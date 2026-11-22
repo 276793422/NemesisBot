@@ -98,17 +98,14 @@ fn l5_msg(
     content: &str,
     metadata: std::collections::HashMap<String, String>,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: channel.to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: chat_id.to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        channel.to_string(),
+        sender_id.to_string(),
+        chat_id.to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session_key.to_string())
+    .with_metadata_map(metadata)
 }
 
 /// 带 credential 扫描的安全插件（生产 agent_factory 注入同源；

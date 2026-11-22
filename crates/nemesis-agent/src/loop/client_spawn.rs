@@ -84,6 +84,10 @@ impl AgentLoop {
                 correlation_id: String::new(),
                 metadata: std::collections::HashMap::new(),
                 voice_playback: None,
+                // 直塞门：enqueue_steer 直接进子代理 steer 队列（不经 busy
+                // gate），必须显式 User 才能过 detection net；steer 指令
+                // 语义 = 用户驾驶意志，User 类直塞不变。
+                msg_class: nemesis_types::channel::MsgClass::User,
             },
             timestamp: chrono::Local::now().to_rfc3339(),
             priority: crate::inbox::MessagePriority::Normal,

@@ -288,17 +288,13 @@ impl MastodonChannel {
 
         let chat_id = status["id"].as_str().unwrap_or("").to_string();
 
-        let inbound = InboundMessage {
-            channel: "mastodon".to_string(),
-            sender_id: sender_id.to_string(),
-            chat_id: chat_id.clone(),
+        let inbound = InboundMessage::user_ingress(
+            "mastodon".to_string(),
+            sender_id.to_string(),
+            chat_id.clone(),
             content,
-            media: Vec::new(),
-            session_key: chat_id,
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        };
+        )
+        .with_session_key(chat_id);
 
         if let Err(e) = bus.send(inbound) {
             warn!("[MastodonChannel] failed to publish inbound message to bus: {e}");

@@ -340,6 +340,33 @@ pub fn append_steer_inject_note(session_key: &str, content: &str) {
     );
 }
 
+/// 系统通告合并注入注记追加入口（2026-11-21 幻影通告根治）：system 行 +
+/// `"note_kind": "bg_notice"` 标记。通告 busy 期间进 stash、轮边界合并注入
+/// ——持久真相是本 system 注记行（全文可审计），**不是 user 行**（user 行
+/// 即幻影通告：排队回执→软拒→物化假用户消息烧 token，本批根治的原始事故
+/// 形态）。模型侧的注入载体 = claim_steer_messages 里 instance 历史 user
+/// 消息（框注合并文本，不落 jsonl user 行）；实时徽标帧由同一调用点经
+/// note_kind="bg_notice" 发出。
+pub fn append_bg_notice_note(session_key: &str, content: &str) {
+    write_chat_entry(
+        session_key,
+        "system",
+        content,
+        None,
+        None,
+        None,
+        &[],
+        &[],
+        &[],
+        None,
+        None,
+        false,
+        None,
+        Some("bg_notice"),
+        None,
+    );
+}
+
 /// Write core shared by all append variants (single source of truth for the
 /// jsonl entry shape). `images` non-empty → extra `"images"` array field.
 /// `file_changes` non-empty → extra `"file_changes"` array field (D3).
@@ -1930,6 +1957,14 @@ pub fn pending_sessions() -> Vec<String> {
         if ext != Some("pending") && ext != Some("taking") {
             continue;
         }
+        // A3 族排除（msg_class 单轨 §10-8）：`.iqueue.taking` /
+        // `.notices.taking` 的扩展名也是 `taking`——裸 `.taking` 才是
+        // 本族（pending）残留；带 A3 族后缀的 stem 归各自扫描器。
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && (stem.ends_with(".iqueue") || stem.ends_with(".notices"))
+        {
+            continue;
+        }
         let Ok(data) = fs::read_to_string(&path) else {
             continue;
         };
@@ -1959,6 +1994,267 @@ pub(crate) fn delete_session_pending(session_key: &str) {
     {
         tracing::warn!("[chat_log] Failed to delete {}: {}", tmp.display(), e);
     }
+}
+
+// ---------------------------------------------------------------------------
+// A3（msg_class 单轨 §10-8，2026-11-21 拍板）：busy 指令队列 + 通告 stash
+// 写穿侧车——三持有区持久化（snooze pending 之上补齐其余两区），进程重启
+// 零丢失。设计同 pending sidecar 家族：
+//   - 后缀刻意避开 `.jsonl`（session_logs 按 *.jsonl 扫描为会话，防幻影
+//     会话条目）；
+//   - **镜像写**（tmp + rename 覆盖）而非追加——持有区是「有界活状态」
+//     （容量帽 + 丢最旧），镜像 = 盘上状态恒等于内存状态，无追加式漂移；
+//     rename 覆盖是目录内原子操作，崩溃窗口 = 旧镜像或新镜像二选一，
+//     不存在半行；
+//   - hydrate/补投走 take-first（rename 收走 → 注入 → 失败回写），与
+//     [`take_session_pending`] 的 `.taking` 崩溃残留臂同型。
+// ---------------------------------------------------------------------------
+
+/// busy 指令队列侧车路径（`{safe_key}.iqueue`）。
+pub(crate) fn instruction_queue_path(session_key: &str) -> PathBuf {
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
+    singleton()
+        .sessions_log_dir()
+        .join(format!("{}.iqueue", safe_key))
+}
+
+/// 通告 stash 侧车路径（`{safe_key}.notices`）。
+pub(crate) fn notices_stash_path(session_key: &str) -> PathBuf {
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
+    singleton()
+        .sessions_log_dir()
+        .join(format!("{}.notices", safe_key))
+}
+
+/// 镜像写通用内核：内容写 `{path}.mirror.tmp` 后 rename 覆盖目标（同目录
+/// rename 是原子替换；崩溃窗口留下的是完整旧镜像或完整新镜像）。tmp 名
+/// **追加后缀而非替换扩展**——三族侧车（pending/iqueue/notices）同会话
+/// 并存，`with_extension` 会把 `.iqueue` 换掉造成跨族撞名。空内容 = 目标
+/// 存在则删（镜像语义：内存空 = 盘上空）。写失败 = 响亮 warn 不炸调用
+/// 方（闸门热路径；丢持久性有内存态顶住，重启后该条丢失 = A3 至少一次
+/// 语义的诚实降级）。
+pub(crate) fn mirror_write(path: &PathBuf, lines: &[String]) {
+    let mut tmp_os = path.clone().into_os_string();
+    tmp_os.push(".mirror.tmp");
+    let tmp = PathBuf::from(tmp_os);
+    if lines.is_empty() {
+        if path.exists()
+            && let Err(e) = nemesis_utils::fsutil::remove_file_retry(path)
+        {
+            tracing::warn!("[chat_log] 镜像删除失败 {}: {}", path.display(), e);
+        }
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let write = || -> Result<(), String> {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp)
+            .map_err(|e| format!("镜像 tmp 写入失败: {e}"))?;
+        for l in lines {
+            writeln!(f, "{l}").map_err(|e| format!("镜像行写入失败: {e}"))?;
+        }
+        f.sync_all().map_err(|e| format!("镜像 sync 失败: {e}"))?;
+        fs::rename(&tmp, path).map_err(|e| format!("镜像 rename 失败: {e}"))?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::warn!("[chat_log] A3 镜像写失败 {}: {}", path.display(), e);
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
+/// 镜像读通用内核：读全部非空行逐条解析，坏行 warn 跳过（不炸整文件）。
+fn mirror_read<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Vec<T> {
+    let Ok(data) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for l in data.lines().filter(|l| !l.trim().is_empty()) {
+        match serde_json::from_str::<T>(l) {
+            Ok(v) => out.push(v),
+            Err(e) => tracing::warn!("[chat_log] 侧车行损坏跳过 {}: {e}", path.display()),
+        }
+    }
+    out
+}
+
+/// take 通用内核（hydrate/补投单次消费）：目标在则 rename 到
+/// `{path}.taking` 族临时名（追加后缀不换扩展——三族侧车 tmp 撞名防护，
+/// 见 [`mirror_write`]；并发双 take 只有一方成功）、读临时名、删除。
+/// 崩溃残留（rename 后删除前终止）由扫描器把 `{stem}.{own}.taking` 纳入
+/// 名单（与 pending 同纪律）。
+fn mirror_take_raw(path: &PathBuf) -> Option<String> {
+    let mut tmp_os = path.clone().into_os_string();
+    tmp_os.push(".taking");
+    let tmp = PathBuf::from(tmp_os);
+    let src = if tmp.exists() {
+        tmp.clone()
+    } else {
+        if !path.exists() {
+            return None;
+        }
+        if fs::rename(path, &tmp).is_err() {
+            return None; // 并发方已取走
+        }
+        tmp.clone()
+    };
+    let data = fs::read_to_string(&src).ok();
+    if let Err(e) = fs::remove_file(&src) {
+        tracing::warn!("[chat_log] 侧车 take 删除失败 {}: {}", src.display(), e);
+    }
+    data
+}
+
+/// 指令队列镜像读（hydrate 用）：每条经 [`legacy 改判`] 由调用方处理，
+/// 本层只管字节。
+pub fn read_instruction_queue(session_key: &str) -> Vec<nemesis_types::channel::InboundMessage> {
+    mirror_read(&instruction_queue_path(session_key))
+}
+
+/// 指令队列整文件收走（hydrate take-first）。等价于
+/// [`take_session_pending`] 的两段式（rename → 读 → 删）。
+pub fn take_instruction_queue(session_key: &str) -> Vec<nemesis_types::channel::InboundMessage> {
+    match mirror_take_raw(&instruction_queue_path(session_key)) {
+        Some(data) => {
+            let mut out = Vec::new();
+            for l in data.lines().filter(|l| !l.trim().is_empty()) {
+                match serde_json::from_str::<nemesis_types::channel::InboundMessage>(l) {
+                    Ok(mut m) => {
+                        // 旧格式改判（§10-7）：无 class 条目按章/标记改判，
+                        // 退役生产者残留（Drop）诚实跳过。
+                        match m.legacy_class_coerce() {
+                            nemesis_types::channel::LegacyVerdict::Drop => {
+                                tracing::warn!(
+                                    "[chat_log] 旧格式指令条目无合法语义章，hydrate 丢弃: {session_key}"
+                                );
+                            }
+                            _ => out.push(m),
+                        }
+                    }
+                    Err(e) => tracing::warn!("[chat_log] iqueue 行损坏跳过: {e}"),
+                }
+            }
+            out
+        }
+        None => Vec::new(),
+    }
+}
+
+/// 指令队列镜像写回（hydrate 注入失败臂的余量回写——与 snooze 重放
+/// 写回同纪律：不丢，等下轮重试）。pub 供 web sweeper 用。
+pub fn restore_instruction_queue(
+    session_key: &str,
+    msgs: &[nemesis_types::channel::InboundMessage],
+) {
+    let lines: Vec<String> = msgs
+        .iter()
+        .filter_map(|m| serde_json::to_string(m).ok())
+        .collect();
+    mirror_write(&instruction_queue_path(session_key), &lines);
+}
+
+/// 通告 stash 镜像读（hydrate 用）。行格式 =
+/// [`crate::inbox::PersistedNotice`]（session_key 包络 + NoticeEntry）。
+pub fn read_notice_stash(session_key: &str) -> Vec<crate::inbox::PersistedNotice> {
+    mirror_read(&notices_stash_path(session_key))
+}
+
+/// 通告 stash 整文件收走（hydrate take-first）。行格式 =
+/// [`crate::inbox::PersistedNotice`]（session_key 包络 + NoticeEntry）。
+pub fn take_notice_stash(session_key: &str) -> Vec<crate::inbox::PersistedNotice> {
+    match mirror_take_raw(&notices_stash_path(session_key)) {
+        Some(data) => {
+            let mut out = Vec::new();
+            for l in data.lines().filter(|l| !l.trim().is_empty()) {
+                match serde_json::from_str::<crate::inbox::PersistedNotice>(l) {
+                    Ok(v) => out.push(v),
+                    Err(e) => tracing::warn!("[chat_log] notices 行损坏跳过: {e}"),
+                }
+            }
+            out
+        }
+        None => Vec::new(),
+    }
+}
+
+/// 通告 stash 镜像写回（hydrate 注入失败臂余量回写）。
+pub fn restore_notice_stash(session_key: &str, entries: &[crate::inbox::PersistedNotice]) {
+    let lines: Vec<String> = entries
+        .iter()
+        .filter_map(|e| serde_json::to_string(e).ok())
+        .collect();
+    mirror_write(&notices_stash_path(session_key), &lines);
+}
+
+/// 列出全部有指令队列侧车残留的会话键（含 `.taking` 崩溃残留——
+/// rename 后删除前终止的窗口，与 [`pending_sessions`] 同纪律）。输出按
+/// 键排序去重。删除级联（会话删除）不认领：会话已删的残留由 sweeper
+/// 的「会话已删 = 作废」臂收敛（与 drain_orphan_pending 同型）。
+pub fn instruction_queue_sessions() -> Vec<String> {
+    sidecar_sessions(&["iqueue", "taking"], "iqueue")
+}
+
+/// 列出全部有通告 stash 侧车残留的会话键（含崩溃残留，同上）。
+pub fn notice_stash_sessions() -> Vec<String> {
+    sidecar_sessions(&["notices", "taking"], "notices")
+}
+
+/// 侧车会话键扫描内核：sessions_log_dir 里枚举指定扩展名 + `.taking`
+/// 残留（文件名形如 `{stem}.{sidecar}.taking` 或 `{stem}.taking`——后者
+/// 无法区分归属（pending/iqueue/notices 三族共用 `.taking` 后缀），按
+/// `own` 扩展名的 stem 端序优先识别：只认 `{stem}.{own}.taking` 形态，
+/// 裸 `.taking` 归 pending 扫描器所有）。首行解析还原真实会话键：指令
+/// 队列行 = InboundMessage 自带 session_key；通告 stash 行 =
+/// PersistedNotice.session_key。
+fn sidecar_sessions(exts: &[&str], own: &str) -> Vec<String> {
+    let dir = singleton().sessions_log_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str());
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let matched = exts.iter().any(|e| Some(*e) == ext)
+            && (ext == Some(own) || stem.ends_with(&format!(".{own}")));
+        if !matched {
+            continue;
+        }
+        let Ok(data) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(first) = data.lines().find(|l| !l.trim().is_empty()) else {
+            continue; // 空文件
+        };
+        // 两族行格式都带 session_key 字段（InboundMessage 自带 /
+        // PersistedNotice 包络），统一按 serde_json Value 抠键——避免为
+        // 扫描器引入两套完整反序列化。
+        match serde_json::from_str::<serde_json::Value>(first) {
+            Ok(v) => {
+                if let Some(k) = v
+                    .get("session_key")
+                    .and_then(|s| s.as_str())
+                    .filter(|k| !k.is_empty())
+                {
+                    out.push(k.to_string());
+                }
+            }
+            Err(e) => tracing::warn!("[chat_log] 侧车首行损坏 {}: {e}", path.display()),
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// L22 session PR：聚合会话内全部 `file_changes`（assistant 行 meta 的
@@ -2518,6 +2814,12 @@ mod detach_tests;
 // + allow_all_sessions 扫描过滤测试。
 #[cfg(test)]
 mod allow_all_tests;
+
+// A3（msg_class 单轨 §10-8，2026-11-21 拍板）：指令队列/通告 stash 写穿
+// 侧车——镜像往返 / take-first / 旧格式改判 / 扫描器三形态 / pending
+// 扫描器排除。
+#[cfg(test)]
+mod a3_sidecar_tests;
 
 // cov 系文件型测试的共享串行锁（2026-09-28 复查新增）：目录型夹具（rewind
 // tmp 目录 / rename 目标目录 / legacy 嵌套目录 / boundary sidecar 目录）与

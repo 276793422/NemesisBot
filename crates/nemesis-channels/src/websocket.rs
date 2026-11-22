@@ -688,17 +688,13 @@ fn handle_text_message(
             let chat_id = format!("websocket:{client_id}");
             info!(content = %client_msg.content, chat_id = %chat_id, "[WebSocketChannel] received message");
 
-            let inbound = InboundMessage {
-                channel: base_name.to_string(),
-                sender_id: chat_id.clone(),
-                chat_id: chat_id.clone(),
-                content: client_msg.content.clone(),
-                media: Vec::new(),
-                session_key: chat_id.clone(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            };
+            let inbound = InboundMessage::user_ingress(
+                base_name.to_string(),
+                chat_id.clone(),
+                chat_id.clone(),
+                client_msg.content.clone(),
+            )
+            .with_session_key(chat_id.clone());
 
             if let Err(e) = bus_sender.send(inbound) {
                 warn!(error = %e, "[WebSocketChannel] failed to publish inbound message");

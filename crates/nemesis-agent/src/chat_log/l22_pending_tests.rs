@@ -19,17 +19,12 @@ fn unique_key(tag: &str) -> String {
 }
 
 fn msg(content: &str) -> InboundMessage {
-    InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "l22user".to_string(),
-        chat_id: "l22chat".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        "web".to_string(),
+        "l22user".to_string(),
+        "l22chat".to_string(),
+        content.to_string(),
+    )
 }
 
 #[test]

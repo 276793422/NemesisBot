@@ -118,17 +118,13 @@ async fn turn_end_persist_preserves_concurrent_compact_summary() {
     );
     al.set_session_store(store.clone());
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "wipeuser".to_string(),
-        chat_id: "wipechat".to_string(),
-        content: "在么".to_string(),
-        media: vec![],
-        session_key: key.clone(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "wipeuser".to_string(),
+        "wipechat".to_string(),
+        "在么".to_string(),
+    )
+    .with_session_key(key.clone());
     let (_agent_id, response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none(), "turn 必须正常完成: {err:?}");
     assert_eq!(response, "turn reply");
@@ -182,17 +178,13 @@ async fn turn_end_persist_does_not_regress_concurrent_recompact() {
     );
     al.set_session_store(store.clone());
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "wipeuser".to_string(),
-        chat_id: "wipechat".to_string(),
-        content: "hello".to_string(),
-        media: vec![],
-        session_key: key.clone(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "wipeuser".to_string(),
+        "wipechat".to_string(),
+        "hello".to_string(),
+    )
+    .with_session_key(key.clone());
     let (_agent_id, _response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none(), "turn 必须正常完成: {err:?}");
 

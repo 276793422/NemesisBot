@@ -61,6 +61,7 @@ fn inbound(content: &str, channel: &str, sender_id: &str, key: &str) -> InboundM
         correlation_id: String::new(),
         metadata: HashMap::new(),
         voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::User,
     }
 }
 

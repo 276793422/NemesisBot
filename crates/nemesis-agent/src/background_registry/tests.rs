@@ -885,133 +885,10 @@ async fn output_with_wait_times_out_with_running_payload() {
     reg.kill(id).await.unwrap();
 }
 
-/// 完成事件经 sink 送达：set_completion_sink → start_with_origin(origin) →
-/// 任务退出后 rx 收到 CompletionEvent（job_id/终态/origin 三元组/尾部）。
-#[tokio::test]
-async fn completion_event_delivered_via_sink() {
-    let _serial = TEST_LOCK.lock().await;
-    let reg = BackgroundProcessRegistry::new();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
-    assert!(reg.set_completion_sink(tx), "首次 set 必须成功");
-    let origin = JobOrigin {
-        channel: "web".to_string(),
-        chat_id: "chat-9".to_string(),
-        session_key: "agent:main:session:s9".to_string(),
-    };
-    let started = reg
-        .start_with_origin(
-            "echo wake_tail_marker_b4",
-            "/",
-            false,
-            Some(origin.clone()),
-            true,
-            None,
-            Arc::new(Vec::new()),
-        )
-        .await
-        .unwrap();
-    let id = started["job_id"].as_u64().unwrap();
-    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
-        .await
-        .expect("completion event within 15s")
-        .expect("channel open");
-    assert_eq!(ev.job_id, id);
-    assert!(ev.status.success);
-    assert!(!ev.status.killed);
-    assert_eq!(ev.origin, origin);
-    assert!(ev.tail.contains("wake_tail_marker_b4"), "tail: {}", ev.tail);
-    // 尾部窗口上限诚实：≤4KB 字节（lossy utf8 后字符数可略小）。
-    assert!(ev.tail.len() <= COMPLETION_TAIL_BYTES + 4);
-}
-
-/// sink 未装配（基线形态）→ start_with_origin 照常返回、无唤醒副作用
-/// （watcher 空等终态后静默返回——不 send 不 panic）。
-#[tokio::test]
-async fn completion_sink_absent_is_noop() {
-    let _serial = TEST_LOCK.lock().await;
-    let reg = BackgroundProcessRegistry::new();
-    let origin = JobOrigin {
-        channel: "web".to_string(),
-        chat_id: "chat-n".to_string(),
-        session_key: String::new(),
-    };
-    let started = reg
-        .start_with_origin(
-            "echo noop_b4",
-            "/",
-            false,
-            Some(origin),
-            true,
-            None,
-            Arc::new(Vec::new()),
-        )
-        .await
-        .unwrap();
-    let id = started["job_id"].as_u64().unwrap();
-    wait_done(&reg, id, 15).await;
-}
-
-/// note 覆盖矩阵：origin 在场 → 反轮询指引；origin 缺席 → 旧轮询指引
-/// （基线行为不变）。
-#[tokio::test]
-async fn start_with_origin_note_matrix() {
-    let _serial = TEST_LOCK.lock().await;
-    let reg = BackgroundProcessRegistry::new();
-    let origin = JobOrigin {
-        channel: "web".to_string(),
-        chat_id: "chat-note".to_string(),
-        session_key: "sess-note".to_string(),
-    };
-    let with_o = reg
-        .start_with_origin(
-            "echo n1_b4",
-            "/",
-            false,
-            Some(origin),
-            true,
-            None,
-            Arc::new(Vec::new()),
-        )
-        .await
-        .unwrap();
-    assert!(
-        with_o["note"]
-            .as_str()
-            .unwrap()
-            .contains("do NOT sleep-poll"),
-        "origin 在场必须给反轮询指引: {}",
-        with_o["note"]
-    );
-    let without_o = reg
-        .start_with_origin(
-            "echo n2_b4",
-            "/",
-            false,
-            None,
-            true,
-            None,
-            Arc::new(Vec::new()),
-        )
-        .await
-        .unwrap();
-    assert!(
-        without_o["note"]
-            .as_str()
-            .unwrap()
-            .contains("poll background_output"),
-        "origin 缺席必须保持旧轮询指引（基线不变）: {}",
-        without_o["note"]
-    );
-    wait_done(&reg, with_o["job_id"].as_u64().unwrap(), 15).await;
-    wait_done(&reg, without_o["job_id"].as_u64().unwrap(), 15).await;
-}
-
 /// 会话资源看板回归锁（2026-11-19 G1 定性修复）：start_with_origin 的
 /// origin 必须落条目——`list_by_session_snapshot(origin.session_key)`
 /// 能盘到该任务、其他会话键盘不到；基线 `start()`（origin=None）不进
-/// 任何会话的盘点。此前 start_with_origin 只把 origin 传给完成唤醒
-/// watcher，条目恒 origin: None，面板 background 类目对任何会话恒
-/// total=0（实录 probe-g9：任务在跑、面板双零）。
+/// 任何会话的盘点。（2026-11-22 完成唤醒摘除后 origin 只服务盘点面。）
 #[tokio::test]
 async fn start_with_origin_lands_on_entry_for_session_snapshot() {
     let _serial = TEST_LOCK.lock().await;
@@ -1021,14 +898,12 @@ async fn start_with_origin_lands_on_entry_for_session_snapshot() {
         chat_id: "chat-snap".to_string(),
         session_key: "agent:main:session:snap-origin".to_string(),
     };
-    // notify=false：本测试只看盘点面，不需要完成唤醒 watcher。
     let started = reg
         .start_with_origin(
             "echo snap_origin_b4",
             "/",
             false,
             Some(origin),
-            false,
             None,
             Arc::new(Vec::new()),
         )
@@ -1067,13 +942,12 @@ async fn start_with_origin_lands_on_entry_for_session_snapshot() {
 }
 
 /// 工具层 e2e：background_start 工具从 RequestContext 捕获 origin →
-/// 完成事件带真实会话锚；返回 note 是反轮询指引。
+/// 任务条目锚定发起会话（list_by_session_snapshot 可盘）；返回 note 是
+/// 轮询指引（完成唤醒已摘除，note 恒轮询语义）。
 #[tokio::test]
-async fn background_start_tool_captures_origin_and_overrides_note() {
+async fn background_start_tool_captures_origin_for_session_snapshot() {
     let _serial = TEST_LOCK.lock().await;
     let reg = Arc::new(BackgroundProcessRegistry::new());
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
-    reg.set_completion_sink(tx);
     let cfg = SharedToolConfig {
         workspace: Some("/".to_string()),
         background_registry: Some(Arc::clone(&reg)),
@@ -1094,91 +968,37 @@ async fn background_start_tool_captures_origin_and_overrides_note() {
         payload["note"]
             .as_str()
             .unwrap()
-            .contains("do NOT sleep-poll"),
-        "工具路径 note 必须被覆盖: {}",
+            .contains("poll background_output"),
+        "工具路径 note 必须是轮询指引（无完成唤醒）: {}",
         payload["note"]
     );
+    // origin 落条目（盘点面）：工具 ctx() 的会话键（sess1）可盘到本任务。
+    let rows = reg.list_by_session_snapshot("sess1").expect("snapshot ok");
+    assert!(
+        rows.iter().any(|r| r["id"] == serde_json::json!(id)),
+        "工具发起的任务必须进发起会话盘点: {rows:?}"
+    );
 
-    // output 工具 wait 路径：等退出 + 终态平铺。
+    // output 工具 wait 路径：等退出 + 终态平铺（要终态就显式 wait，
+    // 2026-11-22 完成唤醒摘除后的标准跟进方式）。
     let args = format!(r#"{{"job_id": {id}, "wait_secs": 10}}"#);
     let out = out_tool.execute(&args, &ctx()).await.unwrap();
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["running"].as_bool(), Some(false));
     assert_eq!(v["success"].as_bool(), Some(true));
-
-    // 完成事件带工具 ctx() 的会话锚（web/chat1/user1/sess1 中的三元组）。
-    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
-        .await
-        .expect("completion event within 15s")
-        .expect("channel open");
-    assert_eq!(ev.job_id, id);
-    assert_eq!(ev.origin.channel, "web");
-    assert_eq!(ev.origin.chat_id, "chat1");
-    assert_eq!(ev.origin.session_key, "sess1");
-    assert!(ev.tail.contains("tool_origin_b4"), "tail: {}", ev.tail);
-}
-
-/// notify=false（2026-11-09 完成唤醒可选化）：受管但静默——退出不发
-/// CompletionEvent（watcher 未 spawn，sink 收不到任何事件）；payload
-/// 显式标注 notify=false 且 note 改静默指引；管理面（output 终态平铺）
-/// 不受影响。
-#[tokio::test]
-async fn notify_false_suppresses_completion_event() {
-    let _serial = TEST_LOCK.lock().await;
-    let reg = BackgroundProcessRegistry::new();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
-    assert!(reg.set_completion_sink(tx), "首次 set 必须成功");
-    let origin = JobOrigin {
-        channel: "web".to_string(),
-        chat_id: "chat-silent".to_string(),
-        session_key: "sess-silent".to_string(),
-    };
-    let started = reg
-        .start_with_origin(
-            "echo silent_b4",
-            "/",
-            false,
-            Some(origin),
-            false,
-            None,
-            Arc::new(Vec::new()),
-        )
-        .await
-        .unwrap();
-    let id = started["job_id"].as_u64().unwrap();
-    assert_eq!(
-        started["notify"].as_bool(),
-        Some(false),
-        "payload 必须显式标注静默: {}",
-        started
-    );
-    assert!(
-        started["note"].as_str().unwrap().contains("notify=false"),
-        "note 必须是静默指引: {}",
-        started["note"]
-    );
-    wait_done(&reg, id, 15).await;
-    // 退出已确认，静默窗内不得有任何事件到达。
-    let quiet = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .is_err();
-    assert!(quiet, "notify=false 的 job 退出不得发 CompletionEvent");
-    // 管理面保留：终态照常平铺。
-    let v = reg.output(id, 0).await.unwrap();
-    assert_eq!(v["success"].as_bool(), Some(true));
 }
 
 /// vault 计划 P2++（2026-11-11）回归锁：env 槽凭据真值被后台任务回显时，
-/// 两个读出面（background_output 分页读 / 完成通告尾部）都必须就地遮蔽
-/// ——明文不落工具结果与 CompletionEvent（session_log / LLM 上下文零暴露）；
-/// 空池 job 原样直通（既有行为零变化）。
+/// 读出面（background_output 分页读）必须就地遮蔽——明文不落工具结果
+/// （session_log / LLM 上下文零暴露）；空池 job 原样直通（既有行为零
+/// 变化）。**tee 镜像面是原始字节直写不过掩码**（设计如此，见
+/// [`TeeFile`] 文档——文件头有敏感信息注记，read_file 读出照常过凭据
+/// 扫描层），本锁只钉工具结果面。
 #[tokio::test]
-async fn job_secret_echo_masked_in_output_and_completion_tail() {
+async fn job_secret_echo_masked_in_output() {
     let _serial = TEST_LOCK.lock().await;
     let reg = BackgroundProcessRegistry::new();
     let secret = "E2E-SECRET-VAL-BGMASK-DO-NOT-USE";
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
-    assert!(reg.set_completion_sink(tx), "首次 set 必须成功");
     let origin = JobOrigin {
         channel: "web".to_string(),
         chat_id: "chat-bgmask".to_string(),
@@ -1190,7 +1010,6 @@ async fn job_secret_echo_masked_in_output_and_completion_tail() {
             "/",
             false,
             Some(origin),
-            true,
             None,
             Arc::new(vec![secret.to_string()]),
         )
@@ -1199,29 +1018,13 @@ async fn job_secret_echo_masked_in_output_and_completion_tail() {
     let id = started["job_id"].as_u64().unwrap();
     let done = wait_done(&reg, id, 15).await;
 
-    // 读出面 1：分页读遮蔽。
+    // 读出面：分页读遮蔽。
     let chunk = done["chunk"].as_str().unwrap_or_default();
     assert!(!chunk.contains(secret), "分页读不得残留明文: {}", chunk);
     assert!(
         chunk.contains("[凭据已掩码]"),
         "分页读必须出现掩码文本: {}",
         chunk
-    );
-
-    // 读出面 2：完成通告尾部遮蔽。
-    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
-        .await
-        .expect("completion event within 15s")
-        .expect("channel open");
-    assert!(
-        !ev.tail.contains(secret),
-        "完成通告尾部不得残留明文: {}",
-        ev.tail
-    );
-    assert!(
-        ev.tail.contains("[凭据已掩码]"),
-        "完成通告尾部必须出现掩码文本: {}",
-        ev.tail
     );
 
     // 空池直通：普通文本原样返回、无掩码文本（既有行为零变化）。
@@ -1243,120 +1046,28 @@ async fn job_secret_echo_masked_in_output_and_completion_tail() {
     );
 }
 
-/// 工具层 e2e：notify=false 经 execute 解析 → 静默生效（无完成事件），
-/// payload 标注与 note 指引同步落位。
+/// schema 回归锁（2026-11-22 完成唤醒摘除）：notify 参数从 schema 整体
+/// 退役——properties 不得再有 notify；工具 description 不再带 notify
+/// 引导、改带轮询/落盘指引。纯逻辑用例，不起进程。
 #[tokio::test]
-async fn background_start_tool_notify_false_suppresses_wake() {
-    let _serial = TEST_LOCK.lock().await;
-    let reg = Arc::new(BackgroundProcessRegistry::new());
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
-    reg.set_completion_sink(tx);
-    let cfg = SharedToolConfig {
-        workspace: Some("/".to_string()),
-        background_registry: Some(Arc::clone(&reg)),
-        exec_output_tx: None,
-        ..Default::default()
-    };
-    let tools = register_shared_tools(&cfg);
-    let start_tool = tools.get("background_start").expect("registered");
-    let out_tool = tools.get("background_output").expect("registered");
-
-    let out = start_tool
-        .execute(
-            r#"{"command": "echo tool_silent_b4", "notify": false}"#,
-            &ctx(),
-        )
-        .await
-        .unwrap();
-    let payload: serde_json::Value = serde_json::from_str(&out).unwrap();
-    let id = payload["job_id"].as_u64().unwrap();
-    assert_eq!(payload["notify"].as_bool(), Some(false));
-    assert!(
-        payload["note"].as_str().unwrap().contains("notify=false"),
-        "工具路径 note 必须是静默指引: {}",
-        payload["note"]
-    );
-
-    // output 工具 wait 路径：管理面保留（等退出 + 终态平铺）。
-    let args = format!(r#"{{"job_id": {id}, "wait_secs": 10}}"#);
-    let v = out_tool.execute(&args, &ctx()).await.unwrap();
-    let v: serde_json::Value = serde_json::from_str(&v).unwrap();
-    assert_eq!(v["running"].as_bool(), Some(false));
-    assert_eq!(v["success"].as_bool(), Some(true));
-
-    // 退出已确认，静默窗内零事件。
-    let quiet = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .is_err();
-    assert!(quiet, "工具路径 notify=false 不得发完成事件");
-}
-
-/// notify 非法值（非 boolean，如字符串 "false"）→ 落缺省 true：watcher
-/// 照常 spawn、事件照常送达；true 路径 payload 不加 notify 键（缺省
-/// 字节不变）。
-#[tokio::test]
-async fn background_start_tool_notify_non_bool_falls_back_to_true() {
-    let _serial = TEST_LOCK.lock().await;
-    let reg = Arc::new(BackgroundProcessRegistry::new());
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
-    reg.set_completion_sink(tx);
-    let cfg = SharedToolConfig {
-        workspace: Some("/".to_string()),
-        background_registry: Some(Arc::clone(&reg)),
-        exec_output_tx: None,
-        ..Default::default()
-    };
-    let tools = register_shared_tools(&cfg);
-    let start_tool = tools.get("background_start").expect("registered");
-
-    let out = start_tool
-        .execute(
-            r#"{"command": "echo tool_nb_b4", "notify": "false"}"#,
-            &ctx(),
-        )
-        .await
-        .unwrap();
-    let payload: serde_json::Value = serde_json::from_str(&out).unwrap();
-    let id = payload["job_id"].as_u64().unwrap();
-    assert!(
-        payload.get("notify").is_none(),
-        "true 路径 payload 不加 notify 键: {}",
-        payload
-    );
-    assert!(
-        payload["note"]
-            .as_str()
-            .unwrap()
-            .contains("do NOT sleep-poll"),
-        "落 true 时 note 是反轮询指引: {}",
-        payload["note"]
-    );
-    wait_done(&reg, id, 15).await;
-    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
-        .await
-        .expect("completion event within 15s")
-        .expect("channel open");
-    assert_eq!(ev.job_id, id);
-}
-
-/// schema 面：notify 参数在 properties 且 type=boolean，description 与
-/// 工具 description 都带引导（供给面可发现）。纯逻辑用例，不起进程。
-#[tokio::test]
-async fn background_start_schema_exposes_notify_param() {
+async fn background_start_schema_notify_param_retired() {
     let tool = BackgroundStartTool::new("/", false, Arc::new(BackgroundProcessRegistry::new()));
     let schema = tool.parameters();
-    let notify = &schema["properties"]["notify"];
-    assert_eq!(notify["type"].as_str(), Some("boolean"));
     assert!(
-        notify["description"]
-            .as_str()
-            .unwrap()
-            .contains("default true"),
-        "schema description 必须写明缺省 true"
+        schema["properties"].get("notify").is_none(),
+        "notify 参数已摘除，schema 不得复活: {}",
+        schema["properties"]
+    );
+    let desc = tool.description();
+    assert!(
+        !desc.contains("notify"),
+        "工具 description 不得再带 notify 引导: {}",
+        desc
     );
     assert!(
-        tool.description().contains("notify=false"),
-        "工具 description 必须带 notify=false 引导"
+        desc.contains("background_output") && desc.contains("log_path"),
+        "description 必须带轮询与落盘路径指引: {}",
+        desc
     );
 }
 
@@ -1510,67 +1221,6 @@ async fn adopt_exec_rejects_when_full_and_all_running() {
     reg.kill(holder).await.unwrap();
 }
 
-/// 收编 + 完成唤醒（B43 接线面）：origin 在场的收编任务自然退出后，
-/// CompletionEvent（带 origin 与输出尾部）照常发出——收编任务与
-/// background_start 任务同轨道享受完成通告。
-#[tokio::test]
-async fn adopt_exec_completion_notice_fires_on_exit() {
-    let _serial = TEST_LOCK.lock().await;
-    let reg = Arc::new(BackgroundProcessRegistry::new());
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    assert!(reg.set_completion_sink(tx), "sink 一次性装配");
-
-    // 快退命令（echo 后 ~1s 自然退出）。
-    let cmd_str = {
-        #[cfg(target_os = "windows")]
-        {
-            "echo adopt_fin_b4& ping -n 2 127.0.0.1 >nul".to_string()
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            "echo adopt_fin_b4; sleep 1".to_string()
-        }
-    };
-    let (mut child, pid) = spawn_piped_shell(&cmd_str);
-    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (err_tx, err_rx) = tokio::sync::mpsc::unbounded_channel();
-    forward_pipe(child.stdout.take(), out_tx);
-    forward_pipe(child.stderr.take(), err_tx);
-
-    let origin = JobOrigin {
-        channel: "web".to_string(),
-        chat_id: "chat1".to_string(),
-        session_key: "sess1".to_string(),
-    };
-    let payload = reg
-        .adopt_exec(
-            &cmd_str,
-            "/",
-            child,
-            pid,
-            b"seed_fin_b4".to_vec(),
-            out_rx,
-            err_rx,
-            Some(origin),
-            Arc::new(Vec::new()),
-        )
-        .await
-        .expect("adopt must succeed");
-    let id = payload["job_id"].as_u64().unwrap();
-
-    let ev = tokio::time::timeout(Duration::from_secs(20), rx.recv())
-        .await
-        .expect("completion event within 20s")
-        .expect("channel open");
-    assert_eq!(ev.job_id, id);
-    assert_eq!(ev.origin.session_key, "sess1", "origin round-trip");
-    assert!(
-        ev.tail.contains("adopt_fin_b4"),
-        "完成通告 tail 含收编后输出: {:?}",
-        ev.tail
-    );
-}
-
 /// exec 超时收编 e2e（B43）：ExecTool + 注册表装配 → 超时文本保持失败
 /// 形态前缀（exec_output_passed 判定依赖），带 job_id 与四动词指引；
 /// 注册表恰一条在跑；seed（超时前 echo）进缓冲；kill 收尾。
@@ -1666,4 +1316,141 @@ async fn exec_timeout_falls_back_to_kill_when_adopt_rejected() {
     assert!(out.contains("fallback_b4"), "残余输出仍在: {out}");
     assert_eq!(reg.job_count().await, 1, "收编失败不占注册表");
     reg.kill(holder).await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// 输出落盘 tee（2026-11-22 完成唤醒摘除批）
+// ---------------------------------------------------------------------------
+
+/// tee 镜像面 e2e：log_dir 注入 → 任务输出双写 append-only 文件；
+/// start/output 响应带 log_path（模型可发现的「最差读文件」面）；文件头
+/// 带敏感信息注记；registry drop（gateway 退出语义）后文件保留不删。
+#[tokio::test]
+async fn tee_file_mirrors_output_and_survives_registry_drop() {
+    let _serial = TEST_LOCK.lock().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log_dir = tmp.path().join("bg");
+    let reg = BackgroundProcessRegistry::new().with_log_dir(log_dir.clone());
+    let started = reg.start("echo tee_mirror_b4", "/", false).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    // start 响应带 log_path。
+    let log_path = started["log_path"]
+        .as_str()
+        .expect("start 响应必须带 log_path")
+        .to_string();
+    let done = wait_done(&reg, id, 15).await;
+    // output 响应同样带 log_path。
+    assert_eq!(done["log_path"].as_str(), Some(log_path.as_str()));
+
+    // 镜像内容完整：输出 + 命令头 + cwd 头 + 敏感信息注记。
+    let content = std::fs::read_to_string(&log_path).expect("tee file readable");
+    assert!(
+        content.contains("tee_mirror_b4"),
+        "输出必须在镜像: {content}"
+    );
+    assert!(
+        content.contains("echo tee_mirror_b4"),
+        "命令头必须在镜像: {content}"
+    );
+    assert!(content.contains("cwd: /"), "cwd 头必须在镜像: {content}");
+    assert!(
+        content.contains("敏感"),
+        "敏感信息注记必须在镜像头: {content}"
+    );
+
+    // registry drop（gateway 退出语义）：文件保留不删（本批的意义所在）。
+    drop(reg);
+    let content2 = std::fs::read_to_string(&log_path).expect("tee file survives drop");
+    assert!(
+        content2.contains("tee_mirror_b4"),
+        "drop 后镜像内容必须还在: {content2}"
+    );
+}
+
+/// tee 关（默认形态）：无 log_dir → start/output 响应不带 log_path
+/// （executor 分离子进程 / 单测零磁盘副作用）。
+#[tokio::test]
+async fn tee_disabled_when_no_log_dir() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start("echo tee_off_b4", "/", false).await.unwrap();
+    assert!(
+        started.get("log_path").is_none(),
+        "tee 关不得透出 log_path: {}",
+        started
+    );
+    let id = started["job_id"].as_u64().unwrap();
+    let done = wait_done(&reg, id, 15).await;
+    assert!(
+        done.get("log_path").is_none(),
+        "output 响应同样不得透出 log_path: {}",
+        done
+    );
+}
+
+/// 收编同样 tee（B43 × 2026-11-22）：收编即建镜像文件 + seed 双写；转发
+/// 泵输出随 chunk 进镜像。
+#[tokio::test]
+async fn adopt_exec_teeds_seed_and_forwarded_output() {
+    let _serial = TEST_LOCK.lock().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let log_dir = tmp.path().join("bg");
+    let reg = BackgroundProcessRegistry::new().with_log_dir(log_dir.clone());
+    let cmd_str = {
+        #[cfg(target_os = "windows")]
+        {
+            "echo adopt_tee_b4& ping -n 30 127.0.0.1 >nul".to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            "echo adopt_tee_b4; sleep 30".to_string()
+        }
+    };
+    let (mut child, pid) = spawn_piped_shell(&cmd_str);
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (err_tx, err_rx) = tokio::sync::mpsc::unbounded_channel();
+    forward_pipe(child.stdout.take(), out_tx);
+    forward_pipe(child.stderr.take(), err_tx);
+
+    let payload = reg
+        .adopt_exec(
+            &cmd_str,
+            "/",
+            child,
+            pid,
+            b"adopt_seed_tee_b4".to_vec(),
+            out_rx,
+            err_rx,
+            None,
+            Arc::new(Vec::new()),
+        )
+        .await
+        .expect("adopt must succeed");
+    let log_path = payload["log_path"]
+        .as_str()
+        .expect("adopt 响应必须带 log_path")
+        .to_string();
+    let id = payload["job_id"].as_u64().unwrap();
+
+    // seed 已在镜像（收编即建文件 + seed 双写）。
+    let content = std::fs::read_to_string(&log_path).expect("tee file readable");
+    assert!(
+        content.contains("adopt_seed_tee_b4"),
+        "seed 必须随收编进镜像: {content}"
+    );
+
+    // 转发泵输出随 chunk 进镜像。
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut saw = false;
+    while Instant::now() < deadline {
+        let c = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if c.contains("adopt_tee_b4") {
+            saw = true;
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(saw, "转发流输出必须进镜像");
+
+    reg.kill(id).await.unwrap();
 }

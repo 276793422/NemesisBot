@@ -49,15 +49,20 @@ export interface ChatMessage {
    *  不落盘，不占行号锚）；`undefined` = 旧规则（user/assistant 占行）。
    *  缺失该键的帧（旧网关/本地回显）按旧规则算，行为逐字节兼容。 */
   occupies?: boolean
-  /** 系统通知标记（2026-11-16 系统注入消息渲染成用户气泡 BUG）：后端
-   *  jsonl 历史行的 `system_notice` 透传。role=user 的系统注入行（后台
-   *  任务完成唤醒/审批裁决回灌/Turn WAL 续轮，sender_id=="system" 推导）
-   *  ——渲染为折叠系统通知条而非用户气泡。缺省 = 真人消息/旧条目，用户
-   *  气泡旧行为。 */
+  /** 内部注入行 kind 标记（2026-11-16 系统注入消息渲染成用户气泡 BUG；
+   *  2026-11-21 msg_class A2 kind-aware）：后端 jsonl 行 / receive 帧的
+   *  `system_notice` 透传——值 = system_notice_of 的 class 投影 kind slug
+   *  （Notice 四族 events/loop/approval_continuation/merged + Instruction
+   *  四族 goal_round/cron_tick/wal_resume/board_dispatch；旧章/旧行=永久
+   *  兼容读）。role=user 的内部注入行渲染为 kind 徽标条而非用户气泡
+   *  （A2 拍板 MUST：内部消息永不渲染成用户气泡）。缺省 = 真人消息/旧
+   *  条目，用户气泡旧行为。 */
   systemNotice?: string
   /** 定时任务来源标记（同 BUG 同族收编）：后端 jsonl 历史行的
    *  `cron_job_id` 透传（后端早已有此键，前端此前从不消费）。cron tick
-   *  行与 systemNotice 行共用同一通知条渲染分支。缺省 = 非 cron 行。 */
+   *  行与 systemNotice 行共用同一徽标条渲染分支；新 cron 行同时带
+   *  system_notice="cron_tick"（kind 徽标行形态），仅带此键的旧行保持
+   *  ⏰ 定时任务兜底形态。缺省 = 非 cron 行。 */
   cronJobId?: string
   /** ②（2026-11-16 用户消息重复渲染修复）：发送链本地回显标记——此行
    *  是前端 sendValidated 先于后端落盘回执创建的乐观行，环里对应的

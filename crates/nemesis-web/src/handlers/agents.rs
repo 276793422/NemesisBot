@@ -294,17 +294,13 @@ impl ModuleHandler for AgentsHandler {
                     None,
                     None,
                 );
-                let msg = InboundMessage {
-                    channel: "web".to_string(),
-                    sender_id: "web".to_string(),
-                    chat_id: ctx.chat_id.clone(),
+                let msg = InboundMessage::user_ingress(
+                    "web".to_string(),
+                    "web".to_string(),
+                    ctx.chat_id.clone(),
                     content,
-                    media: vec![],
-                    session_key,
-                    correlation_id: String::new(),
-                    metadata: Default::default(),
-                    voice_playback: None,
-                };
+                )
+                .with_session_key(session_key);
                 bridge.send_to_agent(&agent_id, msg).await?;
                 Ok(Some(serde_json::json!({
                     "accepted": true,

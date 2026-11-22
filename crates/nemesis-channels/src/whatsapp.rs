@@ -297,17 +297,9 @@ impl WhatsAppChannel {
                                             metadata.insert("from_name".to_string(), name.clone());
                                         }
 
-                                        let inbound = InboundMessage {
-                                            channel: "whatsapp".to_string(),
-                                            sender_id: sender_id.clone(),
-                                            chat_id: chat_id.clone(),
-                                            content,
-                                            media: Vec::new(),
-                                            session_key: format!("whatsapp:{}", chat_id),
-                                            correlation_id: String::new(),
-                                            metadata,
-                                            voice_playback: None,
-                                        };
+                                        let inbound = InboundMessage::user_ingress("whatsapp".to_string(), sender_id.clone(), chat_id.clone(), content)
+                                        .with_session_key(format!("whatsapp:{}", chat_id))
+                                        .with_metadata_map(metadata);
 
                                         info!(
                                             sender_id = %inbound.sender_id,

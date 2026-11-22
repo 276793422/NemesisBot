@@ -546,17 +546,14 @@ impl WeChatChannel {
             metadata.insert("contact_alias".to_string(), alias.clone());
         }
 
-        let inbound = InboundMessage {
-            channel: "wechat".to_string(),
-            sender_id: sender_id.to_string(),
-            chat_id: chat_id.clone(),
-            content: msg.content,
-            media: Vec::new(),
-            session_key: format!("wechat:{chat_id}"),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        };
+        let inbound = InboundMessage::user_ingress(
+            "wechat".to_string(),
+            sender_id.to_string(),
+            chat_id.clone(),
+            msg.content,
+        )
+        .with_session_key(format!("wechat:{chat_id}"))
+        .with_metadata_map(metadata);
 
         info!(
             sender_id = %inbound.sender_id,

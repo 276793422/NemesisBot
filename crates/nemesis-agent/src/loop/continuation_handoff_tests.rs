@@ -183,17 +183,13 @@ fn hs_msg(
     content: &str,
     metadata: std::collections::HashMap<String, String>,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "system".to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: "chatHS".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "system".to_string(),
+        sender_id.to_string(),
+        "chatHS".to_string(),
+        content.to_string(),
+    )
+    .with_metadata_map(metadata)
 }
 
 /// 种一个最小续行快照（user 消息 + 待应答 tool_call；session=hsess 非

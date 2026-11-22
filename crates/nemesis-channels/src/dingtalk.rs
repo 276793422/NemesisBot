@@ -443,17 +443,14 @@ impl DingTalkChannel {
             if is_group { "true" } else { "false" }.to_string(),
         );
 
-        let inbound = InboundMessage {
-            channel: "dingtalk".to_string(),
-            sender_id: sender_id.clone(),
-            chat_id: chat_id.clone(),
-            content: content.clone(),
-            media: Vec::new(),
-            session_key: format!("dingtalk:{}", chat_id),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        };
+        let inbound = InboundMessage::user_ingress(
+            "dingtalk".to_string(),
+            sender_id.clone(),
+            chat_id.clone(),
+            content.clone(),
+        )
+        .with_session_key(format!("dingtalk:{}", chat_id))
+        .with_metadata_map(metadata);
 
         info!(
             sender_id = %inbound.sender_id,

@@ -1379,6 +1379,10 @@ pub fn spawn_snooze_sweeper(
                 tracing::info!("[sessions] snooze sweeper 唤醒 {woken} 个会话");
             }
             drain_orphan_pending();
+            // A3 滞留补投（msg_class 单轨 §10-8）：busy 指令队列 + 通告
+            // stash 的重启 hydrate——同轮跑两族（量级常态零文件零开销）。
+            drain_orphan_instruction_queues();
+            drain_orphan_notice_stashes();
         }
     })
 }
@@ -1442,6 +1446,132 @@ pub(crate) fn drain_orphan_pending() {
         let delivered = replay_pending_for(&key);
         if delivered > 0 {
             tracing::info!("[sessions] 滞留 pending 补投 {delivered} 条: {key}");
+        }
+    }
+}
+
+// —— A3（msg_class 单轨 §10-8，2026-11-21 拍板）：指令队列 / 通告 stash
+//    滞留补投——snooze pending 之上补齐其余两个持有区，进程重启零丢失 ——
+
+/// A3 重放 hook 签名：按会话键注入一批已 hydrate 的 InboundMessage（指令
+/// 条目 / 通告条目由调用方分别构造为正确 class），返回成功注入条数。
+/// loop 缺席（停机窗口/未装配）= 0——调用方把余量写回侧车（restore_*），
+/// sweeper 下轮重试（与 [`SnoozeReplayHook`] 同纪律：不丢，等恢复）。
+pub type PersistedReplayHook = std::sync::Arc<
+    dyn Fn(&str, Vec<nemesis_types::channel::InboundMessage>) -> usize + Send + Sync,
+>;
+
+/// 进程级 hook 槽（与 [`SNOOZE_REPLAY_HOOK`] 同款 RwLock<Option<_>> 形态
+/// ——gateway 装配期安装一次，测试可置换）。
+static PERSISTED_REPLAY_HOOK: std::sync::RwLock<Option<PersistedReplayHook>> =
+    std::sync::RwLock::new(None);
+
+/// gateway 装配期安装 A3 重放 hook（runtime.rs：三臂 loop 解析 +
+/// inject_inbound）。
+pub fn set_persisted_replay_hook(hook: Option<PersistedReplayHook>) {
+    *PERSISTED_REPLAY_HOOK
+        .write()
+        .expect("persisted replay hook lock") = hook;
+}
+
+/// 调 hook 注入一批持久化消息；无 hook（单测/未装配）= 0（调用方写回侧车）。
+fn replay_persisted_for(
+    session_key: &str,
+    msgs: Vec<nemesis_types::channel::InboundMessage>,
+) -> usize {
+    let hook = PERSISTED_REPLAY_HOOK
+        .read()
+        .expect("persisted replay hook lock")
+        .clone();
+    match hook {
+        Some(h) => h(session_key, msgs),
+        None => 0,
+    }
+}
+
+/// A3 滞留补投内核（sweeper 每轮对一族侧车跑一遍）：会话已删 = take 后
+/// 作废（防复活已删会话——与 [`drain_orphan_pending`] 同臂）；活会话 =
+/// take-first 注入，失败余量写回侧车下轮重试。**至少一次语义**：注入后
+/// 崩溃的窗口内条目会重复投递（指令类重入闸有幂等面——cron 合闸/goals
+/// 评估重入；通告合并注入天然幂等），取「不丢」为优先不变量。
+pub(crate) fn drain_orphan_instruction_queues() {
+    for key in nemesis_agent::chat_log::instruction_queue_sessions() {
+        if !nemesis_agent::chat_log::chat_log_exists(&key) {
+            let discarded = nemesis_agent::chat_log::take_instruction_queue(&key);
+            if !discarded.is_empty() {
+                tracing::info!(
+                    "[sessions] 会话已删除，作废滞留指令队列 {} 条: {key}",
+                    discarded.len()
+                );
+            }
+            continue;
+        }
+        let msgs = nemesis_agent::chat_log::take_instruction_queue(&key);
+        if msgs.is_empty() {
+            continue;
+        }
+        let delivered = replay_persisted_for(&key, msgs.clone());
+        if delivered < msgs.len() {
+            // 余量写回（snooze 重放写回同纪律）：loop 缺席/注入失败不丢，
+            // 等下轮。写回走 restore（镜像写全量）。
+            nemesis_agent::chat_log::restore_instruction_queue(
+                &key,
+                &msgs[delivered.min(msgs.len())..],
+            );
+            tracing::info!(
+                "[sessions] 指令队列补投 {delivered}/{} 条（余量写回下轮重试）: {key}",
+                msgs.len()
+            );
+        } else {
+            tracing::info!("[sessions] 指令队列滞留补投 {} 条: {key}", msgs.len());
+        }
+    }
+}
+
+/// 通告 stash 滞留补投：行格式 PersistedNotice → 构造器重建 Notice 条目
+/// （kind 烤死 class）→ 同一 hook 注入；失败余量按原始行写回
+/// （InboundMessage 投影与 PersistedNotice 一一对应，尾部切片同序）。
+pub(crate) fn drain_orphan_notice_stashes() {
+    for key in nemesis_agent::chat_log::notice_stash_sessions() {
+        if !nemesis_agent::chat_log::chat_log_exists(&key) {
+            let discarded = nemesis_agent::chat_log::take_notice_stash(&key);
+            if !discarded.is_empty() {
+                tracing::info!(
+                    "[sessions] 会话已删除，作废滞留通告 stash {} 条: {key}",
+                    discarded.len()
+                );
+            }
+            continue;
+        }
+        let persisted = nemesis_agent::chat_log::take_notice_stash(&key);
+        if persisted.is_empty() {
+            continue;
+        }
+        let msgs = persisted
+            .iter()
+            .map(|p| {
+                nemesis_types::channel::InboundMessage::notice(
+                    p.entry.kind.clone(),
+                    p.entry.channel.clone(),
+                    p.entry.chat_id.clone(),
+                    p.session_key.clone(),
+                    p.entry.content.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let delivered = replay_persisted_for(&key, msgs);
+        if delivered < persisted.len() {
+            let tail = &persisted[delivered.min(persisted.len())..];
+            nemesis_agent::chat_log::restore_notice_stash(&key, tail);
+            tracing::info!(
+                "[sessions] 通告 stash 补投 {delivered}/{} 条（余量写回下轮重试）: {key}",
+                persisted.len()
+            );
+        } else {
+            tracing::info!(
+                "[sessions] 通告 stash 滞留补投 {} 条: {key}",
+                persisted.len()
+            );
         }
     }
 }

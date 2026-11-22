@@ -2308,17 +2308,12 @@ fn test_bus_to_cluster_message_conversion() {
     let chat_id = "chat1".to_string();
     let content = "Hello".to_string();
 
-    let inbound = nemesis_types::channel::InboundMessage {
-        channel: channel.clone(),
-        sender_id: sender_id.clone(),
-        chat_id: chat_id.clone(),
-        content: content.clone(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let inbound = nemesis_types::channel::InboundMessage::user_ingress(
+        channel.clone(),
+        sender_id.clone(),
+        chat_id.clone(),
+        content.clone(),
+    );
     assert_eq!(inbound.channel, "web");
     assert_eq!(inbound.sender_id, "user1");
     assert_eq!(inbound.chat_id, "chat1");
@@ -7555,17 +7550,12 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
     // ① message 触发：bus 入站消息 → 驱动循环匹配 → start_async。
     f.ctx
         .bus
-        .publish_inbound(nemesis_types::channel::InboundMessage {
-            channel: "web".to_string(),
-            sender_id: "cov-user".to_string(),
-            chat_id: "cov-chat".to_string(),
-            content: "hello cov".to_string(),
-            media: vec![],
-            session_key: String::new(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        .publish_inbound(nemesis_types::channel::InboundMessage::user_ingress(
+            "web".to_string(),
+            "cov-user".to_string(),
+            "cov-chat".to_string(),
+            "hello cov".to_string(),
+        ));
     // ② event 触发：EventDispatcher publish → 事件驱动循环匹配。
     f.ctx.workflow_engine.event_dispatcher().publish(
         nemesis_workflow::event_dispatcher::TriggerEvent::new(

@@ -876,17 +876,10 @@ impl TelegramChannel {
         metadata.insert("peer_kind".to_string(), peer_kind.to_string());
         metadata.insert("peer_id".to_string(), peer_id);
 
-        let inbound = InboundMessage {
-            channel: "telegram".to_string(),
-            sender_id,
-            chat_id,
-            content,
-            media,
-            session_key: String::new(),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        };
+        let inbound =
+            InboundMessage::user_ingress("telegram".to_string(), sender_id, chat_id, content)
+                .with_media(media)
+                .with_metadata_map(metadata);
 
         if let Err(e) = bus_sender.send(inbound) {
             warn!("[TelegramChannel] failed to publish inbound message: {e}");

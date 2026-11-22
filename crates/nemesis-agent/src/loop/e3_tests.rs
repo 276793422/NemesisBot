@@ -1299,17 +1299,13 @@ async fn e3_busy_refusal_rows_skipped_inside_rewrite_window() {
     // 占住会话（等价 rewind 持闸期间的 busy 态）。
     assert!(al.try_acquire_session(&key));
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "late-user".to_string(),
-        chat_id: "late-chat".to_string(),
-        content: "迟到消息".to_string(),
-        media: Vec::new(),
-        session_key: key.clone(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "late-user".to_string(),
+        "late-chat".to_string(),
+        "迟到消息".to_string(),
+    )
+    .with_session_key(key.clone());
 
     // 窗口内：瞬态回执照发，但留痕两行必须跳过。
     let guard = crate::chat_log::history_rewrite_begin(&key);

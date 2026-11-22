@@ -234,17 +234,12 @@ fn composite_routes_unregistered_synth_channel_to_default_when_whitelist_armed()
 // ---------------------------------------------------------------------------
 
 fn inbound(channel: &str, chat: &str, content: &str) -> InboundMessage {
-    InboundMessage {
-        channel: channel.to_string(),
-        sender_id: "user-1".to_string(),
-        chat_id: chat.to_string(),
-        content: content.to_string(),
-        media: Vec::new(),
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        channel.to_string(),
+        "user-1".to_string(),
+        chat.to_string(),
+        content.to_string(),
+    )
 }
 
 /// 轮询出站广播直到拿到下一条（测试用，30s 兜底超时）。

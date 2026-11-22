@@ -5,17 +5,13 @@ use super::*;
 use nemesis_types::channel::OutboundMessage;
 
 fn inbound() -> InboundMessage {
-    InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "m".to_string(),
-        media: vec![],
-        session_key: "test:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        "test".to_string(),
+        "u".to_string(),
+        "c".to_string(),
+        "m".to_string(),
+    )
+    .with_session_key("test:c".to_string())
 }
 
 fn outbound() -> OutboundMessage {
@@ -179,4 +175,71 @@ fn subscribe_log_reports_post_subscription_total() {
         captured.contains("New inbound subscriber, total receivers=2"),
         "第二个入站订阅者应打 total=2，捕获日志：{captured}"
     );
+}
+
+// —— msg_class 检测网自证锁（2026-11-21 msg_class 架构 B2/B3，§11）——
+// 三条逃逸路（B3 收窄标记表）× panic 态 + warn 态放行 + 纯净 User 放行。
+
+/// panic 态：User class + 任一内部形状标记 → 当场炸（catch_unwind 断言，
+/// 不污染进程）。三臂覆盖标记表三族：channel=system / sender 前缀 /
+/// metadata 章。
+#[test]
+fn semantic_assert_panics_on_user_class_with_internal_marker() {
+    let bus = MessageBus::new().with_semantic_assert(true);
+    let mut esc_channel = inbound();
+    esc_channel.channel = "system".to_string();
+    let mut esc_sender = inbound();
+    esc_sender.sender_id = "cron:job-1".to_string();
+    let mut esc_meta = inbound();
+    esc_meta
+        .metadata
+        .insert("system_notice".to_string(), "events".to_string());
+    for (name, m) in [
+        ("channel=system", esc_channel),
+        ("sender cron:*", esc_sender),
+        ("metadata:system_notice", esc_meta),
+    ] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            bus.publish_inbound(m.clone());
+        }));
+        assert!(
+            result.is_err(),
+            "User class + {name} 必须炸出（with_semantic_assert(true)）"
+        );
+    }
+}
+
+/// warn 态（默认构造）：User class + 标记 → 发布照常成功（兜底观测不拦
+/// 运行）；Notice class 携带同款标记 = 检测网早退（构造器家族产物合法，
+/// 不误伤）。
+#[test]
+fn semantic_assert_warn_mode_publishes_through() {
+    let bus = MessageBus::new(); // 默认 warn 态
+    let mut m = inbound();
+    m.metadata
+        .insert("cron_job_id".to_string(), "j".to_string());
+    let mut rx = bus.subscribe_inbound();
+    bus.publish_inbound(m);
+    assert!(
+        rx.try_recv().is_ok(),
+        "warn 态不得拦截发布（消息必须进通道）"
+    );
+    let notice = InboundMessage::notice(
+        nemesis_types::channel::NoticeKind::Events,
+        "web",
+        "c",
+        "s",
+        "x",
+    );
+    bus.publish_inbound(notice);
+}
+
+/// 纯净 User（无任何内部形状标记）在 panic 态也恒放行——检测网只抓内部
+/// 生产者逃逸，不误伤正常用户消息。
+#[test]
+fn semantic_assert_clean_user_class_passes() {
+    let bus = MessageBus::new().with_semantic_assert(true);
+    let mut rx = bus.subscribe_inbound();
+    bus.publish_inbound(inbound());
+    assert!(rx.try_recv().is_ok(), "纯净 User 恒放行");
 }

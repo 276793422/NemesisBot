@@ -451,31 +451,24 @@ pub(super) fn inject_project_spawn_fn(
                             Some(e.clone()),
                         ),
                     };
-                    let mut metadata = std::collections::HashMap::new();
-                    metadata.insert("status".to_string(), status.to_string());
-                    if let Some(ref e) = error {
-                        metadata.insert("error".to_string(), e.clone());
-                    }
-                    metadata.insert("source".to_string(), "background_subagent".to_string());
-                    bus.publish_inbound(nemesis_types::channel::InboundMessage {
-                        channel: "system".to_string(),
-                        sender_id: format!(
+                    let mut msg = nemesis_types::channel::InboundMessage::continuation(
+                        format!(
                             "{}{}",
                             nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
                             bg_task_id
                         ),
-                        chat_id: String::new(),
+                        bg_parent_session_key.clone(),
                         content,
-                        media: Vec::new(),
-                        // 子代理可见性：父会话键随行——项目会话派发的后台
-                        // 任务完成回灌项目 loop（manager 按归属路由），不再全局
-                        // 短路进主 loop（项目快照在项目 loop 的 continuation
-                        // store，主 loop 加载必 miss）。
-                        session_key: bg_parent_session_key,
-                        correlation_id: String::new(),
-                        metadata,
-                        voice_playback: None,
-                    });
+                    )
+                    .with_metadata("status", status)
+                    .with_metadata_opt("error", error.as_deref())
+                    .with_metadata("source", "background_subagent");
+                    // 子代理可见性：父会话键随行——项目会话派发的后台
+                    // 任务完成回灌项目 loop（manager 按归属路由），不再全局
+                    // 短路进主 loop（项目快照在项目 loop 的 continuation
+                    // store，主 loop 加载必 miss）。
+                    msg.session_key = bg_parent_session_key;
+                    bus.publish_inbound(msg);
                     tracing::info!(
                         task_id = %bg_task_id,
                         status,

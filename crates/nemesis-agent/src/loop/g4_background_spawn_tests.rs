@@ -99,17 +99,13 @@ fn g4_call(id: &str, name: &str, args: &str) -> crate::types::ToolCallInfo {
 }
 
 fn g4_msg(channel: &str, sender_id: &str, content: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: channel.to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: "chat1".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: format!("{}:{}", channel, "chat1"),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        channel.to_string(),
+        sender_id.to_string(),
+        "chat1".to_string(),
+        content.to_string(),
+    )
+    .with_session_key(format!("{}:{}", channel, "chat1"))
 }
 
 fn g4_plain(content: &str) -> nemesis_types::channel::InboundMessage {

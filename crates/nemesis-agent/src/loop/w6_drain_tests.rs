@@ -52,17 +52,13 @@ fn cov_config() -> crate::types::AgentConfig {
 }
 
 fn inbound(content: &str, channel: &str, key: &str) -> InboundMessage {
-    InboundMessage {
-        channel: channel.to_string(),
-        sender_id: "w6user".to_string(),
-        chat_id: "w6chat".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: key.to_string(),
-        correlation_id: String::new(),
-        metadata: HashMap::new(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        channel.to_string(),
+        "w6user".to_string(),
+        "w6chat".to_string(),
+        content.to_string(),
+    )
+    .with_session_key(key.to_string())
 }
 
 #[tokio::test]

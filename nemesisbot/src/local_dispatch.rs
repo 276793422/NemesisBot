@@ -19,7 +19,6 @@
 //! 回调，本地链路完全没有捕获管线），publish 恒诚实 failed。任何捕获
 //! 失败 = WARN 不阻断写回主链路（交付证据缺席可观测）。
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -338,17 +337,18 @@ impl LocalDispatchExecutor for GatewayLocalExecutor {
         // .session_key = session_key，loop/bus.rs 最终回复盖章）不丢首帧。
         let rx = self.bus.subscribe_outbound();
 
-        self.bus.publish_inbound(InboundMessage {
-            channel: "web".to_string(),
-            sender_id: "board".to_string(),
-            chat_id: req.task_id.clone(),
-            content: req.prompt.clone(),
-            media: Vec::new(),
-            session_key: session_key.clone(),
-            correlation_id: String::new(),
-            metadata: HashMap::new(),
-            voice_playback: None,
-        });
+        // 指令注入（Instruction(BoardDispatch)，msg_class 单轨 2026-11-21）：
+        // 看板本地派发任务轮 = 开真轮的系统指令（busy 静默排队零回执、
+        // Reject 不弹回——派发无人值守，回执/弹回都是给不存在接收方的
+        // 幻影噪音）；构造器烤死 class + instruction_kind 章（旧 `board`
+        // sender 形态退役，task_id 单点走 chat_id）。
+        self.bus.publish_inbound(InboundMessage::instruction(
+            nemesis_types::channel::InstructionKind::BoardDispatch,
+            "web",
+            &req.task_id,
+            &session_key,
+            req.prompt.clone(),
+        ));
         tracing::info!(
             "[LocalDispatch] task {}（issue {}）已入总线（session {session_key}），等待最终回复",
             req.task_id,

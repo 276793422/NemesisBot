@@ -210,6 +210,19 @@ async fn wait_assistant(stream: &mut WsStream, sid: &str, contains: &str, timeou
     .expect(&what);
 }
 
+/// 等一帧指定会话的 role=system 徽标帧（busy 排队/插话回执等瞬态注记）。
+/// 2026-11-20 插话打断感根修起回执带 note_kind=busy_receipt，服务端投影
+/// role=system（不触发前端回合完成语义）——wait_assistant 的 assistant
+/// 谓词结构性看不见徽标帧，回执断言必须走本助手。
+async fn wait_receipt(stream: &mut WsStream, sid: &str, contains: &str, timeout: Duration) {
+    let what = format!("receipt frame [{sid}] ~ \"{contains}\"");
+    ws_recv_matching(stream, timeout, &what, |v| {
+        test_harness::chat_receive_match(v, Some(sid), Some("system"), contains)
+    })
+    .await
+    .expect(&what);
+}
+
 /// chat.history_request → message/chat/history 帧 → (role, content) 行序。
 /// 历史读的是磁盘 chat_log（与前端切会话加载同一真相源）。
 async fn fetch_history(stream: &mut WsStream, sid: &str) -> Vec<(String, String)> {
@@ -387,9 +400,10 @@ async fn s1_cross_session_turns_run_in_parallel() {
 // s2 —— 同会话排队（原 BUG：排队消息零落盘，切会话回来历史里查无此行）
 // ---------------------------------------------------------------------------
 
-/// Queue（缺省）模式下同会话连发两条：第二条即时拿到「已排队」回执，A 的
-/// turn 结束后顺序执行；历史恰好 4 行按时间序——回执不入史、排队消息的
-/// user 行与最终回答都在（原始「消失」现象的回归钉）。
+/// Queue 模式（显式钉死——缺省自 2026-11-03 起为 steer）下同会话连发两条：
+/// 第二条即时拿到「已排队」回执（role=system 徽标帧），A 的 turn 结束后顺序
+/// 执行；历史恰好 4 行按时间序——回执不入史、排队消息的 user 行与最终回答
+/// 都在（原始「消失」现象的回归钉）。
 #[tokio::test]
 async fn s2_same_session_queue_preserves_and_answers() {
     let _gate = live_gate().await;
@@ -402,7 +416,9 @@ async fn s2_same_session_queue_preserves_and_answers() {
             },
             MockAiReply::Text("二-完成".into()),
         ],
-        |_| {},
+        |cfg| {
+            cfg["agents"]["defaults"]["concurrent_request_mode"] = json!("queue");
+        },
     )
     .await;
     let mut conn = gw.connect().await;
@@ -411,8 +427,8 @@ async fn s2_same_session_queue_preserves_and_answers() {
     gw.wait_remaining(1, "first turn LLM request").await;
     chat_send(&mut conn, "消息二", "scn-q").await;
 
-    // 排队回执即时（同会话忙处置；不阻塞在 turn 上）。
-    wait_assistant(&mut conn, "scn-q", "已排队", Duration::from_secs(3)).await;
+    // 排队回执即时（同会话忙处置；不阻塞在 turn 上；徽标帧形态）。
+    wait_receipt(&mut conn, "scn-q", "已排队", Duration::from_secs(3)).await;
     // 两条回答按序完成。
     wait_assistant(&mut conn, "scn-q", "一-完成", Duration::from_secs(15)).await;
     wait_assistant(&mut conn, "scn-q", "二-完成", Duration::from_secs(15)).await;

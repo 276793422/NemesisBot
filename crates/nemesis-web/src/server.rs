@@ -2199,17 +2199,19 @@ pub async fn process_messages_with_router(
             crate::chat_dedup::insert(&session_key, cmid, 0);
         }
 
-        let inbound = InboundMessage {
-            channel: "web".to_string(),
-            sender_id: msg.sender_id.clone(),
-            chat_id: msg.chat_id.clone(),
-            content: msg.content,
-            media: msg.media,
-            session_key,
-            correlation_id: String::new(),
-            metadata: msg.metadata,
-            voice_playback: msg.voice_playback,
-        };
+        let inbound = InboundMessage::user_ingress(
+            "web".to_string(),
+            msg.sender_id.clone(),
+            msg.chat_id.clone(),
+            msg.content,
+        )
+        .with_media(msg.media)
+        .with_session_key(session_key)
+        // 纵深防御（msg_class 单轨 §10-6）：语义伪造键剥离——chat.send 的
+        // metadata 是构造式白名单（客户端无透传字段），本闸兜住未来透传
+        // 面回归；request_type=history 是服务端自写键不在清单（§10-6）。
+        .with_metadata_map(nemesis_types::channel::strip_forge_keys(msg.metadata))
+        .with_voice_playback(msg.voice_playback);
 
         // 入站过滤链（BUG 2026-09-23 项目会话历史修复）：在 bus 扇出之前
         // 过链——`Intercepted` = 过滤器已就地应答（如 history 只读查询经

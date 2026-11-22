@@ -5,17 +5,15 @@ async fn test_publish_subscribe_inbound() {
     let bus = MessageBus::new();
     let mut rx = bus.subscribe_inbound();
 
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "hello".to_string(),
-        media: vec![],
-        session_key: "test:chat1".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "user1".to_string(),
+            "chat1".to_string(),
+            "hello".to_string(),
+        )
+        .with_session_key("test:chat1".to_string()),
+    );
 
     let msg = rx.recv().await.unwrap();
     assert_eq!(msg.channel, "test");
@@ -45,17 +43,15 @@ async fn test_multiple_subscribers() {
     let mut rx1 = bus.subscribe_inbound();
     let mut rx2 = bus.subscribe_inbound();
 
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "broadcast".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "broadcast".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     let msg1 = rx1.recv().await.unwrap();
     let msg2 = rx2.recv().await.unwrap();
@@ -72,17 +68,15 @@ async fn test_close_bus() {
     assert!(bus.is_closed());
 
     // Publishing after close should be a no-op
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "after close".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "after close".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     // Receiver should not get the message (timeout)
     let mut rx = bus.subscribe_inbound();
@@ -101,17 +95,15 @@ async fn test_concurrent_publish() {
     for i in 0..10 {
         let b = bus_clone.clone();
         handles.push(tokio::spawn(async move {
-            b.publish_inbound(InboundMessage {
-                channel: "test".to_string(),
-                sender_id: format!("user{}", i),
-                chat_id: "chat".to_string(),
-                content: format!("msg{}", i),
-                media: vec![],
-                session_key: "test:chat".to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            b.publish_inbound(
+                InboundMessage::user_ingress(
+                    "test".to_string(),
+                    format!("user{}", i),
+                    "chat".to_string(),
+                    format!("msg{}", i),
+                )
+                .with_session_key("test:chat".to_string()),
+            );
         }));
     }
 
@@ -163,17 +155,15 @@ async fn test_inbound_sender() {
     let sender = bus.inbound_sender();
 
     sender
-        .send(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u1".to_string(),
-            chat_id: "c1".to_string(),
-            content: "via sender".to_string(),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        })
+        .send(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u1".to_string(),
+                "c1".to_string(),
+                "via sender".to_string(),
+            )
+            .with_session_key("t:c".to_string()),
+        )
         .unwrap();
 
     let msg = rx.recv().await.unwrap();
@@ -204,17 +194,15 @@ async fn test_outbound_sender() {
 async fn test_late_subscriber_misses_messages() {
     let bus = MessageBus::new();
 
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "early msg".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "early msg".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     // Subscribe after publishing - late subscriber should not get the message
     let mut rx = bus.subscribe_inbound();
@@ -230,17 +218,17 @@ async fn test_inbound_preserves_all_fields() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("key1".to_string(), "value1".to_string());
 
-    bus.publish_inbound(InboundMessage {
-        channel: "rpc".to_string(),
-        sender_id: "sender123".to_string(),
-        chat_id: "chat456".to_string(),
-        content: "test content".to_string(),
-        media: vec![],
-        session_key: "rpc:chat456".to_string(),
-        correlation_id: "corr-123".to_string(),
-        metadata: metadata.clone(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "rpc".to_string(),
+            "sender123".to_string(),
+            "chat456".to_string(),
+            "test content".to_string(),
+        )
+        .with_session_key("rpc:chat456".to_string())
+        .with_correlation_id("corr-123".to_string())
+        .with_metadata_map(metadata.clone()),
+    );
 
     let msg = rx.recv().await.unwrap();
     assert_eq!(msg.channel, "rpc");
@@ -312,17 +300,15 @@ async fn test_sequential_inbound_messages() {
     let mut rx = bus.subscribe_inbound();
 
     for i in 0..5 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("msg{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("msg{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
 
     // Receive all 5 in order
@@ -342,17 +328,15 @@ fn test_bus_publish_throughput() {
 
         let start = std::time::Instant::now();
         for i in 0..count {
-            bus.publish_inbound(InboundMessage {
-                channel: "bench".to_string(),
-                sender_id: "u".to_string(),
-                chat_id: "c".to_string(),
-                content: format!("msg{}", i),
-                media: vec![],
-                session_key: "t:c".to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            bus.publish_inbound(
+                InboundMessage::user_ingress(
+                    "bench".to_string(),
+                    "u".to_string(),
+                    "c".to_string(),
+                    format!("msg{}", i),
+                )
+                .with_session_key("t:c".to_string()),
+            );
         }
         let elapsed = start.elapsed();
         // Should publish 1k messages in under 1 second
@@ -368,17 +352,15 @@ fn test_bus_publish_throughput() {
 fn test_publish_inbound_no_receivers_no_panic() {
     let bus = MessageBus::new();
     // Publishing with no receivers should not panic
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "orphan".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "orphan".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
     // Should have incremented the dropped counter
     assert_eq!(bus.no_receiver_dropped_inbound(), 1);
     assert_eq!(bus.no_receiver_dropped_outbound(), 0);
@@ -406,17 +388,15 @@ fn test_no_receiver_dropped_inbound_counter_multiple() {
 
     // Publish 3 messages with no receivers
     for i in 0..3 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("msg{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("msg{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
     assert_eq!(bus.no_receiver_dropped_inbound(), 3);
 }
@@ -443,32 +423,28 @@ async fn test_dropped_counter_resets_after_subscribe() {
     let bus = MessageBus::new();
 
     // Drop one message with no subscribers
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "dropped".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "dropped".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
     assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 
     // Subscribe, now messages should not be dropped
     let mut rx = bus.subscribe_inbound();
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "delivered".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "delivered".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     let msg = rx.recv().await.unwrap();
     assert_eq!(msg.content, "delivered");
@@ -518,17 +494,15 @@ async fn test_publish_inbound_after_close_drops_silently() {
     let _rx = bus.subscribe_inbound();
 
     bus.close();
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "after close".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "after close".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     // Closed bus should not increment dropped counter (it returns early)
     assert_eq!(bus.no_receiver_dropped_inbound(), 0);
@@ -564,17 +538,15 @@ async fn test_close_prevents_both_inbound_and_outbound() {
     bus.close();
 
     // Publish on both channels after close -- both should be silently dropped.
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "inbound after close".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "inbound after close".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
     bus.publish_outbound(OutboundMessage {
         channel: "test".to_string(),
         chat_id: "c".to_string(),
@@ -628,17 +600,15 @@ async fn test_publish_inbound_all_receivers_dropped() {
 
     // After receiver is dropped, publish should not panic and should
     // increment the dropped counter (no receivers left).
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "no receivers".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "no receivers".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     assert_eq!(bus.no_receiver_dropped_inbound(), 1);
     assert_eq!(bus.inbound_subscriber_count(), 0);
@@ -678,17 +648,15 @@ async fn test_publish_inbound_some_receivers_dropped() {
     drop(rx2);
     assert_eq!(bus.inbound_subscriber_count(), 1);
 
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "partial".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "partial".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     // rx1 should still receive the message.
     let msg = tokio::time::timeout(std::time::Duration::from_millis(100), rx1.recv())
@@ -748,17 +716,15 @@ async fn test_inbound_sender_cloned_independently() {
 
     // Publish via the cloned sender (not via publish_inbound).
     sender
-        .send(InboundMessage {
-            channel: "direct".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: "from sender".to_string(),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        })
+        .send(
+            InboundMessage::user_ingress(
+                "direct".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                "from sender".to_string(),
+            )
+            .with_session_key("t:c".to_string()),
+        )
         .expect("send via cloned sender should succeed");
 
     let msg = rx.recv().await.expect("receiver should get message");
@@ -799,17 +765,15 @@ async fn test_inbound_sender_works_even_after_bus_closed() {
 
     // The broadcast::Sender itself is not closed; only publish_inbound
     // checks the closed flag. Direct send should still work.
-    let result = sender.send(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "direct after close".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    let result = sender.send(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "direct after close".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     // broadcast::Sender:send should succeed because the underlying
     // channel is still open (close only sets the AtomicBool).
@@ -830,31 +794,27 @@ async fn test_multiple_inbound_senders_share_channel() {
     let mut rx = bus.subscribe_inbound();
 
     sender1
-        .send(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u1".to_string(),
-            chat_id: "c".to_string(),
-            content: "from sender1".to_string(),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        })
+        .send(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u1".to_string(),
+                "c".to_string(),
+                "from sender1".to_string(),
+            )
+            .with_session_key("t:c".to_string()),
+        )
         .unwrap();
 
     sender2
-        .send(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u2".to_string(),
-            chat_id: "c".to_string(),
-            content: "from sender2".to_string(),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        })
+        .send(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u2".to_string(),
+                "c".to_string(),
+                "from sender2".to_string(),
+            )
+            .with_session_key("t:c".to_string()),
+        )
         .unwrap();
 
     let msg1 = rx.try_recv().expect("should get first message");
@@ -869,17 +829,15 @@ async fn test_inbound_sender_no_receivers_returns_error() {
     let sender = bus.inbound_sender();
     // No subscribers. broadcast::Sender:send returns Err when there are
     // no active receivers.
-    let result = sender.send(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "orphan".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    let result = sender.send(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "orphan".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
     assert!(result.is_err(), "send with no receivers should return Err");
 }
 
@@ -905,17 +863,15 @@ async fn test_outbound_sender_no_receivers_returns_error() {
 fn test_publish_inbound_no_receivers_multiple_messages_drops_all() {
     let bus = MessageBus::new();
     for i in 0..10 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("msg{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("msg{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
     assert_eq!(bus.no_receiver_dropped_inbound(), 10);
     assert_eq!(bus.no_receiver_dropped_outbound(), 0);
@@ -942,32 +898,28 @@ async fn test_publish_no_receivers_then_subscribe_delivers_new_messages() {
     let bus = MessageBus::new();
 
     // Publish with no receivers -- message is dropped.
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "lost".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "lost".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
     assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 
     // Subscribe and publish again.
     let mut rx = bus.subscribe_inbound();
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "delivered".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "delivered".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     let msg = rx
         .recv()
@@ -1023,17 +975,15 @@ async fn test_publish_inbound_subscribe_then_unsubscribe_all() {
     assert_eq!(bus.inbound_subscriber_count(), 0);
 
     // Now publishing should drop the message.
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "after unsubscribe".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "after unsubscribe".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
     assert_eq!(bus.no_receiver_dropped_inbound(), 1);
 }
 
@@ -1077,17 +1027,15 @@ async fn test_concurrent_multiple_publishers_multiple_subscribers_inbound() {
         let b = bus.clone();
         pub_handles.push(tokio::spawn(async move {
             for m in 0..msgs_per_publisher {
-                b.publish_inbound(InboundMessage {
-                    channel: "test".to_string(),
-                    sender_id: format!("publisher{}", p),
-                    chat_id: "c".to_string(),
-                    content: format!("p{}-m{}", p, m),
-                    media: vec![],
-                    session_key: "t:c".to_string(),
-                    correlation_id: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    voice_playback: None,
-                });
+                b.publish_inbound(
+                    InboundMessage::user_ingress(
+                        "test".to_string(),
+                        format!("publisher{}", p),
+                        "c".to_string(),
+                        format!("p{}-m{}", p, m),
+                    )
+                    .with_session_key("t:c".to_string()),
+                );
             }
         }));
     }
@@ -1127,17 +1075,15 @@ async fn test_concurrent_inbound_and_outbound_are_independent() {
     // Publish inbound on one task, outbound on another.
     let in_handle = tokio::spawn(async move {
         for i in 0..10 {
-            b1.publish_inbound(InboundMessage {
-                channel: "test".to_string(),
-                sender_id: "u".to_string(),
-                chat_id: "c".to_string(),
-                content: format!("in{}", i),
-                media: vec![],
-                session_key: "t:c".to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            b1.publish_inbound(
+                InboundMessage::user_ingress(
+                    "test".to_string(),
+                    "u".to_string(),
+                    "c".to_string(),
+                    format!("in{}", i),
+                )
+                .with_session_key("t:c".to_string()),
+            );
         }
     });
 
@@ -1194,17 +1140,15 @@ async fn test_concurrent_close_during_publish() {
     // One task publishes messages, another closes the bus.
     let pub_handle = tokio::spawn(async move {
         for i in 0..100 {
-            b1.publish_inbound(InboundMessage {
-                channel: "test".to_string(),
-                sender_id: "u".to_string(),
-                chat_id: "c".to_string(),
-                content: format!("msg{}", i),
-                media: vec![],
-                session_key: "t:c".to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            b1.publish_inbound(
+                InboundMessage::user_ingress(
+                    "test".to_string(),
+                    "u".to_string(),
+                    "c".to_string(),
+                    format!("msg{}", i),
+                )
+                .with_session_key("t:c".to_string()),
+            );
             // Yield occasionally to interleave with close.
             if i % 10 == 0 {
                 tokio::task::yield_now().await;
@@ -1241,17 +1185,15 @@ async fn test_concurrent_subscribers_drop_while_publishing() {
     let b = bus.clone();
     let pub_handle = tokio::spawn(async move {
         for i in 0..50 {
-            b.publish_inbound(InboundMessage {
-                channel: "test".to_string(),
-                sender_id: "u".to_string(),
-                chat_id: "c".to_string(),
-                content: format!("msg{}", i),
-                media: vec![],
-                session_key: "t:c".to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            b.publish_inbound(
+                InboundMessage::user_ingress(
+                    "test".to_string(),
+                    "u".to_string(),
+                    "c".to_string(),
+                    format!("msg{}", i),
+                )
+                .with_session_key("t:c".to_string()),
+            );
         }
     });
 
@@ -1275,17 +1217,15 @@ async fn test_with_capacity_one_does_not_panic() {
     let bus = MessageBus::with_capacity(1);
     let mut rx = bus.subscribe_inbound();
 
-    bus.publish_inbound(InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: "first".to_string(),
-        media: vec![],
-        session_key: "t:c".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    });
+    bus.publish_inbound(
+        InboundMessage::user_ingress(
+            "test".to_string(),
+            "u".to_string(),
+            "c".to_string(),
+            "first".to_string(),
+        )
+        .with_session_key("t:c".to_string()),
+    );
 
     let msg = rx.recv().await.expect("should receive first message");
     assert_eq!(msg.content, "first");
@@ -1298,17 +1238,15 @@ async fn test_with_capacity_overflow_drops_oldest() {
     let mut rx = bus.subscribe_inbound();
 
     for i in 0..4 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("msg{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("msg{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
 
     // With broadcast capacity 2 and no recv yet, the oldest messages
@@ -1338,17 +1276,15 @@ async fn test_publish_inbound_no_receivers_after_dropping_receiver_increments_no
     // Publish messages without receiving to overflow the buffer (receiver
     // becomes lagged; publish-side counter must stay untouched).
     for i in 0..10 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("msg{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("msg{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
 
     // 发布侧计数不受 lag 影响（send 全部成功）。
@@ -1365,17 +1301,15 @@ async fn test_publish_inbound_no_receivers_after_dropping_receiver_increments_no
     let initial_dropped = bus.no_receiver_dropped_inbound();
 
     for i in 0..5 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("orphan{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("orphan{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
 
     assert_eq!(bus.no_receiver_dropped_inbound(), initial_dropped + 5);
@@ -1427,17 +1361,15 @@ async fn test_lagged_receiver_loss_recorded_via_record_lagged() {
     let mut rx = bus.subscribe_inbound();
 
     for i in 0..10 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("msg{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("msg{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
 
     match rx.recv().await {
@@ -1492,17 +1424,15 @@ async fn test_broadcast_send_failure_with_active_but_slow_receiver() {
 
     // Publish more messages than buffer capacity
     for i in 0..20 {
-        bus.publish_inbound(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("overflow{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        bus.publish_inbound(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("overflow{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
 
     // 名字承诺 send_failure——20 条灌进容量 3 的广播道、
@@ -1535,17 +1465,15 @@ async fn test_inbound_send_error_path_via_direct_sender() {
 
     // Overfill the buffer without receiving
     for i in 0..10 {
-        let _ = sender.send(InboundMessage {
-            channel: "test".to_string(),
-            sender_id: "u".to_string(),
-            chat_id: "c".to_string(),
-            content: format!("direct{}", i),
-            media: vec![],
-            session_key: "t:c".to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        });
+        let _ = sender.send(
+            InboundMessage::user_ingress(
+                "test".to_string(),
+                "u".to_string(),
+                "c".to_string(),
+                format!("direct{}", i),
+            )
+            .with_session_key("t:c".to_string()),
+        );
     }
 
     // Some sends may have failed - that's the error path we want to exercise
@@ -1607,17 +1535,15 @@ async fn test_publish_inbound_race_condition_receiver_drop_during_send() {
     let bus_clone2 = Arc::clone(&bus);
     let publisher_task = tokio::spawn(async move {
         for i in 0..100 {
-            bus_clone2.publish_inbound(InboundMessage {
-                channel: "race".to_string(),
-                sender_id: "u".to_string(),
-                chat_id: "c".to_string(),
-                content: format!("race{}", i),
-                media: vec![],
-                session_key: "race:c".to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            bus_clone2.publish_inbound(
+                InboundMessage::user_ingress(
+                    "race".to_string(),
+                    "u".to_string(),
+                    "c".to_string(),
+                    format!("race{}", i),
+                )
+                .with_session_key("race:c".to_string()),
+            );
             tokio::time::sleep(std::time::Duration::from_micros(10)).await;
         }
         *publish_done_clone.lock().await = true;
@@ -1709,17 +1635,15 @@ async fn test_publish_inbound_drops_message_when_all_receivers_dropped_concurren
     let bus_clone2 = Arc::clone(&bus);
     let publisher_handle = tokio::spawn(async move {
         for i in 0..100 {
-            bus_clone2.publish_inbound(InboundMessage {
-                channel: "contention".to_string(),
-                sender_id: "u".to_string(),
-                chat_id: "c".to_string(),
-                content: format!("contention{}", i),
-                media: vec![],
-                session_key: "contention:c".to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            bus_clone2.publish_inbound(
+                InboundMessage::user_ingress(
+                    "contention".to_string(),
+                    "u".to_string(),
+                    "c".to_string(),
+                    format!("contention{}", i),
+                )
+                .with_session_key("contention:c".to_string()),
+            );
             tokio::time::sleep(std::time::Duration::from_micros(1)).await;
         }
     });

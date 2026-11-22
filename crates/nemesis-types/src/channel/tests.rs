@@ -249,6 +249,7 @@ fn test_inbound_message_roundtrip() {
         correlation_id: "cid1".to_string(),
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
+        msg_class: MsgClass::User,
     };
     let json = serde_json::to_string(&msg).unwrap();
     let msg2: InboundMessage = serde_json::from_str(&json).unwrap();
@@ -271,6 +272,7 @@ fn test_inbound_message_voice_playback_serialization() {
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
+        msg_class: MsgClass::User,
     };
     let json = serde_json::to_string(&msg).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -292,6 +294,7 @@ fn test_inbound_message_voice_playback_serialization() {
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
         voice_playback: Some(true),
+        msg_class: MsgClass::User,
     };
     let json3 = serde_json::to_string(&msg3).unwrap();
     let parsed3: serde_json::Value = serde_json::from_str(&json3).unwrap();
@@ -607,4 +610,158 @@ fn test_outbound_meta_occupies_serde_roundtrip() {
     // 反序列化缺键 → None（旧网关帧 / 手写 JSON 都安全）。
     let back: OutboundMeta = serde_json::from_value(serde_json::json!({})).unwrap();
     assert_eq!(back.occupies, None);
+}
+
+// ---------------------------------------------------------------------------
+// msg_class（2026-11-21 架构）：类型层自证
+// ---------------------------------------------------------------------------
+
+#[test]
+fn msg_class_default_is_user() {
+    // serde default = User：缺字段反序列化（旧 wire / 旧 sidecar 条目）。
+    let raw = serde_json::json!({
+        "channel": "telegram", "sender_id": "u1", "chat_id": "c1",
+        "content": "hi", "media": [], "session_key": "", "correlation_id": ""
+    });
+    let msg: InboundMessage = serde_json::from_value(raw).unwrap();
+    assert_eq!(msg.msg_class, MsgClass::User);
+}
+
+#[test]
+fn msg_class_wire_roundtrip_all_variants() {
+    let cases = vec![
+        InboundMessage::user_ingress("web", "u", "c", "hello"),
+        InboundMessage::notice(NoticeKind::Events, "web", "c", "s", "n"),
+        InboundMessage::notice(NoticeKind::Merged, "web", "c", "s", "n"),
+        InboundMessage::instruction(InstructionKind::GoalRound, "web", "c", "s", "g"),
+        InboundMessage::instruction(InstructionKind::BoardDispatch, "web", "c", "s", "b"),
+        InboundMessage::continuation("cluster_continuation:t1", "s", "done"),
+    ];
+    for msg in cases {
+        let json = serde_json::to_value(&msg).unwrap();
+        let back: InboundMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(back, msg, "wire 往返必须保 class：{:?}", msg.msg_class);
+    }
+}
+
+#[test]
+fn notice_bakes_class_and_no_stamp() {
+    let msg = InboundMessage::notice(NoticeKind::Events, "web", "c1", "sess", "内容");
+    assert_eq!(msg.msg_class, MsgClass::Notice(NoticeKind::Events));
+    assert_eq!(msg.sender_id, "system");
+    // 构造器不写 system_notice 章——class 是唯一语义真相源。
+    assert!(!msg.metadata.contains_key("system_notice"));
+}
+
+#[test]
+fn instruction_stamps_kind_metadata() {
+    let msg = InboundMessage::instruction(InstructionKind::CronTick, "web", "c1", "sess", "tick");
+    assert_eq!(
+        msg.msg_class,
+        MsgClass::Instruction(InstructionKind::CronTick)
+    );
+    assert_eq!(
+        msg.metadata.get("instruction_kind").map(String::as_str),
+        Some("cron_tick")
+    );
+}
+
+#[test]
+fn continuation_bakes_channel_and_class() {
+    let msg = InboundMessage::continuation("subagent_continuation:t9", "sess", "result");
+    assert_eq!(msg.msg_class, MsgClass::Continuation);
+    assert_eq!(msg.channel, "system");
+    assert_eq!(msg.sender_id, "subagent_continuation:t9");
+}
+
+#[test]
+fn user_ingress_defaults_and_builders() {
+    let msg = InboundMessage::user_ingress("telegram", "u1", "c1", "hi")
+        .with_session_key("agent:main:session:s1")
+        .with_media(vec![MediaAttachment {
+            media_type: String::new(),
+            url: "https://x/y.png".to_string(),
+            data: None,
+        }])
+        .with_metadata("peer_id", "p1")
+        .with_correlation_id("corr-1")
+        .with_voice_playback(Some(true));
+    assert_eq!(msg.msg_class, MsgClass::User);
+    assert_eq!(msg.session_key, "agent:main:session:s1");
+    assert_eq!(msg.media.len(), 1);
+    assert_eq!(msg.metadata.get("peer_id").map(String::as_str), Some("p1"));
+    assert_eq!(msg.correlation_id, "corr-1");
+    assert_eq!(msg.voice_playback, Some(true));
+}
+
+#[test]
+fn legacy_coerce_remaps_stamped_entries() {
+    // system_notice 章 → Notice。
+    let mut msg = InboundMessage::user_ingress("web", "system", "c", "n")
+        .with_metadata("system_notice", "loop");
+    assert_eq!(msg.legacy_class_coerce(), LegacyVerdict::Remapped);
+    assert_eq!(msg.msg_class, MsgClass::Notice(NoticeKind::Loop));
+
+    // cron_job_id → Instruction(CronTick)。
+    let mut msg = InboundMessage::user_ingress("web", "cron:job1", "c", "t")
+        .with_metadata("cron_job_id", "job1");
+    assert_eq!(msg.legacy_class_coerce(), LegacyVerdict::Remapped);
+    assert_eq!(
+        msg.msg_class,
+        MsgClass::Instruction(InstructionKind::CronTick)
+    );
+
+    // turn_wal_resume → Instruction(WalResume)。
+    let mut msg = InboundMessage::user_ingress("system", "system", "c", "w")
+        .with_metadata("turn_wal_resume", "1");
+    assert_eq!(msg.legacy_class_coerce(), LegacyVerdict::Remapped);
+    assert_eq!(
+        msg.msg_class,
+        MsgClass::Instruction(InstructionKind::WalResume)
+    );
+}
+
+#[test]
+fn legacy_coerce_drops_retired_background_and_keeps_user() {
+    // 退役生产者（background）残留 → Drop（调用方诚实丢弃）。
+    let mut msg = InboundMessage::user_ingress("web", "system", "c", "n")
+        .with_metadata("system_notice", "background");
+    assert_eq!(msg.legacy_class_coerce(), LegacyVerdict::Drop);
+
+    // 已带 class → Keep（不二次改判）。
+    let mut msg = InboundMessage::notice(NoticeKind::Events, "web", "c", "s", "n");
+    assert_eq!(msg.legacy_class_coerce(), LegacyVerdict::Keep);
+
+    // 无内部标记的真用户旧条目 → Keep。
+    let mut msg = InboundMessage::user_ingress("telegram", "u1", "c", "hi");
+    assert_eq!(msg.legacy_class_coerce(), LegacyVerdict::Keep);
+    assert_eq!(msg.msg_class, MsgClass::User);
+}
+
+#[test]
+fn notice_kind_slug_roundtrip() {
+    for (kind, slug) in [
+        (NoticeKind::Events, "events"),
+        (NoticeKind::Loop, "loop"),
+        (NoticeKind::ApprovalContinuation, "approval_continuation"),
+        (NoticeKind::Merged, "merged"),
+    ] {
+        assert_eq!(kind.slug(), slug);
+        assert_eq!(NoticeKind::from_slug(slug), Some(kind));
+    }
+    assert_eq!(NoticeKind::from_slug("background"), None);
+}
+
+#[test]
+fn instruction_kind_slug_roundtrip() {
+    for (kind, slug) in [
+        (InstructionKind::GoalRound, "goal_round"),
+        (InstructionKind::CronTick, "cron_tick"),
+        (InstructionKind::WalResume, "wal_resume"),
+        (InstructionKind::BoardDispatch, "board_dispatch"),
+    ] {
+        assert_eq!(kind.slug(), slug);
+        assert_eq!(InstructionKind::from_slug(slug), Some(kind));
+    }
+    assert_eq!(InstructionKind::from_slug("nonsense"), None);
 }

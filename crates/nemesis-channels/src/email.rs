@@ -841,17 +841,9 @@ impl EmailChannel {
                                                         "subject".to_string(),
                                                         subject.clone(),
                                                     );
-                                                    let inbound = InboundMessage {
-                                                        channel: base.name().to_string(),
-                                                        sender_id: chat_id.clone(),
-                                                        chat_id: chat_id.clone(),
-                                                        content: body,
-                                                        media: Vec::new(),
-                                                        session_key: chat_id.clone(),
-                                                        correlation_id: String::new(),
-                                                        metadata,
-                                                        voice_playback: None,
-                                                    };
+                                                    let inbound = InboundMessage::user_ingress(base.name().to_string(), chat_id.clone(), chat_id.clone(), body)
+                                                    .with_session_key(chat_id.clone())
+                                                    .with_metadata_map(metadata);
                                                     if let Err(e) = bus_sender.send(inbound) {
                                                         warn!(error = %e,
                                                             "[EmailChannel] failed to publish inbound message");

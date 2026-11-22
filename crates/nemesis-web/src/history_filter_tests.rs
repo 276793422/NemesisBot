@@ -40,17 +40,14 @@ fn history_msg(session_key: &str, content: String) -> InboundMessage {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("request_type".to_string(), "history".to_string());
     metadata.insert("session_id".to_string(), "hf-sid-x".to_string());
-    InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "tester".to_string(),
-        chat_id: "conn-7".to_string(),
+    InboundMessage::user_ingress(
+        "web".to_string(),
+        "tester".to_string(),
+        "conn-7".to_string(),
         content,
-        media: Vec::new(),
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    )
+    .with_session_key(session_key.to_string())
+    .with_metadata_map(metadata)
 }
 
 #[tokio::test]

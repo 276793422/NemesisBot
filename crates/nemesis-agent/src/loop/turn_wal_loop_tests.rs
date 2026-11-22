@@ -114,17 +114,13 @@ fn bus_msg(
     session_key: &str,
     content: &str,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: channel.to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: chat_id.to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        channel.to_string(),
+        sender_id.to_string(),
+        chat_id.to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session_key.to_string())
 }
 
 // ---------------------------------------------------------------------------

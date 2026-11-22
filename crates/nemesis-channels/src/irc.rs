@@ -554,17 +554,8 @@ impl IRCChannel {
                                                                 IRCChannel::irc_identity(target)
                                                             };
                                                         if base.handle_message(&sender) {
-                                                            let inbound = InboundMessage {
-                                                                channel: base.name().to_string(),
-                                                                sender_id: sender.clone(),
-                                                                chat_id: chat_id.clone(),
-                                                                content: content.to_string(),
-                                                                media: Vec::new(),
-                                                                session_key: format!("irc:{chat_id}"),
-                                                                correlation_id: String::new(),
-                                                                metadata: HashMap::new(),
-                                                                voice_playback: None,
-                                                            };
+                                                            let inbound = InboundMessage::user_ingress(base.name().to_string(), sender.clone(), chat_id.clone(), content.to_string())
+                                                            .with_session_key(format!("irc:{chat_id}"));
                                                             if let Err(e) = bus_sender.send(inbound) {
                                                                 warn!(error = %e,
                                                                     "[IRCChannel] failed to publish inbound message");

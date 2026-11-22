@@ -155,17 +155,13 @@ async fn user_row_lands_while_llm_turn_in_progress() {
     );
     pin_known_window(&agent_loop);
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "slow question".to_string(),
-        media: vec![],
-        session_key: key.clone(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "slow question".to_string(),
+    )
+    .with_session_key(key.clone());
 
     // 不 await 完成：turn 在后台跑（LLM 挂起中 = 模拟分钟级处理窗口）。
     let handle = tokio::spawn(async move { agent_loop.process_inbound_message(&msg).await });
@@ -226,17 +222,13 @@ async fn system_message_turn_appends_user_then_assistant_rows() {
         .unwrap_or_default()
         .as_nanos();
     let content = format!("background result {nonce}");
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "system".to_string(),
-        sender_id: "tester".to_string(),
-        chat_id: "web:chat-sys".to_string(),
-        content: content.clone(),
-        media: vec![],
-        session_key: key.clone(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "system".to_string(),
+        "tester".to_string(),
+        "web:chat-sys".to_string(),
+        content.clone(),
+    )
+    .with_session_key(key.clone());
 
     let (response, err) = agent_loop.process_system_message(&msg).await;
     assert!(err.is_none(), "system turn 必须正常完成: {err:?}");

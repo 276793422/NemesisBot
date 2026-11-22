@@ -811,17 +811,15 @@ impl DiscordChannel {
         // Build sender_id
         let sender_id = author_id.to_string();
 
-        Some(InboundMessage {
-            channel: "discord".to_string(),
-            sender_id,
-            chat_id: channel_id.to_string(),
-            content: content_text.to_string(),
-            media: Vec::new(),
-            session_key: String::new(),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        })
+        Some(
+            InboundMessage::user_ingress(
+                "discord".to_string(),
+                sender_id,
+                channel_id.to_string(),
+                content_text.to_string(),
+            )
+            .with_metadata_map(metadata),
+        )
     }
 }
 

@@ -487,17 +487,13 @@ impl Channel for MatrixChannel {
                                     continue;
                                 }
 
-                                let inbound = InboundMessage {
-                                    channel: "matrix".to_string(),
-                                    sender_id: sender.to_string(),
-                                    chat_id: room_id.clone(),
-                                    content: content.to_string(),
-                                    media: Vec::new(),
-                                    session_key: room_id.clone(),
-                                    correlation_id: String::new(),
-                                    metadata: std::collections::HashMap::new(),
-                                    voice_playback: None,
-                                };
+                                let inbound = InboundMessage::user_ingress(
+                                    "matrix".to_string(),
+                                    sender.to_string(),
+                                    room_id.clone(),
+                                    content.to_string(),
+                                )
+                                .with_session_key(room_id.clone());
 
                                 if let Err(e) = bus.send(inbound) {
                                     warn!(

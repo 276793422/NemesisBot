@@ -97,17 +97,13 @@ fn put_record(
 }
 
 fn inbound(chat_id: &str, session_key: String) -> InboundMessage {
-    InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user".to_string(),
-        chat_id: chat_id.to_string(),
-        content: "你好".to_string(),
-        media: vec![],
-        session_key,
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        "web".to_string(),
+        "user".to_string(),
+        chat_id.to_string(),
+        "你好".to_string(),
+    )
+    .with_session_key(session_key)
 }
 
 #[tokio::test]

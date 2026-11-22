@@ -858,16 +858,77 @@ function isSteerInjectNote(msg: ChatMessage): boolean {
   return msg.noteKind === 'steer_inject'
 }
 
-// --- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）-------------
-// role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮，
-// 后端按 sender_id=="system" 推导落 `system_notice` 键；cron tick 行带既有
-// `cron_job_id` 键）渲染为折叠单行通知条而非用户气泡——通知轮是真实轮次
-// （agent 会回复），行照常占行号锚/可 rewind，只是展示形态区分于真人发言。
-// 仅历史行携带（wake/cron 注入不经 WS 售票点，无实时帧与 sync 事件）。
+/** 系统通告注记徽标谓词（2026-11-21 幻影通告根治）：busy 期间 stash 的
+ *  系统通告（后台任务完成/events/durable loop/审批续行）在轮边界合并注入
+ *  的注记（note_kind=bg_notice，role=system 投影实时帧 + system 行落盘
+ *  占行锚——同压缩注记族）。折叠单行徽标，点击展开全文；不被终局回复
+ *  扫除（通告事实常驻，与压缩完成注记同语义）。 */
+function isBgNoticeNote(msg: ChatMessage): boolean {
+  return msg.noteKind === 'bg_notice'
+}
 
-/** 通知条谓词：role=user 且带 systemNotice 或 cronJobId 标记。 */
+// --- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）-------------
+// role=user 的内部注入行渲染为折叠单行通知条而非用户气泡——通知轮是真实
+// 轮次（agent 会回复），行照常占行号锚/可 rewind，只是展示形态区分于真人
+// 发言。仅历史行携带（内部注入不经 WS 售票点，无实时帧与 sync 事件）。
+// msg_class 单轨（2026-11-21 A2 拍板 MUST）：`system_notice` 值 = 后端
+// system_notice_of 的 class 投影 kind slug（Notice 四族 events/loop/
+// approval_continuation/merged + Instruction 四族 goal_round/cron_tick/
+// wal_resume/board_dispatch；旧章/旧行 = 永久兼容读，未知 slug 优雅兜底
+// ⚙ 系统通知）。内部消息**永不渲染成用户气泡**：Notice = 通知条（虚线），
+// Instruction = 指令徽标行（实线变体）。
+
+/** 通知条谓词：role=user 且带 systemNotice（class kind slug 投影）或
+ *  cronJobId（旧 cron 行章）标记。 */
 function isSystemNotice(msg: ChatMessage): boolean {
   return msg.role === 'user' && !!(msg.systemNotice || msg.cronJobId)
+}
+
+/** kind 徽标表（A2）：slug → 图标 + 类别词。值域 = nemesis-types
+ *  NoticeKind/InstructionKind 的 slug() 投影；`durable_loop` 是 loop 生产者
+ *  旧章值别名（后端 from_slug 同款保留）。表外 slug（退役生产者残留
+ *  background 系列 / hook 注入的 system 章 / 未来新增）走 ⚙ 系统通知优雅
+ *  兜底。 */
+const NOTICE_KIND_TABLE: Record<string, { glyph: string; label: string }> = {
+  events: { glyph: '📡', label: '事件唤醒' },
+  loop: { glyph: '🔁', label: '循环推进' },
+  durable_loop: { glyph: '🔁', label: '循环推进' },
+  approval_continuation: { glyph: '📨', label: '审批续行' },
+  merged: { glyph: '🔔', label: '合并通告' },
+  goal_round: { glyph: '🎯', label: '目标轮次' },
+  cron_tick: { glyph: '⏰', label: '定时任务' },
+  wal_resume: { glyph: '↻', label: '续轮恢复' },
+  board_dispatch: { glyph: '📋', label: '看板派发' },
+}
+
+/** Instruction 族 slug（指令徽标行——实线变体，视觉区分于 Notice 通知条
+ *  的虚线灰）。 */
+const INSTRUCTION_KIND_SLUGS = new Set(['goal_round', 'cron_tick', 'wal_resume', 'board_dispatch'])
+
+function noticeKindInfo(msg: ChatMessage): { glyph: string; label: string } {
+  const slug = msg.systemNotice
+  if (slug && NOTICE_KIND_TABLE[slug]) return NOTICE_KIND_TABLE[slug]
+  // 旧 cron 行（仅 cron_job_id 章，无 slug）保持既有 ⏰ 定时任务形态。
+  if (msg.cronJobId) return { glyph: '⏰', label: '定时任务' }
+  return { glyph: '⚙', label: '系统通知' }
+}
+
+/** 通知条图标：kind 表命中用表值；旧 cron 行 ⏰；未知/旧章 ⚙。 */
+function systemNoticeGlyph(msg: ChatMessage): string {
+  return noticeKindInfo(msg).glyph
+}
+
+/** 通知条类别词：kind 表命中用表值；旧 cron 行「定时任务」；未知/旧章
+ *  「系统通知」。 */
+function systemNoticeLabel(msg: ChatMessage): string {
+  return noticeKindInfo(msg).label
+}
+
+/** A2 形态族：Instruction 族 → 'instruction'（指令徽标行实线变体），
+ *  其余（Notice 通知条/未知 slug/旧章）→ 'notice'。旧 cron 行无 slug，
+ *  归 notice 族虚线形态（永久兼容读——旧行保持旧观感）。 */
+function systemNoticeFamily(msg: ChatMessage): 'instruction' | 'notice' {
+  return msg.systemNotice && INSTRUCTION_KIND_SLUGS.has(msg.systemNotice) ? 'instruction' : 'notice'
 }
 
 /** A4（2026-11-19 头像语义）：过程行谓词——压缩注记徽标 / 系统通知条是
@@ -875,17 +936,7 @@ function isSystemNotice(msg: ChatMessage): boolean {
  *  细条（头像没出现 = 还在跑；头像出现 = 答案到了），与 live 占位行（无
  *  头像）同一语义。 */
 function isProcessRow(msg: ChatMessage): boolean {
-  return isCompactNote(msg) || isRateLimitNote(msg) || isBusyReceiptNote(msg) || isSteerInjectNote(msg) || isSystemNotice(msg)
-}
-
-/** 通知条图标：cron tick ⏰ / 其他系统注入 ⚙。 */
-function systemNoticeGlyph(msg: ChatMessage): string {
-  return msg.cronJobId ? '⏰' : '⚙'
-}
-
-/** 通知条类别词：cron tick 「定时任务」/ 其他「系统通知」。 */
-function systemNoticeLabel(msg: ChatMessage): string {
-  return msg.cronJobId ? '定时任务' : '系统通知'
+  return isCompactNote(msg) || isRateLimitNote(msg) || isBusyReceiptNote(msg) || isSteerInjectNote(msg) || isBgNoticeNote(msg) || isSystemNotice(msg)
 }
 
 /** 压缩进行中（实时态）：驱动 context 进度条流光特效（2026-11-09 用户点名——
@@ -4018,15 +4069,32 @@ onUnmounted(() => {
             <span class="compact-note-glyph" aria-hidden="true">{{ msg.content.startsWith('⚡') ? '⚡' : '⏳' }}</span>
             <span class="compact-note-label">{{ compactNoteLabel(msg).replace(/^[⚡⏳]\s*/, '') }}</span>
           </div>
-          <!-- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
-               role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL
-               续轮 system_notice + cron tick cron_job_id）渲染折叠单行
-               通知条，明确区分于真人发言。点击展开全文（与压缩注记徽标
-               同款 expandedCompactNotes 复用）。 -->
+          <!-- 系统通告注记徽标（2026-11-21 幻影通告根治）：busy 期间 stash 的
+               系统通告（后台任务完成/events/durable loop/审批续行）在轮边界
+               合并注入的注记（note_kind=bg_notice，role=system 投影 + system
+               行落盘占行锚）。压缩注记同族折叠小徽标，点击展开全文。 -->
+          <div
+            v-else-if="isBgNoticeNote(msg)"
+            class="compact-note"
+            :class="{ expanded: expandedCompactNotes.has(msg) }"
+            :title="msg.content"
+            @click="toggleCompactNote(msg)"
+          >
+            <span class="compact-note-glyph" aria-hidden="true">🔔</span>
+            <span class="compact-note-label">{{ compactNoteLabel(msg).replace(/^🔔\s*/, '') }}</span>
+          </div>
+          <!-- 内部注入行通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG；
+               2026-11-21 msg_class A2 kind-aware）：role=user 的内部注入行
+               （Notice 通告四族 + Instruction 指令四族 + 旧章兼容行）渲染
+               折叠单行徽标条，明确区分于真人发言——内部消息永不渲染成用户
+               气泡（A2 拍板 MUST）。Notice = 虚线通知条 / Instruction =
+               实线指令徽标行（family 变体类）；kind 图标+类别词查表，未知
+               slug 优雅兜底 ⚙。点击展开全文（与压缩注记徽标同款
+               expandedCompactNotes 复用）。 -->
           <div
             v-else-if="isSystemNotice(msg)"
             class="system-notice"
-            :class="{ expanded: expandedCompactNotes.has(msg) }"
+            :class="[systemNoticeFamily(msg), { expanded: expandedCompactNotes.has(msg) }]"
             :title="msg.content"
             @click="toggleCompactNote(msg)"
           >
@@ -5367,11 +5435,13 @@ onUnmounted(() => {
   filter: none;
 }
 
-/* ===== 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）=====
-   role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL 续轮/cron
-   tick）渲染为折叠单行通知条。中性灰调（区别于压缩注记的 --info 蓝系
-   与用户气泡）——一眼区分「系统说的」与「我说的」。折叠态单行截断，
-   点击展开全文（与压缩注记同款 expandedCompactNotes）。 */
+/* ===== 内部注入行通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG；
+   2026-11-21 msg_class A2 kind-aware）=====
+   role=user 的内部注入行（Notice 通告四族 + Instruction 指令四族 + 旧章
+   兼容行）渲染为折叠单行徽标条，内部消息永不渲染成用户气泡（A2 拍板
+   MUST）。中性灰调（区别于压缩注记的 --info 蓝系与用户气泡）——一眼区分
+   「系统说的」与「我说的」。折叠态单行截断，点击展开全文（与压缩注记
+   同款 expandedCompactNotes）。 */
 .system-notice {
   display: inline-flex;
   align-items: center;
@@ -5390,6 +5460,13 @@ onUnmounted(() => {
 }
 .system-notice:hover {
   filter: brightness(1.15);
+}
+/* A2 形态族（msg_class 单轨 §10-5）：Instruction 指令徽标行 = 实线描边
+   + 提亮一档的文字色，与 Notice 通知条（虚线中性灰）一眼区分——指令行
+   重定向下一轮工作，通告条只是告知。 */
+.system-notice.instruction {
+  border-style: solid;
+  color: var(--text-secondary, var(--text-muted));
 }
 .system-notice-glyph {
   flex: none;

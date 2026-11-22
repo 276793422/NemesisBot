@@ -469,3 +469,58 @@ describe('插话专轮收口回应（steer_response，2026-11-21 插话专轮批
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 系统通告注记徽标（2026-11-21 幻影通告根治）：busy 期间 stash 的系统通告
+// 轮边界合并注入 → note_kind=bg_notice 帧（role=system 投影，落盘占行锚）
+// → 🔔 折叠徽标（过程行无头像），不被终局回复扫除。
+// ---------------------------------------------------------------------------
+
+describe('系统通告注记徽标（bg_notice）', () => {
+  it('bg_notice 帧 → 🔔 徽标（无头像、不触发完成语义、终局回复后保留）', async () => {
+    const w = await mount(ChatPanel)
+    await flushPromises()
+    const chat = useChatStore()
+    chat.setBusy('s1', true) // 通告合并注入发生在 turn 进行中
+    receive({
+      role: 'system',
+      note_kind: 'bg_notice',
+      content: '🔔 系统通告已注入本轮（1 条）：Background job #1 finished: exit_code=Some(0)',
+    })
+    await flushPromises()
+    // 徽标分支命中（非默认 system 气泡、非 busy_receipt 族）。
+    const badge = w.find('.compact-note')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('系统通告已注入本轮')
+    expect(badge.text()).toContain('Background job #1 finished')
+    // 过程行无头像。
+    expect(w.find('.message.system .message-avatar').exists()).toBe(false)
+    // 终局回复到场后徽标保留（通告事实常驻，不进扫除名单）。
+    receive({ role: 'assistant', content: '收到，后台任务已完成。' })
+    await flushPromises()
+    expect(chat.isBusy('s1')).toBe(false)
+    expect(w.find('.compact-note').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('历史行 note_kind=bg_notice → 同款徽标渲染（历史/sync 三路同源）', async () => {
+    const w = await mount(ChatPanel)
+    await flushPromises()
+    await loadHistory(w, [
+      { index: 0, role: 'user', content: '起个后台任务', timestamp: '2026-11-21T10:00:00+08:00' },
+      {
+        index: 1,
+        role: 'system',
+        note_kind: 'bg_notice',
+        content: '🔔 系统通告已注入本轮（2 条）：job A finished\n\njob B finished',
+        timestamp: '2026-11-21T10:01:00+08:00',
+      },
+      { index: 2, role: 'assistant', content: '两个任务都完成了。', timestamp: '2026-11-21T10:02:00+08:00' },
+    ])
+    const badge = w.find('.compact-note')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('2 条')
+    expect(w.find('.message.system .message-avatar').exists()).toBe(false)
+    w.unmount()
+  })
+})

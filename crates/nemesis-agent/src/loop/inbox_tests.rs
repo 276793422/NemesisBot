@@ -52,17 +52,13 @@ impl LlmProvider for CapturingProvider {
 }
 
 fn inbound(session: &str, content: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "tester".to_string(),
-        chat_id: "c1".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session.to_string(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "tester".to_string(),
+        "c1".to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session.to_string())
 }
 
 /// Owns a shared handle to the capturing provider so tests can read

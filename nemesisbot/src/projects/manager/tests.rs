@@ -52,17 +52,13 @@ fn write_mini_model_config(home: &std::path::Path) {
 }
 
 fn msg(channel: &str, session_key: &str) -> InboundMessage {
-    InboundMessage {
-        channel: channel.to_string(),
-        sender_id: "u1".to_string(),
-        chat_id: "c1".to_string(),
-        content: "hello".to_string(),
-        media: Vec::new(),
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        channel.to_string(),
+        "u1".to_string(),
+        "c1".to_string(),
+        "hello".to_string(),
+    )
+    .with_session_key(session_key.to_string())
 }
 
 // ---------------------------------------------------------------------------

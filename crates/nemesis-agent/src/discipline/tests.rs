@@ -544,17 +544,12 @@ fn waive_audit_written_with_reason_only() {
 // ---------------------------------------------------------------------------
 
 fn inbound(content: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: String::new(),
-        chat_id: "1".to_string(),
-        content: content.to_string(),
-        media: Vec::new(),
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        String::new(),
+        "1".to_string(),
+        content.to_string(),
+    )
 }
 
 struct NoopProvider;

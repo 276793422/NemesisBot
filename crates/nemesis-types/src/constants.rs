@@ -23,6 +23,14 @@ pub const RPC_CHANNEL_TIMEOUT_SECS: u64 = 86400;
 /// Default broadcast channel capacity.
 pub const BUS_CHANNEL_CAPACITY: usize = 1024;
 
+/// 语义断言开关 env（2026-11-21 msg_class 检测网，单一真相源）。消费方两处：
+/// nemesis-bus 发布入口检测网（User class + 内部形状标记 → warn/panic）与
+/// nemesis-agent admission 闸 C1 绊线（Notice/Instruction 健全性不变量 →
+/// warn/panic）。值 = panic|1|true → panic 态（测试 harness 用），其余/缺省
+/// = warn 态（生产兜底观测）。真相源放本 crate 的原因：nemesis-agent 不依赖
+/// nemesis-bus（依赖箭头只允许向下），两消费方的公共基座只有 nemesis-types。
+pub const SEMANTIC_ASSERT_ENV: &str = "NEMESIS_BUS_SEMANTIC_ASSERT";
+
 /// Default cleanup interval.
 pub const CLEANUP_INTERVAL_SECS: u64 = 30;
 

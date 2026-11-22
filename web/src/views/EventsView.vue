@@ -8,9 +8,8 @@
 //    （原裸 JSON textarea 改为规则卡列表：五族 watch 动态字段组 + deliver 表单 +
 //    会话 picker；未知 kind 降级原文编辑、未知字段保真合并——数据不丢）+
 //    泵统计）；
-// ② 时间触发源（tasks.cron.list 只读收编——管理走任务页，此处只展示）；
-// ③ 进程完成唤醒（background_start / 后台子代理，管理走执行单元页，此处
-//    只放链接）。
+// ② 时间触发源（tasks.cron.list 只读收编——管理走任务页，此处只展示）。
+//    （进程完成唤醒卡片已随 2026-11-22 完成唤醒摘除批删除。）
 // 三闸语义（冷却/小时窗/estop 冻结）由后端 nemesis-events 执行，页面只展示。
 // Schema 单一真相源 = crates/nemesis-events/src/rules.rs（五族放行面：
 // fs/webhook/proc/sys/probe；cron 已砍单）。前端校验一层（必填/数字域/target
@@ -696,19 +695,6 @@ onUnmounted(() => {
                 </tbody>
               </table>
             </div>
-          </div>
-        </div>
-
-        <!-- 收编：进程完成唤醒（链接） -->
-        <div class="card">
-          <div class="card-header">
-            <h3>进程完成唤醒</h3>
-          </div>
-          <div class="card-body">
-            <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">
-              后台进程与后台子代理完成时自动回灌发起会话（CompletionEvent 先例）。
-              台账与管理走 <router-link to="/executors">执行单元页</router-link>。
-            </p>
           </div>
         </div>
       </template>

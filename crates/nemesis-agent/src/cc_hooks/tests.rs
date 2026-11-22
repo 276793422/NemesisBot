@@ -1103,17 +1103,13 @@ async fn loop_integration_prompt_hook_loops_until_hook_removed() {
     });
 
     // 一条用户消息进闸 → turn 1（r1）→ 注入回灌 → turn 2（r2）→ 自删 → 收敛。
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "开始工作".to_string(),
-        media: vec![],
-        session_key: "agent:main:session:s-looptest".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "开始工作".to_string(),
+    )
+    .with_session_key("agent:main:session:s-looptest".to_string());
     in_tx.send(msg).await.unwrap();
 
     let mut got: Vec<String> = Vec::new();
@@ -1262,17 +1258,13 @@ async fn brake_fixture(
         }
     });
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "开始工作".to_string(),
-        media: vec![],
-        session_key: format!("agent:main:session:{sid}"),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "开始工作".to_string(),
+    )
+    .with_session_key(format!("agent:main:session:{sid}"));
     in_tx.send(msg).await.unwrap();
 
     // 等 LLM 首呼在飞。
@@ -1382,17 +1374,13 @@ async fn loop_integration_estop_freezes_turn_prompt_hook_not_injected() {
 
     // 冻结期间追加消息：不开新 LLM 轮（pump 链 estop 闸兜底；注入即使
     // 发出也过不去同款门）。
-    let msg2 = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "冻结期间的追加消息".to_string(),
-        media: vec![],
-        session_key: "agent:main:session:s-brake2".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg2 = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "冻结期间的追加消息".to_string(),
+    )
+    .with_session_key("agent:main:session:s-brake2".to_string());
     in_tx.send(msg2).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     // 排干追加消息可能产生的急停回执，防 16 槽出站通道积压。

@@ -567,6 +567,7 @@ mod r10 {
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
             voice_playback: None,
+            msg_class: nemesis_types::channel::MsgClass::User,
         }
     }
 
@@ -720,6 +721,7 @@ mod wave4b {
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
             voice_playback: None,
+            msg_class: nemesis_types::channel::MsgClass::User,
         }
     }
 

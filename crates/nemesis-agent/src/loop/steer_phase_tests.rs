@@ -127,17 +127,14 @@ impl Tool for SteerEnqueueTool {
         self.inbox.enqueue(
             &self.session_key,
             crate::inbox::QueuedMessage {
-                msg: nemesis_types::channel::InboundMessage {
-                    channel: "web".to_string(),
-                    sender_id: "tester".to_string(),
-                    chat_id: "chat1".to_string(),
-                    content: self.steer_content.clone(),
-                    media: vec![],
-                    session_key: self.session_key.clone(),
-                    correlation_id: String::new(),
-                    metadata: Default::default(),
-                    voice_playback: None,
-                },
+                msg: nemesis_types::channel::InboundMessage::user_ingress(
+                    "web".to_string(),
+                    "tester".to_string(),
+                    "chat1".to_string(),
+                    self.steer_content.clone(),
+                )
+                .with_session_key(self.session_key.clone())
+                .with_metadata_map(Default::default()),
                 timestamp: String::new(),
                 priority: crate::inbox::MessagePriority::Normal,
             },
@@ -158,17 +155,13 @@ fn uniq_key(tag: &str) -> String {
 }
 
 fn make_inbound(content: &str, session_key: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session_key.to_string())
 }
 
 /// 全链主用例：原子性 + 排空 + 两段专轮 + 预算豁免 + 续跑。

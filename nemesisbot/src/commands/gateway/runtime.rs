@@ -430,25 +430,20 @@ pub(crate) async fn run_runtime(
                     if !nemesis_agent::chat_log::chat_log_exists(session_key) {
                         return false;
                     }
-                    bus.publish_inbound(nemesis_types::channel::InboundMessage {
-                        channel: "web".to_string(),
-                        sender_id: "system".to_string(),
-                        // 出站回显键（单一解析 resolve_inject_chat_id）：
-                        // ConvRouter 活页绑定优先（回复实时推到正开着该
-                        // 会话的标签页），无绑定回落 web:<会话id>（死会话
-                        // 软失败 + 历史照落）——通道原生形态硬前提不变
-                        // （docs/BUG 同名文档）。
-                        chat_id: super::post_agent::resolve_inject_chat_id(
-                            session_key,
-                            &conv_router,
-                        ),
-                        content: content.to_string(),
-                        media: Vec::new(),
-                        session_key: session_key.to_string(),
-                        correlation_id: String::new(),
-                        metadata: std::collections::HashMap::new(),
-                        voice_playback: None,
-                    });
+                    // 出站回显键（单一解析 resolve_inject_chat_id）：
+                    // ConvRouter 活页绑定优先（回复实时推到正开着该
+                    // 会话的标签页），无绑定回落 web:<会话id>（死会话
+                    // 软失败 + 历史照落）——通道原生形态硬前提不变
+                    // （docs/BUG 同名文档）。信息类注入走 notice 构造器
+                    // （NoticeKind::ApprovalContinuation 烤死 class——
+                    // busy stash 合并注入，不排队回执物化幻影 user 行）。
+                    bus.publish_inbound(super::post_agent::system_notice_inbound(
+                        nemesis_types::channel::NoticeKind::ApprovalContinuation,
+                        "web",
+                        &super::post_agent::resolve_inject_chat_id(session_key, &conv_router),
+                        session_key,
+                        content.to_string(),
+                    ));
                     true
                 })
             });
@@ -1549,6 +1544,37 @@ pub(crate) async fn run_runtime(
             crate::commands::gateway::shutdown::terminal_cancel_token().clone(),
         );
         info!("[Gateway] snooze sweeper started (10s interval, replay hook armed)");
+
+        // A3（msg_class 单轨 §10-8，2026-11-21 拍板）：指令队列/通告 stash
+        // 滞留补投 hook—— sweeper take-first 后把 hydrate 出的消息经同款
+        // 三臂解析注入归属 loop；失败余量由 sweeper 写回侧车（本 hook 只
+        // 报 delivered 数，不碰盘——take/写回都在 sweeper 侧，职责单点）。
+        // inject_inbound 同上：bus 广播会 re-match workflow triggers，不走。
+        let agent_adapter_for_a3 = Arc::clone(&agent_adapter);
+        nemesis_web::handlers::sessions::set_persisted_replay_hook(Some(std::sync::Arc::new(
+            move |session_key: &str, msgs: Vec<nemesis_types::channel::InboundMessage>| -> usize {
+                let loop_arc: Option<Arc<nemesis_agent::r#loop::AgentLoop>> =
+                    if let Some(agent_id) =
+                        nemesis_web::handlers::agents::agent_owner_of(session_key)
+                    {
+                        nemesis_web::handlers::agents::agents_bridge()
+                            .and_then(|b| b.loop_for_agent(&agent_id).ok())
+                    } else if let Some(b) = nemesis_web::handlers::projects::projects_bridge()
+                        && let Some(pid) = b.owner_of(session_key)
+                    {
+                        b.loop_for_session(&pid)
+                    } else {
+                        agent_adapter_for_a3.current()
+                    };
+                let Some(loop_arc) = loop_arc else {
+                    return 0; // 停机窗口：sweeper 写回侧车，下轮重试
+                };
+                msgs.into_iter()
+                    .filter(|m| loop_arc.inject_inbound(m.clone()))
+                    .count()
+            },
+        )));
+        info!("[Gateway] A3 persisted replay hook armed (iqueue + notices hydrate)");
     }
 
     // Ctrl+C / SIGINT 优雅停机臂（2026-08-31 web-dead 停机事故教训）：

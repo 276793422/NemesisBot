@@ -8,17 +8,13 @@ use crate::MessageBus;
 use nemesis_types::channel::InboundMessage;
 
 fn dummy_msg(tag: &str) -> InboundMessage {
-    InboundMessage {
-        channel: "test".to_string(),
-        sender_id: "tester".to_string(),
-        chat_id: "chat-1".to_string(),
-        content: tag.to_string(),
-        media: Vec::new(),
-        session_key: "agent:main:session:s1".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        "test".to_string(),
+        "tester".to_string(),
+        "chat-1".to_string(),
+        tag.to_string(),
+    )
+    .with_session_key("agent:main:session:s1".to_string())
 }
 
 /// 记录调用序 + 可编程决策的探针过滤器。

@@ -543,17 +543,14 @@ async fn callback_message(
         metadata.insert("receiveid".to_string(), receiveid);
     }
 
-    let inbound = InboundMessage {
-        channel: "wecom".to_string(),
-        sender_id: parsed.sender_id.clone(),
-        chat_id: chat_id.clone(),
-        content: parsed.content,
-        media: Vec::new(),
-        session_key: format!("wecom:{}", chat_id),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let inbound = InboundMessage::user_ingress(
+        "wecom".to_string(),
+        parsed.sender_id.clone(),
+        chat_id.clone(),
+        parsed.content,
+    )
+    .with_session_key(format!("wecom:{}", chat_id))
+    .with_metadata_map(metadata);
 
     st.base.record_received();
     info!(

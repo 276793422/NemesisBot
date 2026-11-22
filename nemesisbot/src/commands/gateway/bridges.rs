@@ -560,19 +560,23 @@ pub(crate) struct BusToClusterAdapter {
 #[cfg(feature = "cluster")]
 impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
     fn publish_inbound(&self, msg: nemesis_cluster::cluster::BusInboundMessage) {
-        let inbound = nemesis_types::channel::InboundMessage {
-            channel: msg.channel,
-            sender_id: msg.sender_id,
-            chat_id: msg.chat_id,
-            content: msg.content,
-            media: vec![],
-            session_key: String::new(),
-            correlation_id: String::new(),
+        // class 归属点（msg_class 单轨 2026-11-21）：BusInboundMessage
+        // 全量流量 = 集群续行回灌（sender 形态 `cluster_continuation:
+        // {task_id}`，gate 闸顶前缀臂消费）——continuation() 构造器烤死
+        // Continuation 类；sender 前缀由 cluster 侧给定，channel/chat_id
+        // 按桥接来源回填（构造器缺省 system/空 不符）。
+        let mut inbound = nemesis_types::channel::InboundMessage::continuation(
+            msg.sender_id,
+            String::new(),
+            msg.content,
+        )
+        .with_metadata_map(
             // 透传结构化元数据（cluster_continuation 的 status /
             // source_node / error）——AgentLoop 续行拦截依赖这些字段。
-            metadata: msg.metadata,
-            voice_playback: None,
-        };
+            msg.metadata,
+        );
+        inbound.channel = msg.channel;
+        inbound.chat_id = msg.chat_id;
         self.bus.publish_inbound(inbound);
     }
 

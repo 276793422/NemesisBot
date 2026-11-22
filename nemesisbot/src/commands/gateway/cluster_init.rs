@@ -2024,8 +2024,6 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 // Route 2: Main AgentLoop continuation — publish to bus.
                 // （board 派发任务跳过：无续行快照，进 bus 只会告警。）
                 if !task_id.is_empty() && !is_board_task {
-                    let mut metadata = std::collections::HashMap::new();
-                    metadata.insert("status".to_string(), status.to_string());
                     // 集群续行归属：回调 source 是节点 ID——
                     // 徽章要人读名字，注册表在线时换名；查不到（对端已逐出/
                     // 老恢复快照）回退原 ID（诚实显示）。 恢复发布点在
@@ -2035,22 +2033,24 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         .map(|p| p.base.name)
                         .filter(|n| !n.is_empty())
                         .unwrap_or_else(|| source_node.to_string());
-                    metadata.insert("source_node".to_string(), source_display);
-                    // content 与 metadata.error 都用合并文本——B 端 error
-                    // 回调的 response 为空，续行 tool 结果须携带真实错误。
-                    metadata.insert("error".to_string(), fail_text.to_string());
 
-                    let inbound = nemesis_types::channel::InboundMessage {
-                        channel: "system".to_string(),
-                        sender_id: format!("cluster_continuation:{}", task_id),
-                        chat_id: String::new(),
-                        content: fail_text.to_string(),
-                        media: vec![],
-                        session_key: String::new(),
-                        correlation_id: String::new(),
-                        metadata,
-                        voice_playback: None,
-                    };
+                    // 续行回灌（Continuation class，msg_class 单轨
+                    // 2026-11-21）：构造器烤死 channel="system" + class；
+                    // sender 保持 `cluster_continuation:{task_id}` 前缀形态
+                    // （闸顶续行臂按前缀提取 task_id 路由——契约见构造器
+                    // doc）。status/source_node/error 章随行（续行 tool
+                    // 结果组装消费）。
+                    let inbound =
+                        nemesis_types::channel::InboundMessage::continuation(
+                            format!("cluster_continuation:{}", task_id),
+                            String::new(),
+                            fail_text.to_string(),
+                        )
+                        .with_metadata("status", status)
+                        .with_metadata("source_node", source_display)
+                        // content 与 metadata.error 都用合并文本——B 端 error
+                        // 回调的 response 为空，续行 tool 结果须携带真实错误。
+                        .with_metadata("error", fail_text);
                     bus_for_cb.publish_inbound(inbound);
                     info!("[Gateway] Published cluster_continuation for task_id={}", task_id);
                 }

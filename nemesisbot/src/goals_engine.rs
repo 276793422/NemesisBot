@@ -526,18 +526,17 @@ impl GoalsEngine {
                 // 回落裸 session_key（回复仍落历史，只少实时推送——
                 // WebChannel 对裸 session_key 的拒投是既有软失败语义）。
                 let inject_chat_id = inject_chat_id(&self.conv_router, &entry.session_key);
+                // 指令注入（Instruction(GoalRound)，msg_class 单轨 2026-11-21）：
+                // 开真轮语义（busy 静默排队零回执；构造器烤死 class +
+                // instruction_kind 章）。
                 self.bus
-                    .publish_inbound(nemesis_types::channel::InboundMessage {
-                        channel: "web".to_string(),
-                        sender_id: "system".to_string(),
-                        chat_id: inject_chat_id,
+                    .publish_inbound(nemesis_types::channel::InboundMessage::instruction(
+                        nemesis_types::channel::InstructionKind::GoalRound,
+                        "web",
+                        &inject_chat_id,
+                        &entry.session_key,
                         content,
-                        media: Vec::new(),
-                        session_key: entry.session_key.clone(),
-                        correlation_id: String::new(),
-                        metadata: std::collections::HashMap::new(),
-                        voice_playback: None,
-                    });
+                    ));
                 tracing::info!(
                     "[Goals] goal {} CONTINUE → round {} injected (gap: {})",
                     entry.id,

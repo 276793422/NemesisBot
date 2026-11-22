@@ -99,6 +99,20 @@ function lastRole(body) {
   return msgs[msgs.length - 1]?.role ?? null
 }
 
+// 幻影通告复现（2026-11-21）：找最后一条带 tool_calls 的 assistant 消息的
+// 工具名——同一 turn 内区分「bg_start 已返回（该挂 sleep 保 busy）」和
+// 「sleep 已返回（该收尾）」两个工具阶段。
+function lastToolCallName(body) {
+  const msgs = body?.messages ?? []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m?.role === 'assistant' && Array.isArray(m?.tool_calls) && m.tool_calls.length > 0) {
+      return m.tool_calls[m.tool_calls.length - 1]?.function?.name ?? null
+    }
+  }
+  return null
+}
+
 function lastUserText(body) {
   const msgs = (body?.messages ?? []).filter((m) => m?.role === 'user')
   const last = msgs[msgs.length - 1]
@@ -117,13 +131,35 @@ const STEER_REPLY_TEXT = 'E2E_STEER_ACK：插话已收到，边界说明已纳�
 const STEER_RESUME_TEXT = 'E2E_STEER_MAIN_DONE：主线任务已完成（插话已消化后继续收尾）。'
 
 function routeRequest(body) {
-  if (lastRole(body) === 'tool') return 'final'
+  if (lastRole(body) === 'tool') {
+    // 幻影通告复现（2026-11-21）：同 turn 两工具阶段按最后 tool_call 名分派。
+    if (bodyHasMarker(body, 'E2E_PHANTOM_BG')) {
+      const name = lastToolCallName(body)
+      if (name === 'background_start') return 'phantom_sleep'
+      if (name === 'sleep') return 'phantom_final'
+    }
+    return 'final'
+  }
+  // 幻影通告修复验收（2026-11-21）：忙时通告走 stash → 轮边界合并注入，
+  // 注入内容带单一真相源框注前缀 [系统通告]（inbox::frame_merged_notices）。
+  // 模型在此 LLM 调用里看到框注 → mock 自证回复 MERGED_SEEN（修复正路）。
+  const mergedText = lastUserText(body)
+  if (mergedText.includes('[系统通告]') && mergedText.includes('Background job #'))
+    return 'phantom_notice_merged'
+  // 幻影通告回归签名（2026-11-21）：通告文本【不带框注】直接成为最后一
+  // 条 user 消息 = 通告被物化成 user 身份开幻影轮（修复前旧行为）。mock
+  // 回 GHOST_TURN_SEEN 自证，驱动侧断言输出里不出现该字样。
+  // 必须先于 E2E_PHANTOM_BG marker 臂（幻影轮历史里同样含 marker 文本）。
+  const ghostText = lastUserText(body)
+  if (ghostText.includes('Background job #')) return 'phantom_ghost'
   // 插话专轮路由（2026-11-21）：marker 扫描先于 lastUserText 各臂——
   // RESUME 只在阶段关后出现（与 contract 互斥），先判谁都不冲突。
   if (bodyHasMarker(body, '[E2E_STEER_RESUME]')) return 'steer_resume'
   if (bodyHasMarker(body, '[E2E_STEER_CONTRACT]')) return 'steer_reply'
   const text = lastUserText(body)
   if (text.includes('E2E_WF_GEN')) return 'wf_create'
+  // 幻影通告复现阶段 1（新 turn，marker 在场）：background_start 起短命任务。
+  if (text.includes('E2E_PHANTOM_BG')) return 'phantom_bg'
   if (text.includes('E2E_TOOL_EXEC')) return 'exec_tool'
   // SPAWN2 必须先于 SPAWN 判——'E2E_TOOL_SPAWN2' 包含 'E2E_TOOL_SPAWN' 子串。
   if (text.includes('E2E_TOOL_SPAWN2')) return 'spawn_tool_2'
@@ -162,6 +198,17 @@ function recordEvidence(body) {
     } catch {
       /* ignore */
     }
+  }
+}
+
+// 纯文本直答回复载荷（幻影通告复现剧本用）。
+function textReply(base, content) {
+  return {
+    ...base,
+    choices: [
+      { index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' },
+    ],
+    usage: { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 },
   }
 }
 
@@ -218,6 +265,82 @@ function messagePayload(route, body) {
       ],
       usage: { prompt_tokens: 700, completion_tokens: 55, total_tokens: 755 },
     }
+  }
+  // ── 幻影通告复现剧本（2026-11-21）──
+  // 阶段 1（新 turn，marker 在场）：background_start 起短命后台任务
+  //（~3s 自终，ping 睡眠形态——waitfor/choice 坑位同 bg_tool 注记）。
+  if (route === 'phantom_bg') {
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'call_mock_phantom_bg',
+                type: 'function',
+                function: {
+                  name: 'background_start',
+                  arguments: JSON.stringify({
+                    command:
+                      'for /l %i in (1,1,3) do @(echo PHANTOMJOB-%i& ping -n 1 -w 1000 127.0.0.1>nul 2>&1)& ver>nul',
+                  }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
+    }
+  }
+  // 阶段 2（bg_start 结果回来）：sleep 12 保主轮 busy——覆盖后台任务退出
+  // 时刻（~3s），完成通告此刻到达 → busy 闸 → 排队 + 回执。
+  if (route === 'phantom_sleep') {
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'call_mock_phantom_sleep',
+                type: 'function',
+                function: {
+                  name: 'sleep',
+                  arguments: JSON.stringify({ seconds: 12 }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
+    }
+  }
+  // 阶段 3（sleep 结果回来）：主轮收尾。此后排队通告被 claim → 幻影轮。
+  if (route === 'phantom_final') {
+    return textReply(base, 'PHANTOM_MAIN_DONE：主线 turn 已收尾。')
+  }
+  // 幻影轮回归签名（通告物化成 user 消息开的新轮）：自证回复带通告原文前
+  // 70 字。修复后此臂不应再触发——触发即幻影通告复发。
+  if (route === 'phantom_ghost') {
+    const head = lastUserText(body).slice(0, 70).replace(/\s+/g, ' ')
+    return textReply(base, `PHANTOM_GHOST_TURN_SEEN: ${head}`)
+  }
+  // 修复正路（忙时 stash → 轮边界合并注入）：模型在主轮内看到 [系统通告]
+  // 框注 → 自证回复带通告原文前 70 字，终答收尾（不开新轮）。
+  if (route === 'phantom_notice_merged') {
+    const head = lastUserText(body).slice(0, 70).replace(/\s+/g, ' ')
+    return textReply(base, `PHANTOM_NOTICE_MERGED_SEEN: ${head}`)
   }
   if (route === 'wf_create') {
     return {

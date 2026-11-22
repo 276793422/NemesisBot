@@ -1131,29 +1131,30 @@ impl GatewayCtx {
                             router_for_cron.target(&session_key),
                             job.payload.to.as_deref(),
                         );
-                        let inbound = nemesis_types::channel::InboundMessage {
-                            channel,
-                            sender_id: format!("cron:{}", job.id),
-                            chat_id,
-                            content: job.payload.message.clone(),
-                            media: vec![],
-                            session_key,
-                            correlation_id: String::new(),
-                            metadata: {
-                                let mut m = std::collections::HashMap::new();
-                                m.insert("cron_job_id".to_string(), job.id.clone());
-                                m.insert("cron_job_name".to_string(), job.name.clone());
-                                // per-fire tool-round budget — the agent
-                                // loop reads this and caps the continuation turn's
-                                // tool iterations at this value (graceful stop via
-                                // the grace-round path; job survives).
-                                if let Some(mr) = job.payload.max_rounds {
-                                    m.insert("cron_max_rounds".to_string(), mr.to_string());
-                                }
-                                m
-                            },
-                            voice_playback: None,
-                        };
+                        // 指令注入（Instruction(CronTick)，msg_class 单轨
+                        // 2026-11-21）：cron tick 是开真轮的系统指令——busy
+                        // 静默排队零回执、同 job 合闸（闸门政策臂读本消息
+                        // class + cron_job_id 章）；构造器烤死 class +
+                        // instruction_kind 章（旧 `cron:{id}` sender 形态
+                        // 退役，job id 单点走 cron_job_id 章）。
+                        let inbound =
+                            nemesis_types::channel::InboundMessage::instruction(
+                                nemesis_types::channel::InstructionKind::CronTick,
+                                channel,
+                                &chat_id,
+                                &session_key,
+                                job.payload.message.clone(),
+                            )
+                            .with_metadata("cron_job_id", &job.id)
+                            .with_metadata("cron_job_name", &job.name)
+                            // per-fire tool-round budget — the agent
+                            // loop reads this and caps the continuation turn's
+                            // tool iterations at this value (graceful stop via
+                            // the grace-round path; job survives).
+                            .with_metadata_opt(
+                                "cron_max_rounds",
+                                job.payload.max_rounds.map(|mr| mr.to_string()),
+                            );
                         bus_for_cron.publish_inbound(inbound);
                         Ok(format!("Cron job '{}' triggered", job.name))
                     } else {

@@ -403,30 +403,26 @@ impl LifecycleService for AgentLoopServiceAdapter {
         // 解锁（LLM 自行向用户说明/重派），完成后 resume 自清快照。消息在
         // loop 起步前 try_send 进有界通道（空载必成功），保序为首批消息。
         for task_id in agent_loop.list_stale_bg_spawn_task_ids() {
-            let mut metadata = std::collections::HashMap::new();
-            metadata.insert("status".to_string(), "error".to_string());
-            metadata.insert(
-                "error".to_string(),
-                "gateway restarted while the background sub-agent task was running; its result is lost"
-                    .to_string(),
-            );
-            metadata.insert("source".to_string(), "background_subagent".to_string());
-            let msg = nemesis_types::channel::InboundMessage {
-                channel: "system".to_string(),
-                sender_id: format!(
+            // 续行回灌（Continuation class，msg_class 单轨 2026-11-21）：
+            // 构造器烤死 channel="system" + class；sender 保持
+            // `subagent_continuation:{task_id}` 前缀形态（闸顶续行臂按前缀
+            // 提取 task_id 路由）。status/error/source 章随行（续行 tool
+            // 结果组装消费）。
+            let msg = nemesis_types::channel::InboundMessage::continuation(
+                format!(
                     "{}{}",
                     nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
                     task_id
                 ),
-                chat_id: String::new(),
-                content: "[后台子代理任务丢失] 网关在后台任务运行期间重启，任务结果不可用。"
-                    .to_string(),
-                media: Vec::new(),
-                session_key: String::new(),
-                correlation_id: String::new(),
-                metadata,
-                voice_playback: None,
-            };
+                String::new(),
+                "[后台子代理任务丢失] 网关在后台任务运行期间重启，任务结果不可用。",
+            )
+            .with_metadata("status", "error")
+            .with_metadata(
+                "error",
+                "gateway restarted while the background sub-agent task was running; its result is lost",
+            )
+            .with_metadata("source", "background_subagent");
             if let Err(e) = agent_inbound_tx.try_send(msg) {
                 tracing::warn!(
                     "[AgentAdapter] Failed to inject background-subagent loss note: {}",

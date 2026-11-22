@@ -103,6 +103,29 @@ pub(crate) fn resolve_inject_chat_id(
         .unwrap_or_else(|| web_chat_id_from_session_key(session_key))
 }
 
+/// 系统通告入站消息构造器（2026-11-21 幻影通告根治——单一真相源）：
+/// 所有**信息类**系统注入（events 事件唤醒 / durable loop 唤醒 / 审批续行
+/// 回灌）必须经本函数发布——metadata 盖
+/// `system_notice` 章，AgentLoop busy 闸据此 stash 原文（轮边界合并注入）
+/// 而非排队→回执→软拒→物化 user 行+幻影 LLM 轮（未盖章 = 按用户消息
+/// 语义准入 = 幻影通告复发；闸门侧不变量注释见
+/// nemesis-agent loop/admission.rs busy 通告分支）。
+///
+/// **指令类系统注入刻意不盖章**（turn WAL 续轮 / hook prompt / goals 轮
+/// 注入 / cron tick——它们必须开真轮跑 LLM，busy 时照旧排队）。新注入点
+/// 归类判据：只带来「已发生的事实」→ 本函数盖章；要求模型「接下来做事」
+/// → 裸构造不盖章。
+#[allow(dead_code)] // 裁剪组合下部分调用点缺席（events/loop/security 各自 cfg 门）
+pub(crate) fn system_notice_inbound(
+    kind: nemesis_types::channel::NoticeKind,
+    channel: &str,
+    chat_id: &str,
+    session_key: &str,
+    content: String,
+) -> nemesis_types::channel::InboundMessage {
+    nemesis_types::channel::InboundMessage::notice(kind, channel, chat_id, session_key, content)
+}
+
 /// PB-5 产物 struct。
 pub(crate) struct PostAgentWiring {
     /// Tray 启停 + 心跳 handler + Step 14 start（无门）。
@@ -1260,17 +1283,15 @@ pub(crate) async fn init_post_agent(
                 // 活页绑定优先（回复实时推到正开着该会话的标签页），
                 // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
                 // 通道原生形态硬前提不变（docs/BUG 同名文档）。
-                bus_for_events.publish_inbound(nemesis_types::channel::InboundMessage {
-                    channel: "web".to_string(),
-                    sender_id: "system".to_string(),
-                    chat_id: resolve_inject_chat_id(session_key, &conv_router_for_events),
-                    content: content.to_string(),
-                    media: Vec::new(),
-                    session_key: session_key.to_string(),
-                    correlation_id: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                    voice_playback: None,
-                });
+                // 信息类注入走 notice 构造器（NoticeKind::Events 烤死
+                // class——busy stash 合并注入，不排队回执）。
+                bus_for_events.publish_inbound(system_notice_inbound(
+                    nemesis_types::channel::NoticeKind::Events,
+                    "web",
+                    &resolve_inject_chat_id(session_key, &conv_router_for_events),
+                    session_key,
+                    content.to_string(),
+                ));
                 true
             });
         let events_mgr = nemesis_events::EventWatchManager::new(
@@ -2331,17 +2352,15 @@ pub(crate) async fn run_loop_driver(
             // 活页绑定优先（回复实时推到正开着该会话的标签页），
             // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
             // 通道原生形态硬前提不变（docs/BUG 同名文档）。
-            bus.publish_inbound(nemesis_types::channel::InboundMessage {
-                channel: "web".to_string(),
-                sender_id: "system".to_string(),
-                chat_id: resolve_inject_chat_id(session_key, &conv_router),
-                content: content.to_string(),
-                media: Vec::new(),
-                session_key: session_key.to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            });
+            // 信息类注入走 notice 构造器（NoticeKind::Loop 烤死 class——
+            // busy stash 合并注入，不排队回执；旧章值 `durable_loop` 退役）。
+            bus.publish_inbound(system_notice_inbound(
+                nemesis_types::channel::NoticeKind::Loop,
+                "web",
+                &resolve_inject_chat_id(session_key, &conv_router),
+                session_key,
+                content.to_string(),
+            ));
             true
         });
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));

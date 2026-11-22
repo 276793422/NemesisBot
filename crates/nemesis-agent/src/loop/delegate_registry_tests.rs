@@ -49,17 +49,14 @@ fn d5_msg(
     content: &str,
     metadata: std::collections::HashMap<String, String>,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "system".to_string(),
-        chat_id: "chat1".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: "web:chat1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "system".to_string(),
+        "chat1".to_string(),
+        content.to_string(),
+    )
+    .with_session_key("web:chat1".to_string())
+    .with_metadata_map(metadata)
 }
 
 fn d5_unique(tag: &str) -> String {

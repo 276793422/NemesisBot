@@ -563,17 +563,15 @@ impl SlackChannel {
             channel.to_string()
         };
 
-        Some(InboundMessage {
-            channel: "slack".to_string(),
-            sender_id: user_id.to_string(),
-            chat_id,
-            content: text.to_string(),
-            media: Vec::new(),
-            session_key: String::new(),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        })
+        Some(
+            InboundMessage::user_ingress(
+                "slack".to_string(),
+                user_id.to_string(),
+                chat_id,
+                text.to_string(),
+            )
+            .with_metadata_map(metadata),
+        )
     }
 
     /// Adds a reaction to a message.

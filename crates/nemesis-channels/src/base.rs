@@ -512,6 +512,7 @@ impl BaseChannel {
 /// （`192.168.1.*`，尾段通配）。适用于「服务端监听通道的客户端无
 /// 可预知应用层身份」的场景（maixcam 设备无握手 / websocket client_id
 /// 进程内生成不可预知）——此时 allow_from 的真实语义是对端网络准入。
+#[allow(dead_code)] // 同房规：默认 features（web/webhook/rpc）下消费通道（maixcam）不编译
 pub(crate) fn peer_allowed(allow_from: &[String], peer_ip: &str) -> bool {
     if allow_from.is_empty() {
         return true;
@@ -654,12 +655,14 @@ where
 /// 各自复制）。语义：推送型通道的事件投递是 at-least-once（平台重推/
 /// 双订阅双事件），按幂等键去重防同一条消息重复喂 agent；有界 FIFO
 /// 淘汰防长跑内存无界；键缺失保守放行宁重复不丢。
+#[allow(dead_code)] // 同房规：默认 features 下消费通道（dingtalk/feishu/slack）不编译
 pub(crate) struct EventDedup {
     state: parking_lot::Mutex<EventDedupState>,
     cap: usize,
 }
 
 #[derive(Default)]
+#[allow(dead_code)] // 同上
 struct EventDedupState {
     seen: std::collections::HashSet<String>,
     order: std::collections::VecDeque<String>,
@@ -685,6 +688,7 @@ impl EventDedup {
 
     /// 首次出现返回 true（放行并记录）；重复返回 false（应丢弃）。
     /// 超 cap 淘汰最老条目（FIFO）。
+    #[allow(dead_code)] // 同房规：默认构建形态无消费通道
     pub(crate) fn check_and_record(&self, event_id: &str) -> bool {
         let mut st = self.state.lock();
         if !st.seen.insert(event_id.to_string()) {

@@ -21,17 +21,13 @@ use nemesis_types::channel::{InboundMessage, OutboundMessage};
 // ---------------------------------------------------------------------------
 
 fn make_inbound(channel: &str, sender_id: &str, chat_id: &str, content: &str) -> InboundMessage {
-    InboundMessage {
-        channel: channel.to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: chat_id.to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: format!("{}:{}", channel, chat_id),
-        correlation_id: String::new(),
-        metadata: HashMap::new(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        channel.to_string(),
+        sender_id.to_string(),
+        chat_id.to_string(),
+        content.to_string(),
+    )
+    .with_session_key(format!("{}:{}", channel, chat_id))
 }
 
 fn make_outbound(channel: &str, chat_id: &str, content: &str) -> OutboundMessage {

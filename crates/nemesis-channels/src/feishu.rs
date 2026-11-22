@@ -560,17 +560,14 @@ impl FeishuChannel {
             metadata.insert("chat_type".to_string(), chat_type);
         }
 
-        let inbound = InboundMessage {
-            channel: "feishu".to_string(),
-            sender_id: sender_id.clone(),
-            chat_id: chat_id.clone(),
-            content: text,
-            media: Vec::new(),
-            session_key: format!("feishu:{}", chat_id),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        };
+        let inbound = InboundMessage::user_ingress(
+            "feishu".to_string(),
+            sender_id.clone(),
+            chat_id.clone(),
+            text,
+        )
+        .with_session_key(format!("feishu:{}", chat_id))
+        .with_metadata_map(metadata);
 
         info!(
             sender_id = %inbound.sender_id,

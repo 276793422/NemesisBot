@@ -3,10 +3,10 @@ import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 
 // 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）：role=user 的
-// 系统注入行（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮，后端按
-// sender_id=="system" 推导落 jsonl `system_notice` 键）与 cron tick 行
-// （既有 `cron_job_id` 键）经历史装载三映射位透传后，渲染折叠单行通知条
-// 而非用户气泡。真人 user 行零变化（用户气泡旧行为）。
+// 内部注入行（`system_notice` 键 = msg_class class 投影 kind slug；旧章
+// "system" 兼容读 + cron tick 行既有 `cron_job_id` 键）经历史装载三映射位
+// 透传后，渲染折叠单行徽标条而非用户气泡。真人 user 行零变化（用户气泡
+// 旧行为）。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -158,6 +158,58 @@ describe('ChatPanel 系统通知条', () => {
     // avatar 照常 'U'。
     const rows = w.findAll('.message')
     expect(rows[0].find('.message-avatar').text()).toBe('U')
+    w.unmount()
+  })
+})
+
+// msg_class 单轨 A2 kind-aware 渲染（2026-11-21 拍板 MUST）：`system_notice`
+// 值 = 后端 system_notice_of 的 class 投影 kind slug（Notice 四族 +
+// Instruction 四族），内部消息永不渲染成用户气泡；Notice = 虚线通知条 /
+// Instruction = 实线指令徽标行；未知 slug 优雅兜底 ⚙ 系统通知（退役生产者
+// 残留/未来新增不白屏不崩）。
+describe('ChatPanel 通知条 kind 徽标（msg_class A2）', () => {
+  const KIND_CASES: Array<{ slug: string; glyph: string; label: string; family: string }> = [
+    { slug: 'events', glyph: '📡', label: '事件唤醒', family: 'notice' },
+    { slug: 'loop', glyph: '🔁', label: '循环推进', family: 'notice' },
+    { slug: 'approval_continuation', glyph: '📨', label: '审批续行', family: 'notice' },
+    { slug: 'merged', glyph: '🔔', label: '合并通告', family: 'notice' },
+    { slug: 'goal_round', glyph: '🎯', label: '目标轮次', family: 'instruction' },
+    { slug: 'cron_tick', glyph: '⏰', label: '定时任务', family: 'instruction' },
+    { slug: 'wal_resume', glyph: '↻', label: '续轮恢复', family: 'instruction' },
+    { slug: 'board_dispatch', glyph: '📋', label: '看板派发', family: 'instruction' },
+  ]
+
+  for (const kc of KIND_CASES) {
+    it(`kind slug ${kc.slug} → ${kc.glyph} ${kc.label}（${kc.family} 族，非用户气泡）`, async () => {
+      const w = await mountPanel()
+      await loadHistory(w, [
+        { role: 'user', content: `[${kc.slug}] 内部注入行`, system_notice: kc.slug },
+      ])
+      const notice = w.find('.system-notice')
+      expect(notice.exists()).toBe(true)
+      expect(notice.find('.system-notice-glyph').text()).toBe(kc.glyph)
+      expect(notice.find('.system-notice-tag').text()).toBe(kc.label)
+      // 形态族变体类：Instruction 实线 / Notice 虚线。
+      expect(notice.classes()).toContain(kc.family)
+      // A2 MUST：内部消息永不渲染成用户气泡。
+      const rows = w.findAll('.message')
+      expect(rows[0].find('.message-bubble').exists()).toBe(false)
+      expect(rows[0].find('.message-avatar').exists()).toBe(false)
+      w.unmount()
+    })
+  }
+
+  it('未知 slug → ⚙ 系统通知优雅兜底（退役生产者残留不白屏不崩）', async () => {
+    const w = await mountPanel()
+    await loadHistory(w, [
+      { role: 'user', content: '退役生产者残留行', system_notice: 'background_wake' },
+    ])
+    const notice = w.find('.system-notice')
+    expect(notice.exists()).toBe(true)
+    expect(notice.find('.system-notice-glyph').text()).toBe('⚙')
+    expect(notice.find('.system-notice-tag').text()).toBe('系统通知')
+    expect(notice.classes()).toContain('notice')
+    expect(notice.classes()).not.toContain('instruction')
     w.unmount()
   })
 })

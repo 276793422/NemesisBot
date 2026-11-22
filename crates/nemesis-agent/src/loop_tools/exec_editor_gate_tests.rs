@@ -230,7 +230,6 @@ async fn background_start_gate_allow_starts_outside_cwd() {
     .with_editor_gate(Some(gate_allow()));
     let args = serde_json::json!({
         "command": "echo bg-gate",
-        "notify": false,
         "cwd": outside.to_string_lossy(),
     })
     .to_string();

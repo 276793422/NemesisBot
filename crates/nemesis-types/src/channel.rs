@@ -3,7 +3,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Inbound message from a channel to the agent engine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InboundMessage {
     pub channel: String,
     pub sender_id: String,
@@ -18,9 +18,389 @@ pub struct InboundMessage {
     /// Whether to inject voice playback prompt in AgentLoop.
     #[serde(default)]
     pub voice_playback: Option<bool>,
+    /// 消息语义类（2026-11-21 msg_class 架构）：闸门按 class 查政策表，
+    /// 形状推断退役。User 是唯一 serde default——缺字段（旧 wire / 旧
+    /// sidecar 条目）= User；持有区（pending/队列/stash）反序列化点用
+    /// [`InboundMessage::legacy_class_coerce`] 按章/标记一次性改判。
+    /// 内部生产者**禁止**手写字面量造 User 语义的内部消息——必须走
+    /// 构造器家族（`notice`/`instruction`/`continuation`，class 烤死）；
+    /// 通道 ingress 走 [`InboundMessage::user_ingress`]。
+    #[serde(default)]
+    pub msg_class: MsgClass,
 }
 
 // ---------------------------------------------------------------------------
+// 消息语义类（msg_class，2026-11-21 架构计划；真相源 docs/REPORT 归档后
+// 以交付报告为准）
+// ---------------------------------------------------------------------------
+
+/// 入站消息语义类。
+///
+/// 纪律：[`MsgClass::User`] 是唯一默认（serde default）——只有通道 ingress
+/// 白名单区（[`InboundMessage::user_ingress`] 及其调用点）允许产生 class
+/// 缺省的构造；内部生产者必须经构造器家族（`notice`/`instruction`/
+/// `continuation`），class 在构造器内烤死，生产者碰不到字段。
+///
+/// 扩展纪律：新变体 = 一枚举臂 + 一政策行，闸门政策表 match 不许 `=> {}`
+/// 通配吞新变体（编译器强制补臂）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MsgClass {
+    /// 真实用户消息（唯一默认；完整用户语义：回执/排队/弹回留痕/物化）。
+    #[default]
+    User,
+    /// 信息通告：唤醒语义（A1 拍板维持空闲开轮=唤醒机制本体；三路唤醒各有
+    /// 拍板记录：事件唤醒 events / 循环推进 loop / 审批续行
+    /// approval_continuation；原 background 路已随 2026-11-22 完成唤醒
+    /// 摘除批退场）。
+    /// busy→stash 轮边界合并；snooze→静默 pending；空闲→通知条真轮。
+    /// 零回执零弹回。落盘两态：空闲准入=带章 user 行；busy 合并注入=system 注记行。
+    Notice(NoticeKind),
+    /// 指令注入：开真轮。busy→静默排队（零回执，Reject 也不弹回——
+    /// Reject 是用户对自己并发消息的态度，不作用内部指令）；
+    /// snooze→静默 pending。落盘=user 行带 kind 章。
+    Instruction(InstructionKind),
+    /// 子代理回灌 / 集群续行：闸门直通消费臂（原 channel=="system" +
+    /// 内容前缀推断的 class 化）；下游路由继续用内容前缀（不改）。
+    Continuation,
+}
+
+/// 通告子类（[`MsgClass::Notice`] 携带）。取值域与旧 `system_notice`
+/// 章值域（除已摘除的 background）一一对应。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// 事件唤醒（events injector）。
+    Events,
+    /// durable loop 循环推进。
+    Loop,
+    /// 审批续行回灌（批准/拒绝都回灌，2026-10-22 拍板）。
+    ApprovalContinuation,
+    /// turn 收口合成通告轮（孤儿 kick 等合并注入）。
+    Merged,
+}
+
+impl NoticeKind {
+    /// 章/slug 形态（旧 `system_notice` 章值域；显示面投影与检测网共用）。
+    pub fn slug(&self) -> &'static str {
+        match self {
+            NoticeKind::Events => "events",
+            NoticeKind::Loop => "loop",
+            NoticeKind::ApprovalContinuation => "approval_continuation",
+            NoticeKind::Merged => "merged",
+        }
+    }
+
+    /// 从旧章值反解（`legacy_class_coerce` 与显示面兜底读共用）。
+    /// 已摘除的 background 生产者不在值域（返回 None，持有区条目按
+    /// 退役生产者诚实丢弃）。`durable_loop` 是 loop 生产者的旧章值
+    /// （构造器 slug 统一为 `loop` 后保留为反解别名）。
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        match slug {
+            "events" => Some(NoticeKind::Events),
+            "loop" | "durable_loop" => Some(NoticeKind::Loop),
+            "approval_continuation" => Some(NoticeKind::ApprovalContinuation),
+            "merged" => Some(NoticeKind::Merged),
+            _ => None,
+        }
+    }
+}
+
+/// 指令子类（[`MsgClass::Instruction`] 携带）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstructionKind {
+    /// goals 评估闸 CONTINUE 缺口注入（下一轮开场指令）。
+    GoalRound,
+    /// cron job tick 调度轮。
+    CronTick,
+    /// turn WAL 崩溃续轮。
+    WalResume,
+    /// 看板本地派发任务轮。
+    BoardDispatch,
+}
+
+impl InstructionKind {
+    /// `instruction_kind` metadata 章 slug（构造器写入 + 显示面/检测网共用）。
+    pub fn slug(&self) -> &'static str {
+        match self {
+            InstructionKind::GoalRound => "goal_round",
+            InstructionKind::CronTick => "cron_tick",
+            InstructionKind::WalResume => "wal_resume",
+            InstructionKind::BoardDispatch => "board_dispatch",
+        }
+    }
+
+    /// 从章 slug 反解（`legacy_class_coerce` 与显示面兜底读共用）。
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        match slug {
+            "goal_round" => Some(InstructionKind::GoalRound),
+            "cron_tick" => Some(InstructionKind::CronTick),
+            "wal_resume" => Some(InstructionKind::WalResume),
+            "board_dispatch" => Some(InstructionKind::BoardDispatch),
+            _ => None,
+        }
+    }
+}
+
+/// 旧格式持有区条目的改判结论（[`InboundMessage::legacy_class_coerce`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyVerdict {
+    /// 已带 class（或确无内部标记）——原样保留。
+    Keep,
+    /// 按章/标记改判了 class（Remapped 后全系统单轨）。
+    Remapped,
+    /// 退役生产者的残留条目（如已摘除的 background 通告）——诚实丢弃。
+    Drop,
+}
+
+/// `instruction_kind` metadata 键（构造器写入；显示/检测网/改判共用）。
+pub const INSTRUCTION_KIND_STAMP_KEY: &str = "instruction_kind";
+
+impl InboundMessage {
+    /// 信息通告（Notice class 烤死，sender="system"）。不再写
+    /// `system_notice` 章——class 是唯一语义真相源；显示面对旧 jsonl 行
+    /// 读章兜底（永久兼容读）。
+    pub fn notice(
+        kind: NoticeKind,
+        channel: impl Into<String>,
+        chat_id: impl Into<String>,
+        session_key: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            channel: channel.into(),
+            sender_id: "system".to_string(),
+            chat_id: chat_id.into(),
+            content: content.into(),
+            media: Vec::new(),
+            session_key: session_key.into(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+            msg_class: MsgClass::Notice(kind),
+        }
+    }
+
+    /// 指令注入（Instruction class 烤死，sender="system"，metadata 带
+    /// `instruction_kind` 章——持久化行与旧章消费方读的投影面）。
+    pub fn instruction(
+        kind: InstructionKind,
+        channel: impl Into<String>,
+        chat_id: impl Into<String>,
+        session_key: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            INSTRUCTION_KIND_STAMP_KEY.to_string(),
+            kind.slug().to_string(),
+        );
+        Self {
+            channel: channel.into(),
+            sender_id: "system".to_string(),
+            chat_id: chat_id.into(),
+            content: content.into(),
+            media: Vec::new(),
+            session_key: session_key.into(),
+            correlation_id: String::new(),
+            metadata,
+            voice_playback: None,
+            msg_class: MsgClass::Instruction(kind),
+        }
+    }
+
+    /// 续行回灌（Continuation class + channel="system" 烤死）。
+    ///
+    /// `sender_id` 由调用方提供且**必须保持既有前缀形态**（下游
+    /// admission 续行臂从 sender 前缀/后缀提取 task_id 路由——
+    /// `subagent_continuation:{task_id}` / `cluster_continuation:{task_id}`，
+    /// 前缀常量在 [`crate::constants`]）。
+    pub fn continuation(
+        sender_id: impl Into<String>,
+        session_key: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            channel: "system".to_string(),
+            sender_id: sender_id.into(),
+            chat_id: String::new(),
+            content: content.into(),
+            media: Vec::new(),
+            session_key: session_key.into(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+            msg_class: MsgClass::Continuation,
+        }
+    }
+
+    /// 通道 ingress 的 User 消息构造（**唯一合法的 User 字面量入口**）。
+    ///
+    /// 通道回调与 web server ingress 用此 helper 起底（media/metadata/
+    /// correlation_id/session_key 缺省空），再按需以 `with_*` builder 补
+    /// 字段——grep 门禁据此把 User 字面量白名单收敛到本文件。
+    pub fn user_ingress(
+        channel: impl Into<String>,
+        sender_id: impl Into<String>,
+        chat_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            channel: channel.into(),
+            sender_id: sender_id.into(),
+            chat_id: chat_id.into(),
+            content: content.into(),
+            media: Vec::new(),
+            session_key: String::new(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+            msg_class: MsgClass::User,
+        }
+    }
+
+    /// Builder：附加媒体列表。
+    pub fn with_media(mut self, media: Vec<MediaAttachment>) -> Self {
+        self.media = media;
+        self
+    }
+
+    /// Builder：设置会话键。
+    pub fn with_session_key(mut self, session_key: impl Into<String>) -> Self {
+        self.session_key = session_key.into();
+        self
+    }
+
+    /// Builder：设置关联 ID（RPC 请求-响应匹配）。
+    pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
+        self.correlation_id = correlation_id.into();
+        self
+    }
+
+    /// Builder：合并 metadata 键值。
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Builder：可选 metadata 章（None = 不写键）——条件章的生产者形态
+    /// （如 cron tick 的 per-fire `cron_max_rounds` 预算章）。
+    pub fn with_metadata_opt(
+        mut self,
+        key: impl Into<String>,
+        value: Option<impl Into<String>>,
+    ) -> Self {
+        if let Some(v) = value {
+            self.metadata.insert(key.into(), v.into());
+        }
+        self
+    }
+
+    /// Builder：整体替换 metadata 表（通道 ingress 迁移用——平台回调
+    /// 常持有整个 map 表达式）。
+    pub fn with_metadata_map(
+        mut self,
+        metadata: std::collections::HashMap<String, String>,
+    ) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Builder：设置语音回放旗标。
+    pub fn with_voice_playback(mut self, voice_playback: Option<bool>) -> Self {
+        self.voice_playback = voice_playback;
+        self
+    }
+
+    /// 旧格式持有区条目的一次性改判（pending sidecar / busy 指令队列 /
+    /// 通告 stash 的**反序列化点**调用）：已带 class 原样保留；无 class
+    /// 的旧条目按章/标记改判（`system_notice`→Notice /
+    /// `cron_job_id`→Instruction(CronTick) / `turn_wal_resume`→WalResume /
+    /// `instruction_kind`→Instruction）；退役生产者残留（background 章）
+    /// 判 Drop 由调用方丢弃。改判后进闸即单轨，不做迁移脚本。
+    pub fn legacy_class_coerce(&mut self) -> LegacyVerdict {
+        if !matches!(self.msg_class, MsgClass::User) {
+            return LegacyVerdict::Keep;
+        }
+        // instruction_kind 章（新构造器写的投影面，旧 wire 无 class 但可能有章）。
+        if let Some(kind) = self
+            .metadata
+            .get(INSTRUCTION_KIND_STAMP_KEY)
+            .and_then(|slug| InstructionKind::from_slug(slug))
+        {
+            self.msg_class = MsgClass::Instruction(kind);
+            return LegacyVerdict::Remapped;
+        }
+        if self.metadata.contains_key("cron_job_id") {
+            self.msg_class = MsgClass::Instruction(InstructionKind::CronTick);
+            return LegacyVerdict::Remapped;
+        }
+        if self.metadata.contains_key("turn_wal_resume") {
+            self.msg_class = MsgClass::Instruction(InstructionKind::WalResume);
+            return LegacyVerdict::Remapped;
+        }
+        if let Some(slug) = self.metadata.get("system_notice") {
+            match NoticeKind::from_slug(slug) {
+                Some(kind) => {
+                    self.msg_class = MsgClass::Notice(kind);
+                    return LegacyVerdict::Remapped;
+                }
+                // 已摘除生产者（background 等）的残留条目——诚实丢弃。
+                None => return LegacyVerdict::Drop,
+            }
+        }
+        LegacyVerdict::Keep
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// （msg_class 单轨 2026-11-21 §10-6）：web ingress 语义伪造键剥离
+// ---------------------------------------------------------------------------
+
+/// 语义伪造键清单（web ingress 剥离面，单一真相源）：这些键是**服务端
+/// 内部语义章**——闸门归类（system_notice/cron_job_id/turn_wal_resume）、
+/// 直塞门识别（hook_prompt）、构造器投影（instruction_kind）。客户端
+/// 传入即伪造闸门/直塞语义（如伪造 system_notice 让用户消息在 busy 时
+/// 被 stash 进通告面 = 幻影通告路径复活）。ingress 剥离点统一调
+/// [`strip_forge_keys`]。
+///
+/// 三分类纪律（计划 §10-6）：显示类键（session_id/open_files/priority/
+/// client_msg_id/workflow_edit…）放行；本清单键服务端剥离；服务端控制
+/// 面键（request_type=history 等 websocket_handler 自写键）不在剥离
+/// 逻辑射程——它们不经本函数的威胁模型（客户端无入口），若误入清单
+/// 反而破坏服务端自写链路。
+pub const INGRESS_FORGE_KEYS: [&str; 5] = [
+    "system_notice",
+    "cron_job_id",
+    "turn_wal_resume",
+    "hook_prompt",
+    INSTRUCTION_KIND_STAMP_KEY,
+];
+
+/// 剥离语义伪造键（保留其余键原样返回）。web ingress 装配点
+/// （nemesis-web server.rs 入站咽喉）统一调用——当前 chat.send 的
+/// metadata 是构造式白名单（客户端无透传字段），剥离层是纵深防御：
+/// 未来有人加透传字段时本闸兜底。
+pub fn strip_forge_keys(
+    metadata: std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    if INGRESS_FORGE_KEYS.iter().any(|k| metadata.contains_key(*k)) {
+        let mut m = metadata;
+        for k in INGRESS_FORGE_KEYS {
+            if m.remove(k).is_some() {
+                tracing::warn!(
+                    key = k,
+                    "[ingress] 语义伪造键已剥离（客户端不得携带服务端内部章）"
+                );
+            }
+        }
+        return m;
+    }
+    metadata
+}
+
 // （devtool-upgrade）：客户端上报的「当前打开文件」
 // ---------------------------------------------------------------------------
 
@@ -231,7 +611,7 @@ impl OutboundMessage {
 /// - Otherwise serializes as a full object.
 ///
 /// Deserialization accepts both a plain string (treated as URL) and a full object.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MediaAttachment {
     pub media_type: String,
     pub url: String,

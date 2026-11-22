@@ -36,6 +36,9 @@
 //!
 //! 输出上限：每任务 [`DEFAULT_MAX_OUTPUT_BYTES`] 字节环形语义——超限丢头部
 //! 保尾部，`dropped_bytes` 如实上报（offset 分页坐标按 `produced` 单调计）。
+//! gateway 装配形态（`log_dir` 注入）另有**落盘 tee**（2026-11-22）：每任务
+//! 输出双写 append-only 镜像文件（完整历史），内存窗口 + 盘上全量分工——
+//! 环绕后的早期输出从文件兜（read_file/grep 可达），见 [`TeeFile`]。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -68,23 +71,16 @@ pub const MAX_CHUNK_BYTES: usize = 8 * 1024;
 /// 监督任务轮询子进程退出的间隔。
 const SUPERVISE_INTERVAL: Duration = Duration::from_millis(200);
 
-/// 完成通告 tail 快照前的 pump 排干宽限：正常 EOF 毫秒级到达；孤儿孙进程
-/// 持管不 EOF 时封顶（不无限延迟通告）。
-const COMPLETION_DRAIN_GRACE: Duration = Duration::from_secs(10);
-
-/// 完成唤醒通告携带的输出尾部窗口（字节）。
-pub const COMPLETION_TAIL_BYTES: usize = 4 * 1024;
-
 /// `background_output wait_secs` 的钳制上限（秒）——工具调用不该长阻塞
-/// dispatch（完成等待的正常路径是完成唤醒，不是长轮询）。
+/// dispatch（要任务终态就走本参数显式等待，不做 sleep 长轮询）。
 pub const MAX_OUTPUT_WAIT_SECS: u64 = 30;
 
-/// 完成唤醒的发起会话锚（2026-11-08 子进程实时输出与完成唤醒）：
-/// `background_start` 时从 [`RequestContext`] 捕获的三元组快照。任务退出
-/// 时 gateway 侧 watcher 据此合成 [`InboundMessage`](nemesis_types::channel::InboundMessage)
-/// （sender="system"）经 bus 走标准入站路径回灌发起会话——模型自动收到
-/// 完成通告与输出尾部，无需 sleep 轮询（行业对照：openclaw notifyOnExit
-/// 同款「完成后自动通知」形态）。
+/// 发起会话锚（2026-11-17 会话资源盘点）：`background_start` 时从
+/// [`RequestContext`] 捕获的三元组快照，随任务条目落库——
+/// [`BackgroundProcessRegistry::list_by_session_snapshot`] 按会话盘点
+/// （资源看板 background 类目）的数据面。完成唤醒已于 2026-11-22 摘除
+/// （完成推送定性为流程 bug，产品层不该存在；零通知阵营——与 codex /
+/// gemini 缺省 / goose 同侧），本结构只服务盘点面。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobOrigin {
     /// 发起通道（"web" 等——出站回复经同通道回投）。
@@ -93,18 +89,6 @@ pub struct JobOrigin {
     pub chat_id: String,
     /// 发起会话的 agent session key（round-trip 保会话归属）。
     pub session_key: String,
-}
-
-/// 任务完成事件（completion sink 消费面）。`set_completion_sink` 的
-/// 接收端在 gateway 装配期取走并 spawn 常驻回灌任务。
-#[derive(Debug, Clone)]
-pub struct CompletionEvent {
-    pub job_id: u64,
-    pub status: JobStatus,
-    pub origin: JobOrigin,
-    /// 完成时刻的输出尾部（≤[`COMPLETION_TAIL_BYTES`] 字节，lossy utf8；
-    /// 全文仍可 `background_output` 分页读）。
-    pub tail: String,
 }
 
 /// `background_kill` 等待子进程退出的上限（超时如实报 still running）。
@@ -223,6 +207,83 @@ pub(crate) fn utf8_safe_len(chunk: &[u8]) -> usize {
     }
 }
 
+/// 落盘 tee 句柄（2026-11-22 输出落盘）：每任务一个 append-only 镜像文件
+/// `{log_dir}/bg_{millis}_{job_id}.log`（job_id 是进程内 AtomicU64 从 1 起
+/// **跨重启必撞名**——毫秒前缀防碰撞，对齐 capture_sink `logs/capture/{ts}_`
+/// 先例）。
+///
+/// 语义纪律：
+/// - **原始字节直写**（不过 secrets 掩码）：与老 exec 文件捕获 / terminal
+///   审计日志（含回显密码 + 文件头注记）同级既有实践；文件头带敏感注记；
+///   `read_file` 读出参照常过凭据扫描层（安全 8 层第④层）；
+/// - **文件不设帽**：完整历史镜像（内存 256KB 环帽语义不变——「内存窗口 +
+///   盘上全量」分工）；失控进程磁盘风险与老 exec 文件捕获形态同级；
+/// - **best-effort 写穿**：IO 失败（盘满等）不阻断内存缓冲与 pump——
+///   只警告一次，后续静默（失败进程不该淹日志）；
+/// - **不删文件**：条目移除 / kill / 注册表 Drop 均不删——盘上日志是档案
+///   （gateway 重启杀全部 job 时文件保留已产出内容，本机制的意义所在）。
+pub(crate) struct TeeFile {
+    file: std::sync::Mutex<std::fs::File>,
+    path: PathBuf,
+    warn_once: AtomicBool,
+}
+
+impl TeeFile {
+    /// 创建镜像文件并写文件头（目录不存在则建）。`job_id` 进文件名，
+    /// `cmd`/`cwd` 进头注记（档案自描述）。
+    fn create(dir: &Path, job_id: u64, cmd: &str, cwd: &str) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = dir.join(format!("bg_{}_{}.log", millis, job_id));
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        use std::io::Write as _;
+        // 文件头注记：原始字节直写可能含敏感信息（terminal 审计同款诚实注记）。
+        let _ = writeln!(file, "# NemesisBot background job log (raw output mirror)");
+        let _ = writeln!(file, "# job_id={} started_at_unix_ms={}", job_id, millis);
+        let _ = writeln!(file, "# command: {}", cmd);
+        let _ = writeln!(file, "# cwd: {}", cwd);
+        let _ = writeln!(
+            file,
+            "# 注意：本文件是进程原始输出的逐字节镜像（append-only），可能包含敏感信息（凭据/密钥回显）。"
+        );
+        let _ = writeln!(file);
+        Ok(Self {
+            file: std::sync::Mutex::new(file),
+            path,
+            warn_once: AtomicBool::new(false),
+        })
+    }
+
+    /// 镜像文件路径。
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// 追加原始字节（best-effort 写穿：IO 失败警告一次后静默）。
+    fn append(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        use std::io::Write as _;
+        if let Ok(mut f) = self.file.lock()
+            && f.write_all(data).and_then(|_| f.flush()).is_err()
+            && !self.warn_once.swap(true, Ordering::Relaxed)
+        {
+            debug!(
+                path = %self.path.display(),
+                "[BackgroundRegistry] tee write failed (disk full? io error) — \
+                 further tee errors silent for this job"
+            );
+        }
+    }
+}
+
 /// 注册表中的单个任务条目。
 struct JobEntry {
     cmd: String,
@@ -230,10 +291,11 @@ struct JobEntry {
     started_at: std::time::SystemTime,
     /// stdout+stderr 合流输出（两个 pump task 追加）。
     output: Arc<Mutex<OutputBuffer>>,
-    /// pump 排干完成信号（start 期哨兵任务等两个 pump 任务到 EOF 后置
-    /// true——完成通告 tail 快照前的排干同步消费，见 completion_watcher）。
-    /// JoinHandle 不 Clone（E0599 实录），watch::Receiver 可 Clone。
-    pump_drain: tokio::sync::watch::Receiver<bool>,
+    /// tee 文件路径（tee 关 = None）——`background_output` / start 响应
+    /// `log_path` 字段来源（模型可发现的「最差读文件」路径）。tee 句柄
+    /// 本体不存条目：两个 pump task 持 Arc 克隆写文件，管道 EOF 后随任务
+    /// 退场关闭（条目只存路径供响应透出）。
+    log_path: Option<PathBuf>,
     /// 终态；None = 还在跑。
     status: Arc<Mutex<Option<JobStatus>>>,
     /// kill 请求旗标（监督任务看到即树杀；注册表 Drop 同步置位）。
@@ -307,11 +369,11 @@ pub struct BackgroundProcessRegistry {
     next_id: AtomicU64,
     max_jobs: usize,
     max_output: usize,
-    /// 完成事件汇聚通道（2026-11-08）：gateway 装配期
-    /// [`Self::set_completion_sink`] 一次；None = 无唤醒面（基线/测试
-    /// 形态——`start_with_origin` 仍 spawn watcher，但 watcher 只在事件
-    /// 通道在场时才发送）。`OnceLock`：进程级装配一次语义，set 幂等。
-    completion_tx: Arc<std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CompletionEvent>>>,
+    /// 输出落盘目录（2026-11-22 输出落盘 tee）：Some = 每个 job 的输出
+    /// chunk 双写 `{log_dir}/bg_{millis}_{job_id}.log` append-only 镜像；
+    /// None = tee 关（默认——基线/测试/executor 分离形态零磁盘副作用；
+    /// gateway 装配期注入 `<workspace>/logs/background`）。
+    log_dir: Option<PathBuf>,
 }
 
 impl Default for BackgroundProcessRegistry {
@@ -324,7 +386,8 @@ impl Drop for BackgroundProcessRegistry {
     fn drop(&mut self) {
         // 同步 best-effort：给所有存活任务置 kill 旗标，监督任务（持全部
         // Arc 克隆、生命周期独立于注册表）≤SUPERVISE_INTERVAL 内收尸。
-        // runtime 关停路径由 Child 的 kill_on_drop(true) 兜底。
+        // runtime 关停路径由 Child 的 kill_on_drop(true) 兜底。tee 镜像
+        // 文件不删——盘上日志是档案（本机制的意义所在）。
         if let Ok(jobs) = self.jobs.try_lock() {
             for job in jobs.values() {
                 job.kill_flag.store(true, Ordering::Relaxed);
@@ -342,49 +405,22 @@ impl BackgroundProcessRegistry {
         Self::with_limits(DEFAULT_MAX_JOBS, DEFAULT_MAX_OUTPUT_BYTES)
     }
 
-    /// 测试/定制形态：指定任务数与输出上限。
+    /// 测试/定制形态：指定任务数与输出上限（tee 关——零磁盘副作用）。
     pub fn with_limits(max_jobs: usize, max_output: usize) -> Self {
         Self {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             max_jobs,
             max_output,
-            completion_tx: Arc::new(std::sync::OnceLock::new()),
+            log_dir: None,
         }
     }
 
-    /// 装配完成事件汇聚通道（gateway 装配期调用一次；幂等，重复 set
-    /// 以首次为准并如实返回）。接收端由调用方持 `UnboundedReceiver`
-    /// spawn 常驻回灌任务。
-    pub fn set_completion_sink(
-        &self,
-        tx: tokio::sync::mpsc::UnboundedSender<CompletionEvent>,
-    ) -> bool {
-        self.completion_tx.set(tx).is_ok()
-    }
-
-    /// 任务状态槽句柄（完成唤醒 watcher 消费；仅新路径使用）。
-    fn job_status_handle(&self, id: u64) -> Option<Arc<Mutex<Option<JobStatus>>>> {
-        self.jobs
-            .try_lock()
-            .ok()
-            .and_then(|jobs| jobs.get(&id).map(|j| j.status.clone()))
-    }
-
-    /// 任务输出缓冲句柄（完成唤醒 watcher 取尾部用；仅新路径使用）。
-    fn job_output_handle(&self, id: u64) -> Option<Arc<Mutex<OutputBuffer>>> {
-        self.jobs
-            .try_lock()
-            .ok()
-            .and_then(|jobs| jobs.get(&id).map(|j| j.output.clone()))
-    }
-
-    /// pump 排干完成信号句柄（完成唤醒 watcher 排干同步用；仅新路径使用）。
-    fn job_pump_drain_handle(&self, id: u64) -> Option<tokio::sync::watch::Receiver<bool>> {
-        self.jobs
-            .try_lock()
-            .ok()
-            .and_then(|jobs| jobs.get(&id).map(|j| j.pump_drain.clone()))
+    /// gateway 装配形态：注入输出落盘目录（tee 开——每任务输出双写
+    /// append-only 镜像文件，见 [`TeeFile`]）。
+    pub fn with_log_dir(mut self, dir: PathBuf) -> Self {
+        self.log_dir = Some(dir);
+        self
     }
 
     /// 当前任务数（含已完成——完成后条目保留至被淘汰/注册表销毁）。
@@ -564,6 +600,9 @@ impl BackgroundProcessRegistry {
             .spawn()
             .map_err(|e| format!("Failed to start background command: {}", e))?;
         let pid = child.id();
+        // job_id 先于 pump 装配分配：tee 文件名需要它（bg_{millis}_{id}.log）。
+        // spawn 失败路径不回收（id 序列出现空洞）——id 是不透明句柄，无害。
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         let output = Arc::new(Mutex::new(OutputBuffer::new(self.max_output)));
         let status: Arc<Mutex<Option<JobStatus>>> = Arc::new(Mutex::new(None));
@@ -574,20 +613,33 @@ impl BackgroundProcessRegistry {
             None
         }));
 
+        // 输出落盘 tee（2026-11-22）：log_dir 注入形态创建 append-only 镜像
+        // 文件；创建失败诚实降级 = 无 tee（内存缓冲语义不变，warn 一次）。
+        let (tee, log_path) = match self.log_dir.as_ref() {
+            Some(dir) => match TeeFile::create(dir, id, command, cwd) {
+                Ok(t) => {
+                    let p = t.path().to_path_buf();
+                    (Some(Arc::new(t)), Some(p))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        job = id,
+                        error = %e,
+                        "[BackgroundRegistry] tee file create failed — output stays memory-only"
+                    );
+                    (None, None)
+                }
+            },
+            None => (None, None),
+        };
+
         // 同 exec 的 管道必须由独立任务并发排干——否则长输出
         // 写满 ~64KB 管道缓冲会把子进程卡死在 write 上。stdout/stderr 合流
-        // 追加进同一缓冲（保持产出顺序交错，与终端观感一致）。
-        // 句柄存条目：完成通告 tail 快照前须与两个 pump 排干同步（EOF =
-        // 真尾；竞态实录见 completion_watcher 注）。JoinHandle 不 Clone，
-        // 经哨兵任务转成 watch 信号存条目。
-        let (drain_tx, pump_drain) = tokio::sync::watch::channel(false);
-        let h1 = spawn_pump(child.stdout.take(), output.clone());
-        let h2 = spawn_pump(child.stderr.take(), output.clone());
-        tokio::spawn(async move {
-            let _ = h1.await;
-            let _ = h2.await;
-            let _ = drain_tx.send(true);
-        });
+        // 追加进同一缓冲（保持产出顺序交错，与终端观感一致）；tee 在场时
+        // 双写落盘（append-only 完整镜像）。JoinHandle 直接丢弃——任务随
+        // 管道 EOF 自行退出。
+        spawn_pump(child.stdout.take(), output.clone(), tee.clone());
+        spawn_pump(child.stderr.take(), output.clone(), tee.clone());
 
         // 监督任务：轮询 try_wait（微秒级持锁）→ 记录终态；见 kill 旗标先
         // 树杀。不持锁跨 await，background_output 的读路径永不被阻塞。
@@ -599,7 +651,9 @@ impl BackgroundProcessRegistry {
             kill_flag.clone(),
         ));
 
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        // payload 用落盘路径的显示串（log_path 本体随 JobEntry 入册）。
+        let log_path_display = log_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
         self.jobs.lock().await.insert(
             id,
             JobEntry {
@@ -608,7 +662,7 @@ impl BackgroundProcessRegistry {
                 started_at: std::time::SystemTime::now(),
                 output,
                 status,
-                pump_drain,
+                log_path,
                 kill_flag,
                 stdin,
                 steerable,
@@ -630,7 +684,7 @@ impl BackgroundProcessRegistry {
             note.push_str("; background_steer to inject input via stdin");
         }
 
-        Ok(serde_json::json!({
+        let mut payload = serde_json::json!({
             "job_id": id,
             "pid": pid,
             "command": command,
@@ -638,7 +692,13 @@ impl BackgroundProcessRegistry {
             "running": true,
             "steerable": steerable,
             "note": note,
-        }))
+        });
+        // 落盘 tee 在场时透出镜像文件路径（模型可发现的「最差读文件」面
+        // ——内存环形窗口环绕后，早期输出从文件兜）。
+        if let Some(p) = log_path_display {
+            payload["log_path"] = serde_json::json!(p);
+        }
+        Ok(payload)
     }
 
     /// 分页读任务输出。`offset` 是 produced 字节空间坐标（上一轮返回的
@@ -704,6 +764,12 @@ impl BackgroundProcessRegistry {
             "next_offset": buf.next_read_offset(offset, chunk.len()),
             "chunk": chunk_text,
         });
+        // 落盘 tee 在场时透出完整历史镜像路径（2026-11-22 输出落盘）：内存
+        // 环形窗口环绕后早期输出从文件兜（read_file/grep 可达）——模型可
+        // 发现的「最差读文件」路径。
+        if let Some(p) = &job.log_path {
+            payload["log_path"] = serde_json::json!(p.to_string_lossy());
+        }
         if skipped {
             payload["note"] = serde_json::json!(
                 "requested offset precedes the retained window (head dropped by the \
@@ -725,121 +791,45 @@ impl BackgroundProcessRegistry {
         Ok(payload)
     }
 
-    /// 起一个带完成唤醒的后台任务（2026-11-08 子进程实时输出与完成唤醒）。
+    /// 起一个带发起会话锚的后台任务（origin 盘点面形态）。
     ///
     /// 与 [`Self::start`] 同一装配路径（`start()` 原样保留、不签名变更——
-    /// 基线注册与既有测试继续走它）；origin 在场时：
-    /// 1. 覆盖返回 payload 的 `note`（旧 note 指引轮询，会重新诱发 sleep
-    ///    -poll 反模式；origin 路径的指引是「完成后自动通知，不要轮询」，
-    ///    openclaw notifyOnExit 同款话术）；
-    /// 2. spawn 完成唤醒 watcher：轮询任务终态（与 supervise 同拍 200ms，
-    ///    无 Notify 注册窗口竞态面），退出时取输出尾部（≤
-    ///    [`COMPLETION_TAIL_BYTES`] 字节）发 [`CompletionEvent`] 进
-    ///    completion sink——gateway 侧把它合成为 InboundMessage 经 bus
-    ///    走标准入站路径回灌发起会话（AgentLoop 零改动）。
+    /// 基线注册与既有测试继续走它）；origin 在场时随条目落库，供
+    /// [`Self::list_by_session_snapshot`] 按会话盘点（资源看板 background
+    /// 类目）。`origin = None` → 行为与 `start()` 完全一致。
     ///
-    /// `origin = None` → 行为与 `start()` 完全一致（无 note 覆盖、无
-    /// watcher），调用方语义不变。
-    ///
-    /// `notify = false`（2026-11-09 完成唤醒可选化）：查看型 GUI（notepad
-    /// 等**用户自开自关**的进程）退出对 agent 无信息利益——唤醒一次 LLM
-    /// 报告「你关的东西关了」是纯噪声。受管但静默：不 spawn 完成唤醒
-    /// watcher（完成唤醒的唯一机制面就是 watcher，不 spawn = 零唤醒），
-    /// job 状态由 supervise 照常落账，`background_output`/`background_kill`
-    /// 管理能力完整保留；note/payload 显式标注静默语义。仅 origin 在场时
-    /// 生效（origin 缺席的基线路径本就无唤醒面，notify 被忽略、字节不变）。
-    /// 缺省 true = 现行为（开发服务器/长构建退出 = 崩溃信号，必须唤醒）。
+    /// **完成唤醒已摘除（2026-11-22 拍板）**：完成推送定性为流程 bug——
+    /// 后台化的产品语义就是「去干活、不用告诉我」，要结果由 agent 自己
+    /// 选（轮询 `background_output` / `wait_secs` 显式等待）。原 notify
+    /// 参数随本体一并退场（「给错误功能加开关」不再有存在意义）。
     ///
     /// `env`（vault 计划方案 A，2026-11-11）：显式环境变量槽（同
     /// [`Self::start_inner`]；工具 execute 解析传入，None = 零行为变化）。
     /// `secrets`（vault 计划 P2++，2026-11-11）：本调用 dispatch 注入池
-    /// （`ctx.secrets` 原样捕获）——随 JobEntry 存档 + 传入完成通告
-    /// watcher，两个读出面（output()/完成尾部）据此遮蔽回显真值。
+    /// （`ctx.secrets` 原样捕获）——随 JobEntry 存档，`output()` 读出面
+    /// 据此遮蔽回显真值。
     pub async fn start_with_origin(
         &self,
         command: &str,
         cwd: &str,
         steerable: bool,
         origin: Option<JobOrigin>,
-        notify: bool,
         env: Option<&[(String, String)]>,
         secrets: Arc<Vec<String>>,
     ) -> Result<serde_json::Value, String> {
-        let mut payload = self
-            .start_inner(
-                command,
-                cwd,
-                steerable,
-                env,
-                Arc::clone(&secrets),
-                origin.clone(),
-            )
-            .await?;
-        let Some(origin) = origin else {
-            return Ok(payload);
-        };
-        if !notify {
-            payload["notify"] = serde_json::json!(false);
-            payload["note"] = serde_json::json!(
-                "job started with notify=false — no completion notice will be \
-                 delivered when it exits (the user manages its lifecycle); use \
-                 background_output to read output or check state, background_kill \
-                 to stop"
-            );
-            return Ok(payload);
-        }
-        payload["note"] = serde_json::json!(
-            "job started; when it exits a completion notice (with the recent output) \
-             is delivered back into this conversation automatically — do NOT \
-             sleep-poll background_output waiting for it to finish; read output \
-             with background_output only when you need it"
-        );
-        let job_id = payload.get("job_id").and_then(|v| v.as_u64());
-        if let Some(id) = job_id {
-            self.spawn_completion_watcher(id, origin, secrets);
-        }
-        Ok(payload)
-    }
-
-    /// 完成唤醒 watcher 装配（start_with_origin / adopt_exec 共用）：取
-    /// 条目三句柄 spawn [`completion_watcher`]；句柄取不到（理论竞态：
-    /// jobs 锁正被别的调用方长持）诚实降级——无 watcher = 无唤醒，不静默
-    /// 装没事。
-    fn spawn_completion_watcher(&self, id: u64, origin: JobOrigin, secrets: Arc<Vec<String>>) {
-        match (
-            self.job_status_handle(id),
-            self.job_output_handle(id),
-            self.job_pump_drain_handle(id),
-        ) {
-            (Some(status), Some(output), Some(pump_drain)) => {
-                tokio::spawn(completion_watcher(
-                    id,
-                    status,
-                    output,
-                    origin,
-                    Arc::clone(&self.completion_tx),
-                    secrets,
-                    pump_drain,
-                ));
-            }
-            _ => {
-                debug!(
-                    job = id,
-                    "[BackgroundRegistry] completion watcher not spawned (entry handles unavailable)"
-                );
-            }
-        }
+        self.start_inner(command, cwd, steerable, env, secrets, origin)
+            .await
     }
 
     /// exec 超时收编（2026-11-16 B43：exec 超时自动后台化）。
     ///
     /// 把一个**已 spawn、超时未退**的前台 exec 子进程原样收进注册表——
-    /// 不杀，进程继续跑；四动词（output / kill / steer 诚实拒绝）与完成
-    /// 唤醒照常生效。调用方（ExecTool 超时臂）在收编前已把 stdout/stderr
+    /// 不杀，进程继续跑；四动词（output / kill / steer 诚实拒绝）照常
+    /// 生效。调用方（ExecTool 超时臂）在收编前已把 stdout/stderr
     /// 排水切换为经 `stdout_rx` / `stderr_rx` 通道实时转发；
-    /// `seed_output` = 超时前已累积的输出快照（先入缓冲，保住超时前的
-    /// 可见性——环形 cap 照常裁头、`dropped_bytes` 如实）。通道关闭 =
-    /// 管道 EOF，pump_drain 哨兵照常置位（完成通告 tail 的排干同步消费）。
+    /// `seed_output` = 超时前已累积的输出快照（先入缓冲与 tee 镜像，
+    /// 保住超时前的可见性——环形 cap 照常裁头、`dropped_bytes` 如实）。
+    /// 通道关闭 = 管道 EOF。
     ///
     /// 与 [`Self::start`] 的差异：不 spawn 子进程（child 由调用方移交，
     /// 含其 `kill_on_drop(true)` 兜底——条目被淘汰 / 注册表 Drop 时随
@@ -848,6 +838,10 @@ impl BackgroundProcessRegistry {
     /// 后即捕获传入（超时时刻 `child.id()` 可能已 None——进程已退未收尸
     /// 的窗口）。收编失败（满员全在跑 / pid 缺席）时 Err 返回，child 随
     /// 失败路径 drop（kill_on_drop 收杀兜底），调用方回落树杀旧路径。
+    ///
+    /// tee（2026-11-22 输出落盘）：log_dir 注入形态下，收编即建镜像文件
+    /// ——seed（超时前输出）先行落盘，后续转发 chunk 双写（收编时刻起
+    /// 落盘 = 已知历史的完整镜像）。
     #[allow(clippy::too_many_arguments)]
     pub async fn adopt_exec(
         &self,
@@ -893,28 +887,45 @@ impl BackgroundProcessRegistry {
             }
         }
 
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let output = Arc::new(Mutex::new(OutputBuffer::new(self.max_output)));
         // 超时前快照先入缓冲（保住超时前的输出可见性）。
         output.lock().await.append(&seed_output);
         let status: Arc<Mutex<Option<JobStatus>>> = Arc::new(Mutex::new(None));
         let kill_flag = Arc::new(AtomicBool::new(false));
 
+        // tee（2026-11-22）：收编即建镜像文件；创建失败诚实降级 = 无 tee。
+        let (tee, log_path) = match self.log_dir.as_ref() {
+            Some(dir) => match TeeFile::create(dir, id, command, cwd) {
+                Ok(t) => {
+                    t.append(&seed_output);
+                    let p = t.path().to_path_buf();
+                    (Some(Arc::new(t)), Some(p))
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        job = id,
+                        error = %e,
+                        "[BackgroundRegistry] tee file create failed (adopt) — output stays memory-only"
+                    );
+                    (None, None)
+                }
+            },
+            None => (None, None),
+        };
+
         // 转发泵：调用方排水任务经通道送 chunk（stdout/stderr 合流追加，
-        // 与 start 路径的 pump 语义一致）；两通道都关闭（= 双管道 EOF，
-        // 含孙进程持管时的延迟形态）→ 哨兵置 pump_drain。
-        let (drain_tx, pump_drain) = tokio::sync::watch::channel(false);
-        let h1 = tokio::spawn(pump_forward(stdout_rx, output.clone()));
-        let h2 = tokio::spawn(pump_forward(stderr_rx, output.clone()));
-        tokio::spawn(async move {
-            let _ = h1.await;
-            let _ = h2.await;
-            let _ = drain_tx.send(true);
-        });
+        // 与 start 路径的 pump 语义一致；tee 在场时双写落盘）。JoinHandle
+        // 直接丢弃——任务随通道关闭（双管道 EOF）自行退出。
+        tokio::spawn(pump_forward(stdout_rx, output.clone(), tee.clone()));
+        tokio::spawn(pump_forward(stderr_rx, output.clone(), tee.clone()));
 
         let child = Arc::new(Mutex::new(child));
         tokio::spawn(supervise(pid, child, status.clone(), kill_flag.clone()));
 
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        // payload 用落盘路径的显示串（log_path 本体随 JobEntry 入册）。
+        let log_path_display = log_path.as_ref().map(|p| p.to_string_lossy().to_string());
+
         self.jobs.lock().await.insert(
             id,
             JobEntry {
@@ -923,12 +934,12 @@ impl BackgroundProcessRegistry {
                 started_at: std::time::SystemTime::now(),
                 output,
                 status,
-                pump_drain,
+                log_path,
                 kill_flag,
                 stdin: Arc::new(Mutex::new(None)),
                 steerable: false,
                 secrets: Arc::clone(&secrets),
-                origin: origin.clone(),
+                origin,
             },
         );
         debug!(
@@ -938,15 +949,10 @@ impl BackgroundProcessRegistry {
             "[BackgroundRegistry] adopted timed-out exec"
         );
 
-        let note = if origin.is_some() {
-            "timed-out exec adopted into the background registry; it is still running; \
-             when it exits a completion notice (with the recent output) is delivered \
-             back into this conversation automatically"
-        } else {
-            "timed-out exec adopted into the background registry; it is still running — \
-             read output with background_output, stop with background_kill"
-        };
-        let payload = serde_json::json!({
+        let note = "timed-out exec adopted into the background registry; it is still \
+                    running — read output with background_output (wait_secs blocks for \
+                    the exit code), stop with background_kill";
+        let mut payload = serde_json::json!({
             "job_id": id,
             "pid": pid,
             "command": command,
@@ -956,8 +962,8 @@ impl BackgroundProcessRegistry {
             "adopted": true,
             "note": note,
         });
-        if let Some(origin) = origin {
-            self.spawn_completion_watcher(id, origin, secrets);
+        if let Some(p) = log_path_display {
+            payload["log_path"] = serde_json::json!(p);
         }
         Ok(payload)
     }
@@ -1174,74 +1180,17 @@ pub(crate) async fn supervise(
     }
 }
 
-/// 完成唤醒 watcher（2026-11-08）：轮询任务终态（与 supervise 同拍；
-/// 状态槽写入者 = supervise，读侧 clone 快照不跨锁 await）→ 退出时取
-/// 输出尾部发 [`CompletionEvent`]。completion sink 未装配（基线/测试）
-/// → 只空等终态后返回，零副作用。
-async fn completion_watcher(
-    job_id: u64,
-    status: Arc<Mutex<Option<JobStatus>>>,
-    output: Arc<Mutex<OutputBuffer>>,
-    origin: JobOrigin,
-    completion_tx: Arc<std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CompletionEvent>>>,
-    secrets: Arc<Vec<String>>,
-    pump_drain: tokio::sync::watch::Receiver<bool>,
-) {
-    let final_status = loop {
-        let snap = status.lock().await.clone();
-        if let Some(s) = snap {
-            break s;
-        }
-        sleep(SUPERVISE_INTERVAL).await;
-    };
-    // 排干同步（2026-11-15 ET Linux 假红根修）：supervise 在 try_wait 报
-    // 退出的瞬间写终态，此刻 stdout/stderr pump 可能尚未把管道尾巴追加进
-    // 缓冲——立刻快照 tail 会假空（完成通告尾部空串实录，CI 高并压下
-    // 调度倒转）。先限时等排干哨兵信号（两 pump 到 EOF，正常毫秒级）；
-    // 孤儿孙进程持管不 EOF 时宽限封顶，不无限延迟通告。
-    let _ = tokio::time::timeout(COMPLETION_DRAIN_GRACE, async {
-        let mut rx = pump_drain.clone();
-        while !*rx.borrow_and_update() {
-            if rx.changed().await.is_err() {
-                break; // 发送端掉线（条目淘汰）——按已排干处理
-            }
-        }
-    })
-    .await;
-    let tail = {
-        let buf = output.lock().await;
-        let start = buf.produced().saturating_sub(COMPLETION_TAIL_BYTES as u64);
-        let (chunk, _skipped) = buf.read_chunk(start);
-        // 解码走单一真相源（BUG-20261115-034；窗口劈开码页序列的边界降级
-        // 同 output() 分页读注释）。
-        let raw = nemesis_utils::child_decode::decode_child_output(&chunk);
-        // vault 计划 P2++（2026-11-11）：完成通告尾部过本 job 掩码池——
-        // env 槽真值被任务回显时不随 CompletionEvent → InboundMessage 进
-        // 会话（session_log / LLM 上下文）。空池零成本直通。
-        if secrets.is_empty() {
-            raw
-        } else {
-            crate::r#loop::session_secrets::mask_secrets_in_result(&raw, secrets.as_ref())
-        }
-    };
-    if let Some(tx) = completion_tx.get() {
-        let _ = tx.send(CompletionEvent {
-            job_id,
-            status: final_status,
-            origin,
-            tail,
-        });
-    }
-}
-
-/// 排干管道追加进共享输出缓冲（stdout/stderr 各一个任务）。返回任务句柄
-/// ——完成通告 tail 快照前的排干同步消费（见 `completion_watcher`）。
+/// 排干管道追加进共享输出缓冲（stdout/stderr 各一个任务）；`tee` 在场时
+/// 双写落盘（2026-11-22 输出落盘——append-only 完整镜像）。任务随管道
+/// EOF 自行退出（调用方不需要 JoinHandle）。
 ///
 /// `pub(crate)`：delegate_registry 复用（delegate 子进程同样
-/// 必须并发排干，否则 64KB 管道缓冲写满卡死子进程—— 教训同源）。
+/// 必须并发排干，否则 64KB 管道缓冲写满卡死子进程—— 教训同源）；
+/// delegate 无落盘面，恒传 `None`。
 pub(crate) fn spawn_pump(
     pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
     output: Arc<Mutex<OutputBuffer>>,
+    tee: Option<Arc<TeeFile>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut pipe = match pipe {
@@ -1252,7 +1201,12 @@ pub(crate) fn spawn_pump(
         loop {
             match tokio::io::AsyncReadExt::read(&mut pipe, &mut chunk).await {
                 Ok(0) | Err(_) => return,
-                Ok(n) => output.lock().await.append(&chunk[..n]),
+                Ok(n) => {
+                    output.lock().await.append(&chunk[..n]);
+                    if let Some(t) = tee.as_ref() {
+                        t.append(&chunk[..n]);
+                    }
+                }
             }
         }
     })
@@ -1260,15 +1214,18 @@ pub(crate) fn spawn_pump(
 
 /// 收编路径的转发泵（2026-11-16 B43）：消费 exec 侧排水任务经通道送来的
 /// chunk，追加进注册表输出缓冲（stdout/stderr 合流，与 [`spawn_pump`]
-/// 语义一致）。unbounded 通道 = 发送端（exec 侧排水任务）永不阻塞；
-/// 通道关闭 = 对应管道 EOF，双通道都关后哨兵置 pump_drain（见
-/// [`Self::adopt_exec`]）。
+/// 语义一致）；`tee` 在场时双写落盘。unbounded 通道 = 发送端（exec 侧
+/// 排水任务）永不阻塞；通道关闭 = 对应管道 EOF，任务退出。
 async fn pump_forward(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     output: Arc<Mutex<OutputBuffer>>,
+    tee: Option<Arc<TeeFile>>,
 ) {
     while let Some(chunk) = rx.recv().await {
         output.lock().await.append(&chunk);
+        if let Some(t) = tee.as_ref() {
+            t.append(&chunk);
+        }
     }
 }
 
@@ -1486,15 +1443,14 @@ impl Tool for BackgroundStartTool {
     fn description(&self) -> String {
         "Start a long-running shell command in the background and return immediately \
          with a job_id. Use for dev servers, watchers, builds, GUI apps (notepad, \
-         calc), or any command that outlives a normal exec timeout. When the job \
-         exits, a completion notice (with the recent output) is automatically \
-         delivered back into this conversation — do NOT sleep-poll background_output \
-         waiting for it to finish; read output incrementally with background_output \
-         only when you need it, and stop with background_kill. Pass steerable=true \
-         to keep a live stdin pipe and inject input later with background_steer. \
-         Pass notify=false for user-facing GUI apps the user opens and closes \
-         themselves (notepad, calc): no completion notice is delivered when they \
-         exit (the job stays manageable via background_output/background_kill). \
+         calc), or any command that outlives a normal exec timeout. Read output \
+         incrementally with background_output (offset paging); stop with \
+         background_kill. The job's full output is also teed to a log file on disk \
+         (log_path in responses) — the in-memory window is capped at 256KB, so read \
+         the log_path file for very early output that has scrolled out. Use \
+         background_output wait_secs (max 30) when you deliberately want to block \
+         for the exit code; do not loop it with sleeps. Pass steerable=true to keep \
+         a live stdin pipe and inject input later with background_steer. \
          Credentials/secrets go via the env parameter as vault:<alias> references \
          — never in the command string (it is echoed back in job listings)."
             .to_string()
@@ -1507,7 +1463,6 @@ impl Tool for BackgroundStartTool {
                 "command": {"type": "string", "description": "Shell command to run in the background"},
                 "cwd": {"type": "string", "description": "Working directory (default: workspace root; confined to workspace)"},
                 "steerable": {"type": "boolean", "description": "Keep a live stdin pipe so the job can receive input via background_steer (default false)"},
-                "notify": {"type": "boolean", "description": "Deliver a completion notice into this conversation when the job exits (default true). Set false for user-facing GUI apps the user opens and closes themselves (notepad, calc) — their exit carries no information for you and notifying the chat is noise"},
                 "env": env_slot_schema()
             },
             "required": ["command"]
@@ -1538,22 +1493,18 @@ impl Tool for BackgroundStartTool {
             .get("steerable")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        // notify 缺省 true（开发服务器/长构建退出 = 崩溃信号）；仅显式
-        // boolean false 关闭。非法值（如字符串 "false"）→ 缺省 true，
-        // 不静默纠偏——schema 声明 boolean，模型发非布尔即按缺省走。
-        let notify = val.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);
         // 显式 env 槽（vault 计划方案 A）：值已由 dispatch 注入层改写
         // 真值（credential_arg_keys=["env"] 声明槽）。
         let env_pairs = parse_env_slot(&val)?;
-        // [SEALED 2026-11-08] 旧模式（轮询形态）：不带 origin 起任务，返回
-        // payload 的 note 指引「poll background_output」——诱发模型
-        // background_output→sleep→再读 的空转循环（2026-11-08 用户实测
-        // notepad 场景）。保留备查；恢复 = 把下面 start_with_origin 调用
-        // 换回这行并删掉 origin 捕获段。
+        // [SEALED 2026-11-08] 旧模式（轮询形态）：不带 origin 起任务。保留
+        // 备查；恢复 = 把下面 start_with_origin 调用换回这行并删掉 origin
+        // 捕获段。
         // let payload = self.registry.start(command, &cwd, steerable).await?;
-        // ── 新模式（完成自动唤醒）：捕获发起会话锚，任务退出后 gateway 经
-        // bus 走标准入站路径回灌完成通告（模型零轮询）。channel/chat_id
-        // 缺席（无会话上下文的调用形态）→ None = 旧模式行为。
+        // ── origin 捕获（2026-11-17 会话资源盘点）：任务条目锚定发起会话
+        // （list_by_session_snapshot 盘点面）。**完成唤醒已摘除（2026-11-22
+        // 拍板：完成推送定性流程 bug）**——origin 只服务盘点，不再驱动任何
+        // 回灌/通告；任务要终态就显式 background_output(wait_secs) 或轮询。
+        // channel/chat_id 缺席（无会话上下文的调用形态）→ None。
         let origin = if context.channel.is_empty() || context.chat_id.is_empty() {
             None
         } else {
@@ -1570,11 +1521,10 @@ impl Tool for BackgroundStartTool {
                 &cwd,
                 steerable,
                 origin,
-                notify,
                 env_pairs.as_deref(),
                 // vault 计划 P2++（2026-11-11）：本调用 dispatch 注入池
-                // 原样捕获进 JobEntry——任务回显的凭据真值在 output()/
-                // 完成通告两个读出面就地遮蔽（空池零成本直通）。
+                // 原样捕获进 JobEntry——任务回显的凭据真值在 output()
+                // 读出面就地遮蔽（空池零成本直通）。
                 context.secrets.clone(),
             )
             .await?;
@@ -1599,10 +1549,11 @@ impl Tool for BackgroundOutputTool {
         "Read accumulated output from a background job started with background_start. \
          Pass the job_id; on repeated calls pass the previous response's next_offset \
          to get only new bytes. Response includes running/done status and exit code \
-         when the job has finished. Note: when a job exits you are notified \
-         automatically in this conversation — use wait_secs only if you deliberately \
-         want to block waiting for exit (capped at 30s); do not loop this call with \
-         sleeps."
+         when the job has finished. There is no completion notice — jobs never \
+         notify on exit; when you want the exit code, call this with wait_secs \
+         (blocks up to 30s), otherwise poll with offset paging. If the in-memory \
+         window has scrolled past early output, read the job's log_path file \
+         (returned in responses) which holds the complete history."
             .to_string()
     }
 

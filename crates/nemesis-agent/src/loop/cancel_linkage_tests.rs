@@ -38,17 +38,13 @@ fn cfg() -> AgentConfig {
 }
 
 fn plain(content: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: "web:chat1".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        content.to_string(),
+    )
+    .with_session_key("web:chat1".to_string())
 }
 
 fn resp(content: &str) -> LlmResponse {

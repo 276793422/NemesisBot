@@ -1007,31 +1007,29 @@ pub(super) fn inject_spawn_fn(
                             Some(e.clone()),
                         ),
                     };
-                    let mut metadata = std::collections::HashMap::new();
-                    metadata.insert("status".to_string(), status.to_string());
-                    if let Some(ref e) = error {
-                        metadata.insert("error".to_string(), e.clone());
-                    }
-                    metadata.insert("source".to_string(), "background_subagent".to_string());
-                    bus.publish_inbound(nemesis_types::channel::InboundMessage {
-                        channel: "system".to_string(),
-                        sender_id: format!(
-                            "{}{}",
-                            nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
-                            bg_task_id
-                        ),
-                        chat_id: String::new(),
-                        content,
-                        media: Vec::new(),
-                        // 子代理可见性：父会话键随行——项目会话派发的后台
-                        // 任务完成回灌项目 loop（manager 按归属路由），不再全局
-                        // 短路进主 loop（项目快照在项目 loop 的 continuation
-                        // store，主 loop 加载必 miss）。
-                        session_key: bg_parent_session_key,
-                        correlation_id: String::new(),
-                        metadata,
-                        voice_playback: None,
-                    });
+                    // 续行回灌（Continuation class，msg_class 单轨
+                    // 2026-11-21）：构造器烤死 channel="system" + class；
+                    // sender 保持 `subagent_continuation:{task_id}` 前缀形态
+                    // （闸顶续行臂按前缀提取 task_id 路由）。status/error/
+                    // source 章随行（续行 tool 结果组装消费）。
+                    bus.publish_inbound(
+                        nemesis_types::channel::InboundMessage::continuation(
+                            format!(
+                                "{}{}",
+                                nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
+                                bg_task_id
+                            ),
+                            // 子代理可见性：父会话键随行——项目会话派发的后台
+                            // 任务完成回灌项目 loop（manager 按归属路由），不再全局
+                            // 短路进主 loop（项目快照在项目 loop 的 continuation
+                            // store，主 loop 加载必 miss）。
+                            bg_parent_session_key,
+                            content,
+                        )
+                        .with_metadata("status", status)
+                        .with_metadata_opt("error", error)
+                        .with_metadata("source", "background_subagent"),
+                    );
                     tracing::info!(
                         task_id = %bg_task_id,
                         status,

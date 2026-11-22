@@ -78,17 +78,13 @@ fn resp(content: &str) -> LlmResponse {
 }
 
 fn cov_inbound(content: &str, session_key: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "covuser".to_string(),
-        chat_id: "covchat".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "covuser".to_string(),
+        "covchat".to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session_key.to_string())
 }
 
 fn unique_key(tag: &str) -> String {

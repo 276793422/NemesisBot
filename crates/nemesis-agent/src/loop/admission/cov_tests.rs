@@ -69,6 +69,7 @@ async fn gate_short_circuits_approval_replies() {
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::User,
     };
     let (agent_id, response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none());
@@ -280,6 +281,7 @@ fn f2_msg(content: &str, key: &str) -> nemesis_types::channel::InboundMessage {
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::User,
     }
 }
 
@@ -395,6 +397,9 @@ fn cron_tick(job: &str, key: &str, content: &str) -> nemesis_types::channel::Inb
         correlation_id: String::new(),
         metadata: Default::default(),
         voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::Instruction(
+            nemesis_types::channel::InstructionKind::CronTick,
+        ),
     };
     m.metadata
         .insert("cron_job_id".to_string(), job.to_string());
@@ -410,13 +415,14 @@ fn cron_tick_coalesced_when_same_job_already_queued() {
     // busy：占住会话，后续消息全走入队路径。
     assert!(al.try_acquire_session(key));
 
-    // tick 1：正常入队（排队回执）。
-    let GateOutcome::Immediate { response, .. } =
+    // tick 1：正常入队（指令注入静默排队——§9 政策表：⏳ 回执是用户
+    // 消息语义，不作用内部指令；排队事实由 claim 后真轮呈现）。
+    let GateOutcome::InstructionQueued { session_key } =
         al.gate_inbound(&cron_tick("job-a", key, "tick1"))
     else {
-        panic!("expected immediate queue receipt");
+        panic!("expected instruction queued");
     };
-    assert!(response.contains("已排队"), "response={response}");
+    assert_eq!(session_key, key);
 
     // tick 2 同 job：合闸丢弃（Coalesced，无回执）。
     let GateOutcome::Coalesced { cron_job_id } = al.gate_inbound(&cron_tick("job-a", key, "tick2"))
@@ -426,19 +432,25 @@ fn cron_tick_coalesced_when_same_job_already_queued() {
     assert_eq!(cron_job_id, "job-a");
     assert_eq!(al.inbox.pending(key), (1, 0), "队列仍只有 tick1 一条");
 
-    // 不同 job 不受影响：照常入队。
-    let GateOutcome::Immediate { .. } = al.gate_inbound(&cron_tick("job-b", key, "tick3")) else {
+    // 不同 job 不受影响：照常静默入队。
+    let GateOutcome::InstructionQueued { .. } = al.gate_inbound(&cron_tick("job-b", key, "tick3"))
+    else {
         panic!("expected queued for other job");
     };
     assert_eq!(al.inbox.pending(key), (2, 0));
 
-    // 用户消息（无 cron_job_id）永不合闸。
-    let mut user = cron_tick("job-a", key, "普通用户消息");
-    user.metadata.remove("cron_job_id");
-    user.sender_id = String::new();
-    let GateOutcome::Immediate { .. } = al.gate_inbound(&user) else {
+    // 用户消息（User class）永不合闸（Queue 模式 ⏳ 排队回执语义保留）。
+    let user = nemesis_types::channel::InboundMessage::user_ingress(
+        "web",
+        "covuser",
+        "web:x",
+        "普通用户消息",
+    )
+    .with_session_key(key);
+    let GateOutcome::Immediate { response, .. } = al.gate_inbound(&user) else {
         panic!("expected queued for user message");
     };
+    assert!(response.contains("已排队"), "response={response}");
     assert_eq!(al.inbox.pending(key), (3, 0));
 
     // 合闸上界：再来的 job-a tick 全部丢弃，队列恒 ≤ 1 条/job。
@@ -503,6 +515,7 @@ async fn busy_race_orphan_kick_reinjects_parked_head() {
             correlation_id: String::new(),
             metadata: Default::default(),
             voice_playback: None,
+            msg_class: nemesis_types::channel::MsgClass::User,
         },
         timestamp: chrono::Local::now().to_rfc3339(),
         priority: crate::inbox::MessagePriority::Normal,
@@ -540,6 +553,7 @@ async fn busy_race_orphan_kick_reinjects_parked_head() {
             correlation_id: String::new(),
             metadata: Default::default(),
             voice_playback: None,
+            msg_class: nemesis_types::channel::MsgClass::User,
         },
         timestamp: chrono::Local::now().to_rfc3339(),
         priority: crate::inbox::MessagePriority::Normal,
@@ -567,6 +581,7 @@ fn system_notice_of_derivation_table() {
             correlation_id: String::new(),
             metadata,
             voice_playback: None,
+            msg_class: nemesis_types::channel::MsgClass::User,
         };
 
     // ① 后台任务完成唤醒形态：sender=system、无 metadata → 推导命中。
@@ -604,4 +619,430 @@ fn system_notice_of_derivation_table() {
     // ⑥ 集群桥接远端用户：sender 为远端真实 id → None。
     let remote = mk("remote-user-9", HashMap::new());
     assert_eq!(super::system_notice_of(&remote), None);
+}
+
+// ---------------------------------------------------------------------------
+// 幻影通告根治回归锁（2026-11-21）：busy 闸通告分支——盖章通告 stash 旁路
+// 三模式；指令类注入静默排队（政策臂）；空闲照常 Admitted 开真轮；
+// busy-race 孤儿 kick；turn 收口合成通告轮。
+// 事故形态：目标机 14 条后台构建通告连环排队/软拒/claim 后物化 user 行 +
+// 幻影 LLM 轮（usage 97→109）。任何一条断言红 = 幻影路径复活。
+// ---------------------------------------------------------------------------
+
+/// 盖章通告消息构造（与 nemesisbot post_agent::system_notice_inbound 同形
+/// ——msg_class=Notice 是闸门识别的唯一真相源；kind 必须是合法 NoticeKind
+/// slug）。
+fn notice_msg(kind: &str, key: &str, content: &str) -> nemesis_types::channel::InboundMessage {
+    let mut m = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "system".to_string(),
+        chat_id: "web:notice".to_string(),
+        content: content.to_string(),
+        media: vec![],
+        session_key: key.to_string(),
+        correlation_id: String::new(),
+        metadata: Default::default(),
+        voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::Notice(
+            nemesis_types::channel::NoticeKind::from_slug(kind)
+                .unwrap_or_else(|| panic!("invalid NoticeKind slug in test: {kind}")),
+        ),
+    };
+    m.metadata
+        .insert("system_notice".to_string(), kind.to_string());
+    m
+}
+
+/// 三模式 busy 全部 stash（Reject 弹回 / Queue 排队 / Steer 插话——通告都
+/// 不再走用户消息语义；队列恒空 = 零回执零占位零弹回）。
+#[test]
+fn notice_stash_bypasses_all_three_busy_modes() {
+    let mut al = AgentLoop::new(Box::new(CovQuietProvider), test_config());
+    let key = "agent:main:session:noticemode";
+    assert!(al.try_acquire_session(key), "precondition: busy session");
+
+    for mode in [
+        ConcurrentMode::Reject,
+        ConcurrentMode::Queue,
+        ConcurrentMode::Steer,
+    ] {
+        al.concurrent_mode = mode;
+        let GateOutcome::NoticeStashed { session_key } =
+            al.gate_inbound(&notice_msg("events", key, "Background job #1 finished"))
+        else {
+            panic!("mode {mode:?}: stamped notice must stash, not queue/bounce");
+        };
+        assert_eq!(session_key, key);
+        assert_eq!(
+            al.inbox.pending(key),
+            (0, 0),
+            "通告不占用户队列位（占位 = 幻影物化路径复发）"
+        );
+    }
+    assert!(al.inbox.has_notices(key), "三模式 stash 共 3 条在库");
+}
+
+/// 指令类注入（WAL 续轮 / goals 缺口 / 看板派发）busy 时静默排队：政策臂
+/// 按类裁决（零回执零占位零弹回）；cron tick 按 job_id 合闸（重复 tick 只
+/// 留首条）。指令不进通告 stash、不发回执（排队事实由 claim 后真轮呈现）。
+#[test]
+fn instruction_class_busy_queues_silently() {
+    let mut al = AgentLoop::new(Box::new(CovQuietProvider), test_config());
+    al.concurrent_mode = ConcurrentMode::Queue;
+    let key = "agent:main:session:noticeinstr";
+
+    assert!(al.try_acquire_session(key));
+    let mk_instruction = |kind| nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "system".to_string(),
+        chat_id: "web:x".to_string(),
+        content: "继续执行".to_string(),
+        media: vec![],
+        session_key: key.to_string(),
+        correlation_id: String::new(),
+        metadata: Default::default(),
+        voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::Instruction(kind),
+    };
+    for kind in [
+        nemesis_types::channel::InstructionKind::WalResume,
+        nemesis_types::channel::InstructionKind::GoalRound,
+        nemesis_types::channel::InstructionKind::BoardDispatch,
+    ] {
+        let GateOutcome::InstructionQueued { session_key } = al.gate_inbound(&mk_instruction(kind))
+        else {
+            panic!("instruction must queue silently via policy arm");
+        };
+        assert_eq!(session_key, key);
+    }
+    // cron tick：同 job 重复 tick 合闸（Coalesced，只留首条）。
+    let mut cron = mk_instruction(nemesis_types::channel::InstructionKind::CronTick);
+    cron.metadata
+        .insert("cron_job_id".to_string(), "job-7".to_string());
+    let GateOutcome::InstructionQueued { .. } = al.gate_inbound(&cron) else {
+        panic!("first cron tick queues");
+    };
+    let GateOutcome::Coalesced { cron_job_id } = al.gate_inbound(&cron) else {
+        panic!("duplicate cron tick must coalesce");
+    };
+    assert_eq!(cron_job_id, "job-7");
+    // 队列只有 4 条指令（cron 合闸只留 1 条）。
+    assert_eq!(al.inbox.pending(key), (4, 0), "四条全在队列（cron 已合闸）");
+    assert!(!al.inbox.has_notices(key), "指令不进通告 stash");
+}
+
+/// Reject 模式指令静默排队（§9 政策表「Reject 不弹回不留痕」收编锁）：
+/// 政策臂在模式分派之前——Reject 的弹回+成对留痕（persist_busy_refusal
+/// 幻影双行）结构性作用不到指令类。本锁钉住「Reject × Instruction 零
+/// Immediate 零 jsonl 行」契约（验收 §14-9 的 Reject 幻影双行面）。
+#[test]
+fn instruction_reject_mode_queues_silently_without_rows() {
+    use crate::chat_log::{delete_chat_log, read_chat_log};
+    let mut al = AgentLoop::new(Box::new(CovQuietProvider), test_config());
+    al.concurrent_mode = ConcurrentMode::Reject;
+    let key = "agent:main:session:instrrej";
+    delete_chat_log(key);
+
+    assert!(al.try_acquire_session(key), "precondition: busy session");
+    let instr = nemesis_types::channel::InboundMessage::instruction(
+        nemesis_types::channel::InstructionKind::GoalRound,
+        "web",
+        "web:x",
+        key,
+        "目标缺口：补齐验收锚点",
+    );
+    let GateOutcome::InstructionQueued { session_key } = al.gate_inbound(&instr) else {
+        panic!("Reject mode must NOT bounce instructions (silent queue per policy)");
+    };
+    assert_eq!(session_key, key);
+
+    // 零弹回零留痕：无 persist_busy_refusal 成对行，队列持有该指令。
+    let (rows, _, _, _) = read_chat_log(key, 100, None);
+    assert!(
+        rows.is_empty(),
+        "Reject × Instruction 不得落弹回双行（幻影双行收编），实际: {rows:?}"
+    );
+    assert_eq!(al.inbox.pending(key), (1, 0), "指令在 next_turn 队等待");
+    delete_chat_log(key);
+}
+
+/// 空闲盖章通告：照常 Admitted 开真轮（通知条形态——信息不丢，模型可
+/// 跟进）；jsonl user 行带 system_notice 键（前端通知条渲染，非用户气泡）。
+#[tokio::test]
+async fn idle_notice_admitted_opens_real_turn_with_notice_row() {
+    use crate::chat_log::{delete_chat_log, read_chat_log};
+    let seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>> = Default::default();
+    let al = AgentLoop::new(
+        Box::new(F2CapturingProvider { seen: seen.clone() }),
+        test_config(),
+    );
+    let key = "agent:main:session:noticeidle";
+    delete_chat_log(key);
+
+    let (_, resp, err, _) = al
+        .process_inbound_message(&notice_msg("events", key, "Background job #2 finished"))
+        .await;
+    assert!(err.is_none(), "idle notice turn must succeed: resp={resp}");
+    // 模型照常拿到通告内容（信息不丢）。
+    let model_saw = seen.lock().last().cloned().expect("LLM saw the notice");
+    assert!(model_saw.contains("Background job #2 finished"));
+    // user 行落盘带 system_notice 键（通知条渲染）——role 仍是 user。
+    let (rows, _, _, _) = read_chat_log(key, 100, None);
+    let user_row = rows
+        .iter()
+        .rev()
+        .find(|r| r["role"] == "user")
+        .expect("user row persisted");
+    assert_eq!(
+        user_row["system_notice"], "events",
+        "通知条标记随行（前端渲染为通知条而非用户气泡）"
+    );
+    delete_chat_log(key);
+    // turn 收尾释放：会话可重新认领（无 stash 残留——空闲路径不经 stash）。
+    assert!(!al.is_session_busy(key));
+    assert!(!al.inbox.has_notices(key));
+}
+
+/// busy-race 孤儿通告 kick（kick_orphaned_queue_if_idle 同款机理）：
+/// stash 后复查 busy——回合已收尾即就地合成通告轮重注入（构造消息带
+/// system_notice=merged 章 + 框注）；busy 会话不 kick（正常路径守卫）。
+#[tokio::test]
+async fn notice_busy_race_orphan_kick_reinjects_merged() {
+    struct UnusedLlmProvider;
+    #[async_trait]
+    impl LlmProvider for UnusedLlmProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            panic!("kick 路径不得触碰 LLM");
+        }
+    }
+
+    let al = AgentLoop::new(Box::new(UnusedLlmProvider), test_config());
+    let (rein_tx, mut rein_rx) = tokio::sync::mpsc::channel(4);
+    al.set_reinject_tx(rein_tx);
+    let key = "agent:main:session:noticekick";
+
+    // ① 坏终态（合法原语序）：release 先行（无在途回合）→ stash 落库
+    //    （等价于 gate 判 busy 后回合恰完成的窗口终态）→ kick。
+    al.release_session(key); // no-op busy=false，构造「无在途回合」状态
+    al.inbox.stash_notice(
+        key,
+        crate::inbox::NoticeEntry {
+            kind: nemesis_types::channel::NoticeKind::Events,
+            channel: "web".to_string(),
+            chat_id: "web:notice".to_string(),
+            content: "Background job #3 finished".to_string(),
+        },
+    );
+    assert!(!al.is_session_busy(key), "precondition: no in-flight turn");
+    al.kick_orphaned_notices_if_idle(key);
+    assert!(!al.inbox.has_notices(key), "orphan notices must be kicked");
+    let reinjected = tokio::time::timeout(std::time::Duration::from_secs(2), rein_rx.recv())
+        .await
+        .expect("kick must re-inject the merged notice")
+        .expect("channel open");
+    assert_eq!(reinjected.session_key, key);
+    assert_eq!(
+        reinjected.msg_class,
+        nemesis_types::channel::MsgClass::Notice(nemesis_types::channel::NoticeKind::Merged),
+        "合成通告轮 = Notice(Merged) 类（空闲准入=通知条；再 busy=re-stash 闭环）"
+    );
+    assert!(
+        reinjected.content.contains("[系统通告]") && reinjected.content.contains("#3 finished"),
+        "框注 + 原文随行"
+    );
+
+    // ② 正常路径守卫：busy 会话不 kick（在途回合的边界/尾巴负责 drain）。
+    assert!(al.try_acquire_session(key));
+    al.inbox.stash_notice(
+        key,
+        crate::inbox::NoticeEntry {
+            kind: nemesis_types::channel::NoticeKind::Events,
+            channel: "web".to_string(),
+            chat_id: "web:notice".to_string(),
+            content: "Background job #4 finished".to_string(),
+        },
+    );
+    al.kick_orphaned_notices_if_idle(key);
+    assert!(al.inbox.has_notices(key), "busy session must not kick");
+    al.release_session(key);
+}
+
+/// turn 收口通告 drain：busy 末段（最后一个 claim 边界之后）到达的 stash
+/// 残留 → drain_next_turn_queue 合成一条合并通告轮经 reinject 回流；
+/// 多条合并为一条（count/路由=最后一条来源）；模式无关（Reject 无队列
+/// drain 也合成）；与队列头部 drain 互不吞并。
+#[tokio::test]
+async fn turn_end_drain_synthesizes_merged_notice_turn() {
+    struct UnusedLlmProvider;
+    #[async_trait]
+    impl LlmProvider for UnusedLlmProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            panic!("drain 收口路径不得触碰 LLM（合成消息走泵重新准入）");
+        }
+    }
+
+    let mut al = AgentLoop::new(Box::new(UnusedLlmProvider), test_config());
+    al.concurrent_mode = ConcurrentMode::Reject;
+    let (rein_tx, mut rein_rx) = tokio::sync::mpsc::channel(4);
+    al.set_reinject_tx(rein_tx);
+    let key = "agent:main:session:noticedrain";
+
+    // 两条通告 stash（跨通道来源）→ turn 收口 drain。
+    al.inbox.stash_notice(
+        key,
+        crate::inbox::NoticeEntry {
+            kind: nemesis_types::channel::NoticeKind::Loop,
+            channel: "web".to_string(),
+            chat_id: "web:early".to_string(),
+            content: "job A finished".to_string(),
+        },
+    );
+    al.inbox.stash_notice(
+        key,
+        crate::inbox::NoticeEntry {
+            kind: nemesis_types::channel::NoticeKind::Loop,
+            channel: "rpc".to_string(),
+            chat_id: "rpc:late".to_string(),
+            content: "job B finished".to_string(),
+        },
+    );
+    al.drain_next_turn_queue(key).await;
+
+    // 合并成一条合成通告轮（Reject 模式无队列头部 drain，恰验证通告轮
+    // 独立于模式）。
+    let reinjected = tokio::time::timeout(std::time::Duration::from_secs(2), rein_rx.recv())
+        .await
+        .expect("turn-end drain must synthesize the notice turn")
+        .expect("channel open");
+    assert_eq!(reinjected.session_key, key);
+    assert_eq!(reinjected.channel, "rpc", "路由=最后一条通告来源");
+    assert_eq!(reinjected.chat_id, "rpc:late");
+    assert!(reinjected.content.contains("job A finished"));
+    assert!(reinjected.content.contains("job B finished"), "多条合并");
+    assert!(
+        matches!(
+            &reinjected.msg_class,
+            nemesis_types::channel::MsgClass::Notice(nemesis_types::channel::NoticeKind::Merged)
+        ),
+        "合成通告轮 class=Notice(Merged)（构造器烤死，旧 merged 章退役），实际 {:?}",
+        reinjected.msg_class
+    );
+    // stash 已空；无第二条合成消息（通道空）。
+    assert!(!al.inbox.has_notices(key));
+    assert!(
+        rein_rx.try_recv().is_err(),
+        "两条通告只合成一条（不逐条物化——逐条=幻影复发）"
+    );
+}
+
+// —— C1 绊线 + estop×class 兼容锁（msg_class 单轨 §10-9/§11，2026-11-21）——
+
+/// C1 绊线是**观察面**（不改路由）：Notice 指向不存在的会话 → gate 照常
+/// 走 idle 准入臂（Admitted），默认 warn 态不 panic。孤儿注入的物化风险
+/// 由 warn 观测 + 生产装配纪律双面收敛；panic 态走 env
+/// （NEMESIS_BUS_SEMANTIC_ASSERT，同 bus 检测网键），进程级 env 置换会
+/// 与并行测试竞速，不在套件内驱动（检测逻辑本身由本锁覆盖，处置分叉
+/// 只是 matches! 分支）。本锁钉住「绊线不得改变路由语义」契约。
+#[tokio::test]
+async fn c1_tripwire_is_observe_only_routes_unchanged() {
+    struct UnusedLlmProvider;
+    #[async_trait]
+    impl LlmProvider for UnusedLlmProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            panic!("本测试不驱动真回合");
+        }
+    }
+    let al = AgentLoop::new(Box::new(UnusedLlmProvider), test_config());
+    // 会话 jsonl 刻意不存在（孤儿注入形态——C1 第 2 条命中）。
+    let key = format!(
+        "agent:main:session:c1orphan-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let notice = nemesis_types::channel::InboundMessage::notice(
+        nemesis_types::channel::NoticeKind::Events,
+        "web",
+        "web:c1",
+        key.clone(),
+        "orphan notice",
+    );
+    let outcome = al.gate_inbound(&notice);
+    assert!(
+        matches!(outcome, GateOutcome::Admitted(_)),
+        "绊线必须观察不拦截（Admitted 照常 mint），实际: {outcome:?}"
+    );
+    al.release_session(&key);
+    crate::chat_log::delete_chat_log(&key);
+}
+
+/// estop×class 兼容（§11 estop 锁）：急停期间闸门 class 臂照常工作——
+/// busy 会话的通告照常 stash、指令照常静默排队（闸门机制不咨询 estop；
+/// 零轮次不变量由 run-loop 顶部臂保证——estop_engaged_stops_loop_before_llm
+/// 已锁，此处锁「class 臂不被 estop 冻结」的另一面：release 后积压指令/
+/// 通告照常可交付，无丢失）。
+#[tokio::test]
+async fn estop_engaged_class_arms_still_stash_and_queue() {
+    use crate::estop::EstopState;
+    struct UnusedLlmProvider;
+    #[async_trait]
+    impl LlmProvider for UnusedLlmProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            panic!("本测试不驱动真回合");
+        }
+    }
+    let al = AgentLoop::new(Box::new(UnusedLlmProvider), test_config());
+    let estop = std::sync::Arc::new(EstopState::new());
+    al.set_estop(estop.clone());
+    estop.trigger();
+    let key = "agent:main:session:c1estop";
+    // 先建会话 jsonl（C1 绊线第 2 条要求目标会话存在——本锁测 estop 面，
+    // 不测绊线）。
+    crate::chat_log::delete_chat_log(key);
+    crate::chat_log::append_chat_log(key, "system", "seed");
+
+    // busy 持闸 + estop 中：通告 stash、指令排队都照常（class 臂不冻结）。
+    assert!(al.try_acquire_session(key));
+    let stashed = al.gate_inbound(&notice_msg("events", key, "bg done"));
+    assert!(
+        matches!(stashed, GateOutcome::NoticeStashed { .. }),
+        "estop 中通告照常 stash，实际: {stashed:?}"
+    );
+    let queued = al.gate_inbound(&cron_tick("job-e", key, "tick"));
+    assert!(
+        matches!(queued, GateOutcome::InstructionQueued { .. }),
+        "estop 中指令照常静默排队，实际: {queued:?}"
+    );
+    al.release_session(key);
+
+    // release 后积压可交付（无丢失——A3/队列语义在 estop 两侧一致）。
+    assert_eq!(al.inbox.pending(key), (1, 0), "指令条目在队");
+    assert!(al.inbox.has_notices(key), "通告在 stash");
+    al.inbox.clear(key);
+    crate::chat_log::delete_chat_log(key);
 }

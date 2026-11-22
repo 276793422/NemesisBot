@@ -58,17 +58,13 @@ fn write_mini_model_config(home: &std::path::Path) {
 }
 
 fn msg(channel: &str, session_key: &str) -> InboundMessage {
-    InboundMessage {
-        channel: channel.to_string(),
-        sender_id: "u1".to_string(),
-        chat_id: format!("web:{}", session_key.rsplit(':').next().unwrap_or("x")),
-        content: "hello".to_string(),
-        media: Vec::new(),
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    }
+    InboundMessage::user_ingress(
+        channel.to_string(),
+        "u1".to_string(),
+        format!("web:{}", session_key.rsplit(':').next().unwrap_or("x")),
+        "hello".to_string(),
+    )
+    .with_session_key(session_key.to_string())
 }
 
 /// 真 bus + 真 manager（不 spawn 真项目 loop；通道按需注入）。返回

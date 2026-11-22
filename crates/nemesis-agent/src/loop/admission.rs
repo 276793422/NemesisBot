@@ -59,6 +59,30 @@ pub(crate) enum GateOutcome {
     /// 用；触发真相源在 cron 服务自身日志 + 触发账本）。泵侧只 debug 记
     /// 一笔。job id 走 tracing 字段。
     Coalesced { cron_job_id: String },
+    /// 系统通告 stash（2026-11-21 幻影通告根治）：带 `system_notice`
+    /// metadata 的消息在 busy 闸被暂存（`Inbox::stash_notice`）——零回执、
+    /// 零落盘、零队列占位，轮边界合并注入（`claim_steer_messages` 通告
+    /// drain）/ turn 收口合成通告轮（`drain_next_turn_queue` 残留 drain）。
+    /// 与 Coalesced 的区别：内容**不丢**（暂存待合并），cron tick 是重复
+    /// 信号可直接丢。 Reject 模式同样 stash——通告不是用户消息，弹回+
+    /// 留痕契约（D-2）不适用（弹回一条「后台任务完成」= 信息丢失 + 噪声
+    /// 行，正是本批根治的病灶）。
+    NoticeStashed { session_key: String },
+    /// 暂停期系统通告静默排队（2026-11-21 复查残余门）：snoozed 会话收到
+    /// 带 `system_notice` 章的通告 → 落 pending sidecar（唤醒重放投递，
+    /// metadata 随全量 InboundMessage 序列化往返保真）——零回执零弹回。
+    /// 假 💤 排队回执 = bot「确认」一条没人发的消息（幻影同病灶）；Err
+    /// 臂（pending 拒收）= 响亮 warn + 丢弃（cron Err 臂同姿态）。泵/
+    /// 串行尾零出站零落盘。与 NoticeStashed 的区别：投递机制是唤醒重放
+    /// 不是轮边界合并（暂停会话无回合可蹭）。
+    SnoozeQueued { session_key: String },
+    /// 指令注入静默排队（msg_class §9 政策表，2026-11-21）：Instruction
+    /// class 在 busy 闸（含 Reject 模式）一律入 next_turn 队——零回执零
+    /// 弹回（⏳/Reject 弹回是用户消息语义，不作用内部指令；Steer 不认领，
+    /// 指令必须开完整真轮）。泵/串行尾零出站零落盘（与 SnoozeQueued 同
+    /// 姿态；排队事实由 claim 后真轮呈现）。队满丢弃臂同走本 outcome
+    /// （闸门侧响亮 warn 区分——丢失事实在 gate 日志，不在出站面）。
+    InstructionQueued { session_key: String },
     /// `/compact` / `/clear` — 会话维护命令。gate 的同步
     /// 短路点拿不到 instance（LLM 摘要是 async），但会话已在此获取（防
     /// 并发回合与压缩互相踩摘要推进）；pump/serial tail 派发到
@@ -464,6 +488,33 @@ impl AgentLoop {
                 );
                 (String::new(), String::new(), None, None)
             }
+            GateOutcome::NoticeStashed { session_key } => {
+                // （通告 stash）：串行回退路径同语义——零出站零落盘（内容
+                // 已进 inbox stash，等轮边界合并注入/收口通告轮）。
+                debug!(
+                    session_key = %session_key,
+                    "[AgentLoop] system notice stashed (serial tail)"
+                );
+                (String::new(), String::new(), None, None)
+            }
+            GateOutcome::SnoozeQueued { session_key } => {
+                // （暂停期通告静默排队）：串行回退路径同语义——零出站零
+                // 落盘（内容已进 pending sidecar，唤醒重放投递）。
+                debug!(
+                    session_key = %session_key,
+                    "[AgentLoop] snoozed-session notice queued for wake delivery (serial tail)"
+                );
+                (String::new(), String::new(), None, None)
+            }
+            GateOutcome::InstructionQueued { session_key } => {
+                // （指令注入静默排队，§9 政策表）：串行回退路径同语义——
+                // 零出站零落盘（内容已进 next_turn 队，claim 后真轮呈现）。
+                debug!(
+                    session_key = %session_key,
+                    "[AgentLoop] internal instruction queued silently (serial tail)"
+                );
+                (String::new(), String::new(), None, None)
+            }
             GateOutcome::Maintenance {
                 kind,
                 session_key,
@@ -735,6 +786,46 @@ impl AgentLoop {
         // Admitted 构造点——非回合消息不再换 cur 指针）。
         self.log_gate_receipt(msg);
 
+        // C1 绊线（msg_class 单轨 §10-9，2026-11-21 拍板）：Notice /
+        // Instruction 到闸的两条健全性不变量，违规 = 生产者装配残缺/孤儿
+        // 注入——不改路由（warn 观测面），semantic-assert panic 态（测试
+        // harness 设 NEMESIS_BUS_SEMANTIC_ASSERT=panic|1|true，与 bus 检测
+        // 网同键同语义）当场炸出。Continuation 不在射程（channel="system"
+        // 自有路由臂，session_key 语义不同，且永不物化 user 行）。idle 准
+        // 入路径上违反第 2 条会让 process_admitted 物化 user 行、凭空造出
+        // 幻影会话（复活已删会话同族病灶），本绊线是它的观测哨；
+        // busy/snooze 臂只 stash/排队不物化，违规同样响。
+        if matches!(
+            msg.msg_class,
+            nemesis_types::channel::MsgClass::Notice(_)
+                | nemesis_types::channel::MsgClass::Instruction(_)
+        ) {
+            let (_, gate_session_key) = self.route_message(msg);
+            let panic_mode = matches!(
+                std::env::var(nemesis_types::constants::SEMANTIC_ASSERT_ENV).as_deref(),
+                Ok("panic") | Ok("1") | Ok("true")
+            );
+            if gate_session_key.is_empty() {
+                let detail = format!(
+                    "non-User class message with empty session_key (class={:?}, channel={}, sender={})",
+                    msg.msg_class, msg.channel, msg.sender_id
+                );
+                if panic_mode {
+                    panic!("[Gate] 语义断言失败：{detail} —— 内部消息生产者必须携带目标会话键");
+                }
+                warn!("[Gate] C1 绊线（warn 态）：{detail}");
+            } else if !crate::chat_log::chat_log_exists(&gate_session_key) {
+                let detail = format!(
+                    "non-User class message targeting non-existent session (class={:?}, session_key={gate_session_key})",
+                    msg.msg_class
+                );
+                if panic_mode {
+                    panic!("[Gate] 语义断言失败：{detail} —— 孤儿注入会让 idle 准入物化幻影会话");
+                }
+                warn!("[Gate] C1 绊线（warn 态）：{detail}");
+            }
+        }
+
         // Route system messages.
         if msg.channel == "system" {
             // Cluster continuation — the pump handles via dispatch_continuation.
@@ -964,13 +1055,33 @@ impl AgentLoop {
         // 不是「失联」。
         // - cron tick：静默排队（cron 无人类接收方，零回执零出站——
         //   Coalesced 同姿态）；超限/落盘失败同样静默（info 留痕）。
+        // - 带章系统通告：静默排队（SnoozeQueued 同姿态——假 💤 回执 =
+        //   bot「确认」一条没人发的消息，幻影通告同病灶；唤醒重放时
+        //   metadata 随全量消息保真，再过闸按通告语义准入/stash）。
         // - 用户消息：排队 + 诚实回执（jsonl system 行 + Immediate 响应帧）。
         // - 超上限/落盘失败：诚实拒收（persist_busy_refusal 成对留痕，D-2
         //   同款——收不下的消息不能无痕消失）。
         if let Some((until, _note)) = crate::chat_log::session_snoozed_until(&session_key) {
             match crate::chat_log::append_session_pending(&session_key, msg) {
                 Ok(n) => {
-                    if let Some(job_id) = msg.metadata.get("cron_job_id") {
+                    // msg_class 单轨分派（§8/§9 政策表）：识别键从旧 metadata
+                    // 章（cron_job_id / system_notice）切换为 class（构造器
+                    // 烤死，单一真相源；旧持久化条目在反序列化点经
+                    // legacy_class_coerce 改判后再入闸）。
+                    // - Instruction(CronTick)：同 job 合闸语义保留（job_id
+                    //   仍读 metadata——ctx.rs 生产者保留 cron 簇章供
+                    //   合闸/展示消费）。
+                    // - 其余非 User class（Notice / 其他 Instruction /
+                    //   Continuation 兜底臂）：静默 pending（假 💤 回执 =
+                    //   bot「确认」一条没人发的消息，幻影通告同病灶——
+                    //   通告与内部指令零回执不变量在暂停期同样成立）。
+                    //   内容已在 pending sidecar，唤醒重放投递（全量消息
+                    //   serde 往返保真，重放过闸按各自 class 准入）。
+                    if let nemesis_types::channel::MsgClass::Instruction(
+                        nemesis_types::channel::InstructionKind::CronTick,
+                    ) = &msg.msg_class
+                        && let Some(job_id) = msg.metadata.get("cron_job_id")
+                    {
                         info!(
                             cron_job_id = %job_id,
                             "[AgentLoop] session snoozed — cron tick queued for wake delivery (session_key={session_key}, pending={n})"
@@ -978,6 +1089,13 @@ impl AgentLoop {
                         return GateOutcome::Coalesced {
                             cron_job_id: job_id.clone(),
                         };
+                    }
+                    if !matches!(msg.msg_class, nemesis_types::channel::MsgClass::User) {
+                        info!(
+                            class = ?msg.msg_class,
+                            "[AgentLoop] session snoozed — internal message queued silently for wake delivery (session_key={session_key}, pending={n})"
+                        );
+                        return GateOutcome::SnoozeQueued { session_key };
                     }
                     let receipt = format!(
                         "💤 会话暂停中（至 {until}）：消息已排队（第 {n} 条），恢复后自动投递。"
@@ -1000,15 +1118,25 @@ impl AgentLoop {
                     warn!(
                         "[AgentLoop] session snoozed — pending queue refused message (session_key={session_key}): {why}"
                     );
-                    if msg.metadata.contains_key("cron_job_id") {
-                        // cron 臂拒绝同样静默（无接收方，Coalesced 同姿态）。
+                    // Err 臂 class 分派：cron tick 静默合闸（无接收方，
+                    // Coalesced 同姿态）；其余非 User class 静默丢弃（弹回
+                    // 一条「后台任务完成/系统指令」正是幻影通告根治的病灶），
+                    // 响亮 warn 留丢失事实；User 诚实拒收（留痕不变）。
+                    if let nemesis_types::channel::MsgClass::Instruction(
+                        nemesis_types::channel::InstructionKind::CronTick,
+                    ) = &msg.msg_class
+                    {
+                        let job_id = msg.metadata.get("cron_job_id").cloned().unwrap_or_default();
                         return GateOutcome::Coalesced {
-                            cron_job_id: msg
-                                .metadata
-                                .get("cron_job_id")
-                                .cloned()
-                                .unwrap_or_default(),
+                            cron_job_id: job_id,
                         };
+                    }
+                    if !matches!(msg.msg_class, nemesis_types::channel::MsgClass::User) {
+                        warn!(
+                            class = ?msg.msg_class,
+                            "[AgentLoop] session snoozed — internal message dropped, pending refused (session_key={session_key}): {why}"
+                        );
+                        return GateOutcome::SnoozeQueued { session_key };
                     }
                     let bounce = format!("💤 会话暂停中且排队不可用，消息未接收：{why}");
                     self.persist_busy_refusal(msg, &session_key, &bounce);
@@ -1035,6 +1163,136 @@ impl AgentLoop {
         //   turn end starts a new one with the head). Capacity-bounded with a
         //   clear receipt so the rule is discoverable.
         if !self.try_acquire_session(&session_key) {
+            // msg_class 单轨分派（2026-11-21 msg_class 架构 §8，幻影通告
+            // 根治的后续形态化）：busy 时非 User class 按政策表各走各臂，
+            // 都不进入用户消息语义（排队 + ⏳ 回执 + 轮尾逐条物化 user 行
+            // + 每条烧一轮 LLM——目标机 2026-11-21 事故：14 条后台构建通告
+            // 连环排队、队列紧张软拒、claim 后幻影轮 usage 97→109）。
+            // - Notice（events 唤醒 / durable loop / 审批续行 / turn 收口
+            //   合并通告）：stash + 轮边界合并注入（claim_steer_messages
+            //   通告 drain）；turn 收口残留由 drain_next_turn_queue 合成
+            //   通告轮。空闲时照常 Admitted（通知条形态真轮，模型可跟进
+            //   ——信息不丢）。
+            // - Instruction（cron tick / WAL 续轮 / goals 轮注入 / 看板
+            //   本地派发）：静默排队（零回执——⏳/Reject 弹回是用户消息
+            //   语义，不作用内部指令）；Steer 不认领（指令必须开完整真轮，
+            //   不塞插话槽）；cron 合闸照常。它们必须开真轮，Reject 模式
+            //   也排队不弹回。
+            // - Continuation：永不到达此处（channel="system" 在闸顶
+            //   short-circuit；构造器烤死通道）。
+            // 识别键 = msg_class（单一真相源；旧 metadata `system_notice`
+            // 章退役，持久化旧行经 legacy_class_coerce 改判）。未来任何新
+            // 内部注入点必须经构造器家族（notice/instruction/continuation，
+            // nemesisbot post_agent::system_notice_inbound 是 notice 的
+            // gateway 侧收编包装）发布——字面量 User 构造 + 内部形状标记
+            // 会撞检测网（nemesis-bus 语义断言）。这是刻意的不变量。
+            match &msg.msg_class {
+                nemesis_types::channel::MsgClass::Notice(kind) => {
+                    let len = msg.content.chars().count();
+                    self.inbox.stash_notice(
+                        &session_key,
+                        crate::inbox::NoticeEntry {
+                            kind: kind.clone(),
+                            channel: msg.channel.clone(),
+                            chat_id: msg.chat_id.clone(),
+                            content: msg.content.clone(),
+                        },
+                    );
+                    info!(
+                        class = ?msg.msg_class,
+                        session_key = %session_key,
+                        "[AgentLoop] system notice stashed for turn-boundary merge (len={len})"
+                    );
+                    // 竞态孤儿封口：闸 busy 判定与回合尾巴（release + drain）
+                    // 并行——若 stash 时回合恰已收尾且 drain 已过，stash 无人
+                    // 排空。复查 busy：已空闲就地合成通告轮重注入（细节见
+                    // kick_orphaned_notices_if_idle）。
+                    self.kick_orphaned_notices_if_idle(&session_key);
+                    return GateOutcome::NoticeStashed { session_key };
+                }
+                nemesis_types::channel::MsgClass::Instruction(_) => {
+                    // 指令注入政策臂（§9 政策表）：cron 合闸（同 job 已有
+                    // 排队中的 tick → 丢弃本 tick——触发间隔 < 轮时长时
+                    // FIFO 无限积压防护；job_id 读 metadata，ctx.rs 生产者
+                    // 保留 cron 簇章）；其余静默入 next_turn 队（Steer 不
+                    // 认领：steer=false 恒定）。
+                    if let nemesis_types::channel::MsgClass::Instruction(
+                        nemesis_types::channel::InstructionKind::CronTick,
+                    ) = &msg.msg_class
+                        && let Some(job_id) = msg.metadata.get("cron_job_id")
+                        && self.inbox.has_pending_cron_job(&session_key, job_id)
+                    {
+                        info!(
+                            cron_job_id = %job_id,
+                            "[AgentLoop] cron tick coalesced: same job already queued, dropping duplicate tick (session_key={})",
+                            session_key
+                        );
+                        return GateOutcome::Coalesced {
+                            cron_job_id: job_id.clone(),
+                        };
+                    }
+                    // 逐字段拷贝重包装（不能走 user_ingress——会丢 class）：
+                    // msg_class 原样透传，排队语义不改变消息类别。
+                    let queued = crate::inbox::QueuedMessage {
+                        msg: msg.clone(),
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                        // （引入）：优先级随消息
+                        // metadata 解析（单点 [`crate::inbox:priority_of`]）。
+                        priority: crate::inbox::priority_of(msg),
+                    };
+                    // 指令只入 next_turn 队（steer=false——Steer 不认领），
+                    // 零回执：排队事实由 claim 后真轮呈现，⏳ 帧 = 幻影
+                    // 通告同病灶。
+                    match self.inbox.enqueue_for_mode(&session_key, queued, false) {
+                        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+                        | crate::inbox::EnqueueOutcome::QueuedForNextStep => {
+                            // 入队后复查 busy——回合可能恰在本闸 busy 判定
+                            // 与入队之间完成（竞态孤儿），就地 kick 排空，
+                            // 防无限期滞留。
+                            self.kick_orphaned_queue_if_idle(&session_key);
+                            info!(
+                                class = ?msg.msg_class,
+                                "[AgentLoop] internal instruction queued silently for next turn: session_key={}",
+                                session_key
+                            );
+                            return GateOutcome::InstructionQueued { session_key };
+                        }
+                        crate::inbox::EnqueueOutcome::Rejected
+                        | crate::inbox::EnqueueOutcome::RejectedSoft => {
+                            // 队满丢弃：零回执零弹回（同政策），响亮 warn
+                            // 留丢失事实（生产者侧日志可查）。
+                            warn!(
+                                class = ?msg.msg_class,
+                                session_key = %session_key,
+                                "[AgentLoop] internal instruction DROPPED — queues full at busy gate (silent per policy)"
+                            );
+                            return GateOutcome::InstructionQueued { session_key };
+                        }
+                    }
+                }
+                nemesis_types::channel::MsgClass::Continuation => {
+                    // 不可达（channel="system" 闸顶短路）；防御臂：按通告
+                    // stash 同姿态处理（信息不丢，直通臂语义等价）。
+                    debug!(
+                        session_key = %session_key,
+                        "[AgentLoop] continuation-class message reached busy gate (unexpected) — stashing as notice"
+                    );
+                    self.inbox.stash_notice(
+                        &session_key,
+                        crate::inbox::NoticeEntry {
+                            // 防御臂无真实 kind：continuation 误达按 loop
+                            // 类通告 stash（原语义就是 loop 续行族）。
+                            kind: nemesis_types::channel::NoticeKind::Loop,
+                            channel: msg.channel.clone(),
+                            chat_id: msg.chat_id.clone(),
+                            content: msg.content.clone(),
+                        },
+                    );
+                    self.kick_orphaned_notices_if_idle(&session_key);
+                    return GateOutcome::NoticeStashed { session_key };
+                }
+                nemesis_types::channel::MsgClass::User => {}
+            }
             match self.concurrent_mode {
                 ConcurrentMode::Reject => {
                     warn!(
@@ -1056,36 +1314,17 @@ impl AgentLoop {
                     };
                 }
                 ConcurrentMode::Queue | ConcurrentMode::Steer => {
-                    // （cron 合闸，docs/BUG/-24_cron触发
-                    // 无合闸队列积压.md）：同 job 已有排队中的 tick → 丢弃本
-                    // tick。触发间隔 < 轮时长时无合闸 FIFO 无限积压（实测：
-                    // 30s 采集任务积压 6 轮、删除后幽灵排空 2 分钟、累计烧
-                    // 8.1M tokens）。合闸后积压上界 = 1 在途 + 1 排队。用户
-                    // 消息无 cron_job_id，永不命中本分支。
-                    if let Some(job_id) = msg.metadata.get("cron_job_id")
-                        && self.inbox.has_pending_cron_job(&session_key, job_id)
-                    {
-                        info!(
-                            cron_job_id = %job_id,
-                            "[AgentLoop] cron tick coalesced: same job already queued, dropping duplicate tick (session_key={})",
-                            session_key
-                        );
-                        return GateOutcome::Coalesced {
-                            cron_job_id: job_id.clone(),
-                        };
-                    }
+                    // （cron 合闸已上移至 Instruction 政策臂，msg_class 单轨
+                    // 2026-11-21：本臂现在只服务 User class——Notice/连续化/
+                    // Instruction 都在上臂返回。旧 metadata cron_job_id 推断
+                    // 退役：cron tick 经构造器烤死 CronTick class，合闸在
+                    // 政策臂统一裁决（含 Reject 模式——旧形态 Reject 不合闸
+                    // 直接弹回是政策漏洞）。
+                    // 整体 clone 重包装（class 随行——不能走 user_ingress，
+                    // 会丢 class；逐字段拷贝是 msg_class 之前的旧形态，
+                    // 漏新字段就是漏 class，单点 clone 消灭该风险面）。
                     let queued = crate::inbox::QueuedMessage {
-                        msg: nemesis_types::channel::InboundMessage {
-                            channel: msg.channel.clone(),
-                            sender_id: msg.sender_id.clone(),
-                            chat_id: msg.chat_id.clone(),
-                            content: msg.content.clone(),
-                            media: msg.media.clone(),
-                            session_key: msg.session_key.clone(),
-                            correlation_id: msg.correlation_id.clone(),
-                            metadata: msg.metadata.clone(),
-                            voice_playback: msg.voice_playback,
-                        },
+                        msg: msg.clone(),
                         timestamp: chrono::Local::now().to_rfc3339(),
                         // （引入）：优先级随消息
                         // metadata 解析（单点 [`crate::inbox:priority_of`]）。
@@ -1555,6 +1794,21 @@ impl AgentLoop {
     /// （真实模型 /compact 观察中滞留 >20 分钟）。提取为共享方法三处接线。
     pub(crate) async fn drain_next_turn_queue(&self, session_key: &str) {
         self.inbox.transfer_next_step_to_next_turn(session_key);
+        // 通告收口 drain（2026-11-21 幻影通告根治）：busy 期间 stash 的
+        // 通告若在最后一个轮边界之后到达（纯文本收尾段无 claim 点可注），
+        // turn 尾在此合成一条合并通告消息走重注入链（与队首 claim 同机理
+        // ——release 已先行，泵按正常闸门重新准入：空闲 = 通知条形态通告
+        // 轮；竞态再入 busy = 通告闸 re-stash + orphan kick 兜底，无滞留
+        // 无丢失）。模式无关：Reject 无队列 drain，但通告轮不是排队用户
+        // 消息，照常合成。
+        if let Some(merged) = self.inbox.drain_notices_merged(session_key) {
+            info!(
+                session_key = %session_key,
+                len = merged.content.chars().count(),
+                "[AgentLoop] turn-end notice drain: synthesizing merged notice turn"
+            );
+            self.synthesize_notice_turn(session_key, merged).await;
+        }
         if matches!(
             self.concurrent_mode,
             ConcurrentMode::Queue | ConcurrentMode::Steer
@@ -1651,10 +1905,100 @@ impl AgentLoop {
                 }
             }
             // Drop empty queues (housekeeping; keeps the map bounded).
-            if self.inbox.pending(session_key) == (0, 0) {
+            // 通告感知（2026-11-21）：stash 非空不 clear——清了=刚 stash 的
+            // 通告静默丢失（本 fn 与 gate stash 并行，清空窗口内新 stash
+            // 真实可能）。
+            if self.inbox.pending(session_key) == (0, 0) && !self.inbox.has_notices(session_key) {
                 self.inbox.clear(session_key);
             }
         }
+    }
+
+    /// 合并通告 → 合成 InboundMessage → 重注入。通告轮的准入形态：元数据
+    /// 带回 `system_notice` 标记（空闲准入 = user 行带 system_notice 键，
+    /// 前端通知条渲染 + 模型照常拿到内容；竞态再入 busy = 通告闸
+    /// re-stash 原样合并，无丢失）。reinject_tx 缺失（standalone/测试）=
+    /// inline 走 process_inbound_message（与 drain 队首 claim 的 inline
+    /// 回退同语义）。
+    pub(crate) async fn synthesize_notice_turn(
+        &self,
+        session_key: &str,
+        merged: crate::inbox::NoticeMerge,
+    ) {
+        let inbound = Self::build_merged_notice_message(session_key, &merged);
+        let reinject = self.reinject_tx.read().clone();
+        match reinject {
+            Some(tx) => {
+                if let Err(e) = tx.try_send(inbound) {
+                    // 与 drain 的重注入失败语义一致：响亮留痕（1024 容量
+                    // 下通道满不可达，失败=无消费者）。
+                    warn!(
+                        "[AgentLoop] notice turn re-inject failed (session_key={}, err={}) — merged notices dropped",
+                        session_key, e
+                    );
+                }
+            }
+            None => {
+                warn!(
+                    "[AgentLoop] reinject_tx not set — processing merged notice inline (post-processing skipped), session_key={}",
+                    session_key
+                );
+                Box::pin(self.process_inbound_message(&inbound)).await;
+            }
+        }
+    }
+
+    /// 通告闸竞态孤儿封口（kick_orphaned_queue_if_idle 同款机理）：
+    /// 闸的 busy 判定与运行中回合的尾巴（release + drain）在不同 worker
+    /// 并行——若通告 stash 落在尾巴 drain **之后**（drain 已过、release
+    /// 未至/刚至），stash 无人排空，滞留到该会话下一条消息（顺序倒挂）
+    /// 或无限期。stash 后复查 busy：已空闲 = 输掉竞态，就地 drain +
+    /// 合成通告轮重注入。sync fn（gate 内调用）——无 inline 回退，
+    /// reinject_tx 缺失诚实留痕留 stash（下一回合尾巴兜底，与队列
+    /// orphan 未接线同语义）。
+    pub(crate) fn kick_orphaned_notices_if_idle(&self, session_key: &str) {
+        if self.is_session_busy(session_key) {
+            return; // 正常路径：在途回合的边界/尾巴负责 drain
+        }
+        let tx = self.reinject_tx.read().clone();
+        let Some(tx) = tx else {
+            warn!(
+                "[AgentLoop] busy-race orphaned notices but reinject_tx unset (standalone/test) — left for next turn tail, session_key={}",
+                session_key
+            );
+            return;
+        };
+        if let Some(merged) = self.inbox.drain_notices_merged(session_key) {
+            warn!(
+                "[AgentLoop] busy-race: turn finished between busy check and notice stash — kicking notice turn, session_key={}",
+                session_key
+            );
+            let inbound = Self::build_merged_notice_message(session_key, &merged);
+            if let Err(e) = tx.try_send(inbound) {
+                warn!(
+                    "[AgentLoop] notice orphan kick re-inject failed (session_key={}, err={}) — merged notices dropped",
+                    session_key, e
+                );
+            }
+        }
+    }
+
+    /// 合成通告轮消息（单一构造点：synthesize/kick 两臂共用）。路由 =
+    /// 最后一条通告的来源（回复回到通告来自的通道）；文本加合并框注；
+    /// class = Notice(Merged)（空闲准入的通知条渲染 + 竞态再入 busy 的
+    /// re-stash 识别都读 class，同键闭环；旧 `system_notice=merged` 章
+    /// 退役——构造器烤死 class，落盘旧行的章由显示面兜底读）。
+    fn build_merged_notice_message(
+        session_key: &str,
+        merged: &crate::inbox::NoticeMerge,
+    ) -> nemesis_types::channel::InboundMessage {
+        nemesis_types::channel::InboundMessage::notice(
+            nemesis_types::channel::NoticeKind::Merged,
+            &merged.channel,
+            &merged.chat_id,
+            session_key,
+            crate::inbox::frame_merged_notices(&merged.content),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -2080,20 +2424,27 @@ pub fn resolve_route(input: &RouteInput) -> RouteOutput {
     }
 }
 
-/// 系统通知标记推导（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
-/// metadata 显式 `system_notice` 优先（注入点可指定更细的类别文案），
-/// 否则 `sender_id=="system"` 的注入源一律视为系统通知——后台任务完成
-/// 唤醒（agent_build）、审批裁决回灌（runtime）、Turn WAL 崩溃恢复续轮
-/// （bus）三个已知生产注入点全部命中；未来任何 `sender="system"` 的新
-/// 注入点自动正确（推导而非逐注入点打标）。真人消息经各通道携带真实
-/// 用户 id，不命中——返回 None 不写键，前端用户气泡逐字节旧行为。
-/// role 仍是 `"user"`（通知轮是真实轮次：上下文重建投影与轮边界判定
+/// 系统注入标记推导（msg_class 显示投影，2026-11-21 类型化）：
+/// **class 优先**（构造器烤死，单一真相源）：Notice → 通告子类 slug
+/// （events/loop/approval_continuation/merged），Instruction → 指令子类
+/// slug（goal_round/cron_tick/wal_resume/board_dispatch）——前端按 slug
+/// 值做 kind-aware 渲染（通知条 vs 指令徽标行，永不用户气泡）。
+/// **兜底链（永久兼容读）**：非 User class 缺席的旧 jsonl 行读旧
+/// `system_notice` 章；再兜底 `sender_id=="system"` 推导（hook prompt
+/// 直塞门 = 拍板永久 User 形态、历史行等——真人消息经各通道携带真实
+/// 用户 id，不命中）。
+/// role 仍是 `"user"`（注入轮是真实轮次：上下文重建投影与轮边界判定
 /// 依赖 role=user），标记只影响 Dashboard 展示形态。
 fn system_notice_of(msg: &nemesis_types::channel::InboundMessage) -> Option<&str> {
-    msg.metadata
-        .get("system_notice")
-        .map(|s| s.as_str())
-        .or_else(|| (msg.sender_id == "system").then_some("system"))
+    match &msg.msg_class {
+        nemesis_types::channel::MsgClass::Notice(kind) => Some(kind.slug()),
+        nemesis_types::channel::MsgClass::Instruction(kind) => Some(kind.slug()),
+        _ => msg
+            .metadata
+            .get("system_notice")
+            .map(|s| s.as_str())
+            .or_else(|| (msg.sender_id == "system").then_some("system")),
+    }
 }
 
 // 覆盖率补充批次：审批卡回执语法 / 会话闸队列账目 / inbox_status 模式。

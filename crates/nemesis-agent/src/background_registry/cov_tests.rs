@@ -260,7 +260,7 @@ fn background_tools_expose_metadata() {
 #[tokio::test]
 async fn spawn_pump_none_pipe_is_noop() {
     let buf: Arc<Mutex<OutputBuffer>> = Arc::new(Mutex::new(OutputBuffer::new(4096)));
-    spawn_pump(None::<tokio::io::Empty>, buf.clone());
+    spawn_pump(None::<tokio::io::Empty>, buf.clone(), None);
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     let (chunk, _skipped) = buf.lock().await.read_chunk(0);
     assert!(chunk.is_empty(), "no pipe → no output");

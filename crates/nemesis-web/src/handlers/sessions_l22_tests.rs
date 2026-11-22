@@ -124,17 +124,12 @@ fn seed_session(home: &Path, sid: &str) -> String {
 
 /// 造一条待排队消息（session_key 留空——append_session_pending 烧入裁决键）。
 fn queued_msg(content: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "u".to_string(),
-        chat_id: "c".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "u".to_string(),
+        "c".to_string(),
+        content.to_string(),
+    )
 }
 
 /// 假 hook：记录被调键 + 按真 hook 语义消费 pending（take 后返条数）。

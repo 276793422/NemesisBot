@@ -38,6 +38,65 @@ pub struct MessageBus {
     /// 形态，逐订阅 WARN 只是每世代 3 条启动噪音。
     inbound_fanout_warned: AtomicBool,
     outbound_fanout_warned: AtomicBool,
+    /// 语义断言 panic 态（2026-11-21 msg_class 检测网，B2 显式开关）。
+    /// 构造期决议：显式 [`MessageBus::with_semantic_assert`] 注入优先，
+    /// 否则读 env [`SEMANTIC_ASSERT_ENV`]（测试 harness 用），都缺 = false
+    /// （生产 warn 态兜底观测）。
+    semantic_assert_panic: bool,
+    /// 语义断言 warn 限频（每 bus 实例只发一次）。
+    semantic_warn_emitted: AtomicBool,
+}
+
+/// 语义断言开关 env（B2：显式 env 而非 cfg!(test)——nemesis-bus 作为
+/// 依赖编进 nemesis-agent 等的测试目标时 `cfg(test)` 恒 false，panic 永不
+/// 触发，自证锁测空）。**单一真相源在 nemesis-types**（C1 绊线 admission
+/// 闸同键消费，nemesis-agent 不依赖 nemesis-bus——依赖箭头只允许向下）；
+/// 此处 re-export 保持既有公共路径稳定。
+pub use nemesis_types::constants::SEMANTIC_ASSERT_ENV;
+
+/// 内部形状标记表（检测网数据驱动面，B3 收窄版）。
+///
+/// 命中任一 = 该消息形状上是内部生产者的产物。User class + 命中 = 绕过
+/// 构造器家族的逃逸（构造器烤死 class；serde default 陷阱漏填；
+/// `..Default::default()` 漏填），当场抓。
+///
+/// 收窄纪律（B3）：`sender=="system"` 单条过宽（真实平台用户 sender_id
+/// 可能恰为 "system"）——收窄为 `sender=="system" && channel=="system"`
+/// 组合 + `channel=="system"`（内部通道名，平台通道不用此名）+ 前缀/键。
+fn internal_shape_marker(msg: &InboundMessage) -> Option<String> {
+    if msg.sender_id == "system" && msg.channel == "system" {
+        return Some("sender=system&channel=system".to_string());
+    }
+    if msg.channel == "system" {
+        return Some("channel=system".to_string());
+    }
+    for (prefix, name) in [
+        ("cron:", "sender cron:*"),
+        ("cluster_continuation:", "sender cluster_continuation:*"),
+        (
+            nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
+            "sender subagent_continuation:*",
+        ),
+    ] {
+        if msg.sender_id.starts_with(prefix) {
+            return Some(name.to_string());
+        }
+    }
+    if msg.sender_id == "board" {
+        return Some("sender=board".to_string());
+    }
+    for key in [
+        "cron_job_id",
+        "turn_wal_resume",
+        "system_notice",
+        "hook_prompt",
+        nemesis_types::channel::INSTRUCTION_KIND_STAMP_KEY,
+    ] {
+        if msg.metadata.contains_key(key) {
+            return Some(format!("metadata:{key}"));
+        }
+    }
+    None
 }
 
 impl MessageBus {
@@ -50,6 +109,10 @@ impl MessageBus {
     pub fn with_capacity(capacity: usize) -> Self {
         let (inbound_tx, _) = broadcast::channel(capacity);
         let (outbound_tx, _) = broadcast::channel(capacity);
+        let semantic_assert_panic = matches!(
+            std::env::var(SEMANTIC_ASSERT_ENV).as_deref(),
+            Ok("panic") | Ok("1") | Ok("true")
+        );
         Self {
             inbound_tx,
             outbound_tx,
@@ -60,7 +123,15 @@ impl MessageBus {
             outbound_lagged: AtomicU64::new(0),
             inbound_fanout_warned: AtomicBool::new(false),
             outbound_fanout_warned: AtomicBool::new(false),
+            semantic_assert_panic,
+            semantic_warn_emitted: AtomicBool::new(false),
         }
+    }
+
+    /// 语义断言 panic 态显式注入（检测网自证锁用；优先于 env）。
+    pub fn with_semantic_assert(mut self, panic_on_violation: bool) -> Self {
+        self.semantic_assert_panic = panic_on_violation;
+        self
     }
 
     /// Inbound 订阅者计数（发布侧就绪探测）。
@@ -77,6 +148,7 @@ impl MessageBus {
     /// 最旧；慢消费者的丢帧在接收端以 `Lagged` 上报）。无接收者时本方法
     /// 记 warn 并累计发布侧丢失计数。
     pub fn publish_inbound(&self, msg: InboundMessage) {
+        self.assert_inbound_semantics(&msg);
         if self.closed.load(Ordering::Relaxed) {
             warn!("[Bus] Publish inbound rejected: bus is closed");
             return;
@@ -255,6 +327,36 @@ impl MessageBus {
     /// Close the bus. No more messages can be published.
     pub fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
+    }
+
+    /// 检测网点位 1（2026-11-21 msg_class 架构）：发布入口语义断言。
+    ///
+    /// User class + 内部形状标记（[`internal_shape_marker`]）= 生产者绕过
+    /// 构造器家族的逃逸口（构造器烤死 class；`#[serde(default)]` 陷阱漏
+    /// 填；手写字面量漏填）。检查**语义**而非写法——三条逃逸路都抓。
+    ///
+    /// 处置（B2 显式开关，非 cfg!(test)）：panic 态（构造注入或 env）
+    /// → panic 当场炸（回归当场现形）；默认 warn 态 → 限频一条（生产
+    /// 兜底观测，不炸运行）。
+    fn assert_inbound_semantics(&self, msg: &InboundMessage) {
+        if !matches!(msg.msg_class, nemesis_types::channel::MsgClass::User) {
+            return;
+        }
+        let Some(marker) = internal_shape_marker(msg) else {
+            return;
+        };
+        if self.semantic_assert_panic {
+            panic!(
+                "[Bus] 语义断言失败：User class 消息携带内部形状标记（marker={}, channel={}, sender={}）——内部生产者必须走 InboundMessage 构造器家族（notice/instruction/continuation），禁止字面量构造",
+                marker, msg.channel, msg.sender_id
+            );
+        }
+        if !self.semantic_warn_emitted.swap(true, Ordering::Relaxed) {
+            warn!(
+                "[Bus] 语义断言（warn 态）：User class 消息携带内部形状标记（marker={}, channel={}, sender={}）——内部生产者必须走构造器家族；设 {}=panic 或 with_semantic_assert(true) 可在测试中炸出",
+                marker, msg.channel, msg.sender_id, SEMANTIC_ASSERT_ENV
+            );
+        }
     }
 }
 

@@ -1544,6 +1544,35 @@ impl AgentLoop {
                     "[AgentLoop] coalesced cron tick dropped at pump (no receipt, no persistence)"
                 );
             }
+            GateOutcome::NoticeStashed { session_key } => {
+                // 通告 stash（2026-11-21 幻影通告根治）：零出站零落盘——
+                // 内容已进 inbox stash，busy 回合的轮边界合并注入 /
+                // turn 收口合成通告轮负责投递。回执噪音正是本批根治的
+                // 病灶（⏳ 刷屏），泵侧不再发任何帧。
+                debug!(
+                    session_key = %session_key,
+                    "[AgentLoop] system notice stashed at pump (no receipt, merged at turn boundary)"
+                );
+            }
+            GateOutcome::SnoozeQueued { session_key } => {
+                // 暂停期通告静默排队（2026-11-21 复查残余门）：零出站零
+                // 落盘——假 💤 回执 = bot「确认」一条没人发的消息（幻影
+                // 同病灶）；内容已进 pending sidecar，唤醒重放投递
+                // （metadata 保真，重放过闸按通告语义准入/stash）。
+                debug!(
+                    session_key = %session_key,
+                    "[AgentLoop] snoozed-session notice queued for wake delivery at pump"
+                );
+            }
+            GateOutcome::InstructionQueued { session_key } => {
+                // 指令注入静默排队（msg_class §9 政策表，2026-11-21）：
+                // 零出站零落盘——内容已进 next_turn 队，claim 后开完整
+                // 真轮；⏳ 帧 = 幻影通告同病灶（零回执不变量）。
+                debug!(
+                    session_key = %session_key,
+                    "[AgentLoop] internal instruction queued silently at pump (no receipt, real turn at claim)"
+                );
+            }
             GateOutcome::Maintenance {
                 kind,
                 session_key,
@@ -1684,23 +1713,20 @@ impl AgentLoop {
                 "⟳ 系统续轮：上次进程在工具执行中被中断（tool={}，args={}）。该次调用的结果已丢失；请从中断处继续完成任务（必要时重新执行该工具）。",
                 rec.tool, rec.args_preview
             );
-            let mut msg = nemesis_types::channel::InboundMessage {
-                channel: if rec.channel.is_empty() {
-                    "web".to_string()
+            // msg_class 指令注入（Instruction(WalResume)）：开真轮语义，
+            // busy→静默排队；构造器烤死 class + instruction_kind 章
+            // （旧 turn_wal_resume 章退役——改判读方走 legacy_class_coerce）。
+            let mut msg = nemesis_types::channel::InboundMessage::instruction(
+                nemesis_types::channel::InstructionKind::WalResume,
+                if rec.channel.is_empty() {
+                    "web"
                 } else {
-                    rec.channel.clone()
+                    rec.channel.as_str()
                 },
-                sender_id: "system".to_string(),
-                chat_id: rec.chat_id.clone(),
+                &rec.chat_id,
+                &rec.session_key,
                 content,
-                media: Vec::new(),
-                session_key: rec.session_key.clone(),
-                correlation_id: String::new(),
-                metadata: [("turn_wal_resume".to_string(), "1".to_string())]
-                    .into_iter()
-                    .collect(),
-                voice_playback: None,
-            };
+            );
             info!(
                 "[AgentLoop] Turn WAL 续轮：session={} tool={}",
                 rec.session_key, rec.tool

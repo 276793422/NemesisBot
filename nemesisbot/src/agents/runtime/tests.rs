@@ -435,6 +435,27 @@ mod sup_real_child {
         );
     }
 
+    /// taskkill /F 返回 ≠ try_wait 立即翻死：TerminateProcess 之后进程
+    /// 对象清理是异步的，紧随其后的探测（is_alive=try_wait，slot_states
+    /// alive 投影同源）若抢在清理完成前执行会把死槽当活槽——
+    /// sup_removed_agent_crash_is_not_relaunched 全量并行负载下实测假红；
+    /// sup_execute_round_trip_and_respawn_after_kill 2026-11-22 隔离复跑
+    /// ~25% 同族实锤（漏判死 → 下一次调用绕过「死进程先重建」臂 → 写相位
+    /// 撞 os error 232）。轮询等监督器同一探测结论翻死再继续——有界 10s，
+    /// 超时按旧路径继续（后续断言会给出诚实失败）。
+    async fn wait_slot_dead(sup: &AgentRuntimeSupervisor, agent_id: &str) {
+        for _ in 0..200 {
+            let alive = sup
+                .slot_states()
+                .iter()
+                .any(|s| s.agent_id == agent_id && s.alive);
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     async fn exec_cmd(
         sup: &AgentRuntimeSupervisor,
         exec_root: &std::path::Path,
@@ -515,6 +536,10 @@ mod sup_real_child {
             .await
             .expect("slot pid after first call");
         kill_pid(pid);
+        // teardown 窗口内 try_wait 漏判死会让下一次调用绕过死进程重建臂
+        // （BUG 文档：常驻执行体respawn测试kill后teardown窗口竞速）——
+        // 等翻死再发，锁的仍是「死进程下次调用自动重建」设计路径。
+        wait_slot_dead(&sup, "agent-a").await;
         let out = exec_cmd(&sup, &exec_root, "echo after-respawn")
             .await
             .expect("respawn after external kill");
@@ -589,21 +614,10 @@ mod sup_real_child {
         // 拦下 auto_relaunch——完整生产顺序，不是裸调 auto_relaunch）。
         registered.store(false, std::sync::atomic::Ordering::SeqCst);
         kill_pid(pid);
-        // taskkill /F 返回 ≠ try_wait 立即翻死：TerminateProcess 之后进程
-        // 对象清理是异步的，watchdog_tick 若抢在清理完成前探测会把槽当活槽
-        // 跳过（全量并行负载下实测假红）。轮询等监督器同一探测
-        // 结论（is_alive=try_wait，slot_states alive 投影）翻死再 tick——
-        // 有界 10s，超时按旧路径继续（tick 断言会给出诚实失败）。
-        for _ in 0..200 {
-            let alive = sup
-                .slot_states()
-                .iter()
-                .any(|s| s.agent_id == "agent-a" && s.alive);
-            if !alive {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        // taskkill /F 返回 ≠ try_wait 立即翻死（坑位说明与缓解先例见
+        // wait_slot_dead doc）——watchdog_tick 若抢在清理完成前探测会把
+        // 槽当活槽跳过。等翻死再 tick。
+        wait_slot_dead(&sup, "agent-a").await;
         sup.watchdog_tick().await;
         assert!(
             sup.slot_states().is_empty(),

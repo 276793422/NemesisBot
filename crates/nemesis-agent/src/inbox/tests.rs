@@ -4,17 +4,14 @@ use super::*;
 
 fn msg(content: &str) -> QueuedMessage {
     QueuedMessage {
-        msg: nemesis_types::channel::InboundMessage {
-            channel: "web".to_string(),
-            sender_id: String::new(),
-            chat_id: "c1".to_string(),
-            content: content.to_string(),
-            media: vec![],
-            session_key: "web:c1".to_string(),
-            correlation_id: String::new(),
-            metadata: Default::default(),
-            voice_playback: None,
-        },
+        msg: nemesis_types::channel::InboundMessage::user_ingress(
+            "web".to_string(),
+            String::new(),
+            "c1".to_string(),
+            content.to_string(),
+        )
+        .with_session_key("web:c1".to_string())
+        .with_metadata_map(Default::default()),
         timestamp: "2026-08-22T00:00:00Z".to_string(),
         priority: MessagePriority::Normal,
     }
@@ -377,4 +374,136 @@ fn test_enqueue_steer_ignores_soft_watermark_but_not_hard_cap() {
         inbox.enqueue_steer("s", msg("第 9 条")),
         EnqueueOutcome::Rejected
     );
+}
+
+// ---------------------------------------------------------------------------
+// 系统通告 stash（2026-11-21 幻影通告根治）：独立于两条用户消息队列——
+// 消费语义是「合并 system 注记」，混入 next_turn/next_step 即复发幻影。
+// ---------------------------------------------------------------------------
+
+fn notice_entry(channel: &str, chat_id: &str, content: &str) -> NoticeEntry {
+    NoticeEntry {
+        kind: nemesis_types::channel::NoticeKind::Events,
+        channel: channel.to_string(),
+        chat_id: chat_id.to_string(),
+        content: content.to_string(),
+    }
+}
+
+#[test]
+fn test_notice_stash_drain_merge_and_routing() {
+    let inbox = Inbox::new(8);
+    assert!(!inbox.has_notices("s"));
+    assert!(inbox.drain_notices_merged("s").is_none(), "空 stash → None");
+
+    inbox.stash_notice(
+        "s",
+        notice_entry("web", "web:a", "Background job #1 finished"),
+    );
+    inbox.stash_notice(
+        "s",
+        notice_entry("rpc", "rpc:b", "Background job #2 finished"),
+    );
+    assert!(inbox.has_notices("s"));
+    // 不占用户队列位（占位 = 幻影物化路径复发）。
+    assert_eq!(inbox.pending("s"), (0, 0));
+
+    let merged = inbox.drain_notices_merged("s").expect("two notices");
+    assert_eq!(merged.count, 2);
+    assert!(merged.content.contains("#1 finished"));
+    assert!(merged.content.contains("#2 finished"));
+    // 路由 = 最后一条通告的来源（回复回到通告来自的通道）。
+    assert_eq!(merged.channel, "rpc");
+    assert_eq!(merged.chat_id, "rpc:b");
+    // 调用即清空：重复 drain 幂等。
+    assert!(!inbox.has_notices("s"));
+    assert!(inbox.drain_notices_merged("s").is_none());
+
+    // 与用户队列互不干扰：同会话既有排队又有 stash，drain 只取通告。
+    inbox.enqueue_for_mode("s", msg("用户消息"), false);
+    inbox.stash_notice("s", notice_entry("web", "web:a", "job #3 done"));
+    assert_eq!(inbox.pending("s"), (1, 0));
+    let merged = inbox.drain_notices_merged("s").unwrap();
+    assert_eq!(merged.content, "job #3 done");
+    assert_eq!(inbox.pending("s"), (1, 0), "用户队列原样");
+}
+
+#[test]
+fn test_notice_stash_entry_truncation_and_cap_drops_oldest() {
+    let inbox = Inbox::new(8);
+    // 单条超长截断（诚实注记）。
+    let long = "长".repeat(NOTICE_STASH_ENTRY_CAP + 100);
+    inbox.stash_notice("s", notice_entry("web", "c", &long));
+    let merged = inbox.drain_notices_merged("s").unwrap();
+    let expected = "长".repeat(NOTICE_STASH_ENTRY_CAP);
+    assert_eq!(
+        merged.content,
+        format!("{expected} …[通告超长已截断]"),
+        "单条超长截断带注记"
+    );
+
+    // 条数上限：stash 超限丢最旧（通告是信息不是指令，合闸优先）。
+    for i in 0..NOTICE_STASH_CAP + 5 {
+        inbox.stash_notice("s", notice_entry("web", "c", &format!("job{i}")));
+    }
+    let merged = inbox.drain_notices_merged("s").unwrap();
+    assert!(
+        !merged.content.contains("job0"),
+        "最旧条目被丢弃（cap={NOTICE_STASH_CAP}）"
+    );
+    assert!(
+        merged
+            .content
+            .contains(&format!("job{}", NOTICE_STASH_CAP + 4)),
+        "最新条目在库"
+    );
+    // 合并 count = 实际保留条数（cap 封顶）。
+    assert_eq!(merged.count, NOTICE_STASH_CAP);
+}
+
+#[test]
+fn test_notice_merge_total_cap_truncates_with_disclosure() {
+    let inbox = Inbox::new(8);
+    // 构造：8 条 × 3500 字符（单条低于 4000 条目截断帽——截断注记是另一
+    // 个测试的职责），合计 28014 > 24000 合并总量帽 → 按序保留可容纳的
+    // 条数、截丢其余、注记披露丢弃条数。
+    let unit = 3500;
+    let mk_big = |c: char| c.to_string().repeat(unit);
+    for c in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'] {
+        inbox.stash_notice("s", notice_entry("web", "c", &mk_big(c)));
+    }
+    let merged = inbox.drain_notices_merged("s").unwrap();
+    assert_eq!(merged.count, 8, "count 反映 stash 条数（含被截丢的）");
+    // 保留循环：used 累计到第 7 条超帽（6×3500=21000 可容纳，第 7 条
+    // 21000+3500>24000 截停）→ 保留 a..f 共 6 条，丢弃 g、h。
+    assert!(merged.content.starts_with(&mk_big('a')), "按序保留第一条");
+    assert!(
+        merged.content.contains(&mk_big('f')) && !merged.content.contains(&mk_big('g')),
+        "保留到 f、从 g 起截丢"
+    );
+    assert!(
+        merged.content.contains("2 条通告因合并超长未注入"),
+        "丢弃注记诚实披露"
+    );
+}
+
+#[test]
+fn test_notice_clear_symmetry_with_queues() {
+    let inbox = Inbox::new(8);
+    inbox.enqueue_for_mode("s", msg("用户消息"), false);
+    inbox.stash_notice("s", notice_entry("web", "c", "job done"));
+    // clear 摘除整个 SessionQueues（含 notices）——清窗语义对称，不留
+    // 孤儿 stash。
+    inbox.clear("s");
+    assert_eq!(inbox.pending("s"), (0, 0));
+    assert!(!inbox.has_notices("s"));
+    assert!(inbox.drain_notices_merged("s").is_none());
+}
+
+// 合并框注（单一真相源）：轮边界注入与收口合成通告轮共用同一文案。
+#[test]
+fn test_frame_merged_notices_framing() {
+    let framed = frame_merged_notices("Background job #1 finished");
+    assert!(framed.contains("[系统通告]"));
+    assert!(framed.contains("Background job #1 finished"));
 }

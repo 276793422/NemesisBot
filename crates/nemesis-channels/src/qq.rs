@@ -676,17 +676,14 @@ impl QQChannel {
         }
         metadata.insert("chat_type".to_string(), "c2c".to_string());
 
-        let inbound = InboundMessage {
-            channel: "qq".to_string(),
-            sender_id: sender_id.clone(),
-            chat_id: chat_id.clone(),
+        let inbound = InboundMessage::user_ingress(
+            "qq".to_string(),
+            sender_id.clone(),
+            chat_id.clone(),
             content,
-            media: Vec::new(),
-            session_key: format!("qq:{}", chat_id),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        };
+        )
+        .with_session_key(format!("qq:{}", chat_id))
+        .with_metadata_map(metadata);
 
         info!(
             sender_id = %inbound.sender_id,
@@ -751,17 +748,14 @@ impl QQChannel {
         }
         metadata.insert("chat_type".to_string(), "group".to_string());
 
-        let inbound = InboundMessage {
-            channel: "qq".to_string(),
-            sender_id: sender_id.clone(),
-            chat_id: chat_id.clone(),
+        let inbound = InboundMessage::user_ingress(
+            "qq".to_string(),
+            sender_id.clone(),
+            chat_id.clone(),
             content,
-            media: Vec::new(),
-            session_key: format!("qq:{}", chat_id),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        };
+        )
+        .with_session_key(format!("qq:{}", chat_id))
+        .with_metadata_map(metadata);
 
         info!(
             sender_id = %inbound.sender_id,

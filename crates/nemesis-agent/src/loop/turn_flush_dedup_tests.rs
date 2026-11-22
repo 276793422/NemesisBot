@@ -48,17 +48,13 @@ async fn error_ending_flush_does_not_duplicate_terminal_error_row() {
     let key = "agent:main:session:flushdup";
     crate::chat_log::delete_chat_log(key);
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "flushuser".to_string(),
-        chat_id: "flushchat".to_string(),
-        content: "hi".to_string(),
-        media: vec![],
-        session_key: key.to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "flushuser".to_string(),
+        "flushchat".to_string(),
+        "hi".to_string(),
+    )
+    .with_session_key(key.to_string());
     let (_, resp, err, _) = al.process_inbound_message(&msg).await;
     assert!(
         err.is_some(),

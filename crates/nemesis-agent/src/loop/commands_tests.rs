@@ -34,17 +34,7 @@ fn write_table(dir: &std::path::Path, body: &str) {
 }
 
 fn inbound(content: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".into(),
-        sender_id: "user".into(),
-        chat_id: "chat".into(),
-        content: content.into(),
-        media: Vec::new(),
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress("web", "user", "chat", content)
 }
 
 const TABLE: &str = r#"{

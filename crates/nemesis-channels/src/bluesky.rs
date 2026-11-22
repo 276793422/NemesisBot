@@ -376,17 +376,13 @@ impl BlueskyChannel {
             }
         }
 
-        let inbound = InboundMessage {
-            channel: "bluesky".to_string(),
-            sender_id: sender_handle.to_string(),
-            chat_id: notif["uri"].as_str().unwrap_or("").to_string(),
-            content: text.to_string(),
-            media: Vec::new(),
-            session_key: sender_handle.to_string(),
-            correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
-            voice_playback: None,
-        };
+        let inbound = InboundMessage::user_ingress(
+            "bluesky".to_string(),
+            sender_handle.to_string(),
+            notif["uri"].as_str().unwrap_or("").to_string(),
+            text.to_string(),
+        )
+        .with_session_key(sender_handle.to_string());
 
         if let Err(e) = bus.send(inbound) {
             warn!("[BlueskyChannel] failed to publish inbound message to bus: {e}");

@@ -502,6 +502,11 @@ impl AgentLoop {
                         .into_iter()
                         .collect(),
                     voice_playback: None,
+                    // 直塞门（拍板永久不动）：hook_prompt 走 enqueue_for_mode
+                    // 绕过 busy gate，落点即 inbox 队列本体——msg_class 必须
+                    // 显式 User 才能过 detection net（User + 内部形状标记 =
+                    // 拦截）；User 类无 busy/snooze 闸介入，直塞语义不变。
+                    msg_class: nemesis_types::channel::MsgClass::User,
                 };
                 let queued = crate::inbox::QueuedMessage {
                     msg,
@@ -1289,6 +1294,39 @@ impl AgentLoop {
                 )
                 .await;
             }
+        }
+        // 系统通告合并注入（2026-11-21 幻影通告根治）：busy 期间 stash 的
+        // 通告在本轮下一次 LLM 调用前合并注入（与 steer claim 同位；上方
+        // steer_phase_active 早退同样罩住这里——插话专轮不被掺和，通告留
+        // stash 由下一边界或 turn 收口 drain）。模型侧载体 = instance 历史的
+        // user 消息（框注文本——系统生成文本无媒体无 @引用，不走展开链）；
+        // 持久真相 = jsonl system 注记行（note_kind="bg_notice"，全文），
+        // **不是 user 行**（user 行 = 幻影通告，本批根治的事故形态）。实时
+        // 徽标帧路由最后一条通告的来源端点。
+        if let Some(merged) = self.inbox.drain_notices_merged(&context.session_key) {
+            let framed = crate::inbox::frame_merged_notices(&merged.content);
+            info!(
+                "[AgentLoop] merged notice(s) injected before LLM call: session_key={}, count={}, len={}",
+                context.session_key,
+                merged.count,
+                merged.content.chars().count()
+            );
+            instance.add_user_message(&framed);
+            let head = crate::tool_event_hook::truncate_chars(merged.content.trim(), 50);
+            let note = format!("🔔 系统通告已注入本轮（{} 条）：{}", merged.count, head);
+            crate::chat_log::append_bg_notice_note(&context.session_key, &merged.content);
+            self.work_recorder
+                .record_steer_note(&context.session_key, &note);
+            self.send_note_badge_frame(
+                &merged.channel,
+                &merged.chat_id,
+                &context.session_key,
+                "bg_notice",
+                &note,
+                // 注记行已落盘（system 行占行号锚）→ Some(true)。
+                Some(true),
+            )
+            .await;
         }
     }
 

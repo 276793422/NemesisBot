@@ -372,17 +372,9 @@ impl MaixCamChannel {
                                                         debug!(msg_type = %msg_type, "[MaixCamChannel] event");
                                                         match MaixCamChannel::classify_message(&msg) {
                                                             MaixCamEvent::PersonDetected { content, metadata, sender_id, chat_id } => {
-                                                                let inbound = InboundMessage {
-                                                                    channel: "maixcam".to_string(),
-                                                                    sender_id,
-                                                                    chat_id,
-                                                                    content,
-                                                                    media: Vec::new(),
-                                                                    session_key: "maixcam:default".to_string(),
-                                                                    correlation_id: String::new(),
-                                                                    metadata,
-                                                                    voice_playback: None,
-                                                                };
+                                                                let inbound = InboundMessage::user_ingress("maixcam".to_string(), sender_id, chat_id, content)
+                                                                .with_session_key("maixcam:default".to_string())
+                                                                .with_metadata_map(metadata);
                                                                 if let Err(e) = bus_sender.send(inbound) {
                                                                     warn!(error = %e, "[MaixCamChannel] failed to publish inbound message");
                                                                 }

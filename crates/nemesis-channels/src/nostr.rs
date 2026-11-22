@@ -851,17 +851,13 @@ impl NostrEventProcessor {
             "[NostrChannel] 收到加密 DM（{} 字节）",
             content.len()
         );
-        let inbound = InboundMessage {
-            channel: "nostr".to_string(),
-            sender_id: event.pubkey.clone(),
-            chat_id: chat_id.clone(),
+        let inbound = InboundMessage::user_ingress(
+            "nostr".to_string(),
+            event.pubkey.clone(),
+            chat_id.clone(),
             content,
-            media: Vec::new(),
-            session_key: chat_id,
-            correlation_id: String::new(),
-            metadata: HashMap::new(),
-            voice_playback: None,
-        };
+        )
+        .with_session_key(chat_id);
         self.base.record_received();
         if let Err(e) = self.bus_sender.send(inbound) {
             warn!(error = %e, "[NostrChannel] 入站消息发布失败（bus 无接收者）");

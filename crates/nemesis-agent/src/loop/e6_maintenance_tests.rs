@@ -97,17 +97,13 @@ fn resp(content: &str) -> LlmResponse {
 }
 
 fn inbound_msg(content: &str, session_key: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "e6user".to_string(),
-        chat_id: "e6chat".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "e6user".to_string(),
+        "e6chat".to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session_key.to_string())
 }
 
 /// 进程内唯一 key（时间戳纳秒 + 标签），chat_log 落盘测试互不干扰。

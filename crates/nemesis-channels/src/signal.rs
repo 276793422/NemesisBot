@@ -294,21 +294,18 @@ impl Channel for SignalChannel {
                         sender.to_string()
                     };
 
-                    let inbound = InboundMessage {
-                        channel: "signal".to_string(),
-                        sender_id: sender.to_string(),
-                        chat_id: chat_id.clone(),
-                        content: content.to_string(),
-                        media: Vec::new(),
-                        session_key: chat_id,
-                        correlation_id: String::new(),
-                        metadata: {
-                            let mut m = std::collections::HashMap::new();
-                            m.insert("timestamp".to_string(), timestamp.to_string());
-                            m
-                        },
-                        voice_playback: None,
-                    };
+                    let inbound = InboundMessage::user_ingress(
+                        "signal".to_string(),
+                        sender.to_string(),
+                        chat_id.clone(),
+                        content.to_string(),
+                    )
+                    .with_session_key(chat_id)
+                    .with_metadata_map({
+                        let mut m = std::collections::HashMap::new();
+                        m.insert("timestamp".to_string(), timestamp.to_string());
+                        m
+                    });
 
                     if let Err(e) = bus.send(inbound) {
                         warn!("[SignalChannel] failed to publish inbound message to bus: {e}");

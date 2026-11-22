@@ -4,6 +4,10 @@
 // ① 用户消息：排队（.pending 落盘）+ 💤 Immediate 回执 + jsonl system 单行
 //    （不成对——user 行由重放物化）；
 // ② cron tick：静默排队（Coalesced，零 jsonl 落盘零回执）；
+// ②b 带章系统通告：静默排队（SnoozeQueued，零 jsonl 落盘零回执——
+//    幻影通告根治残余门 2026-11-21：假 💤 回执 = bot「确认」一条没人发
+//    的消息；metadata 随 pending 往返保真，唤醒重放再过闸按通告语义
+//    准入/stash）；Err 臂（pending 拒收）响亮 warn + 丢弃，不弹回不留痕；
 // ③ 超上限：诚实拒收（persist_busy_refusal 成对留痕 user+assistant）；
 // ④ 管理动词（slash）在闸上方短路——暂停不拦管理操作；
 // ⑤ 未暂停会话正常准入，零 pending 文件。
@@ -78,7 +82,33 @@ fn gate_msg(session_key: &str, content: &str) -> InboundMessage {
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::User,
     }
+}
+
+/// 通告类消息（msg_class 单轨：构造器烤死 class，不再写 metadata 章）。
+fn notice_msg(session_key: &str, content: &str) -> InboundMessage {
+    InboundMessage::notice(
+        nemesis_types::channel::NoticeKind::Events,
+        "web".to_string(),
+        "l22chat".to_string(),
+        session_key.to_string(),
+        content.to_string(),
+    )
+}
+
+/// cron tick 指令类消息（class 烤死 CronTick；job_id 章供合闸/展示消费）。
+fn cron_tick_msg(session_key: &str, job: &str, content: &str) -> InboundMessage {
+    let mut m = InboundMessage::instruction(
+        nemesis_types::channel::InstructionKind::CronTick,
+        "web".to_string(),
+        "l22chat".to_string(),
+        session_key.to_string(),
+        content.to_string(),
+    );
+    m.metadata
+        .insert("cron_job_id".to_string(), job.to_string());
+    m
 }
 
 fn jsonl_roles(key: &str) -> Vec<(String, String)> {
@@ -143,9 +173,7 @@ async fn snoozed_cron_tick_queues_silently() {
     let al = l22_gate_loop();
     crate::chat_log::write_session_snooze(&key, "2099-01-01T00:00:00+08:00", None);
 
-    let mut msg = gate_msg(&key, "定时任务心跳");
-    msg.metadata
-        .insert("cron_job_id".to_string(), "job-l22".to_string());
+    let msg = cron_tick_msg(&key, "job-l22", "定时任务心跳");
 
     match al.gate_inbound(&msg) {
         GateOutcome::Coalesced { cron_job_id } => {
@@ -161,6 +189,75 @@ async fn snoozed_cron_tick_queues_silently() {
     assert!(
         roles.is_empty(),
         "cron 静默排队不得落回执行，实际: {roles:?}"
+    );
+
+    crate::chat_log::delete_chat_log(&key);
+}
+
+#[tokio::test]
+async fn snoozed_system_notice_queues_silently() {
+    // 幻影通告根治残余门（2026-11-21）：暂停会话的通告类消息零回执零落盘
+    // ——假 💤 回执 = bot「确认」一条没人发的消息（幻影同病灶）。
+    let key = l22_key("notice");
+    let al = l22_gate_loop();
+    crate::chat_log::write_session_snooze(&key, "2099-01-01T00:00:00+08:00", None);
+
+    let msg = notice_msg(&key, "Background job #1 finished");
+
+    match al.gate_inbound(&msg) {
+        GateOutcome::SnoozeQueued { session_key } => {
+            assert_eq!(session_key, key);
+        }
+        other => panic!("暂停中通告必须 SnoozeQueued 静默排队，实际 {other:?}"),
+    }
+
+    // pending 落盘 + class 往返保真（唤醒重放再过闸按通告语义准入）。
+    let queued = crate::chat_log::take_session_pending(&key);
+    assert_eq!(queued.len(), 1, "通告必须落 pending（唤醒重放投递）");
+    assert_eq!(queued[0].content, "Background job #1 finished");
+    assert!(
+        matches!(
+            &queued[0].msg_class,
+            nemesis_types::channel::MsgClass::Notice(nemesis_types::channel::NoticeKind::Events)
+        ),
+        "class 必须随 pending 往返保真，实际 {:?}",
+        queued[0].msg_class
+    );
+
+    // 零 jsonl 落盘（无 💤 回执行、无 user 行）。
+    let roles = jsonl_roles(&key);
+    assert!(roles.is_empty(), "通告静默排队不得落回执，实际: {roles:?}");
+
+    crate::chat_log::delete_chat_log(&key);
+}
+
+#[tokio::test]
+async fn snoozed_notice_overflow_drops_silently() {
+    // Err 臂（pending 拒收）：不弹回不留痕（persist_busy_refusal 的
+    // user+bounce 成对行正是幻影物化形态），响亮 warn 即全部留痕。
+    let key = l22_key("notice-cap");
+    let al = l22_gate_loop();
+    crate::chat_log::write_session_snooze(&key, "2099-01-01T00:00:00+08:00", None);
+
+    // 灌满 pending 隔离 Err 臂（同 ③ 的隔离手法）。
+    for i in 0..crate::chat_log::SESSION_PENDING_CAP {
+        crate::chat_log::append_session_pending(&key, &gate_msg(&key, &format!("m{i}")))
+            .expect("灌满过程不应失败");
+    }
+
+    let msg = notice_msg(&key, "Background job #2 finished");
+    match al.gate_inbound(&msg) {
+        GateOutcome::SnoozeQueued { .. } => {}
+        other => panic!("暂停中通告 pending 拒收必须静默丢弃，实际 {other:?}"),
+    }
+
+    // 零弹回零落盘 + 已排队条目不被挤掉。
+    let roles = jsonl_roles(&key);
+    assert!(roles.is_empty(), "通告 Err 臂不得留弹回痕，实际: {roles:?}");
+    assert_eq!(
+        crate::chat_log::session_pending_count(&key),
+        crate::chat_log::SESSION_PENDING_CAP,
+        "拒收不得挤掉已排队消息"
     );
 
     crate::chat_log::delete_chat_log(&key);

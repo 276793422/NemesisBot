@@ -2154,17 +2154,13 @@ fn test_format_tools_for_log() {
 
 #[test]
 fn test_extract_peer_no_metadata() {
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user123".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string());
     assert_eq!(extract_peer(&msg), "user123");
 }
 
@@ -2173,17 +2169,14 @@ fn test_extract_peer_with_metadata() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("peer_kind".to_string(), "guild".to_string());
     metadata.insert("peer_id".to_string(), "guild_12345".to_string());
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "discord".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "discord".to_string(),
+        "user123".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string())
+    .with_metadata_map(metadata);
     assert_eq!(extract_peer(&msg), "guild:guild_12345");
 }
 
@@ -2191,17 +2184,14 @@ fn test_extract_peer_with_metadata() {
 fn test_extract_peer_direct_kind() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("peer_kind".to_string(), "direct".to_string());
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "telegram".to_string(),
-        sender_id: "tg_user_456".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "telegram".to_string(),
+        "tg_user_456".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string())
+    .with_metadata_map(metadata);
     assert_eq!(extract_peer(&msg), "direct:tg_user_456");
 }
 
@@ -2210,17 +2200,14 @@ fn test_extract_parent_peer() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("parent_peer_kind".to_string(), "channel".to_string());
     metadata.insert("parent_peer_id".to_string(), "chan_789".to_string());
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "discord".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "discord".to_string(),
+        "user123".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string())
+    .with_metadata_map(metadata);
     assert_eq!(
         extract_parent_peer(&msg),
         Some("channel:chan_789".to_string())
@@ -2229,17 +2216,13 @@ fn test_extract_parent_peer() {
 
 #[test]
 fn test_extract_parent_peer_missing() {
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user123".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string());
     assert_eq!(extract_parent_peer(&msg), None);
 }
 
@@ -3377,17 +3360,14 @@ fn test_truncate_exact() {
 fn test_extract_peer_with_empty_peer_kind() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("peer_kind".to_string(), String::new());
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user123".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string())
+    .with_metadata_map(metadata);
     // Empty peer_kind should fall through to sender_id
     assert_eq!(extract_peer(&msg), "user123");
 }
@@ -3396,17 +3376,14 @@ fn test_extract_peer_with_empty_peer_kind() {
 fn test_extract_peer_with_peer_kind_no_peer_id() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("peer_kind".to_string(), "group".to_string());
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "discord".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat_abc".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "discord".to_string(),
+        "user123".to_string(),
+        "chat_abc".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string())
+    .with_metadata_map(metadata);
     // No peer_id, non-direct -> falls back to chat_id
     assert_eq!(extract_peer(&msg), "group:chat_abc");
 }
@@ -3416,17 +3393,14 @@ fn test_extract_parent_peer_empty_values() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("parent_peer_kind".to_string(), String::new());
     metadata.insert("parent_peer_id".to_string(), String::new());
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user123".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string())
+    .with_metadata_map(metadata);
     assert_eq!(extract_parent_peer(&msg), None);
 }
 
@@ -3435,17 +3409,14 @@ fn test_extract_parent_peer_missing_id() {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("parent_peer_kind".to_string(), "channel".to_string());
     // No parent_peer_id
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user123".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "sess1".to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user123".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("sess1".to_string())
+    .with_metadata_map(metadata);
     assert_eq!(extract_parent_peer(&msg), None);
 }
 
@@ -3896,20 +3867,18 @@ fn test_route_message_dm_scope_and_identity_links_wiring() {
         8,
         0,
     );
-    let msg = || nemesis_types::channel::InboundMessage {
-        channel: "telegram".to_string(),
-        sender_id: "123".to_string(),
-        chat_id: "123".to_string(),
-        content: "hello".to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: {
+    let msg = || {
+        nemesis_types::channel::InboundMessage::user_ingress(
+            "telegram".to_string(),
+            "123".to_string(),
+            "123".to_string(),
+            "hello".to_string(),
+        )
+        .with_metadata_map({
             let mut m = std::collections::HashMap::new();
             m.insert("peer_kind".to_string(), "direct".to_string());
             m
-        },
-        voice_playback: None,
+        })
     };
 
     // 缺省（new_bus 默认 resolver：Main scope；identity_links 空）= 旧行为。
@@ -3956,17 +3925,14 @@ fn test_route_message_honors_agents_entity_session_key() {
         8,
         0,
     );
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "web".to_string(),
-        chat_id: "web:conn-1".to_string(),
-        content: "hello".to_string(),
-        media: vec![],
-        session_key: "agents:abcd1234:session:default".to_string(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "web".to_string(),
+        "web:conn-1".to_string(),
+        "hello".to_string(),
+    )
+    .with_session_key("agents:abcd1234:session:default".to_string())
+    .with_metadata_map(Default::default());
     let (_agent_id, session_key) = agent_loop.route_message(&msg);
     assert_eq!(
         session_key, "agents:abcd1234:session:default",
@@ -3991,16 +3957,15 @@ fn test_route_message_honors_board_dispatch_session_key() {
         8,
         0,
     );
-    let msg = |session_key: &str| nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "board".to_string(),
-        chat_id: "task-1".to_string(),
-        content: "fix the bug".to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: Default::default(),
-        voice_playback: None,
+    let msg = |session_key: &str| {
+        nemesis_types::channel::InboundMessage::user_ingress(
+            "web".to_string(),
+            "board".to_string(),
+            "task-1".to_string(),
+            "fix the bug".to_string(),
+        )
+        .with_session_key(session_key.to_string())
+        .with_metadata_map(Default::default())
     };
     let (agent_id, session_key) = agent_loop.route_message(&msg("board_dispatch:task-1"));
     assert_eq!(agent_id, "main");
@@ -4599,17 +4564,13 @@ fn make_inbound(
     sender_id: &str,
     session_key: &str,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: channel.to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: chat_id.to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        channel.to_string(),
+        sender_id.to_string(),
+        chat_id.to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session_key.to_string())
 }
 
 #[tokio::test]
@@ -4636,17 +4597,12 @@ async fn test_process_inbound_message_system_internal_channel() {
     );
 
     // System message with internal channel (cli) - should skip processing
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "system".to_string(),
-        sender_id: "subagent-1".to_string(),
-        chat_id: "cli:direct".to_string(),
-        content: "Task completed.".to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "system".to_string(),
+        "subagent-1".to_string(),
+        "cli:direct".to_string(),
+        "Task completed.".to_string(),
+    );
     let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "");
     assert!(response.is_empty());
@@ -4670,21 +4626,18 @@ async fn test_process_inbound_message_history_request() {
         0,
     );
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: r#"{"request_id":"r1","limit":10}"#.to_string(),
-        session_key: "web:chat1".to_string(),
-        media: vec![],
-        correlation_id: String::new(),
-        metadata: {
-            let mut m = std::collections::HashMap::new();
-            m.insert("request_type".to_string(), "history".to_string());
-            m
-        },
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        r#"{"request_id":"r1","limit":10}"#.to_string(),
+    )
+    .with_session_key("web:chat1".to_string())
+    .with_metadata_map({
+        let mut m = std::collections::HashMap::new();
+        m.insert("request_type".to_string(), "history".to_string());
+        m
+    });
     let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "");
     assert!(response.is_empty());
@@ -4793,17 +4746,13 @@ async fn test_process_inbound_message_route_with_agent_scoped_key() {
         0,
     );
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: "agent:main:custom_session".to_string(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key("agent:main:custom_session".to_string());
     let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "main");
     assert!(response.contains("Agent scoped"));
@@ -4981,17 +4930,14 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
         0,
     );
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "rpc".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello RPC".to_string(),
-        media: vec![],
-        session_key: "rpc:chat1".to_string(),
-        correlation_id: "corr-123".to_string(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "rpc".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "Hello RPC".to_string(),
+    )
+    .with_session_key("rpc:chat1".to_string())
+    .with_correlation_id("corr-123".to_string());
     inbound_tx.send(msg).await.unwrap();
     drop(inbound_tx);
 
@@ -5046,6 +4992,7 @@ async fn test_process_system_message_with_result_extraction() {
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
+        msg_class: nemesis_types::channel::MsgClass::User,
     };
     let (_, response, _, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(response.contains("System processed"));
@@ -5074,17 +5021,12 @@ async fn test_process_system_message_without_result_prefix() {
         0,
     );
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "system".to_string(),
-        sender_id: "subagent-1".to_string(),
-        chat_id: "web:chat1".to_string(),
-        content: "No result prefix here".to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "system".to_string(),
+        "subagent-1".to_string(),
+        "web:chat1".to_string(),
+        "No result prefix here".to_string(),
+    );
     let (_, response, _, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(response.contains("Direct content"));
 }
@@ -6719,22 +6661,18 @@ async fn test_process_inbound_message_with_route_resolver_configured() {
     );
     agent_loop.set_route_resolver(nemesis_routing::RouteResolver::new(config));
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "discord".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello discord".to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: {
-            let mut m = std::collections::HashMap::new();
-            m.insert("peer_kind".to_string(), "guild".to_string());
-            m.insert("peer_id".to_string(), "12345".to_string());
-            m
-        },
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "discord".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "Hello discord".to_string(),
+    )
+    .with_metadata_map({
+        let mut m = std::collections::HashMap::new();
+        m.insert("peer_kind".to_string(), "guild".to_string());
+        m.insert("peer_id".to_string(), "12345".to_string());
+        m
+    });
 
     let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "main");
@@ -7021,17 +6959,13 @@ fn make_inbound_msg(
     chat_id: &str,
     metadata: std::collections::HashMap<String, String>,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: chat_id.to_string(),
-        content: String::new(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        sender_id.to_string(),
+        chat_id.to_string(),
+        String::new(),
+    )
+    .with_metadata_map(metadata)
 }
 
 #[test]
@@ -7180,17 +7114,14 @@ fn make_history_inbound(
     });
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("request_type".to_string(), "history".to_string());
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: format!("web:{}", chat_id),
-        chat_id: chat_id.to_string(),
-        content: payload.to_string(),
-        media: vec![],
-        session_key: format!("web:{}", chat_id),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        format!("web:{}", chat_id),
+        chat_id.to_string(),
+        payload.to_string(),
+    )
+    .with_session_key(format!("web:{}", chat_id))
+    .with_metadata_map(metadata)
 }
 
 /// Lock to serialize integration tests that share the "agent:main:main" chat log.
@@ -7695,17 +7626,14 @@ fn make_inbound_with_metadata(
     for (k, v) in metadata {
         meta.insert(k.to_string(), v.to_string());
     }
-    nemesis_types::channel::InboundMessage {
-        channel: channel.to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: chat_id.to_string(),
-        content: "test".to_string(),
-        media: vec![],
-        session_key: format!("{}:{}", channel, chat_id),
-        correlation_id: String::new(),
-        metadata: meta,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        channel.to_string(),
+        sender_id.to_string(),
+        chat_id.to_string(),
+        "test".to_string(),
+    )
+    .with_session_key(format!("{}:{}", channel, chat_id))
+    .with_metadata_map(meta)
 }
 
 #[test]
@@ -9358,17 +9286,14 @@ impl Tool for SteerEnqueueNoteStubTool {
         self.inbox.enqueue(
             &self.session_key,
             crate::inbox::QueuedMessage {
-                msg: nemesis_types::channel::InboundMessage {
-                    channel: "web".to_string(),
-                    sender_id: "tester".to_string(),
-                    chat_id: "chat1".to_string(),
-                    content: self.steer_content.clone(),
-                    media: vec![],
-                    session_key: self.session_key.clone(),
-                    correlation_id: String::new(),
-                    metadata: Default::default(),
-                    voice_playback: None,
-                },
+                msg: nemesis_types::channel::InboundMessage::user_ingress(
+                    "web".to_string(),
+                    "tester".to_string(),
+                    "chat1".to_string(),
+                    self.steer_content.clone(),
+                )
+                .with_session_key(self.session_key.clone())
+                .with_metadata_map(Default::default()),
                 timestamp: String::new(),
                 priority: crate::inbox::MessagePriority::Normal,
             },
@@ -11089,17 +11014,13 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
     );
     pin_known_window_config(&agent_loop);
 
-    let msg = nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "Hello".to_string(),
-        media: vec![],
-        session_key: key.clone(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    };
+    let msg = nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "Hello".to_string(),
+    )
+    .with_session_key(key.clone());
     let (_agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(err.is_none(), "一轮必须正常完成: {err:?}");
     assert_eq!(response, "hd reply");

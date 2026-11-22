@@ -618,17 +618,14 @@ fn s9_inbound(
     session_key: &str,
     metadata: std::collections::HashMap<String, String>,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "user1".to_string(),
-        chat_id: "chat1".to_string(),
-        content: "hi".to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "user1".to_string(),
+        "chat1".to_string(),
+        "hi".to_string(),
+    )
+    .with_session_key(session_key.to_string())
+    .with_metadata_map(metadata)
 }
 
 /// route_message 无 resolver 兜底臂（2116-2135）：session_key 空走
@@ -820,17 +817,14 @@ fn s9_msg(
     content: &str,
     metadata: std::collections::HashMap<String, String>,
 ) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: channel.to_string(),
-        sender_id: sender_id.to_string(),
-        chat_id: chat_id.to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: session_key.to_string(),
-        correlation_id: String::new(),
-        metadata,
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        channel.to_string(),
+        sender_id.to_string(),
+        chat_id.to_string(),
+        content.to_string(),
+    )
+    .with_session_key(session_key.to_string())
+    .with_metadata_map(metadata)
 }
 
 fn plain_msg(content: &str) -> nemesis_types::channel::InboundMessage {

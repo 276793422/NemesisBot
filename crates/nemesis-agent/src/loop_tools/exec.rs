@@ -879,8 +879,10 @@ impl Tool for ExecTool {
                                  the background (job_id {}) and is still running.\n\
                                  - Read output: background_output (job_id {})\n\
                                  - Stop it: background_kill (job_id {})\n\
-                                 You will get a completion notice here automatically when it \
-                                 exits — no polling needed.\n\
+                                 There is no completion notice — follow up with \
+                                 background_output (its wait_secs blocks up to 30s for the \
+                                 exit code), or poll as needed. Full output is also on disk \
+                                 at the log_path in the response.\n\
                                  Tip: the command may be waiting for interactive input — on \
                                  Windows `date`/`time` are interactive (use `date /t`/`time /t` \
                                  or PowerShell Get-Date).\n\

@@ -428,17 +428,13 @@ impl LineChannel {
                 reply_tokens.insert(chat_id.to_string(), reply_token.clone());
             }
 
-            let inbound = InboundMessage {
-                channel: "line".to_string(),
-                sender_id: sender_id.to_string(),
-                chat_id: chat_id.to_string(),
-                content: text.to_string(),
-                media: Vec::new(),
-                session_key: chat_id.to_string(),
-                correlation_id: String::new(),
-                metadata: std::collections::HashMap::new(),
-                voice_playback: None,
-            };
+            let inbound = InboundMessage::user_ingress(
+                "line".to_string(),
+                sender_id.to_string(),
+                chat_id.to_string(),
+                text.to_string(),
+            )
+            .with_session_key(chat_id.to_string());
 
             if let Err(e) = bus.send(inbound) {
                 warn!("[LineChannel] failed to publish inbound message to bus: {e}");

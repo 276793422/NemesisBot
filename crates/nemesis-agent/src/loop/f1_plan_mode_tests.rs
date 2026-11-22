@@ -72,17 +72,12 @@ fn def_names(defs: &[crate::types::ToolDefinition]) -> Vec<String> {
 }
 
 fn inbound_msg(content: &str) -> nemesis_types::channel::InboundMessage {
-    nemesis_types::channel::InboundMessage {
-        channel: "web".to_string(),
-        sender_id: "f1user".to_string(),
-        chat_id: "f1chat".to_string(),
-        content: content.to_string(),
-        media: vec![],
-        session_key: String::new(),
-        correlation_id: String::new(),
-        metadata: std::collections::HashMap::new(),
-        voice_playback: None,
-    }
+    nemesis_types::channel::InboundMessage::user_ingress(
+        "web".to_string(),
+        "f1user".to_string(),
+        "f1chat".to_string(),
+        content.to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------

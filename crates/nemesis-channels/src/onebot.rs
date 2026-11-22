@@ -619,17 +619,13 @@ impl Channel for OneBotChannel {
                         last_message_ids.insert(chat_id.clone(), message_id);
                     }
 
-                    let inbound = InboundMessage {
-                        channel: "onebot".to_string(),
-                        sender_id: user_id,
-                        chat_id: chat_id.clone(),
+                    let inbound = InboundMessage::user_ingress(
+                        "onebot".to_string(),
+                        user_id,
+                        chat_id.clone(),
                         content,
-                        media: Vec::new(),
-                        session_key: chat_id,
-                        correlation_id: String::new(),
-                        metadata: std::collections::HashMap::new(),
-                        voice_playback: None,
-                    };
+                    )
+                    .with_session_key(chat_id);
 
                     if let Err(e) = bus.send(inbound) {
                         warn!("[OneBotChannel] failed to publish inbound message to bus: {e}");

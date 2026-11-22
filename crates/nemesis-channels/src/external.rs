@@ -187,17 +187,8 @@ impl ExternalChannel {
 
                                     // Allow-list check (mirrors Go HandleMessage → IsAllowed)
                                     if base.is_allowed(&chat_id) {
-                                        let inbound = InboundMessage {
-                                            channel: base.name().to_string(),
-                                            sender_id: chat_id.clone(),
-                                            chat_id: chat_id.clone(),
-                                            content: trimmed.to_string(),
-                                            media: Vec::new(),
-                                            session_key: chat_id.clone(),
-                                            correlation_id: String::new(),
-                                            metadata: std::collections::HashMap::new(),
-                                            voice_playback: None,
-                                        };
+                                        let inbound = InboundMessage::user_ingress(base.name().to_string(), chat_id.clone(), chat_id.clone(), trimmed.to_string())
+                                        .with_session_key(chat_id.clone());
                                         if let Err(e) = bus_sender.send(inbound) {
                                             warn!(
                                                 error = %e,

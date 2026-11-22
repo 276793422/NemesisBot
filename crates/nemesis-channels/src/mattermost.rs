@@ -623,17 +623,15 @@ impl MattermostChannel {
             format!("{channel_id}/{root_id}")
         };
 
-        Some(InboundMessage {
-            channel: "mattermost".to_string(),
-            sender_id: user_id.to_string(),
-            chat_id,
-            content,
-            media: Vec::new(),
-            session_key: String::new(),
-            correlation_id: String::new(),
-            metadata,
-            voice_playback: None,
-        })
+        Some(
+            InboundMessage::user_ingress(
+                "mattermost".to_string(),
+                user_id.to_string(),
+                chat_id,
+                content,
+            )
+            .with_metadata_map(metadata),
+        )
     }
 }
 
