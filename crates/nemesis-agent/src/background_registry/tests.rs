@@ -1454,3 +1454,53 @@ async fn adopt_exec_teeds_seed_and_forwarded_output() {
 
     reg.kill(id).await.unwrap();
 }
+
+// ---- tee 日志 7 天 TTL 清扫（BUG-20261123-005）----
+// 纯文件系统用例，不起子进程，不参与 TEST_LOCK。
+
+/// 写一个镜像文件并回拨 mtime 模拟年龄（spill tests 同款 set_modified）。
+fn make_tee_log(dir: &std::path::Path, name: &str, age_secs: u64, body: &str) {
+    let path = dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
+    let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.set_modified(past).unwrap();
+}
+
+#[tokio::test]
+async fn test_tee_log_sweep_deletes_expired_keeps_fresh_and_foreign() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    make_tee_log(dir.path(), "bg_1000_1.log", 10 * 24 * 3600, "old");
+    make_tee_log(dir.path(), "bg_2000_2.log", 24 * 3600, "fresh");
+    make_tee_log(dir.path(), "unrelated_old.txt", 30 * 24 * 3600, "foreign");
+    let deleted = sweep_expired_tee_logs(dir.path(), 7);
+    assert_eq!(deleted, 1, "only the expired tee mirror is deleted");
+    assert!(!dir.path().join("bg_1000_1.log").exists());
+    assert!(
+        dir.path().join("bg_2000_2.log").exists(),
+        "fresh mirror kept"
+    );
+    assert!(
+        dir.path().join("unrelated_old.txt").exists(),
+        "non bg_*.log file untouched by pattern guard"
+    );
+}
+
+#[tokio::test]
+async fn test_tee_log_sweep_zero_days_disables() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    make_tee_log(dir.path(), "bg_1_1.log", 365 * 24 * 3600, "ancient");
+    assert_eq!(
+        sweep_expired_tee_logs(dir.path(), 0),
+        0,
+        "0 = disabled, nothing touched"
+    );
+    assert!(dir.path().join("bg_1_1.log").exists());
+}
+
+#[tokio::test]
+async fn test_tee_log_sweep_missing_dir_is_noop() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let absent = dir.path().join("no_such_dir");
+    assert_eq!(sweep_expired_tee_logs(&absent, 7), 0);
+}
