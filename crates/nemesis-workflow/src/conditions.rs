@@ -50,7 +50,14 @@ fn resolve_variables(expr: &str, vars: &HashMap<String, String>) -> String {
 
             if let Some(val) = vars.get(key) {
                 result.replace_range(open_abs..close_abs + 2, val);
-                // Don't advance start, as the replacement may contain {{ that need resolving
+                // BUG-20261122-037：start 必须**前进过插入值**（open_abs +
+                // val.len()）——替换值不做二次解析（行为被
+                // w4a_resolve_variables_value_templates_are_not_rescanned
+                // 钉死）。旧注释写「Don't advance start … need resolving」
+                // 与代码相反：不前进会让自引用/环引用值（变量来自节点输出
+                // = LLM 生成文本，可携带 `{{a}}` 自指或 a↔b 互指）在同一
+                // find 循环里反复命中同一 `{{` 无限挂死 gateway；前进语义
+                // 即循环终结器，代价是链式引用（a→b）不解析——安全侧取舍。
                 start = open_abs + val.len();
             } else {
                 start = close_abs + 2;
