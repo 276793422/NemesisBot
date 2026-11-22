@@ -219,6 +219,20 @@ fn build_edit_preview(
     new_text: &str,
 ) -> Option<(String, &'static str)> {
     let p = resolve_preview_path(workspace, path);
+    // 现盘参与 diff 的大小闸（与 write/append 臂同款，BUG-20261122-034）：
+    // 超限不整读、注记形态降级。无闸时超大目标全量进内存 ×3 份拷贝
+    // （bytes + from_utf8_lossy + 替换结果），每次审批请求都触发。
+    if let Ok(meta) = std::fs::metadata(&p)
+        && meta.len() > MAX_DIFF_SOURCE_BYTES
+    {
+        return Some((
+            format!(
+                "目标文件较大（{}），diff 预览略——请谨慎确认目标路径。",
+                human_size(meta.len())
+            ),
+            "text",
+        ));
+    }
     match std::fs::read(&p) {
         Err(e) => Some((
             format!(
@@ -271,6 +285,9 @@ fn build_multiedit_preview(
     let mut files: std::collections::BTreeMap<String, (Vec<u8>, Option<String>)> =
         std::collections::BTreeMap::new();
     let mut notes: Vec<String> = Vec::new();
+    // 现盘参与 diff 的大小闸（与 write/append 臂同款，BUG-20261122-034）：
+    // 超限目标不整读、注记形态降级；同文件多条编辑只注记一次。
+    let mut oversized: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, e) in edits.iter().enumerate() {
         let (Some(path), Some(old_text), Some(new_text)) = (
             e.get("path").and_then(|v| v.as_str()),
@@ -279,8 +296,22 @@ fn build_multiedit_preview(
         ) else {
             return None; // 条目形态不齐 = 非本工具的 args，诚实不产。
         };
-        let entry = files.entry(path.to_string()).or_insert_with(|| {
-            let bytes = std::fs::read(resolve_preview_path(workspace, path)).unwrap_or_default();
+        if oversized.contains(path) {
+            continue;
+        }
+        let resolved = resolve_preview_path(workspace, path);
+        if let Ok(meta) = std::fs::metadata(&resolved)
+            && meta.len() > MAX_DIFF_SOURCE_BYTES
+        {
+            oversized.insert(path);
+            notes.push(format!(
+                "{path}：目标文件较大（{}），diff 预览略——请谨慎确认目标路径。",
+                human_size(meta.len())
+            ));
+            continue;
+        }
+        let entry = files.entry(path.to_string()).or_insert_with(move || {
+            let bytes = std::fs::read(&resolved).unwrap_or_default();
             let text = if is_binary(&bytes) {
                 None
             } else {

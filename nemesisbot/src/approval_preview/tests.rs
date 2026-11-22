@@ -463,3 +463,53 @@ fn relative_append_resolved_against_workspace() {
         "None（旧行为）对照臂：cwd 无此文件 → 全量新增：{old_text}"
     );
 }
+
+// ---------- 现盘大小闸（BUG-20261122-034）----------
+
+#[test]
+fn edit_form_oversized_target_downgrades_to_note() {
+    // 现盘超 MAX_DIFF_SOURCE_BYTES 的 edit 目标不整读——注记形态降级
+    // （与 write/append 臂同款闸）。旧形态无闸：超大目标全量进内存 ×3
+    // 份拷贝（bytes + lossy + 替换结果），每次审批请求都触发。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("big.bin");
+    let payload = vec![b'a'; (MAX_DIFF_SOURCE_BYTES as usize) + 1];
+    std::fs::write(&p, &payload).unwrap();
+    let args = serde_json::json!({
+        "path": p.to_str().unwrap(), "old_text": "aaa", "new_text": "bbb"
+    });
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "text");
+    assert!(text.contains("diff 预览略"), "超限注记必须出现: {text}");
+    assert!(text.contains("请谨慎确认目标路径"), "{text}");
+}
+
+#[test]
+fn multiedit_oversized_target_downgrades_and_small_sibling_still_diffs() {
+    // multiedit 混合批次：超限文件注记降级（不进 diff、不整读），
+    // 同批小文件 diff 照常；同文件两条超限编辑只注记一次。
+    let dir = tempfile::tempdir().unwrap();
+    let big = dir.path().join("big.txt");
+    let small = dir.path().join("small.txt");
+    let payload = vec![b'a'; (MAX_DIFF_SOURCE_BYTES as usize) + 1];
+    std::fs::write(&big, &payload).unwrap();
+    std::fs::write(&small, "keep\n").unwrap();
+    let args = serde_json::json!({
+        "edits": [
+            { "path": big.to_str().unwrap(), "old_text": "aaa", "new_text": "bbb" },
+            { "path": small.to_str().unwrap(), "old_text": "keep", "new_text": "kept" },
+            { "path": big.to_str().unwrap(), "old_text": "aaa", "new_text": "ccc" }
+        ]
+    });
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains("big.txt"), "超限注记带路径: {text}");
+    assert!(text.contains("diff 预览略"), "超限注记出现: {text}");
+    assert!(text.contains("+kept"), "小文件 diff 照常: {text}");
+    assert_eq!(
+        text.matches("diff 预览略").count(),
+        1,
+        "同文件多条编辑只注记一次: {text}"
+    );
+    assert!(!text.contains("+bbb"), "超限文件不产 diff: {text}");
+}
