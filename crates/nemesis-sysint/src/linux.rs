@@ -264,7 +264,19 @@ pub fn write_unit_at(path: &Path, exec: &Path) -> Result<PathBuf> {
 /// 追加 PATH 哨兵块到 profile 文件（幂等：已含哨兵或 PATH 已精确含
 /// `~/.local/bin` = 不动）。返回是否实际追加。
 pub fn append_path_snippet_at(profile: &Path) -> Result<bool> {
-    let existing = std::fs::read_to_string(profile).unwrap_or_default();
+    let existing = match std::fs::read_to_string(profile) {
+        // NotFound = 文件不存在 = 首次注册（哨兵必不在）。其他读失败按空
+        // 默认会误判「哨兵缺席」→ 哨兵块重复追加，幂等承诺破
+        // （BUG-20261122-046）——只在 NotFound 降级为空，其余诚实上抛。
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!(
+                "读取 profile 失败（防误判重复追加）: {}",
+                profile.display()
+            )));
+        }
+    };
     let local_bin = local_bin_path()?;
     if !content::needs_path_append(
         &std::env::var("PATH").unwrap_or_default(),

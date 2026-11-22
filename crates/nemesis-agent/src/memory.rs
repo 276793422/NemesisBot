@@ -265,7 +265,7 @@ impl MemoryStore {
         let _g = MEMORY_FILE_WRITE_LOCK
             .lock()
             .map_err(|_| std::io::Error::other("memory file write lock poisoned"))?;
-        let existing = fs::read_to_string(&path).unwrap_or_default();
+        let existing = Self::read_daily_note_leg(&path)?;
 
         let new_content = if existing.is_empty() {
             format!("# {}\n\n{}", Local::now().format("%Y-%m-%d"), content)
@@ -275,6 +275,18 @@ impl MemoryStore {
 
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), new_content.as_bytes(), 0o600)
             .map_err(std::io::Error::other)
+    }
+
+    /// RMW 读腿（BUG-20261122-046）：NotFound = 文件不存在 = 合法首写
+    /// （空默认走建头分支）；**其他读失败诚实上抛**——按空默认会误走建头
+    /// 分支，`write_file_atomic` 整文件替换 = 当日已有笔记静默清空
+    /// （Windows AV/索引器瞬时句柄是常态，读失败与写成功之间存在真实窗口）。
+    fn read_daily_note_leg(path: &Path) -> std::io::Result<String> {
+        match fs::read_to_string(path) {
+            Ok(s) => Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Return daily notes from the last `days` days, joined with `---`.
