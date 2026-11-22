@@ -404,7 +404,11 @@ impl std::fmt::Display for MandateViolation {
             Self::Expired { expires_at, now } => {
                 write!(
                     f,
-                    "mandate 拒绝: 已过期（expires_at={expires_at} < now={now}）"
+                    // BUG-20261122-036：判定条件是 now >= expires_at（边界秒
+                    // expires_at == now 也拒绝），文案必须 <=——旧文案写 `<`
+                    // 在边界秒陈述假关系（同枚举 NotYetValid 臂与 agent 侧
+                    // mandate_guard 均精确一致，唯此臂漂移）。
+                    "mandate 拒绝: 已过期（expires_at={expires_at} <= now={now}）"
                 )
             }
         }

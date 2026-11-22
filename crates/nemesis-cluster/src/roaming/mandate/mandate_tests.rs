@@ -221,6 +221,12 @@ fn expired_and_not_yet_valid_rejected() {
         verify_mandate_full(&ws, "node-a", &v, "t-1", now + 3700),
         Err(MandateViolation::Expired { .. })
     ));
+    // 边界秒（now == expires_at，+3600s）：半开窗 [not_before, expires_at)
+    // 端点=过期——BUG-20261122-036 回归锁（判定 now >= expires_at）。
+    assert!(matches!(
+        verify_mandate_full(&ws, "node-a", &v, "t-1", now + 3600),
+        Err(MandateViolation::Expired { .. })
+    ));
     // 未生效（not_before = signed_at - 60s 容差；提前 61s 验仍落在窗外）
     assert!(matches!(
         verify_mandate_full(&ws, "node-a", &v, "t-1", now.saturating_sub(61)),
@@ -229,6 +235,32 @@ fn expired_and_not_yet_valid_rejected() {
     // 容差窗内（落后 30s）不假拒——e2e 双机时钟差实测形态
     assert!(verify_mandate_full(&ws, "node-a", &v, "t-1", now.saturating_sub(30)).is_ok());
     cleanup(&ws);
+}
+
+/// BUG-20261122-036 回归锁：Expired 文案必须与判定语义一致（<=）——
+/// 判定条件 now >= expires_at 含边界秒等号分支，旧文案写 `<` 在
+/// now == expires_at 时陈述假关系（同枚举 NotYetValid 臂与 agent 侧
+/// mandate_guard 均精确一致，唯此臂漂移）。
+#[test]
+fn expired_display_message_matches_half_open_window_semantics() {
+    let s = MandateViolation::Expired {
+        expires_at: 1000,
+        now: 1000,
+    }
+    .to_string();
+    assert!(
+        s.contains("expires_at=1000 <= now=1000"),
+        "边界秒（相等）文案必须 <= 形态: {s}"
+    );
+    let s2 = MandateViolation::Expired {
+        expires_at: 1000,
+        now: 1001,
+    }
+    .to_string();
+    assert!(
+        s2.contains("expires_at=1000 <= now=1001"),
+        "超期文案同样 <= 形态: {s2}"
+    );
 }
 
 #[test]
