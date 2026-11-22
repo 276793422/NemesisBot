@@ -1541,3 +1541,50 @@ fn test_new_from_config_trailing_slash_base_normalized() {
     let registry = GitHubRegistry::new_from_config(&cfg);
     assert_eq!(registry.base_url, "https://raw.githubusercontent.com");
 }
+
+#[test]
+fn expand_path_pattern_does_not_rescan_replacement_values() {
+    // R2318：单遍展开——author 值里的 `{slug}` 字面量不得被二次替换
+    // （顺序双 replace 会把搜索展示路径替换成实际下载路径之外的形态）。
+    assert_eq!(
+        expand_path_pattern("skills/{author}/{slug}/SKILL.md", Some("a{slug}b"), "demo"),
+        "skills/a{slug}b/demo/SKILL.md"
+    );
+    // slug 值含 `{author}` 字面量同样不重扫。
+    assert_eq!(
+        expand_path_pattern(
+            "skills/{author}/{slug}/SKILL.md",
+            Some("alice"),
+            "x{author}y"
+        ),
+        "skills/alice/x{author}y/SKILL.md"
+    );
+    // 正常双占位符展开。
+    assert_eq!(
+        expand_path_pattern("skills/{author}/{slug}/SKILL.md", Some("alice"), "demo"),
+        "skills/alice/demo/SKILL.md"
+    );
+}
+
+#[test]
+fn expand_path_pattern_unknown_and_unclosed_placeholders_pass_through() {
+    // 未知占位符名原样保留（不猜不吞）。
+    assert_eq!(
+        expand_path_pattern("skills/{version}/{slug}/SKILL.md", Some("a"), "s"),
+        "skills/{version}/s/SKILL.md"
+    );
+    // 无闭合 `}`：花括号起全部原样保留。
+    assert_eq!(
+        expand_path_pattern("skills/{slug}/SKILL.md", Some("a"), "s"),
+        "skills/s/SKILL.md"
+    );
+    assert_eq!(
+        expand_path_pattern("skills/Weird{name", Some("a"), "s"),
+        "skills/Weird{name"
+    );
+    // 无占位符模式直通。
+    assert_eq!(
+        expand_path_pattern("skills/plain.md", None, "s"),
+        "skills/plain.md"
+    );
+}

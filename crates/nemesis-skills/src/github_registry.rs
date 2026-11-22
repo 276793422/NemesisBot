@@ -584,10 +584,7 @@ impl GitHubRegistry {
             }
 
             seen_slugs.insert(slug.to_string());
-            let download_path = self
-                .skill_path_pattern
-                .replace("{author}", author)
-                .replace("{slug}", slug);
+            let download_path = expand_path_pattern(&self.skill_path_pattern, Some(author), slug);
 
             results.push(SkillSearchResult {
                 score: 1.0,
@@ -713,9 +710,7 @@ impl GitHubRegistry {
         let path = if self.skill_path_pattern.contains("{author}") {
             let parts: Vec<&str> = slug.splitn(2, '/').collect();
             if parts.len() == 2 {
-                self.skill_path_pattern
-                    .replace("{author}", parts[0])
-                    .replace("{slug}", parts[1])
+                expand_path_pattern(&self.skill_path_pattern, Some(parts[0]), parts[1])
             } else {
                 return None; // Can't determine author from slug alone.
             }
@@ -733,9 +728,7 @@ impl GitHubRegistry {
         let path = if self.skill_path_pattern.contains("{author}") {
             let parts: Vec<&str> = slug.splitn(2, '/').collect();
             if parts.len() == 2 {
-                self.skill_path_pattern
-                    .replace("{author}", parts[0])
-                    .replace("{slug}", parts[1])
+                expand_path_pattern(&self.skill_path_pattern, Some(parts[0]), parts[1])
             } else {
                 self.skill_path_pattern.replace("{slug}", slug)
             }
@@ -860,6 +853,45 @@ pub struct GitHubSourceConfig {
     pub skill_path_pattern: String,
     pub timeout_secs: u64,
     pub max_size: u64,
+}
+
+/// 单遍模板展开（R2318 镜头）：`{author}`/`{slug}` 一次扫描替换，替换值
+/// 原样插入**不重扫**。顺序双 replace（`.replace("{author}", a).replace(
+/// "{slug}", s)`）会让 author 值里的 `{slug}` 字面量被第二跳二次替换——
+/// 搜索展示的 download_path 与实际下载路径不一致；`validate_skill_identifier`
+/// 不拒 `{}`，验证后仍存活。未知 `{...}` 段原样保留（不猜）。
+fn expand_path_pattern(pattern: &str, author: Option<&str>, slug: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() + slug.len() + 16);
+    let mut rest = pattern;
+    while let Some(brace) = rest.find('{') {
+        out.push_str(&rest[..brace]);
+        let after = &rest[brace..];
+        let Some(name_end) = after.find('}') else {
+            // 无闭合 `}`：花括号起全部原样保留。
+            out.push_str(after);
+            rest = "";
+            break;
+        };
+        let name = &after[1..name_end];
+        let value = match (name, author) {
+            ("author", Some(a)) => Some(a),
+            ("slug", _) => Some(slug),
+            _ => None,
+        };
+        match value {
+            Some(v) => {
+                out.push_str(v);
+                rest = &after[name_end + 1..];
+            }
+            None => {
+                // 未知占位符名：原样保留整段 `{name}`。
+                out.push_str(&after[..name_end + 1]);
+                rest = &after[name_end + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 // --- JSON types ---

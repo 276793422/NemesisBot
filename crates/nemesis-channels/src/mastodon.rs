@@ -317,13 +317,17 @@ pub fn strip_html_tags(html: &str) -> String {
         }
     }
 
-    // Decode common HTML entities
+    // Decode common HTML entities。顺序纪律：`&amp;` 必须最后解——先解
+    // `&amp;` 会把原文转义形态 `&amp;lt;`（用户发字面 "&lt;"）变成中间态
+    // `&lt;`，被下一跳再解成 `<` = 双解码（转义层次塌陷）；`&apos;` 是
+    // HTML5 命名实体，与 `&#39;` 等义，一并覆盖。
     result
-        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
         .trim()
         .to_string()
 }

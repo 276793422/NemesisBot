@@ -226,3 +226,25 @@ fn test_bug150_mark_mentions_seen_baseline_then_dedup() {
     ));
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn strip_html_tags_no_double_decode_of_escaped_entities() {
+    // R2318：`&amp;` 必须最后解——原文转义形态 `&amp;lt;`（用户发的字面
+    // "&lt;"）只解一跳回 "&lt;"，不得塌陷成 "<"（旧链 &amp; 先行 = 双解码）。
+    assert_eq!(strip_html_tags("&amp;lt;"), "&lt;");
+    assert_eq!(strip_html_tags("&amp;amp;"), "&amp;");
+    // 用户发字面文本 "&quot;X&quot;"，服务端只转义 `&` 一层 → 单跳解回字面。
+    assert_eq!(strip_html_tags("&amp;quot;X&amp;quot;"), "&quot;X&quot;");
+    // 正常单层转义照常解码。
+    assert_eq!(
+        strip_html_tags("&lt;a&gt; &amp; &quot;b&quot;"),
+        "<a> & \"b\""
+    );
+}
+
+#[test]
+fn strip_html_tags_decodes_apos_entity() {
+    // &apos; 是 HTML5 命名实体（部分 Mastodon 前端产物），与 &#39; 等义。
+    assert_eq!(strip_html_tags("it&apos;s"), "it's");
+    assert_eq!(strip_html_tags("it&#39;s"), "it's");
+}
