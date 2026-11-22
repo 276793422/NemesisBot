@@ -112,6 +112,10 @@ async fn kill_child_tree(pid: Option<u32>) {
     let mut cmd = {
         let mut c = tokio::process::Command::new("taskkill");
         c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        // BUG-20261122-017：gateway 以 windows 子系统构建（main.rs
+        // `windows_subsystem = "windows"`），控制台子进程缺
+        // CREATE_NO_WINDOW 会弹黑窗（本文件 cmd spawn 同款旗标对齐）。
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         c
     };
     #[cfg(not(windows))]

@@ -1740,6 +1740,12 @@ async fn run_image_build(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // BUG-20261122-017：gateway 以 windows 子系统构建（main.rs
+    // `windows_subsystem = "windows"`），控制台子进程（wsl.exe /
+    // 构建脚本）缺 CREATE_NO_WINDOW 会弹黑窗（本文件探测模块
+    // CREATE_NO_WINDOW 同款旗标对齐）。
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
     log_line(&log_path, "spawn 构建脚本…");
     let status = match cmd.spawn() {
@@ -1919,8 +1925,8 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
             ),
         );
         for ov in &overlays {
-            let out = tokio::process::Command::new(&qemu_img)
-                .arg("rebase")
+            let mut cmd = tokio::process::Command::new(&qemu_img);
+            cmd.arg("rebase")
                 .arg("-b")
                 .arg(&new_base)
                 // 新版 qemu-img 换 backing 强制显式格式（真机走查实锤：
@@ -1928,7 +1934,12 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
                 // 均为本管线 create -F qcow2 产物，格式恒 qcow2）。
                 .arg("-F")
                 .arg("qcow2")
-                .arg(ov)
+                .arg(ov);
+            // BUG-20261122-017：gateway 以 windows 子系统构建，控制台
+            // 子进程缺 CREATE_NO_WINDOW 会弹黑窗。
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let out = cmd
                 .output()
                 .await
                 .map_err(|e| format!("qemu-img rebase 启动失败: {e}"))?;
@@ -1950,15 +1961,20 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
     }
     std::fs::rename(&new_base, &canonical).map_err(|e| format!("新 base 转正失败: {e}"))?;
     for ov in &overlays {
-        let out = tokio::process::Command::new(&qemu_img)
-            .arg("rebase")
+        let mut cmd = tokio::process::Command::new(&qemu_img);
+        cmd.arg("rebase")
             .arg("-u")
             .arg("-b")
             .arg(&canonical)
             // 同上：-u 只改指针也要求显式 backing 格式。
             .arg("-F")
             .arg("qcow2")
-            .arg(ov)
+            .arg(ov);
+        // BUG-20261122-017：gateway 以 windows 子系统构建，控制台
+        // 子进程缺 CREATE_NO_WINDOW 会弹黑窗。
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let out = cmd
             .output()
             .await
             .map_err(|e| format!("qemu-img rebase -u 启动失败: {e}"))?;

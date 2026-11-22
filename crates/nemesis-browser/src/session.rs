@@ -521,8 +521,13 @@ fn process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
+        // BUG-20261122-017：gateway 以 windows 子系统构建，控制台子进程
+        // （tasklist）缺 CREATE_NO_WINDOW 会弹黑窗——同文件 kill_process
+        // 已有旗标（纪律漂移补齐）。
+        use std::os::windows::process::CommandExt;
         let out = std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .output();
         match out {
             Ok(o) => {
