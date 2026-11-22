@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use nemesis_agent::session::SessionStore;
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -113,7 +113,9 @@ pub fn stem_from_session_key(session_key: &str) -> String {
 
 struct ProjectLoopHandle {
     agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
-    agent_task: tokio::task::JoinHandle<()>,
+    /// Arc 包装：监督任务需跨 await 持有句柄轮询 `is_finished()`（&self，
+    /// Arc 解引用可用；abort 同为 &self——stop 路径不受影响）。
+    agent_task: Arc<tokio::task::JoinHandle<()>>,
 }
 
 /// 项目常驻 loop 的生命周期 + 归属索引 + 路由管理。gateway 持一个实例
@@ -137,6 +139,18 @@ pub struct ProjectLoopManager {
     /// session_key → project_id（启动期从 meta sidecar 扫出 + 运行期回填/
     /// 增量维护；miss 时回读 sidecar 兜底——见 `owner_of`）。
     owner_index: parking_lot::RwLock<HashMap<String, String>>,
+    /// per-project 期望停机标志（BUG-20261123-003 监督器用，与主 loop
+    /// adapter 的 expected_stop 同构）：spawn_project 插入 Arc（监督任务持
+    /// clone 轮询），stop_project 置位 + 摘除（监督任务见置位即收班；摘除
+    /// 防 map 无界增长，重新 spawn 插新的）。
+    stop_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// per-project panic 重启计数（熔断：第 4 次死亡只 error! 留痕不再
+    /// 重启）。进程生命周期累计，gateway 重启清零。
+    panic_restart_counts: Mutex<HashMap<String, u64>>,
+    /// 监督重启钩子（gateway 装配点注入，闭包捕获 `Arc<ProjectLoopManager>`
+    /// 调 [`Self::supervisor_restart_project`]）。None = 死亡只 error! 留痕
+    /// 不行动。spawn 时快照（钩子在装配期先于 start_all 注入）。
+    restart_hook: Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
 }
 
 impl ProjectLoopManager {
@@ -158,6 +172,53 @@ impl ProjectLoopManager {
             channels: Mutex::new(HashMap::new()),
             routing_started: AtomicBool::new(false),
             owner_index: parking_lot::RwLock::new(HashMap::new()),
+            stop_flags: Mutex::new(HashMap::new()),
+            panic_restart_counts: Mutex::new(HashMap::new()),
+            restart_hook: Mutex::new(None),
+        }
+    }
+
+    /// 装配点注入监督重启钩子（post_agent.rs 在 `start_all` 前调用——
+    /// spawn 时快照，晚注入的项目 loop 监督拿不到钩子）。
+    pub fn set_restart_hook(&self, hook: Arc<dyn Fn(&str) + Send + Sync>) {
+        *self.restart_hook.lock().unwrap() = Some(hook);
+    }
+
+    /// 项目 loop 监督重启（pub 仅因 gateway 钩子闭包跨模块调用）。熔断
+    /// 计数按 pid 累计（第 4 次死亡起只留痕）；重启序列必须先
+    /// `stop_project` 摘条目再 `spawn_project`——spawn 幂等闸
+    /// `state.contains_key` 会跳过重建（panic 死亡后条目仍在 state）。
+    /// 计数进程生命周期累计、不清零（与主 loop adapter 同语义：连续
+    /// panic = 系统性问题，无限自动重启只会掩盖）。
+    pub fn supervisor_restart_project(&self, project_id: &str) {
+        let count = {
+            let mut counts = self.panic_restart_counts.lock().unwrap();
+            let n = counts.entry(project_id.to_string()).or_insert(0);
+            let prev = *n;
+            *n += 1;
+            prev
+        };
+        if count >= 3 {
+            error!(
+                id = %project_id,
+                "[ProjectLoops] 项目 loop 连续 panic 达熔断阈值（3），自动重启停用；需人工排查或重启 gateway"
+            );
+            return;
+        }
+        error!(
+            id = %project_id,
+            "[ProjectLoops] 项目 loop 任务异常终止（疑似 panic），执行监督重启（prior deaths: {count}）"
+        );
+        self.stop_project(project_id);
+        match registry::find_project(&self.registry_path, project_id) {
+            Some(entry) => {
+                if let Err(e) = self.spawn_project(&entry) {
+                    error!(id = %project_id, "[ProjectLoops] 监督重启失败: {e}");
+                }
+            }
+            None => {
+                error!(id = %project_id, "[ProjectLoops] 监督重启失败: 注册表已无此项目条目");
+            }
         }
     }
 
@@ -270,9 +331,9 @@ impl ProjectLoopManager {
         let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1024);
         agent_loop.set_reinject_tx(inbound_tx.clone());
         let loop_for_task = agent_loop.clone();
-        let agent_task = self.rt.spawn(async move {
+        let agent_task = Arc::new(self.rt.spawn(async move {
             loop_for_task.run_bus_arc(inbound_rx).await;
-        });
+        }));
         let mut state = self.state.lock().unwrap();
         if state.contains_key(&entry.id) {
             // 极小窗口的双 spawn（单调用方不触发）；输者清理自己。
@@ -286,7 +347,7 @@ impl ProjectLoopManager {
             entry.id.clone(),
             ProjectLoopHandle {
                 agent_loop,
-                agent_task,
+                agent_task: Arc::clone(&agent_task),
             },
         );
         drop(state);
@@ -313,6 +374,28 @@ impl ProjectLoopManager {
                 chans.remove(&entry.id);
             }
         }
+        // 监督任务（BUG-20261123-003，与主 loop adapter 同构）。撞上并发
+        // stop（orphaned）时不插期望停机标志、不 spawn 监督——loop 已被
+        // 摘表 + abort，监督无人可看。标志插入与 orphaned 复核同锁串行
+        // （stop_project 同锁摘标志）：封死「stop 落在复核与 spawn 之间」
+        // 的微窗口——stop 要么先于复核（contains_key=false 不 spawn），要么
+        // 排在锁后（监督首检见 expected 置位即收班，无误重启）。钩子在
+        // 装配期注入，此处快照。
+        let supervisor_args = {
+            let mut flags = self.stop_flags.lock().unwrap();
+            if !orphaned && self.state.lock().unwrap().contains_key(&entry.id) {
+                let stop_flag = Arc::new(AtomicBool::new(false));
+                flags.insert(entry.id.clone(), Arc::clone(&stop_flag));
+                let hook = self.restart_hook.lock().unwrap().clone();
+                Some((entry.id.clone(), Arc::clone(&agent_task), stop_flag, hook))
+            } else {
+                None
+            }
+        };
+        if let Some((pid, task, stop_flag, hook)) = supervisor_args {
+            self.rt
+                .spawn(project_loop_supervisor(pid, task, stop_flag, hook));
+        }
         info!(
             id = %entry.id,
             name = %entry.name,
@@ -326,6 +409,12 @@ impl ProjectLoopManager {
     /// 停止单个项目 loop（先摘表再停——路由摘除语义，/ 复用）。
     /// 返回是否确有对应实例被停止。
     pub fn stop_project(&self, project_id: &str) -> bool {
+        // 先置位 + 摘除期望停机标志：监督任务（持有 clone）见置位即收班，
+        // 不把本次显式 stop 误判为 panic 触发重启。摘除防 map 无界增长
+        // （监督任务手里的 Arc clone 不受影响）；重新 spawn 会插新的。
+        if let Some(flag) = self.stop_flags.lock().unwrap().remove(project_id) {
+            flag.store(true, Ordering::SeqCst);
+        }
         let handle = self.state.lock().unwrap().remove(project_id);
         // 调度转发端同步摘除：此后 route_one 对该项目走「不可用」诚实报错。
         self.channels.lock().unwrap().remove(project_id);
@@ -1535,4 +1624,49 @@ fn conflict_cancel_outbound(
             "⚠ 项目「{name}」存在宿主与 VM 双改冲突，{note}。重新发送消息可再次触发开工对齐。"
         ),
     ));
+}
+
+/// 项目 loop 监督任务体（BUG-20261123-003；独立 free fn 供单测直驱——
+/// 构造整个 manager 太重。与主 loop 的
+/// `adapters::agent_loop_supervisor_task` 同构，两点刻意差异：① 退避固定
+/// 10s（熔断计数按 pid 在 `supervisor_restart_project` 内部累计，监督任务
+/// 不需要读计数表）；② 钩子签名带 project_id。每 5s 轮询 `is_finished()`：
+/// 期望停机标志（stop_project 置位）= 正常退出臂；任务死亡且非期望停机 =
+/// panic/异常终止 → 退避后触发 restart 回调（None = 只 error! 留痕）。
+/// 行动后本任务即退——重启产生的新 loop 由 spawn_project 新监督接管。
+async fn project_loop_supervisor(
+    project_id: String,
+    handle: Arc<tokio::task::JoinHandle<()>>,
+    expected_stop: Arc<AtomicBool>,
+    hook: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    tick.tick().await; // interval 首 tick 立即返回，跳过
+    loop {
+        tick.tick().await;
+        if expected_stop.load(Ordering::SeqCst) {
+            return; // 正常 stop_project 流程，监督收班
+        }
+        if !handle.is_finished() {
+            continue;
+        }
+        // 任务已结束且非期望停机 = 异常死亡（panic unwind / 非 stop 终止）。
+        // is_running()（查 state 表）此刻仍假绿——panic 后条目仍在表里，
+        // 这里是唯一可靠的死亡观测点。
+        let Some(restart) = hook else {
+            error!(
+                id = %project_id,
+                "[ProjectLoops] 项目 loop 任务异常终止（疑似 panic）且未装配监督重启钩子，仅留痕（无自愈）"
+            );
+            return;
+        };
+        // 退避窗口：固定 10s 后再复核 expected（窗口内显式 stop 尊重），
+        // 然后触发重启（熔断计数按 pid 在 restart 目标累计）。
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        if expected_stop.load(Ordering::SeqCst) {
+            return;
+        }
+        restart(&project_id);
+        return;
+    }
 }

@@ -1403,3 +1403,85 @@ mod vm_conflict {
         assert!(a.starts_with("vm-conflict-"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// 项目 loop 监督任务体 project_loop_supervisor（BUG-20261123-003）
+// ---------------------------------------------------------------------------
+
+/// panic 任务死亡 + 非期望停机 → 退避后钩子收到 pid。start_paused 虚拟
+/// 时间自动推进（5s 轮询 + 10s 退避零真实等待；真实墙钟上限仅死锁兜底）。
+#[tokio::test(start_paused = true)]
+async fn project_supervisor_panic_death_calls_hook_with_pid() {
+    use std::sync::atomic::AtomicBool;
+
+    let handle = Arc::new(tokio::spawn(async { panic!("project loop boom") }));
+    let expected = Arc::new(AtomicBool::new(false));
+    let hit = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let hit_for_hook = Arc::clone(&hit);
+    let hook: Option<Arc<dyn Fn(&str) + Send + Sync>> = Some(Arc::new(move |pid: &str| {
+        hit_for_hook.lock().unwrap().push(pid.to_string());
+    }));
+
+    let sup = tokio::spawn(super::project_loop_supervisor(
+        "nb-proj-1".to_string(),
+        Arc::clone(&handle),
+        Arc::clone(&expected),
+        hook,
+    ));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "restart hook never fired for panicked project loop"
+        );
+        if !hit.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(*hit.lock().unwrap(), vec!["nb-proj-1".to_string()]);
+    sup.abort();
+}
+
+/// 期望停机（stop_project 置位形态）→ 监督自行收班，钩子不触发。
+#[tokio::test(start_paused = true)]
+async fn project_supervisor_expected_stop_exits_without_restart() {
+    use std::sync::atomic::AtomicBool;
+
+    let handle = Arc::new(tokio::spawn(async {}));
+    let expected = Arc::new(AtomicBool::new(true));
+    let hit = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let hit_for_hook = Arc::clone(&hit);
+    let hook: Option<Arc<dyn Fn(&str) + Send + Sync>> = Some(Arc::new(move |pid: &str| {
+        hit_for_hook.lock().unwrap().push(pid.to_string());
+    }));
+
+    let sup = tokio::spawn(super::project_loop_supervisor(
+        "nb-proj-2".to_string(),
+        handle,
+        expected,
+        hook,
+    ));
+    let _ = sup.await; // 首检见 expected=true 即退，不挂
+    assert!(
+        hit.lock().unwrap().is_empty(),
+        "expected stop must not trigger restart hook"
+    );
+}
+
+/// 无钩子（未装配）+ panic 死亡 → 只留痕臂自行退出不挂。
+#[tokio::test(start_paused = true)]
+async fn project_supervisor_death_without_hook_exits_cleanly() {
+    use std::sync::atomic::AtomicBool;
+
+    let handle = Arc::new(tokio::spawn(async { panic!("boom without hook") }));
+    let expected = Arc::new(AtomicBool::new(false));
+    let sup = tokio::spawn(super::project_loop_supervisor(
+        "nb-proj-3".to_string(),
+        handle,
+        expected,
+        None,
+    ));
+    let _ = sup.await;
+}
