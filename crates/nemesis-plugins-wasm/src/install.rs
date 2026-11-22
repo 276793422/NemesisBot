@@ -479,7 +479,8 @@ impl PluginInstaller {
         // ⑧ 落位（升级路径：先清旧载荷；数据目录保留不动）。删除重试耗尽
         // 必须中止——继续落位会新旧载荷文件混布（交付审查）。
         let target = self.manager.plugin_dir(&manifest.slug);
-        match resilient_remove_dir_all(&target) {
+        // 阻塞删除 offload 出 worker（BUG-20261122-023）。
+        match block_worker_or_direct(|| resilient_remove_dir_all(&target)) {
             Ok(true) => {
                 tracing::info!(slug = %manifest.slug, "[WasmPlugin] 升级前清理旧载荷完成");
             }
@@ -1088,6 +1089,21 @@ pub fn is_eight_short_name(seg: &str) -> bool {
     !base.is_empty() && tail.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
+/// 多线程 runtime 下把阻塞段让出 worker 调度权（BUG-20261122-023；
+/// turn_wal BUG-20261118-172 同款闸）。装配漏斗跑在 WSAPI async handler /
+/// gateway 启动 spawn 任务（tokio worker）上；其间的韧性删除（~0.8s worst）
+/// 与 wasm 字节落盘在争用下可秒级占死 worker。无 runtime / 单线程
+/// （CLI 一次性装配、测试直调）= 直接跑（block_in_place 在
+/// current_thread runtime 会 panic）。
+fn block_worker_or_direct<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
 /// 韧性删除（Windows AV/索引器瞬时句柄是常态：80ms×10 退避重试）。
 /// `Ok(false)` = 目录不存在（首装/已删，正常）；`Ok(true)` = 已删除；
 /// `Err` = 重试耗尽删除失败——调用方必须中止，不能与「不存在」混同
@@ -1171,7 +1187,10 @@ pub async fn uninstall(manager: &PluginManager, slug: &str) -> Result<bool, Plug
         return Err(PluginError::Manifest(format!("invalid slug: {slug}")));
     }
     let _funnel = FUNNEL_LOCK.lock().await;
-    uninstall_inner(manager, slug)
+    // 卸载本体含韧性删除（~0.8s worst）——offload 出 worker
+    // （BUG-20261122-023）。manager 是借用，spawn_blocking 不可用，
+    // block_in_place 形态（内联闭包借用）。
+    block_worker_or_direct(|| uninstall_inner(manager, slug))
 }
 
 /// 卸载本体（同步，漏斗锁由调用方持有）。`uninstall_blocking` 供无异步

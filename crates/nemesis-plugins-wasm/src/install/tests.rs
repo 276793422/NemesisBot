@@ -971,3 +971,23 @@ async fn install_with_overrides_approver_and_injects_reason() {
     }
     let _ = ws;
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261122-023：block_worker_or_direct 双 flavor 守卫（与
+// board_archive_ingest::offload_worker_blocking 同款纪律，分 crate 各持
+// 一份——nemesis-board 无 tokio 依赖的同款约束在这里不存在，但 helper
+// 随调用面走 crate 本地，避免 utils 升 tokio 依赖）。
+#[test]
+fn block_worker_or_direct_without_runtime() {
+    let v = super::block_worker_or_direct(|| 7 + 35);
+    assert_eq!(v, 42);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn block_worker_or_direct_multi_thread_no_panic() {
+    let v = super::block_worker_or_direct(|| {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        "uninstalled"
+    });
+    assert_eq!(v, "uninstalled");
+}
