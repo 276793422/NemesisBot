@@ -230,3 +230,37 @@ fn extract_response_headers_malformed_status_line() {
     assert!(super::extract_status_and_content_length("garbage\r\n\r\n").is_err());
     assert!(super::extract_status_and_content_length("").is_err());
 }
+
+#[test]
+fn resolve_body_len_rejects_oversized_content_length() {
+    // F43 同族：谎报 Content-Length 的巨量一次性分配必须在 vec! 前拒绝
+    // （usize 上限即 u64::MAX，直接分配 = abort guest）。超上限诚实报错。
+    let err = super::resolve_body_len(Some(super::CDP_BODY_CAP + 1), "/json/list").unwrap_err();
+    assert!(err.contains("exceeds cap"), "实际错误: {err}");
+    assert!(err.contains("/json/list"), "错误必须带端点路径现场: {err}");
+    // usize::MAX 极端形态同样被闸（解析自响应头，攻击者可控到全值域）。
+    assert!(super::resolve_body_len(Some(usize::MAX), "/json/new?about:blank").is_err());
+}
+
+#[test]
+fn resolve_body_len_cap_boundary_and_happy_path() {
+    // 恰好上限 = 放行（上限含边界，防正常大响应被误拒）。
+    assert_eq!(
+        super::resolve_body_len(Some(super::CDP_BODY_CAP), "/json/list").unwrap(),
+        super::CDP_BODY_CAP
+    );
+    // 正常 KB 级响应直通。
+    let len = super::resolve_body_len(Some(1024), "/json/version").unwrap();
+    assert_eq!(len, 1024);
+}
+
+#[test]
+fn resolve_body_len_missing_content_length_honest_error() {
+    // 缺席 = 诚实报错不做无限等待（keep-alive 挂死形态，forensic8 实证）。
+    let err = super::resolve_body_len(None, "/json/version").unwrap_err();
+    assert!(err.contains("no Content-Length"), "实际错误: {err}");
+    assert!(
+        err.contains("/json/version"),
+        "错误必须带端点路径现场: {err}"
+    );
+}

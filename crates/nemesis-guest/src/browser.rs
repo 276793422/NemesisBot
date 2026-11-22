@@ -59,6 +59,12 @@ const CDP_CMD_TIMEOUT: Duration = Duration::from_secs(30);
 /// 单条 HTTP 发现端点请求整体预算（回环小响应正常毫秒级；10s 是上限不是
 /// 延迟——框架读形态下唯一会撞它的是服务端异常，挂死形态已被框架读封死）。
 const CDP_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// 响应体预分配上限（宿主侧 nemesis-browser cdp.rs F43 同族纪律）：body
+/// `vec![0u8; len]` 按响应头 Content-Length 一次性分配——端点异常/谎报
+/// （回环端口可被任意本地进程抢占，或 chromium 异常态）会触发巨量分配，
+/// 分配失败直接 abort guest。上限只防异常不设正常延迟：/json/list 上百
+/// tab 也只数百 KB，16MiB 是 ~50 倍余量。
+const CDP_BODY_CAP: usize = 16 * 1024 * 1024;
 /// navigate 后等 document.readyState==complete 的缺省预算。
 const NAV_WAIT_DEFAULT_MS: u64 = 30_000;
 /// wait_for 缺省/上限预算。
@@ -234,6 +240,21 @@ fn extract_status_and_content_length(head: &str) -> Result<(u16, Option<usize>),
     Ok((status, content_length))
 }
 
+/// Content-Length 解析 + 预分配上限闸（单一真相源，cdp_http 与测试共用）：
+/// 缺席 = 诚实报错（keep-alive 形态「读到 EOF」会永久挂死，forensic8 实证）；
+/// 超限 = 分配前拒绝（CDP_BODY_CAP 注记的 F43 同族谎报分配面）。
+fn resolve_body_len(content_length: Option<usize>, path: &str) -> Result<usize, String> {
+    let len = content_length.ok_or_else(|| {
+        format!("CDP endpoint {path}: no Content-Length (keep-alive framing unreadable)")
+    })?;
+    if len > CDP_BODY_CAP {
+        return Err(format!(
+            "CDP endpoint {path}: Content-Length {len} exceeds cap {CDP_BODY_CAP} (refusing allocation)"
+        ));
+    }
+    Ok(len)
+}
+
 async fn cdp_http(method: &str, path: &str) -> Result<String, String> {
     let req = cdp_request(method, path);
     let io = async {
@@ -270,9 +291,7 @@ async fn cdp_http(method: &str, path: &str) -> Result<String, String> {
         if !(200..300).contains(&status) {
             return Err(format!("CDP endpoint {path} returned HTTP {status}"));
         }
-        let len = content_length.ok_or_else(|| {
-            format!("CDP endpoint {path}: no Content-Length (keep-alive framing unreadable)")
-        })?;
+        let len = resolve_body_len(content_length, path)?;
         let mut body = vec![0u8; len];
         stream
             .read_exact(&mut body)
