@@ -92,6 +92,9 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
     let timeout_secs = val
         .get("timeout")
         .and_then(|v| v.as_u64())
+        // BUG-20261121-062：0 视作缺省（宿主 exec 工具同款，0 秒 = 立即
+        // 超时无意义）。
+        .filter(|n| *n > 0)
         .unwrap_or(EXEC_DEFAULT_TIMEOUT_SECS)
         .min(EXEC_MAX_TIMEOUT_SECS);
 

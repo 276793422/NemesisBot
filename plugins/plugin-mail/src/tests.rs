@@ -904,3 +904,61 @@ fn client_settings_defaults_implicit_tls_465() {
     assert!(c.smtp_host.is_empty());
     assert!(c.ca_cert_path.is_empty(), "缺省走 webpki 公共根");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261122-008 回归锁：远程行触发的 str 切片 panic
+// ---------------------------------------------------------------------------
+//
+// strip_ci 旧形态 `s[..prefix.len()]` 只有字节长度守卫——CJK 开头的网络行
+// 字节 prefix.len()（"MAIL FROM:"=10）落在多字节字符中间 → str 切片 panic
+// （会话任务崩 = 连接无应答直接断，远程一行即触发）。extract_envelope_addr
+// 旧形态 find('<')/rfind('>') 无序守卫："abc>def<" → 逆序 range panic。
+// 修复后两类行都走正常协议应答路径，会话存活。
+
+#[tokio::test]
+async fn smtp_multibyte_command_line_does_not_kill_session() {
+    let (_dir, store) = temp_store();
+    let (port, _tx) = spawn_smtp(store.clone(), 10 * 1024 * 1024).await;
+
+    let (mut r, mut w) = smtp_session(port).await;
+    assert!(recv_line(&mut r).await.starts_with("220"));
+
+    send_line(&mut w, "EHLO tester").await;
+    // EHLO 多行应答：末行 250（无连字符）——两行都消费。
+    assert!(recv_line(&mut r).await.starts_with("250-"));
+    assert!(recv_line(&mut r).await.starts_with("250 "));
+
+    // CJK 行：字节 10 落在第 4 个汉字（3 字节/字）中间——修复前此处 panic
+    // = 连接无 500 应答直接 EOF（recv_line expect 崩测试即假红信号）。
+    send_line(&mut w, "邮件服务器测试行").await;
+    let resp = recv_line(&mut r).await;
+    assert!(resp.starts_with("500"), "多字节未知命令应答 500：{resp}");
+
+    // 会话仍存活：后续正常命令有应答（修复前到不了这里）。
+    send_line(&mut w, "NOOP").await;
+    let resp = recv_line(&mut r).await;
+    assert!(resp.starts_with("250"), "会话存活：{resp}");
+}
+
+#[tokio::test]
+async fn smtp_inverted_bracket_envelope_does_not_kill_session() {
+    let (_dir, store) = temp_store();
+    let (port, _tx) = spawn_smtp(store.clone(), 10 * 1024 * 1024).await;
+
+    let (mut r, mut w) = smtp_session(port).await;
+    assert!(recv_line(&mut r).await.starts_with("220"));
+
+    send_line(&mut w, "EHLO tester").await;
+    assert!(recv_line(&mut r).await.starts_with("250-"));
+    assert!(recv_line(&mut r).await.starts_with("250 "));
+
+    // 括号次序倒置（'<' 在 '>' 之后）——修复前 find/rfind 逆序区间
+    // `&trimmed[8..3]` panic。修复后按无括号形态走裸地址回落，250 继续会话。
+    send_line(&mut w, "MAIL FROM:abc>def<").await;
+    let resp = recv_line(&mut r).await;
+    assert!(resp.starts_with("250"), "倒置括号按裸地址回落：{resp}");
+
+    send_line(&mut w, "NOOP").await;
+    let resp = recv_line(&mut r).await;
+    assert!(resp.starts_with("250"), "会话存活：{resp}");
+}

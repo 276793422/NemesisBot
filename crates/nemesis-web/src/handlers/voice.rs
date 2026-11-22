@@ -5,10 +5,11 @@
 //!           tts, stt_start, stt_stop, speakers, devices,
 //!           engine_start, engine_stop, pipeline_start, pipeline_stop
 
-#[cfg(target_os = "windows")]
 use crate::handlers::require_workspace;
 use crate::server::WS_BROADCAST_TIMEOUT;
 use crate::ws_router::{ModuleHandler, RequestContext};
+#[cfg(target_os = "windows")]
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 #[cfg(target_os = "windows")]
 use nemesis_voice::EchoCanceller; // trait needed to call SpeexAec::process
 #[cfg(target_os = "windows")]
@@ -1565,19 +1566,26 @@ impl VoiceHandler {
             .map_err(|e| format!("failed to read config: {}", e))?;
         let cfg = nemesis_voice::AppConfig::load(&config_path).map_err(|e| e.to_string())?;
 
-        // 变体存在 + 类别匹配（typed 校验读 AppConfig，与 set_model_name_in_config
-        // 的文本改写同读一份文件，窗口内手动改文件的双写竞态可忽略——单用户桌面场景）
-        let source = cfg
+        // 变体存在 + 类别匹配（复合键 (category, name) 精确命中，与
+        // model_source_installed / ensure_model_by_name 同判据——name-only
+        // 旧形态在跨类别同名配置（sources 数组合法形态）下会被先声明的他类
+        // 条目挡住，已安装的合法变体无法设为当前；typed 校验读 AppConfig，
+        // 与 set_model_name_in_config 的文本改写同读一份文件，窗口内手动改
+        // 文件的双写竞态可忽略——单用户桌面场景）
+        if cfg
             .models
             .sources
             .iter()
-            .find(|s| s.name == name)
-            .ok_or_else(|| format!("模型 '{name}' 不在 config [models.sources] 目录中"))?;
-        if source.category != category {
-            return Err(format!(
-                "模型 '{name}' 属于类别 '{}'，与请求的类别 '{category}' 不符",
-                source.category
-            ));
+            .find(|s| s.name == name && s.category == category)
+            .is_none()
+        {
+            return Err(match cfg.models.sources.iter().find(|s| s.name == name) {
+                Some(other) => format!(
+                    "模型 '{name}' 只在类别 '{}' 中声明，不在请求的类别 '{category}' 中",
+                    other.category
+                ),
+                None => format!("模型 '{name}' 不在 config [models.sources] 目录中"),
+            });
         }
         // 已安装才允许设为当前（未安装的变体设了也无法装载，诚实拒绝）
         if !nemesis_voice::model::model_source_installed(&cfg, category, name) {
@@ -3109,7 +3117,8 @@ impl VoiceHandler {
                 // 共享同一变换（UUID 下 sanitize 恒等，但形态一变两边就漂移，
                 // 症状是接力静默不接管）。
                 format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 )
             }) {

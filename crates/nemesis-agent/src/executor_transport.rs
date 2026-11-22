@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 
 // 协议本体（wire structs / Transport trait / 交换原语 / TransportError /
 // call_id / v2 请求行构造）单一真相源在薄 crate——这里 re-export 保兼容。
@@ -90,6 +90,14 @@ impl AsyncWrite for ChildStdio {
 /// stderr 环形尾容量（行数）。
 pub const STDERR_TAIL_CAP: usize = 20;
 
+/// stderr 单行帽（字节）。executor 子进程的 stderr 内容是任意被执行命令
+/// 的输出（不受我方控制），一行无限输出即可在 `next_line` 的无界积累里
+/// 打爆宿主内存（BUG-20261122-020）。帽值对齐 nemesis-mcp stdio stderr
+/// 排水的 64KB 先例（BUG-20261108-028）；超帽截断 + 注记，排水任务照常
+/// 走到 EOF（游标对齐由 [`nemesis_utils::line_cap`] 保证，后续行不受
+/// 毒丸行影响）。
+const STDERR_LINE_CAP_BYTES: usize = 64 * 1024;
+
 /// 子进程 stderr 的后台排水句柄。排水防止 ~4KB 管道缓冲写满后子进程阻塞；
 /// 行照旧 `debug!` 全量落日志，环形尾保留最近 [`STDERR_TAIL_CAP`] 行供
 /// 失败臂拼接（静默死亡=panic/OOM/启动失败时唯一的诊断面）。
@@ -104,15 +112,39 @@ impl StderrTail {
         let this = Self::default();
         if let Some(stderr) = stderr {
             let sink = this.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+            tokio::spawn(StderrTail::drain(stderr, sink));
+        }
+        this
+    }
+
+    /// 排水循环（泛型 reader 形态 = [`Self::spawn`] 的可测内核；生产调用
+    /// 点传 `ChildStderr`）。带帽行读：EOF / 读错误照旧退出循环。
+    pub(super) async fn drain<R: AsyncRead + Unpin>(stderr: R, sink: StderrTail) {
+        let mut reader = BufReader::new(stderr);
+        loop {
+            match nemesis_utils::line_cap::read_line_capped(&mut reader, STDERR_LINE_CAP_BYTES)
+                .await
+            {
+                Ok(None) | Err(_) => break,
+                Ok(Some((mut raw, truncated))) => {
+                    // lines() 同语义剥尾部换行；字节收齐后一次性 lossy
+                    // （分块 lossy 会劈开 chunk 边界的多字节字符——
+                    // line_cap 模块纪律）。
+                    if raw.last() == Some(&b'\n') {
+                        raw.pop();
+                    }
+                    if raw.last() == Some(&b'\r') {
+                        raw.pop();
+                    }
+                    let mut line = String::from_utf8_lossy(&raw).into_owned();
+                    if truncated {
+                        line.push_str("...[line truncated]");
+                    }
                     tracing::debug!("[executor stderr] {line}");
                     sink.push_line(line);
                 }
-            });
+            }
         }
-        this
     }
 
     /// 推一行进环形尾（满则逐出最旧）。

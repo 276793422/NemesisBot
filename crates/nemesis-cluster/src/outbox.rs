@@ -536,35 +536,25 @@ impl TransferOutbox {
         {
             return "assembling";
         }
-        let Ok(devices) = std::fs::read_dir(&self.logs_root) else {
+        // BUG-20261121-061：多轮执行可能跨设备目录并存（重派 / 中继链），
+        // 必须取字典序最新轮（与 find_task_dir 同一不变量）而非 read_dir
+        // 平台序首匹配——首匹配在 NTFS 上由设备名字典序决定，选中旧轮入队
+        // 后条目幂等 + master 对已归档任务停拉，新轮永久不可达（粘滞）。
+        // logs 根不可读 = 无档（helper None 同语义）。
+        let Some((dev_name, _dir)) = self.find_latest_task_dir_across_devices(task_id) else {
             return "no_archive";
         };
-        for dev in devices.flatten() {
-            let dev_name = dev.file_name().to_string_lossy().to_string();
-            if !dev.path().is_dir() {
-                continue;
+        match self.enqueue(task_id, &dev_name) {
+            Ok(()) => {
+                tracing::info!(
+                    task_id = %task_id,
+                    device = %dev_name,
+                    "[Transfer] master 兜底拉取：已入队重推"
+                );
+                "queued"
             }
-            let Ok(tasks) = std::fs::read_dir(dev.path()) else {
-                continue;
-            };
-            for t in tasks.flatten() {
-                let name = t.file_name().to_string_lossy().to_string();
-                if t.path().is_dir() && task_dir_matches(&name, task_id) {
-                    return match self.enqueue(task_id, &dev_name) {
-                        Ok(()) => {
-                            tracing::info!(
-                                task_id = %task_id,
-                                device = %dev_name,
-                                "[Transfer] master 兜底拉取：已入队重推"
-                            );
-                            "queued"
-                        }
-                        Err(_) => "no_archive",
-                    };
-                }
-            }
+            Err(_) => "no_archive",
         }
-        "no_archive"
     }
 
     /// 条目停车态探针：dead/over_limit → Some(态词)；
@@ -610,8 +600,15 @@ impl TransferOutbox {
                 }
             }
         }
-        // ③ 补入队 cluster_logs 残留。
+        // ③ 补入队 cluster_logs 残留。同任务多轮可能跨设备并存（重派 /
+        // 中继链）——按 task_id 分组取目录名字典序最新轮入队（与
+        // `find_task_dir` 同一不变量；BUG-20261121-061：旧形态 read_dir
+        // 首匹配入队，平台序决定推旧轮还是新轮，且 entry.json 幂等闸会把
+        // 错选固化）。年龄闸作用在最新轮上语义不变：最新轮超龄 = 更旧的
+        // 轮更超龄。
         if let Ok(devices) = std::fs::read_dir(&self.logs_root) {
+            let mut newest: std::collections::HashMap<String, (String, String)> =
+                std::collections::HashMap::new(); // task_id -> (设备名, 目录名)
             for dev in devices.flatten() {
                 let dev_name = dev.file_name().to_string_lossy().to_string();
                 if !dev.path().is_dir() {
@@ -634,29 +631,40 @@ impl TransferOutbox {
                     let Some(task_id) = derive_task_id_from_dir(&name) else {
                         continue;
                     };
-                    // F-NEW-3（四轮审计）：年龄闸——只补「新近」
-                    // 目录（崩溃窗口兜底本来意图）；更早的历史不自动重推，
-                    // 否则每次重启全量重放保留期内所有已送达任务（master
-                    // ingest 搬走落地实体后 dedup 放行）。超龄仍可由 master
-                    // `request_pull` 点名救取。
-                    if residual_dir_older_than(
-                        &name,
-                        chrono::Local::now(),
-                        RESIDUAL_BACKFILL_MAX_AGE_SECS,
-                    ) {
-                        continue;
-                    }
-                    if self.entry_dir(&task_id).join("entry.json").exists() {
-                        continue;
-                    }
-                    match self.enqueue(&task_id, &dev_name) {
-                        Ok(()) => enqueued += 1,
-                        Err(e) => tracing::warn!(
-                            task_id = %task_id,
-                            device = %dev_name,
-                            "[Transfer] 启动清扫补入队失败: {e}"
-                        ),
-                    }
+                    newest
+                        .entry(task_id)
+                        .and_modify(|(d, n)| {
+                            if *n < name {
+                                *d = dev_name.clone();
+                                *n = name.clone();
+                            }
+                        })
+                        .or_insert((dev_name.clone(), name));
+                }
+            }
+            for (task_id, (dev_name, dir_name)) in newest {
+                // F-NEW-3（四轮审计）：年龄闸——只补「新近」
+                // 目录（崩溃窗口兜底本来意图）；更早的历史不自动重推，
+                // 否则每次重启全量重放保留期内所有已送达任务（master
+                // ingest 搬走落地实体后 dedup 放行）。超龄仍可由 master
+                // `request_pull` 点名救取。
+                if residual_dir_older_than(
+                    &dir_name,
+                    chrono::Local::now(),
+                    RESIDUAL_BACKFILL_MAX_AGE_SECS,
+                ) {
+                    continue;
+                }
+                if self.entry_dir(&task_id).join("entry.json").exists() {
+                    continue;
+                }
+                match self.enqueue(&task_id, &dev_name) {
+                    Ok(()) => enqueued += 1,
+                    Err(e) => tracing::warn!(
+                        task_id = %task_id,
+                        device = %dev_name,
+                        "[Transfer] 启动清扫补入队失败: {e}"
+                    ),
                 }
             }
         }
@@ -1038,6 +1046,54 @@ impl TransferOutbox {
             }
         }
         best
+    }
+
+    /// 跨设备定位该任务执行记录目录，取**字典序最新轮**，返回
+    /// (设备名, 目录)（logs 根不可读 / 无命中 = None）。
+    ///
+    /// 多轮执行（同 worker 同 task_id 重派 / 中继链各留一轮）可能跨设备
+    /// 目录并存（BUG-20261121-061）：选择必须与 [`Self::find_task_dir`]
+    /// 同一不变量——「多轮执行取字典序最大 = 最新」（ts 前缀定宽，字典序
+    /// = 时间序）——而非 read_dir 平台序首匹配。首匹配在 NTFS 上由设备名
+    /// 字典序决定；选中旧轮入队后条目幂等 + master 对已归档任务停拉，
+    /// 新轮**永久不可达**（粘滞，不只「推了旧轮」一轮的伤害）。
+    ///
+    /// 按**目录名**（非全路径）比较：全路径比较会被设备名前缀支配——
+    /// 设备名字典序 ≠ 轮次新旧（设备 `zeta` 的旧轮全路径 > 设备 `alpha`
+    /// 的新轮全路径）。设备内多轮由 [`Self::find_task_dir`] 在 enqueue
+    /// 时二次收口，两处不变量一致。
+    ///
+    /// 含 `_unknown` 设备：request_pull 点名救取是 `_unknown` 残留唯一
+    /// 可救路径（sweep ③ 主动跳过它——无主记录不可寻址，注释在档）；
+    /// 本 helper 只改选择策略，不改资格集。
+    fn find_latest_task_dir_across_devices(&self, task_id: &str) -> Option<(String, PathBuf)> {
+        let devices = std::fs::read_dir(&self.logs_root).ok()?;
+        let mut best: Option<(String, String, PathBuf)> = None; // (设备名, 目录名, 目录)
+        for dev in devices.flatten() {
+            if !dev.path().is_dir() {
+                continue;
+            }
+            let dev_name = dev.file_name().to_string_lossy().to_string();
+            let Ok(tasks) = std::fs::read_dir(dev.path()) else {
+                continue;
+            };
+            for t in tasks.flatten() {
+                if !t.path().is_dir() {
+                    continue;
+                }
+                let name = t.file_name().to_string_lossy().to_string();
+                if task_dir_matches(&name, task_id) {
+                    let take_newer = match &best {
+                        Some((_, b, _)) => *b < name,
+                        None => true,
+                    };
+                    if take_newer {
+                        best = Some((dev_name.clone(), name, t.path()));
+                    }
+                }
+            }
+        }
+        best.map(|(dev, _, dir)| (dev, dir))
     }
 }
 

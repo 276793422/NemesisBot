@@ -518,7 +518,7 @@ pub fn load_forge_config(path: &Path) -> ForgeConfig {
     match nemesis_utils::fsutil::read_config_string(path) {
         Ok(data) => {
             let mut config = ForgeConfig::default();
-            match serde_json::from_str::<ForgeConfig>(&data) {
+            match forge_config_from_str(&data) {
                 Ok(loaded) => config = loaded,
                 Err(e) => {
                     tracing::warn!("[Config] Failed to parse forge config: {}", e);
@@ -528,6 +528,21 @@ pub fn load_forge_config(path: &Path) -> ForgeConfig {
         }
         Err(_) => ForgeConfig::default(),
     }
+}
+
+/// 解析（形状闸 + typed 解析），lenient loader 的统一解析通道。
+///
+/// BUG-20261122-003（BUG-20261120-030 同族横扫补位）：ForgeConfig 全字段
+/// 带 default，`[]` 文档走 serde visit_seq 零元素臂 = 「全默认
+/// ForgeConfig」**静默成功**——绕过下方 load_forge_config 的 lenient WARN
+/// 臂（用户 forge 调参被静默无视，零诊断）。函数文档自述的「partial
+/// JSON, missing fields use defaults」语义只覆盖 object 文档缺键；数组/
+/// 标量是形状错，必须 Err 进 WARN 臂。语义单一真相源 =
+/// nemesis_utils::json_shape。
+pub(crate) fn forge_config_from_str(data: &str) -> std::result::Result<ForgeConfig, String> {
+    let value: serde_json::Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    nemesis_utils::json_shape::ensure_object(&value, "forge config file")?;
+    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// Save forge configuration to a JSON file.

@@ -406,6 +406,12 @@ impl MaixCamChannel {
                             }
                             Err(e) => {
                                 warn!(error = %e, "[MaixCamChannel] accept error");
+                                // accept 错误退避（BUG-20261122-019）：无退避
+                                // 的 select 臂在重置风暴下热自旋。
+                                tokio::time::sleep(
+                                    nemesis_utils::accept_retry::accept_error_backoff(&e),
+                                )
+                                .await;
                             }
                         }
                     }

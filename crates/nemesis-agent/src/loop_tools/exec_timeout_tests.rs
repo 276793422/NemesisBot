@@ -55,6 +55,15 @@ fn timeout_capped_custom_cap_clamps() {
     assert_eq!(super::exec_timeout_secs_capped(None, 1800), 30);
 }
 
+#[test]
+fn timeout_zero_treated_as_default() {
+    // BUG-20261121-062：显式 0 视作缺省——旧 `unwrap_or` 形态放行
+    // Some(0)，0 秒墙钟 = 命令被立即收尸，与 schema "default 30" 相悖。
+    assert_eq!(super::exec_timeout_secs_capped(Some(0), 600), 30);
+    // 0 视作缺省后仍受 cap 钳制（缺省 30 是请求值，cap 是绝对天花板）。
+    assert_eq!(super::exec_timeout_secs_capped(Some(0), 2), 2);
+}
+
 // ---------------------------------------------------------------------------
 // schema description 动态上限（部署侧可见性）
 // ---------------------------------------------------------------------------

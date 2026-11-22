@@ -173,6 +173,63 @@ fn test_trust_revoke_readback_flow() {
     ));
 }
 
+// BUG-20261122-012 回归锁：同名异钥按 name 解析必须拒歧义（旧实现走
+// HashMap 迭代序任意取——CLI 每进程新 RandomState，同一信任库同一
+// --name 跨 run 可落到不同公钥条目，吊销/移除可错改）。单名/零名行为
+// 不变；重名列出 fingerprint 前缀要求 --key 精确指定。
+#[test]
+fn test_resolve_trust_entry_duplicate_name_refuses() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = nemesis_connectors::signing::workspace_trust_store(tmp.path());
+    let pair1 = nemesis_connectors::signing::generate_key_pair().expect("keygen");
+    let pair2 = nemesis_connectors::signing::generate_key_pair().expect("keygen");
+    store.add_key(&pair1.public_key, "signer-dup", {
+        use nemesis_connectors::signing::TrustLevel;
+        TrustLevel::Verified
+    });
+    store.add_key(&pair2.public_key, "signer-dup", {
+        use nemesis_connectors::signing::TrustLevel;
+        TrustLevel::Community
+    });
+
+    // 重名 → Err 且带拒歧义指引（同名异钥 / --key）。
+    let err = resolve_trust_entry(&store, &None, &Some("signer-dup".into()))
+        .expect_err("同名异钥必须拒绝而非任意取");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("同名异钥"), "报错须点名同名异钥: {msg}");
+    assert!(msg.contains("--key"), "报错须指引 --key 精确指定: {msg}");
+    // 两条 fingerprint 前缀都要在列（用户能据此挑条目）。
+    for fp in [
+        store.get_key(&pair1.public_key).unwrap().fingerprint,
+        store.get_key(&pair2.public_key).unwrap().fingerprint,
+    ] {
+        assert!(
+            msg.contains(&fp.chars().take(12).collect::<String>()),
+            "报错须列出 fingerprint 前缀: {msg}"
+        );
+    }
+
+    // 单名仍 Ok、零名仍 not_found（既有行为不回归）。
+    store.add_key(
+        &nemesis_connectors::signing::generate_key_pair()
+            .unwrap()
+            .public_key,
+        "signer-solo",
+        {
+            use nemesis_connectors::signing::TrustLevel;
+            TrustLevel::Verified
+        },
+    );
+    assert!(
+        resolve_trust_entry(&store, &None, &Some("signer-solo".into())).is_ok(),
+        "唯一名解析不受拒歧义臂影响"
+    );
+    assert!(
+        resolve_trust_entry(&store, &None, &Some("没有这个名字".into())).is_err(),
+        "无名条目仍 not_found"
+    );
+}
+
 // ============ 管理对称族（治理补全） ============
 
 /// 最小合法清单模板（rest 型，无凭据槽位）。

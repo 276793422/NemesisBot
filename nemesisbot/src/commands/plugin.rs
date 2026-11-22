@@ -126,7 +126,25 @@ fn resolve_trust_entry(
             }
             store.get_key(k).ok_or_else(|| not_found("公钥"))
         }
-        (None, Some(n)) => store.get_key_by_name(n).ok_or_else(|| not_found("签名者")),
+        (None, Some(n)) => {
+            // BUG-20261122-012：同名异钥必须拒歧义——按名解析旧走
+            // HashMap 迭代序任意取（每进程新 RandomState，同输入跨 run
+            // 落到不同公钥条目，吊销/移除可错改）。全量取回后单条放行、
+            // 多条列出 fingerprint 前缀要求 --key 精确指定。
+            let matches = store.get_keys_by_name(n);
+            match matches.as_slice() {
+                [] => Err(not_found("签名者")),
+                [only] => Ok(only.clone()),
+                many => anyhow::bail!(
+                    "签名者「{n}」在信任库中有 {} 条同名异钥条目（fingerprint: {}），请用 --key 精确指定",
+                    many.len(),
+                    many.iter()
+                        .map(|k| k.fingerprint.chars().take(12).collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        }
         (Some(k), Some(n)) => {
             let entry = store.get_key(k).ok_or_else(|| not_found("公钥"))?;
             if entry.name != *n {
@@ -617,3 +635,6 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

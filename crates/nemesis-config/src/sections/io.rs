@@ -720,7 +720,20 @@ pub fn load_security_config(path: &Path) -> Result<SecurityConfig> {
             error!("[Config] Failed to read security config: {}", e);
             e
         })?;
-        let cfg: SecurityConfig = serde_json::from_str(&content).map_err(|e| {
+        let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse security config JSON: {}", e);
+            e
+        })?;
+        // 形状闸（BUG-20261122-003，BUG-20261120-030 同族横扫补位）：
+        // SecurityConfig 全字段带 default，`[]` 文档走 serde visit_seq 零
+        // 元素臂 = 「全默认 SecurityConfig」合法值——用户限流规则/审计策略
+        // 被静默无视，零诊断。配置文档唯一合法形状是 object，typed 解析前
+        // loud 拒绝。语义单一真相源 = nemesis_utils::json_shape。
+        if let Err(e) = nemesis_utils::json_shape::ensure_object(&value, "security config file") {
+            error!("[Config] {}", e);
+            return Err(ConfigError::Validation(e));
+        }
+        let cfg: SecurityConfig = serde_json::from_value(value).map_err(|e| {
             error!("[Config] Failed to parse security config JSON: {}", e);
             e
         })?;
@@ -774,7 +787,19 @@ pub fn load_scanner_config(path: &Path) -> Result<ScannerFullConfig> {
             error!("[Config] Failed to read scanner config: {}", e);
             e
         })?;
-        let cfg: ScannerFullConfig = serde_json::from_str(&content).map_err(|e| {
+        let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse scanner config JSON: {}", e);
+            e
+        })?;
+        // 形状闸（BUG-20261122-003 同族横扫补位）：ScannerFullConfig 全字段
+        // 带 default，`[]` 文档走 visit_seq 零元素臂 = 「全默认」合法值——
+        // 引擎清单被静默无视，零诊断。语义单一真相源 =
+        // nemesis_utils::json_shape。
+        if let Err(e) = nemesis_utils::json_shape::ensure_object(&value, "scanner config file") {
+            error!("[Config] {}", e);
+            return Err(ConfigError::Validation(e));
+        }
+        let cfg: ScannerFullConfig = serde_json::from_value(value).map_err(|e| {
             error!("[Config] Failed to parse scanner config JSON: {}", e);
             e
         })?;
@@ -948,7 +973,14 @@ impl ConfigLoader {
     /// Load config from a file path.
     pub fn load_from_file(path: &Path) -> Result<Config> {
         let content = nemesis_utils::fsutil::read_config_string(path)?;
-        let config: Config = serde_json::from_str(&content)?;
+        let value: serde_json::Value = serde_json::from_str(&content)?;
+        // 形状闸（BUG-20261122-003 横扫补位）：与 load_config 同洞同闸。
+        // 本函数当前生产零调用（生产走 load_config / load_from_workspace，
+        // 均已闸）；闸在此是同族统一，防未来接线时漏防。
+        if let Err(e) = nemesis_utils::json_shape::ensure_object(&value, "config file") {
+            return Err(ConfigError::Validation(e));
+        }
+        let config: Config = serde_json::from_value(value)?;
         Ok(config)
     }
 

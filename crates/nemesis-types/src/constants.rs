@@ -17,6 +17,13 @@ pub const CLUSTER_CONTINUATION_PREFIX: &str = "cluster_continuation:";
 /// 续行同构复用 handle_cluster_continuation）。
 pub const SUBAGENT_CONTINUATION_PREFIX: &str = "subagent_continuation:";
 
+/// RPC correlation ID 前缀（`[rpc:{correlation_id}] 内容`）。
+/// 单一真相源：生产端 = nemesis-agent `context.rs::format_rpc_message`（RPC
+/// 上下文响应包装）与 `loop/bus.rs`（无前缀时补包装）；解析端 =
+/// nemesis-channels `rpc_channel.rs::parse_rpc_prefix`（correlation ID
+/// 匹配路由，响应缺前缀 = 请求方永久等待）。协议键，改动=跨 crate 破坏性。
+pub const RPC_CORRELATION_PREFIX: &str = "[rpc:";
+
 /// RPC channel timeout (24 hours, safety net).
 pub const RPC_CHANNEL_TIMEOUT_SECS: u64 = 86400;
 

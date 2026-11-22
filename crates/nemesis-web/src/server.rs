@@ -28,6 +28,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_bus::MessageBus;
 use nemesis_types::channel::InboundMessage;
 use std::convert::Infallible;
@@ -2075,7 +2076,8 @@ pub async fn process_messages_with_router(
             // Multi-session: client-chosen conversation id → own session_key
             // (agent: prefix is adopted by loop.rs:1623, bypassing routing).
             Some(sid) if !sid.is_empty() => format!(
-                "agent:main:session:{}",
+                "{}{}",
+                WEB_SESSION_KEY_PREFIX,
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             ),
             // No session_id → the single shared default conversation "legacy".
@@ -2087,7 +2089,7 @@ pub async fn process_messages_with_router(
             // (same legacy fallback) so chat-write and history-read share a key.
             // Formerly `web:{chat_id}`, which the route resolver collapsed to
             // `agent:main:main` — invisible to the list (the bug).
-            _ => "agent:main:session:legacy".to_string(),
+            _ => format!("{}legacy", WEB_SESSION_KEY_PREFIX),
         };
 
         // Opt 2: record conversation → live chat_id binding so a cron job
@@ -2147,7 +2149,7 @@ pub async fn process_messages_with_router(
                     "seq": orig_seq,
                     "deduped": true,
                 });
-                if let Some(sid) = session_key.strip_prefix("agent:main:session:") {
+                if let Some(sid) = session_key.strip_prefix(WEB_SESSION_KEY_PREFIX) {
                     echo["session_id"] = serde_json::Value::String(sid.to_string());
                 }
                 let frame =
@@ -2179,7 +2181,7 @@ pub async fn process_messages_with_router(
                     "content": msg.content,
                     "seq": seq,
                 });
-                if let Some(sid) = session_key.strip_prefix("agent:main:session:") {
+                if let Some(sid) = session_key.strip_prefix(WEB_SESSION_KEY_PREFIX) {
                     echo["session_id"] = serde_json::Value::String(sid.to_string());
                 }
                 let frame =
@@ -2323,7 +2325,7 @@ pub async fn send_to_session(
     // 还原）——前端按当前会话过滤 receive 帧：异会话晚到的回复不进当前视图
     // （后端已持久化，切到该会话时从磁盘加载），否则跨组切换时会串台。
     // 无 session_key 的旧路径帧不带该字段，前端保持接受（legacy 兼容）。
-    if let Some(sid) = session_key.and_then(|s| s.strip_prefix("agent:main:session:")) {
+    if let Some(sid) = session_key.and_then(|s| s.strip_prefix(WEB_SESSION_KEY_PREFIX)) {
         data["session_id"] = serde_json::Value::String(sid.to_string());
     }
     // 集群续行归属（2026-09-23）：干活的是远端 worker 节点，前端据此渲染
@@ -2415,7 +2417,7 @@ pub async fn send_to_session(
 /// 后果 = 前端等下一次 sync 时机（重连/切会话），不丢数据。
 fn broadcast_chat_dirty_hint(session_manager: &SessionManager, session_key: &str) {
     let sid = session_key
-        .strip_prefix("agent:main:session:")
+        .strip_prefix(WEB_SESSION_KEY_PREFIX)
         .unwrap_or(session_key);
     let payload = serde_json::json!({
         "session_id": sid,
@@ -2488,7 +2490,7 @@ pub async fn send_history_to_session(
 /// IM 会话事件注进无关 dashboard 会话（跨会话事件串桶）。只有第一族注入。
 fn dashboard_session_id(session_key: &str) -> Option<&str> {
     session_key
-        .strip_prefix("agent:main:session:")
+        .strip_prefix(WEB_SESSION_KEY_PREFIX)
         .filter(|sid| !sid.is_empty())
 }
 

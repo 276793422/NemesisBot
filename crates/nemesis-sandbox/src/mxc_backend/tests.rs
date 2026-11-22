@@ -201,3 +201,48 @@ fn request_carries_command_env_timeout_and_process_containment() {
     );
     assert!(!ui.allow_input_injection, "输入注入仍禁");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261122-020：响应行带帽读（helper 契约）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn response_line_normal_stops_at_newline() {
+    let mut r = std::io::Cursor::new(b"ok: hello\nrest".to_vec());
+    let line = read_response_line_capped_sync(&mut r).unwrap();
+    assert_eq!(line, "ok: hello");
+    // 游标停在下一行行首（协议失步防线）。
+    let mut rest = String::new();
+    std::io::BufRead::read_line(&mut r, &mut rest).unwrap();
+    assert_eq!(rest, "rest");
+}
+
+#[test]
+fn response_line_truncated_oversize() {
+    let poison = format!("{}\n", "x".repeat(RESPONSE_LINE_CAP_BYTES + 16 * 1024));
+    let mut r = std::io::Cursor::new(poison.into_bytes());
+    let line = read_response_line_capped_sync(&mut r).unwrap();
+    assert!(line.starts_with('x'));
+    assert!(line.ends_with("...[line truncated]"));
+    assert!(
+        line.chars().count() < RESPONSE_LINE_CAP_BYTES + 64,
+        "内存峰值必须受帽约束（帽内 + 注记）"
+    );
+}
+
+#[test]
+fn response_line_eof_is_empty_string() {
+    let mut r = std::io::Cursor::new(Vec::new());
+    assert_eq!(read_response_line_capped_sync(&mut r).unwrap(), "");
+}
+
+#[test]
+fn response_line_non_utf8_is_lossy_not_error() {
+    // 裸 read_line 会以 InvalidData 失败的非 UTF-8 行；helper 一次性
+    // lossy 降级，事务不再被编码杀死。
+    let mut r = std::io::Cursor::new(vec![b'a', 0xFF, b'b', b'\n']);
+    assert_eq!(
+        read_response_line_capped_sync(&mut r).unwrap(),
+        "a\u{FFFD}b"
+    );
+}

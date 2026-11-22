@@ -124,8 +124,10 @@ pub fn migrate_legacy_home_hooks_config(home_config_dir: &Path, workspace_config
 /// 方言默认脚本超时（秒）。
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
-/// Web 会话键前缀（`nemesis-web` handlers/chat.rs 同源字面量；本 crate 内
-/// 唯一定义点）。会话圈定的匹配与 agent 侧存储都按剥前缀的裸 sid 落地；
+/// Web 会话键前缀（**单一真相源**：nemesis-web handlers/server/api_handlers/
+/// chat_event_log 与本 crate chat_trash/loop commands 全部消费本常量，禁再
+/// 手抄字面量；测试载荷字面量刻意保留=黑盒 fixture 与常量互证）。会话圈定
+/// 的匹配与 agent 侧存储都按剥前缀的裸 sid 落地；
 /// 非 web 通道 session_key 形状不同——剥不动就整串参与精确比较。
 pub const WEB_SESSION_KEY_PREFIX: &str = "agent:main:session:";
 

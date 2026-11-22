@@ -119,8 +119,14 @@ impl DeploymentMonitor {
     /// `improvement = success_rate - baseline`, where baseline is 0.5.
     pub fn evaluate(&self, artifact: &Artifact) -> EvaluationResult {
         let sample_size = artifact.usage_count as usize;
+        // BUG-20261121-064：旧守卫把 `min_samples == 0` 当「未配置」回落 5
+        // ——前提自 INIT 起即为假：serde default 已给 5
+        // （default_min_samples），0 的唯一入口是用户显式配置。静默改回 5
+        // 正是 BUG-20261113-161 / BUG-20261114-029 家族裁决删除的
+        // 「silently overriding user-configured value」。显式 0 语义 =
+        // 不设样本下限（护栏关，对齐 evaluate_outcomes 的
+        // `min_traces > 0 &&` 同节惯例），直接采信。
         let min_samples = self.config.learning.min_outcome_samples as usize;
-        let min_samples = if min_samples == 0 { 5 } else { min_samples };
 
         if sample_size < min_samples {
             return EvaluationResult {
@@ -183,12 +189,19 @@ impl DeploymentMonitor {
     pub fn evaluate_outcomes(&self, traces: &[ConversationTrace]) -> Vec<ActionOutcome> {
         let mut outcomes = Vec::new();
 
+        // BUG-20261121-064：同家族回落臂已删——serde default 已给 7
+        // （default_monitor_window），0 的唯一入口是用户显式配置。显式 0 =
+        // 观察窗口归零（窗口内无轨迹 → 无实效分析，诚实空转），不再静默
+        // 改回 7。
         let window_days = self.config.learning.monitor_window_days;
-        let window_days = if window_days == 0 { 7 } else { window_days };
 
         // Filter traces within the observation window
-        // （window_days 是 u32：as i64 恒正，4.29e9 天 < Duration::days
-        // 恐慌带 ~1.07e14——无回绕/恐慌面，无需钳制。）
+        // （window_days 是 u32：as i64 恒正无回绕面；但 u32 全域 4.29e9
+        // 天远超 DateTime 减法溢出带 ~9.6e7 天——巨值配置令实效评估每次
+        // 调用 panic。上界钳制单一真相源 time_bounds::MAX_AGE_DAYS
+        // （R735 姊妹站点同款；0 语义不变——显式 0 仍诚实空转）。
+        // BUG-20261122-015。）
+        let window_days = window_days.min(nemesis_utils::time_bounds::MAX_AGE_DAYS as u32);
         let since = chrono::Local::now() - chrono::Duration::days(window_days as i64);
         let recent_traces: Vec<&ConversationTrace> = traces
             .iter()
@@ -334,11 +347,9 @@ impl DeploymentMonitor {
             }
         }
 
-        let min_samples = if self.config.learning.min_outcome_samples == 0 {
-            5
-        } else {
-            self.config.learning.min_outcome_samples as usize
-        };
+        // BUG-20261121-064：同 evaluate——显式 0 = 不设样本下限（护栏关），
+        // 直接采信，不再静默回落 5。
+        let min_samples = self.config.learning.min_outcome_samples as usize;
 
         let before_refs: Vec<&ConversationTrace> = before_traces.iter().collect();
         let after_refs: Vec<&ConversationTrace> = after_traces.iter().collect();

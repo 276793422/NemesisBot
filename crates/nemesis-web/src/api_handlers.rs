@@ -20,6 +20,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_services::bot_service::AgentLoopService;
 use nemesis_types::utils;
 use parking_lot::Mutex;
@@ -1284,7 +1285,7 @@ pub fn write_json_error(message: &str, _code: u16) -> Vec<u8> {
 /// sessions WSAPI handler: `agent:main:session:{sanitized}`).
 fn chat_session_key(sid: &str) -> String {
     format!(
-        "agent:main:session:{}",
+        "{WEB_SESSION_KEY_PREFIX}{}",
         nemesis_agent::session::SessionStore::sanitize_session_id(sid)
     )
 }
@@ -1292,7 +1293,7 @@ fn chat_session_key(sid: &str) -> String {
 /// Reverse of [`chat_session_key`] — lets the frontend switch to the new
 /// session after a fork (ids are what the session list WSAPI speaks).
 fn chat_session_id(key: &str) -> String {
-    key.strip_prefix("agent:main:session:")
+    key.strip_prefix(WEB_SESSION_KEY_PREFIX)
         .unwrap_or(key)
         .to_string()
 }

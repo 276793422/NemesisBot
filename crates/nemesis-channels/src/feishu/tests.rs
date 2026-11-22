@@ -148,6 +148,48 @@ fn test_parse_and_publish_event_filtered() {
     assert!(rx.try_recv().is_err());
 }
 
+/// BUG-20261121-057 回归锁：条目侧卫生 trim——config 手滑空白
+///（`" u_allowed "`）与净形态等价命中，空白条目照常拦截非白名单者。
+#[test]
+fn b057_allow_from_entry_whitespace_still_matches() {
+    let (tx, mut rx) = broadcast::channel(256);
+
+    let event = serde_json::json!({
+        "header": {"event_id": "evt_ws1", "event_type": "im.message.receive_v1"},
+        "event": {
+            "message": {
+                "chat_id": "oc_test",
+                "message_id": "om_ws1",
+                "message_type": "text",
+                "content": "{\"text\":\"hi\"}",
+                "chat_type": "p2p"
+            },
+            "sender": {"sender_id": {"user_id": "u_allowed"}}
+        }
+    });
+
+    // 条目带前导/尾随空白：sender 在白名单（trim 后命中）→ 放行。
+    FeishuChannel::parse_and_publish_event(
+        &event,
+        &tx,
+        &[" u_allowed ".to_string()],
+        &EventDedup::new(),
+    );
+    assert!(rx.try_recv().is_ok(), "空白条目必须与净形态等价命中");
+
+    // 同一空白条目：sender 不在白名单 → 照常拦截。
+    let mut blocked = event.clone();
+    blocked["header"]["event_id"] = serde_json::json!("evt_ws2");
+    blocked["event"]["sender"]["sender_id"]["user_id"] = serde_json::json!("u_other");
+    FeishuChannel::parse_and_publish_event(
+        &blocked,
+        &tx,
+        &[" u_allowed ".to_string()],
+        &EventDedup::new(),
+    );
+    assert!(rx.try_recv().is_err(), "空白条目不得放行非白名单者");
+}
+
 #[test]
 fn test_extract_json_from_protobuf() {
     // Test with embedded JSON in binary data
@@ -450,4 +492,34 @@ fn b048_missing_event_id_passes_through() {
     FeishuChannel::parse_and_publish_event(&event, &tx, &[], &dedup);
     assert!(rx.try_recv().is_ok());
     assert!(rx.try_recv().is_ok(), "event_id 缺失时不得去重（保守放行）");
+}
+
+/// BUG-20261121-056 回归锁：send 成功体有帽读取（BUG-20261115-024 挂账
+/// 收尾）——4MB+1 的 200 响应体在读入中途断开（exceeds limit），不再
+/// 全量灌内存后才在 JSON 解析臂报错。前缀契约保持（is_send_rejected 只
+/// 认 token 类子串，超帽不触发刷新重试）。
+#[tokio::test]
+async fn b056_send_body_over_cap_aborts_mid_read() {
+    let (tx, _rx) = broadcast::channel(16);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    // 4MB+1 字节（> SEND_BODY_CAP = 4MB）非 JSON 大体；Box::leak 造
+    // &'static str 供 spawn_http_mock 复用（body 参数是静态生命周期）。
+    let huge: &'static str =
+        Box::leak(format!("x{}", "x".repeat(4 * 1024 * 1024)).into_boxed_str());
+    let base = spawn_http_mock("HTTP/1.1 200 OK", huge);
+    let mut cfg = make_config();
+    cfg.api_base = base;
+    let ch = FeishuChannel::new_with_client(cfg, tx, http).unwrap();
+    *ch.access_token.write() = "test-token".to_string();
+    let err = ch
+        .send_text_once("oc_x", "hello")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("exceeds limit"),
+        "4MB+1 成功体须在读入中途断开（修复前全量读入后 JSON parse 报错）: {err}"
+    );
+    assert!(err.contains("feishu send error"), "前缀契约保持: {err}");
 }

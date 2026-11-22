@@ -20,6 +20,7 @@
 //! 派生**（jsonl 或 meta 侧车任一在），不走 `default_path_manager()` 全局
 //! 单例——测试重定向 home 到临时目录即可全链路隔离，不碰真实 home。
 
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -104,7 +105,8 @@ fn normalize_key(key: &str) -> Result<String, String> {
 /// path manager——生产两处同源（workspace 由 home 派生），测试可重定向。
 fn session_artifact_exists(workspace: &str, sid: &str) -> bool {
     let session_key = format!(
-        "agent:main:session:{}",
+        "{}{}",
+        WEB_SESSION_KEY_PREFIX,
         nemesis_agent::session::SessionStore::sanitize_session_id(sid)
     );
     let safe = nemesis_utils::sanitize::sanitize_path_segment(&session_key);
@@ -157,7 +159,8 @@ pub fn get_or_create_session(
     }
     let session_id = uuid::Uuid::new_v4().to_string();
     let session_key = format!(
-        "agent:main:session:{}",
+        "{}{}",
+        WEB_SESSION_KEY_PREFIX,
         nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
     );
     if manual_title {

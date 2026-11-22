@@ -12,6 +12,7 @@
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use chrono::NaiveDateTime;
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 #[cfg(feature = "security")]
 use nemesis_security::integrity::AuditEvent;
 // 无 feature 门：下方目录 helper（request/cluster/security/session/boundary）
@@ -371,7 +372,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         // use the fixed prefix `agent_main_session_` → reconstruct only that
         // prefix; fall back to naive restore for non-web sessions.
         let session_key = if let Some(rest) = id.strip_prefix("agent_main_session_") {
-            format!("agent:main:session:{}", rest)
+            format!("{}{}", WEB_SESSION_KEY_PREFIX, rest)
         } else {
             id.replace('_', ":")
         };
@@ -646,7 +647,8 @@ fn session_usage_key(session_id: &str) -> String {
         .strip_prefix("agent_main_session_")
         .unwrap_or(session_id);
     format!(
-        "agent:main:session:{}",
+        "{}{}",
+        WEB_SESSION_KEY_PREFIX,
         nemesis_agent::session::SessionStore::sanitize_session_id(sid)
     )
 }

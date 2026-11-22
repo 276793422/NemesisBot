@@ -16,6 +16,7 @@
 //! goal（非 done）= 拒绝（一对一绑定；done 旧条目保留作历史，新建不删）。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_goals::{
     GoalCreatedBy, GoalEntry, GoalStatus, alloc_id, load_registry, read_evals_tail, read_goal_md,
     remove_goal, update_registry, write_goal_md,
@@ -49,7 +50,8 @@ fn resolve_session_key(data: &serde_json::Value) -> Result<String, String> {
         .filter(|s| !s.is_empty())
     {
         return Ok(format!(
-            "agent:main:session:{}",
+            "{}{}",
+            WEB_SESSION_KEY_PREFIX,
             nemesis_agent::session::SessionStore::sanitize_session_id(sid)
         ));
     }

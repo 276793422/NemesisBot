@@ -17,6 +17,7 @@
 use crate::common;
 use anyhow::{Result, bail};
 use clap::Subcommand;
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_agent::session::SessionStore;
 use nemesis_agent::session_fork::{fork_session, row_user_turn_count};
 use std::io::IsTerminal;
@@ -115,7 +116,7 @@ pub async fn run(action: SessionAction, local: bool) -> Result<()> {
                 "  聊天记录 : 逐行原样复制 {} 行（时间戳等原字段保真）",
                 info.chat_log_lines
             );
-            if let Some(ws_id) = info.new_key.strip_prefix("agent:main:session:") {
+            if let Some(ws_id) = info.new_key.strip_prefix(WEB_SESSION_KEY_PREFIX) {
                 println!(
                     "  打开方式 : WebSocket 消息 metadata.session_id={}（Dashboard/Chat 直接可用）",
                     ws_id

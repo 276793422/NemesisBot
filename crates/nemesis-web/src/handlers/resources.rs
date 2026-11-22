@@ -20,6 +20,7 @@
 use crate::handlers::projects::resolve_session_loop;
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_types::resources::{CategoryView, ResourceCtx, ResourceProvider};
 use serde_json::{Value, json};
 
@@ -101,7 +102,7 @@ impl ModuleHandler for ResourcesHandler {
             } else {
                 raw_sid
             });
-        let session_key = format!("agent:main:session:{safe_sid}");
+        let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, safe_sid);
         let workspace = require_workspace(ctx)?.to_string();
         let rc = ResourceCtx {
             session_key: &session_key,

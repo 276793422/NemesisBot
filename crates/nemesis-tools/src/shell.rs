@@ -758,6 +758,18 @@ impl ShellTool {
                 let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
                 let rest = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
+                // 路径含 cmd 元字符时保持引号原形态（BUG-20261122-014）：
+                // 引号已保护这些字符的字面语义，去引号（仅转义空格）会让
+                // & | < > ^ ( ) 裸露成命令连接/重定向/转义符——行为翻转
+                // （`del "a & b.txt"` → `del a^ &^ b.txt` = 删 a + 尝试执行
+                // b.txt）。且本工具的执行顺序是 guard_command 审原始形态 →
+                // preprocess 改写 → 执行改写形态，元字符改写会让审计面看到
+                // 的安全形态与执行面形态漂移。引号形态对 cmd 内部命令是
+                // 正确执行形态，跳过改写 = 保留安全原形态。
+                if path.contains(['&', '|', '<', '>', '^', '(', ')']) {
+                    continue;
+                }
+
                 // If path has no spaces, remove quotes
                 if !path.contains(' ') {
                     return format!("{} {}{}", cmd, path, rest);

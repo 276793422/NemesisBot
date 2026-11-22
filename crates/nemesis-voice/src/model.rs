@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ModelSource};
 
 // ---------------------------------------------------------------------------
 // Progress reporting — thread-local callback for UI progress updates
@@ -87,7 +87,8 @@ pub fn ensure_stt_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.stt.model_name;
     let dir = cfg.model_dir().join("stt").join(model_name);
 
-    let source = cfg.find_model_source(model_name);
+    // 类别内复合查找（跨类别同名条目不串扰，与 model_source_installed 同判据）
+    let source = cfg.find_model_source_in("stt", model_name);
     let files: Vec<(&str, &str)> = source
         .map(|s| {
             s.files
@@ -142,7 +143,8 @@ pub fn ensure_stt_stream_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.stt_stream.model_name;
     let dir = cfg.model_dir().join("stt_stream").join(model_name);
 
-    let source = cfg.find_model_source(model_name);
+    // 类别内复合查找（同 ensure_stt_model）
+    let source = cfg.find_model_source_in("stt_stream", model_name);
     let files: Vec<(&str, &str)> = source
         .map(|s| {
             s.files
@@ -218,7 +220,8 @@ pub fn ensure_vad_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.vad.model_name;
     let dir = cfg.model_dir().join("vad").join(model_name);
 
-    let source = cfg.find_model_source(model_name);
+    // 类别内复合查找（同 ensure_stt_model）
+    let source = cfg.find_model_source_in("vad", model_name);
     let files: Vec<(&str, &str)> = source
         .map(|s| {
             s.files
@@ -281,7 +284,8 @@ pub fn ensure_tts_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.tts.model_name;
     let dir = cfg.model_dir().join("tts").join(model_name);
 
-    let source = cfg.find_model_source(model_name);
+    // 类别内复合查找（同 ensure_stt_model）
+    let source = cfg.find_model_source_in("tts", model_name);
     let files: Vec<(&str, &str)> = source
         .map(|s| {
             s.files
@@ -333,7 +337,8 @@ pub fn ensure_punct_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.punct.model_name;
     let dir = cfg.model_dir().join("punct").join(model_name);
 
-    let source = cfg.find_model_source(model_name);
+    // 类别内复合查找（同 ensure_stt_model）
+    let source = cfg.find_model_source_in("punct", model_name);
     let files: Vec<(&str, &str)> = source
         .map(|s| {
             s.files
@@ -385,7 +390,8 @@ pub fn ensure_speaker_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.speaker.model_name;
     let dir = cfg.model_dir().join("speaker").join(model_name);
 
-    let source = cfg.find_model_source(model_name);
+    // 类别内复合查找（同 ensure_stt_model）
+    let source = cfg.find_model_source_in("speaker", model_name);
     let files: Vec<(&str, &str)> = source
         .map(|s| {
             s.files
@@ -469,39 +475,56 @@ pub fn model_source_installed(cfg: &AppConfig, category: &str, name: &str) -> bo
 /// `cfg.<category>.model_name`——装好 ≠ 启用，设为当前是 `voice.set_model`
 /// 的职责（两步解耦，与现有六个 `ensure_*_model`「装配置默认变体」并存）。
 pub fn ensure_model_by_name(cfg: &AppConfig, category: &str, name: &str) -> Result<PathBuf> {
+    // 复合键 (category, name) 精确命中——与 model_source_installed 同判据。
+    // 旧形态 name-only 查找在跨类别同名配置（sources 数组合法形态）下会被
+    // 先声明的他类条目挡住：catalog 显示未安装（复合判定正确）而点安装恒
+    // bail，合法条目安装死锁。fallback 文案保留「同名只在他类」的引导信息。
     let source = cfg
         .models
         .sources
         .iter()
-        .find(|s| s.name == name)
-        .with_context(|| format!("模型 '{name}' 不在 config [models.sources] 目录中"))?;
-    if source.category != category {
-        anyhow::bail!(
-            "模型 '{name}' 属于类别 '{}'，与请求的类别 '{category}' 不符",
-            source.category
-        );
-    }
-    ensure_model_core(cfg, category, name)
+        .find(|s| s.name == name && s.category == category)
+        .with_context(
+            || match cfg.models.sources.iter().find(|s| s.name == name) {
+                Some(other) => format!(
+                    "模型 '{name}' 只在类别 '{}' 中声明，不在请求的类别 '{category}' 中",
+                    other.category
+                ),
+                None => format!("模型 '{name}' 不在 config [models.sources] 目录中"),
+            },
+        )?;
+    ensure_model_core(cfg, source)
 }
 
 /// ensure_*_model 共享内核（`ensure_model_by_name` 专用，避免第七份复制）：
-/// 本地命中短路 → auto_download 门 → 下载。现有六个 `ensure_*_model` 保持
-/// 原样不动（错误文案 / 日志前缀各自定制，VAD 还返回文件路径而非目录），
-/// 不为去重而动已验证代码。
-fn ensure_model_core(cfg: &AppConfig, category: &str, model_name: &str) -> Result<PathBuf> {
+/// 本地命中短路 → auto_download 门 → 下载。接收入口已复合键验证的 source，
+/// 不再内部二次 find（旧形态 name-only 二次查找在跨类别同名配置下会取错
+/// files/repo，把别的类别的文件清单装进本类别目录）。现有六个
+/// `ensure_*_model` 保持原样不动（错误文案 / 日志前缀各自定制，VAD 还返回
+/// 文件路径而非目录），不为去重而动已验证代码。
+fn ensure_model_core(cfg: &AppConfig, source: &ModelSource) -> Result<PathBuf> {
+    let category = source.category.as_str();
+    let model_name = source.name.as_str();
     let dir = cfg.model_dir().join(category).join(model_name);
 
-    let source = cfg.find_model_source(model_name);
-    let files: Vec<(&str, &str)> = source
-        .map(|s| {
-            s.files
-                .iter()
-                .map(|f| (f.local.as_str(), f.remote.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
+    // 空 files = 无法验证 = 未安装（BUG-145 家族判据，与六个 ensure_*_model
+    // 及 model_source_installed 对齐）：不拦则零跑下载后无条件 Ok 空目录，
+    // Ready 假成功（下游装载必炸且伪装成已就绪）。
+    if source.files.is_empty() {
+        anyhow::bail!(
+            "Model '{}' (category '{}') declares no files in config [models.sources]; add the file list",
+            model_name,
+            category
+        );
+    }
 
-    if !files.is_empty() && check_model_files(&dir, &files) {
+    let files: Vec<(&str, &str)> = source
+        .files
+        .iter()
+        .map(|f| (f.local.as_str(), f.remote.as_str()))
+        .collect();
+
+    if check_model_files(&dir, &files) {
         tracing::info!(
             "[{}] Model '{}' found at {}",
             category,
@@ -518,13 +541,6 @@ fn ensure_model_core(cfg: &AppConfig, category: &str, model_name: &str) -> Resul
             category
         );
     }
-
-    let source = source.with_context(|| {
-        format!(
-            "Model '{}' (category '{}') not found in config [models.sources]. Add it to config.toml.",
-            model_name, category
-        )
-    })?;
 
     download_model_files(
         &cfg.models.mirror.base,

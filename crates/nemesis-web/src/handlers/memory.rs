@@ -837,8 +837,21 @@ impl MemoryHandler {
             // from_str::<EmbeddingConfig> 失败会**静默回落 default**——编辑器
             // 存进一份坏 JSON = 配置无声丢失。loud 拒绝让坏内容停在编辑器；
             // 与 loader 同型同源（字段 serde default，仅拒类型失配字段）。
-            serde_json::from_str::<nemesis_memory::vector::embedding_config::EmbeddingConfig>(
-                &content,
+            // BUG-20261122-007：`[]`（或标量）对全 default struct 是
+            // 「typed 解析成功但语义全默认」（visit_seq 零元素臂）——原预检
+            // 放行落盘「保存成功」，加载期才被 loader 侧形状闸（BUG-20261122-003）
+            // error! 臂拒收，保存/加载口径分裂。object 形状闸前置对齐。
+            let emb_value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                format!("embedding 配置解析失败（拒绝写入，防加载期静默回落默认值）: {e}")
+            })?;
+            if let Err(e) = nemesis_utils::json_shape::ensure_object(&emb_value, "embedding config")
+            {
+                return Err(format!(
+                    "embedding 配置形状非法（拒绝写入，防加载期全默认静默）: {e}"
+                ));
+            }
+            serde_json::from_value::<nemesis_memory::vector::embedding_config::EmbeddingConfig>(
+                emb_value,
             )
             .map_err(|e| {
                 format!("embedding 配置解析失败（拒绝写入，防加载期静默回落默认值）: {e}")

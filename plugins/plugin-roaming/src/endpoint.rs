@@ -161,14 +161,18 @@ pub(crate) fn load_trust_book(workspace: &Path) -> Result<TrustBookData, String>
 }
 
 /// 写信任簿（`<workspace>/cluster/` 目录不存在则先建）。
+///
+/// (BUG-20261122-010) 原裸 `std::fs::write` 是非原子写：崩溃/断电可留半截
+/// trust.toml，读侧 fail-closed（trust_allows 对解析失败拒绝放行）语义下
+/// = roaming 桥全拒直到人工修复。改走插件自持 [`crate::atomic::atomic_write`]
+/// （create_new 临时名 + write + flush + sync + rename 覆盖 + 失败清理——
+/// 宿主 `write_file_atomic` 语义孪生）：同物理文件三写者（宿主 TrustBook、
+/// identity、relay_server PEM）对齐同一纪律。`private=true` 对齐宿主
+/// TrustBook::save 的 0o600（Windows no-op，诚实边界）。
 pub(crate) fn save_trust_book(workspace: &Path, data: &TrustBookData) -> Result<(), String> {
     let path = trust_book_path(workspace);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
-    }
     let text = toml::to_string_pretty(data).map_err(|e| format!("trust.toml 序列化失败: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+    crate::atomic::atomic_write(&path, text.as_bytes(), true)
 }
 
 /// 身份归一（trim + 剥 `iroh:` 前缀 + 小写——镜像宿主 normalize_id）。

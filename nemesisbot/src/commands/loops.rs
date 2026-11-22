@@ -11,6 +11,7 @@
 //! token 基线：`--max-tokens` >0 时直开 usage 账本（与 gateway 同路径
 //! 真相源 workspace_data_dir）记创建时刻会话已耗 token。
 
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -135,7 +136,8 @@ fn cmd_create(
         bail!("goal 不能为空");
     }
     let session_key = format!(
-        "agent:main:session:{}",
+        "{}{}",
+        WEB_SESSION_KEY_PREFIX,
         nemesis_agent::session::SessionStore::sanitize_session_id(session)
     );
     if !nemesis_agent::chat_log::session_occupied(&session_key) {

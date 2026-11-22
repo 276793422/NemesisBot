@@ -290,7 +290,7 @@ impl MatrixChannel {
     /// non-empty = only listed senders. Shared by `process_sync_events` and the
     /// `start()` runtime sync loop so the rule can't drift between them.
     fn sender_allowed(allow_from: &[String], sender: &str) -> bool {
-        allow_from.is_empty() || allow_from.iter().any(|a| a == sender)
+        allow_from.is_empty() || crate::base::allow_list_contains(allow_from, sender)
     }
 
     /// Processes events from a sync response.

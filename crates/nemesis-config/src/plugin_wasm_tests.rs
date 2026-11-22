@@ -215,6 +215,33 @@ fn legacy_dir_noise_handled() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// BUG-20261122-007 回归锁：`[]` 数组文档对全 default LegacyInstanceFile
+/// 是「typed 解析成功但语义全空」（serde visit_seq 零元素臂）——修复前
+/// 空壳迁移 + 删除原文件 = 用户旧实例配置静默永久丢失（035「解析失败 ≠
+/// 空配置」的姊妹形态「解析成功 = 空配置」）。修复 = object 形状闸前置：
+/// 非 object 与损坏 JSON 同待遇——诚实跳过 WARN、原文件保留、不入册。
+#[test]
+fn legacy_instance_array_document_not_migrated() {
+    let dir = temp_config_dir("legacy_array_doc");
+    let _g = SERIAL.lock().unwrap();
+    std::fs::create_dir_all(dir.join("plugins")).unwrap();
+    std::fs::write(dir.join("plugins/arr.json"), "[]").unwrap();
+    // 标量文档同闸。
+    std::fs::write(dir.join("plugins/num.json"), "42").unwrap();
+
+    let all = load_switches(&dir);
+    assert!(
+        all.is_empty(),
+        "`[]`/标量文档不入册（防空壳迁移，BUG-20261122-007）"
+    );
+    assert!(
+        dir.join("plugins/arr.json").exists(),
+        "`[]` 旧文件保留（不得空壳迁移后删除原文件）"
+    );
+    assert!(dir.join("plugins/num.json").exists(), "标量文档旧文件保留");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ==================== 回归锁 ====================
 //
 // write_switch_file 曾是手搓 tmp+rename：tmp 名只到毫秒精度（读路径迁移写

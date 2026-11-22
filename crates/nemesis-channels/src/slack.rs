@@ -512,7 +512,7 @@ impl SlackChannel {
         }
 
         // Filter by allow_from
-        if !allow_from.is_empty() && !allow_from.iter().any(|u| u == user_id) {
+        if !allow_from.is_empty() && !crate::base::allow_list_contains(allow_from, user_id) {
             debug!("[SlackChannel] ignoring message from unlisted user {user_id}");
             return None;
         }

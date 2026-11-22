@@ -29,6 +29,7 @@
 // @cluster）。
 // ---------------------------------------------------------------------------
 
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -74,7 +75,7 @@ pub(crate) fn roster_state(
     allow(dead_code)
 )]
 pub(crate) fn web_chat_id_from_session_key(session_key: &str) -> String {
-    match session_key.strip_prefix("agent:main:session:") {
+    match session_key.strip_prefix(WEB_SESSION_KEY_PREFIX) {
         Some(sid) => format!("web:{sid}"),
         None => session_key.to_string(),
     }

@@ -4304,3 +4304,72 @@ fn dispatch_rejected_false_for_unknown_and_server_error_texts() {
     // 成功结果文本 = false。
     assert!(!error_text_dispatch_rejected("{\"number\":7}"));
 }
+
+/// BUG-20261121-056 回归锁：invoke 成功体有帽读取（BUG-20261115-024 挂账
+/// 收尾）——4MB+1 的 200 回执在读入中途断开（exceeds limit → UnknownOutcome
+/// 保留账目），不再全量灌内存后才走 HTTP_BODY_CAP 显示帽截断（读后才核对
+/// = BUG-20261101-273 哲学原文反例）。无凭据 read op：零审批/零 vault 面，
+/// 无 GLOBAL_STATE_LOCK 需求（receipts 落 per-tempdir）。
+#[test]
+fn test_b056_invoke_success_body_over_cap_aborts_mid_read() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            let huge = "x".repeat(4 * 1024 * 1024 + 1); // > INVOKE_BODY_CAP (4MB)
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(huge))
+                .mount(&server)
+                .await;
+
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let ws = tmp.path();
+            write_connector(
+                ws,
+                "bigbody",
+                &r#"
+[connector]
+id = "bigbody"
+name = "BigBody"
+version = "0.1.0"
+kind = "rest"
+
+[connector.http]
+base = "{BASE}"
+
+[[op]]
+id = "fetch_report"
+intent = ["拉取报表"]
+risk = "low"
+class = "network"
+args_schema = { type = "object", properties = {} }
+http = { method = "GET", path = "/report" }
+"#
+                .replace("{BASE}", &server.uri()),
+            );
+
+            let tool = invoke_tool(ws, &ws.join("config.json"));
+            // UnknownOutcome 在 invoke 工具面走 Err（"Tool error: " 前缀 +
+            // result_text）——结果不完整 = 诚实失败关闭，不伪装成功。
+            let out = tool
+                .execute(
+                    r#"{"connector":"bigbody","op":"fetch_report","args":{}}"#,
+                    &ctx(),
+                )
+                .await
+                .expect_err("超帽回执须落 UnknownOutcome（Err 面）");
+            assert!(
+                out.contains("exceeds limit"),
+                "4MB+1 成功体须在读入中途断开: {out}"
+            );
+            // 决策表第四臂：2xx 已受理 = 预算保留，凭条落 unknown 不是 executed。
+            let receipts = list_receipts(ws, 50, None).expect("receipts");
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(
+                receipts[0].outcome, "unknown",
+                "超帽回执落 UnknownOutcome（预算保留），不得伪装 executed"
+            );
+        });
+}

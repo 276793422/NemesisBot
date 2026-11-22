@@ -144,7 +144,13 @@ fn truncate_keep_newest(file: &Path, max_bytes: u64) -> std::io::Result<()> {
     let len = f.metadata()?.len();
     // 从尾部向前找起点：简化实现——逐行读入并从尾部累计（512MB 上限内
     // 内存可承受；超上限场景是滥用，此时诚实占用而非静默丢数据）。
-    let lines: Vec<String> = BufReader::new(f).lines().map_while(|l| l.ok()).collect();
+    // 读失败/非 UTF-8 行诚实上浮放弃截断（BUG-20261121-058②：旧
+    // `map_while(|l| l.ok())` 在错误点静默掐断，重写后错误点之后全部
+    // 行永久丢失——与「单条超大记录不静默丢」同一不变量，截断永远
+    // 不得静默丢行）。
+    let lines: Vec<String> = BufReader::new(f)
+        .lines()
+        .collect::<std::io::Result<Vec<String>>>()?;
     let mut keep_from = lines.len();
     let mut acc = 0u64;
     for (i, line) in lines.iter().enumerate().rev() {
@@ -162,15 +168,19 @@ fn truncate_keep_newest(file: &Path, max_bytes: u64) -> std::io::Result<()> {
         // 最新一条自己就超限：仍保它（单条超大记录不静默丢，注释承诺）
         keep_from = lines.len() - 1;
     }
-    let tmp = file.with_extension("jsonl.tmp");
-    {
-        let mut out = std::fs::File::create(&tmp)?;
-        for line in &lines[keep_from..] {
-            writeln!(out, "{line}")?;
-        }
-        out.flush()?;
+    let mut content = String::new();
+    for line in &lines[keep_from..] {
+        content.push_str(line);
+        content.push('\n');
     }
-    std::fs::rename(&tmp, file)?;
+    // 原子重写（BUG-20261121-058①，bug59/唯一临时名家族收编）：旧手写
+    // 固定名 `capture.jsonl.tmp` 被残留垃圾占用（目录形态最顽固）时
+    // File::create 必败，该 profile 的容量截断从此每轮 sweep WARN 空转
+    // 永久失效。helper 自带唯一临时名 create_new + sync_all 先于 rename
+    // + 失败清理（同族收编参照 experience_store trim / memory graph
+    // persist，20+ 站点既有惯例）。
+    nemesis_utils::file::write_file_atomic(&file.to_string_lossy(), content.as_bytes(), 0o644)
+        .map_err(std::io::Error::other)?;
     tracing::info!(
         "[ziwei] capture 截断：{} → {}（保留尾部 {} 行）",
         len,

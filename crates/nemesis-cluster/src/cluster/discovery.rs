@@ -1091,17 +1091,42 @@ impl Cluster {
 
     /// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
     fn persist_real_peer_to_toml(&self, real_id: &str, info: &RealNodeInfo) {
-        let path = &self.static_config_path;
+        // 外部入口：自带写锁（append wrapper 内取 config_write_lock）。
+        // upgrade 事务内禁用本入口——嵌套取锁即死锁，走
+        // [`Self::persist_real_peer_to_toml_locked`]。
         let role_str = info.role.as_role_str();
-        // peers.toml's `address` field is the UDP host:port — the static loader
-        // (gateway.rs) derives rpc_port = udp_port + 10000 from it. info.address
-        // is the RPC address (host:rpc_port) used in-memory; convert it back to
-        // the UDP address on write so the derivation isn't double-applied on
-        // reload (otherwise 21949 → 31949, breaking post-restart callbacks —
-        // root cause of cluster-uat).
         let toml_address = Self::rpc_to_udp_address(&info.address);
         if let Err(e) = crate::cluster_config::append_peer_to_file_with_name(
-            path,
+            &self.static_config_path,
+            real_id,
+            &toml_address,
+            role_str,
+            &info.category,
+            Some(&info.name),
+            info.rpc_port,
+        ) {
+            tracing::warn!(
+                real_id = real_id,
+                error = %e,
+                "[Cluster] Failed to persist real peer info to peers.toml"
+            );
+        }
+    }
+
+    /// [`Self::persist_real_peer_to_toml`] 的锁内变体（BUG-20261121-071）：
+    /// 调用方必须已持 `config_write_lock`（upgrade 事务入口）。条目形态、
+    /// 地址换算与告警语义与外层完全同源。
+    ///
+    /// 地址换算（两变体同源）：peers.toml 的 `address` 字段是 UDP host:port
+    /// ——静态 loader（gateway.rs）按 `rpc_port = udp_port + 10000` 推导。
+    /// info.address 是 RPC 形态（host:rpc_port），写盘前换回 UDP 形态避免
+    /// 重载时推导被二次叠加（否则 21949 → 31949，重启后回调断裂——
+    /// cluster-uat 根因）。
+    fn persist_real_peer_to_toml_locked(&self, real_id: &str, info: &RealNodeInfo) {
+        let role_str = info.role.as_role_str();
+        let toml_address = Self::rpc_to_udp_address(&info.address);
+        if let Err(e) = crate::cluster_config::append_peer_to_file_with_name_locked(
+            &self.static_config_path,
             real_id,
             &toml_address,
             role_str,
@@ -1119,6 +1144,10 @@ impl Cluster {
 
     /// Remove `[peers.{placeholder}]` and add `[peers.{real_id}]` in peers.toml.
     ///
+    /// 写串行：入口持 `config_write_lock` 罩「load → 摘占位 → 并入真实条目 →
+    /// 单次原子写」全程（BUG-20261121-071，与 append/remove/update_peers_node
+    /// 同锁互斥；锁内 persist 分支走 `_locked` 变体防嵌套死锁）。
+    ///
     /// If both keys sanitize to the same value (i.e. the user already added the
     /// peer with the real ID), this is a no-op aside from a content refresh via
     /// `persist_real_peer_to_toml`. Otherwise the placeholder is stripped AND
@@ -1133,11 +1162,19 @@ impl Cluster {
         info: &RealNodeInfo,
     ) {
         let path = &self.static_config_path;
+        // 写串行锁（BUG-20261121-071）：本函数的读→摘占位→写快照与
+        // append/remove/update_peers_node 是同一文件的多个写者——家族不变量
+        // 要求同锁互斥（append 注释明文：不互斥则并发写回互相冲掉快照）。
+        // 此前唯一漏网的裸奔写者：dashboard 身份编辑（update_peers_node）
+        // 与 announce 占位升级交错时，一方改动被整文件原子写静默丢弃。
+        // 锁内的 persist 分支走 `_locked` 变体（外层 append 自取锁，非重入
+        // 嵌套即死锁）。
+        let _cfg_serial = nemesis_config::config_write_lock();
         // Same key after sanitization → just write the real_id content.
         if crate::cluster_config::sanitize_peer_key(placeholder)
             == crate::cluster_config::sanitize_peer_key(real_id)
         {
-            self.persist_real_peer_to_toml(real_id, info);
+            self.persist_real_peer_to_toml_locked(real_id, info);
             return;
         }
 
@@ -1168,7 +1205,7 @@ impl Cluster {
             Some(t) => t,
             None => {
                 // No [peers] section yet → just write the real entry via append.
-                self.persist_real_peer_to_toml(real_id, info);
+                self.persist_real_peer_to_toml_locked(real_id, info);
                 return;
             }
         };

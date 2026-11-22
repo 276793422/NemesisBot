@@ -121,8 +121,13 @@ pub fn scheme_supported(value: &str) -> bool {
 }
 
 /// 读取代理文件。`Ok(None)` = 文件不存在（未配置；调用方静默走系统默认，
-/// **绝不因此落盘**）；`Err` = 文件在但损坏/不可读（调用方 WARN + 按未配置
-/// 走，不阻断启动）。
+/// **绝不因此落盘**）；`Err` = 文件在但损坏/不可读/形状非法（调用方 WARN +
+/// 按未配置走，不阻断启动）。
+///
+/// BUG-20261122-006（BUG-20261122-003 家族横扫漏网）：ProxyFileConfig 全字
+/// 段 `#[serde(default)]` 无 flatten，`[]`（或标量）文档走 serde visit_seq
+/// 零元素臂 = 「全默认」合法值——用户代理配置静默无视零诊断。object 形状
+/// 闸在 typed 解析前拦下（030 家族纪律：反序列化 struct 之前先验形状）。
 pub fn load(config_dir: &Path) -> Result<Option<ProxyFileConfig>, String> {
     let path = proxy_config_path(config_dir);
     let content = match nemesis_utils::fsutil::read_config_string(&path) {
@@ -130,7 +135,12 @@ pub fn load(config_dir: &Path) -> Result<Option<ProxyFileConfig>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("读取 {} 失败：{e}", path.display())),
     };
-    serde_json::from_str::<ProxyFileConfig>(&content)
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("代理配置 {} 解析失败：{e}", path.display()))?;
+    if let Err(e) = nemesis_utils::json_shape::ensure_object(&value, "proxy config file") {
+        return Err(format!("代理配置 {} 形状非法：{e}", path.display()));
+    }
+    serde_json::from_value::<ProxyFileConfig>(value)
         .map(Some)
         .map_err(|e| format!("代理配置 {} 解析失败：{e}", path.display()))
 }

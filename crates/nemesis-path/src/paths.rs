@@ -945,9 +945,38 @@ pub fn resolve_scanner_config_path() -> PathBuf {
 ///
 /// 尾巴里的 `..` 语义：可出栈则出栈；出到底（根/盘符）则保留为 `..` 逃逸
 /// 标记，让 starts_with 前缀判断自然拒绝逃逸路径。
+///
+/// 悬空符号链接（BUG-20261121-059）：canonicalize 失败 ≠「path 不存在」
+/// ——末段组件本身是符号链接入口而链接目标不存在（悬空）时 canonicalize
+/// 同样失败。该形态此前滑进「最长存在祖先 + 词法尾巴」分支，归一结果 =
+/// canon(祖先) + [链接名] 落在界内 → 围栏放行 → 后续写操作跟随悬空 file
+/// symlink 在**界外**创建目标文件（实机复现：`ws\evil.txt → <界外>
+/// real_target.txt` 写入成功）。判定面用 `symlink_metadata`（不跟随末段，
+/// 悬空存在性可判）：末段是符号链接而整体 canonicalize 失败 = 真实位置
+/// 未知 = 保守判界外。返回带前导 `..` 的标记路径——它是**纯比较值**（全部
+/// 消费方只做 starts_with/等值比较，不解引用）：首组件 ParentDir 使其对
+/// 任何真实根的前缀比较恒 false，等值比较也恒 false；父目录为悬空链接的
+/// 路径不受影响（写操作在 OS 层 ENOENT 诚实失败，无逃逸面）。
 pub fn canonicalize_for_compare(path: &Path) -> PathBuf {
     if let Ok(p) = std::fs::canonicalize(path) {
         return strip_verbatim(p);
+    }
+    if std::fs::symlink_metadata(path)
+        .map(|m| m.is_symlink())
+        .unwrap_or(false)
+    {
+        // 末段是符号链接入口而 canonicalize 失败 = 悬空链接 → 逃逸标记
+        //（跳过 Prefix/RootDir 构建相对标记；前导 `..` 保证对任何真实根
+        // 的前缀/等值比较恒 false）。
+        let mut marker = PathBuf::new();
+        marker.push("..");
+        for comp in path.components() {
+            match comp {
+                Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+                other => marker.push(other.as_os_str()),
+            }
+        }
+        return marker;
     }
     // 逐级向上找最靠近 path 的存在祖先（更近的都 canonicalize 失败了，
     // 第一个成功的即最长存在祖先）。盘根/根目录总存在，通常走不到兜底。

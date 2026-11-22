@@ -415,7 +415,7 @@ impl LineChannel {
             // 死键，任何 LINE 用户都可驱动 bot（BUG-20261113-149；与
             // webhook_host/webhook_path 同 struct 的第三颗死键，055 修复
             // 横扫漏）。
-            if !allow_from.is_empty() && !allow_from.iter().any(|a| a == sender_id) {
+            if !allow_from.is_empty() && !crate::base::allow_list_contains(allow_from, sender_id) {
                 warn!(
                     sender = %sender_id,
                     "[LineChannel] sender filtered by allow_from"
@@ -495,6 +495,12 @@ impl Channel for LineChannel {
                     Ok(s) => s,
                     Err(e) => {
                         warn!("[LineChannel] webhook accept error: {e}");
+                        // accept 错误退避（BUG-20261122-019）：裸 continue 在
+                        // Windows WSAECONNRESET 重置风暴（扫描/健康检查连后
+                        // 即 RST）下是热自旋——分诊退避单一真相源
+                        // nemesis_utils::accept_retry。
+                        tokio::time::sleep(nemesis_utils::accept_retry::accept_error_backoff(&e))
+                            .await;
                         continue;
                     }
                 };

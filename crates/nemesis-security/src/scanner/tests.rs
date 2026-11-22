@@ -3168,6 +3168,12 @@ fn test_scanner_config_from_raw_consumes_max_file_size() {
     assert_eq!(cfg.max_file_size, 50 * 1024 * 1024);
     assert_eq!(cfg.address, "127.0.0.1:3310");
     assert!(cfg.enabled);
+
+    // BUG-20261121-062：timeout_secs=0 视作缺省——Duration::from_secs(0)
+    // 会让 ClamAV INSTREAM 的 tokio timeout 立即触发 → 安全第 7 层扫描
+    // 必败；0 不改写默认 60s。
+    let cfg = scanner_config_from_raw(&serde_json::json!({"timeout_secs": 0}));
+    assert_eq!(cfg.timeout, std::time::Duration::from_secs(60));
 }
 
 #[tokio::test]

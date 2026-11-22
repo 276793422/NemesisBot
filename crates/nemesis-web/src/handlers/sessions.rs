@@ -9,6 +9,7 @@
 use crate::handlers::logs::scan_session_logs;
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 
 pub struct SessionsHandler;
 
@@ -103,7 +104,8 @@ impl ModuleHandler for SessionsHandler {
                             continue;
                         };
                         let key = format!(
-                            "agent:main:session:{}",
+                            "{}{}",
+                            WEB_SESSION_KEY_PREFIX,
                             nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                         );
                         row["allow_all"] = serde_json::Value::Bool(allow_keys.contains(&key));
@@ -123,7 +125,8 @@ impl ModuleHandler for SessionsHandler {
                         continue;
                     };
                     let key = format!(
-                        "agent:main:session:{}",
+                        "{}{}",
+                        WEB_SESSION_KEY_PREFIX,
                         nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                     );
                     let pending = nemesis_agent::chat_log::session_pending_count(&key);
@@ -142,7 +145,8 @@ impl ModuleHandler for SessionsHandler {
                         continue;
                     };
                     let key = format!(
-                        "agent:main:session:{}",
+                        "{}{}",
+                        WEB_SESSION_KEY_PREFIX,
                         nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                     );
                     let root = std::path::PathBuf::from(&workspace);
@@ -182,7 +186,8 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "missing session_id".to_string())?;
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(session_id)
                 );
                 let cleared = nemesis_agent::chat_log::clear_undelivered_replies(&session_key);
@@ -208,7 +213,7 @@ impl ModuleHandler for SessionsHandler {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty());
                 let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
-                let session_key = format!("agent:main:session:{sid}");
+                let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, sid);
                 if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
                     return Err(format!("会话不存在: {sid}"));
                 }
@@ -239,7 +244,7 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "missing session_id".to_string())?;
                 let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
-                let session_key = format!("agent:main:session:{sid}");
+                let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, sid);
                 if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
                     return Err(format!("会话不存在: {sid}"));
                 }
@@ -265,7 +270,7 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "missing session_id".to_string())?;
                 let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
-                let session_key = format!("agent:main:session:{sid}");
+                let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, sid);
                 let cleared = nemesis_agent::chat_log::clear_session_snooze(&session_key).is_some();
                 let delivered = replay_pending_for(&session_key);
                 ctx.state.event_hub.publish(
@@ -335,7 +340,8 @@ impl ModuleHandler for SessionsHandler {
                 // written to a sidecar meta file immediately.
                 let session_id = uuid::Uuid::new_v4().to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // L6++ G4（2026-09-08）：可选 project_id——先校验+烧归属
@@ -443,7 +449,8 @@ impl ModuleHandler for SessionsHandler {
                     .ok_or_else(|| "missing title".to_string())?
                     .to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // E7：rename 是用户意志——置 manual 标记，自动标题永不覆盖。
@@ -477,7 +484,8 @@ impl ModuleHandler for SessionsHandler {
                     _ => "single",
                 };
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // 会话闸（BUG-HUNT R6，同 rewind 家族——admission
@@ -509,7 +517,8 @@ impl ModuleHandler for SessionsHandler {
                     .ok_or_else(|| "missing session_id".to_string())?
                     .to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // 会话闸（BUG-HUNT R6，同 delete 臂）：clear 的 jsonl 截断
@@ -534,7 +543,8 @@ impl ModuleHandler for SessionsHandler {
                     .ok_or_else(|| "missing session_id".to_string())?
                     .to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // BUG-20261102-302：export 全量读会话日志，同步阻塞 IO 直跑
@@ -600,7 +610,7 @@ impl ModuleHandler for SessionsHandler {
                 {
                     Some(raw) => {
                         let sid = nemesis_agent::session::SessionStore::sanitize_session_id(raw);
-                        let key = format!("agent:main:session:{sid}");
+                        let key = format!("{}{}", WEB_SESSION_KEY_PREFIX, sid);
                         // session_occupied（非裸 jsonl）：meta-only 残留键同样
                         // 拒绝——meta 写入是 upsert，导入复用会继承陈旧
                         // allow_all/branch_summary/title（BUG-20261106-038）。
@@ -624,7 +634,7 @@ impl ModuleHandler for SessionsHandler {
                     }
                     None => uuid::Uuid::new_v4().to_string(),
                 };
-                let session_key = format!("agent:main:session:{sid}");
+                let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, sid);
                 // BUG-20261106-003：落盘走排他创建（create_new）——上面的
                 // exists 预检只是友好快速路径，真实「不覆盖」契约由文件系统
                 // 原子性背书（check-then-create 竞态窗口不再能覆盖既有会话）。
@@ -676,7 +686,8 @@ impl ModuleHandler for SessionsHandler {
                     .ok_or_else(|| "missing session_id".to_string())?
                     .to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 let files = {
@@ -736,7 +747,8 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // L6++ G6（2026-09-08）：undo 栈与 checkpoint store 都住 loop
@@ -781,7 +793,8 @@ impl ModuleHandler for SessionsHandler {
                     .ok_or_else(|| "missing session_id".to_string())?
                     .to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // L6++ G6：redo 的 undo 栈住 loop 实例，同 rewind 路由项目会话。
@@ -815,7 +828,8 @@ impl ModuleHandler for SessionsHandler {
                     .ok_or_else(|| "missing path".to_string())?
                     .to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // L6++ G6：checkpoint 索引住 loop 实例，同 rewind 路由项目会话。
@@ -834,7 +848,8 @@ impl ModuleHandler for SessionsHandler {
                     .ok_or_else(|| "missing session_id".to_string())?
                     .to_string();
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 let path = nemesis_agent::event_ledger::ledger_path(&session_key);
@@ -1022,7 +1037,7 @@ impl ModuleHandler for SessionsHandler {
                     .strip_prefix("agent_main_session_")
                     .unwrap_or(session_id);
                 let sid = nemesis_agent::session::SessionStore::sanitize_session_id(bare);
-                let session_key = format!("agent:main:session:{sid}");
+                let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, sid);
                 if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
                     return Err(format!("会话不存在: {sid}"));
                 }
@@ -1603,7 +1618,7 @@ pub(crate) fn wake_due_sessions() -> usize {
         if due.with_timezone(&chrono::Local) > now {
             continue;
         }
-        let session_key = format!("agent:main:session:{sid}");
+        let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, sid);
         // BUG-20261031-231：会话 jsonl 重写窗口（rewind/redo）进行中 →
         // 本轮整条目跳过（标记保留，10s 后下轮重试——窗口通常亚秒级）。
         // 必须先于摘标记：旧序「摘标记 → 落唤醒行」在窗口内行被截断吞掉

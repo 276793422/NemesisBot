@@ -288,7 +288,7 @@ pub fn load_app_config(workspace: &Path) -> AppConfig {
     let config_path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     if config_path.exists() {
         match nemesis_utils::fsutil::read_config_string(&config_path) {
-            Ok(content) => match serde_json::from_str(&content) {
+            Ok(content) => match app_config_from_str(&content) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     tracing::warn!(
@@ -311,6 +311,19 @@ pub fn load_app_config(workspace: &Path) -> AppConfig {
     } else {
         AppConfig::default()
     }
+}
+
+/// 解析（形状闸 + typed 解析），lenient loader 的统一解析通道。
+///
+/// BUG-20261122-003（BUG-20261120-030 同族横扫补位）：AppConfig 全字段带
+/// default，`[]` 文档走 serde visit_seq 零元素臂 = 「全默认 AppConfig」
+/// **静默成功**——连 load_app_config 自声明的「解析失败必须留 WARN——无声
+/// 黑洞」防线都不经过（Ok 臂不 warn）。形状错（数组/标量文档）统一 Err
+/// 进 WARN 臂。语义单一真相源 = nemesis_utils::json_shape。
+pub(crate) fn app_config_from_str(content: &str) -> Result<AppConfig, String> {
+    let value: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
+    nemesis_utils::json_shape::ensure_object(&value, "cluster config file")?;
+    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// Save app configuration to workspace/config/config.cluster.json.

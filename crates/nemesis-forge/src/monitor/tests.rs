@@ -950,10 +950,10 @@ fn test_s8_evaluate_outcomes_skips_non_active_artifact() {
 #[test]
 fn test_s8_evaluate_artifact_before_traces_insufficient_after() {
     let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
-    // min_outcome_samples = 0 → the default minimum of 5 applies; zero
-    // after-traces → "insufficient_data" early return.
-    let mut cfg = ForgeConfig::default();
-    cfg.learning.min_outcome_samples = 0;
+    // 默认下限 5（BUG-20261121-064：显式 0 自本修复起语义 = 护栏关，
+    // 不再回落 5——触发 insufficient_data 用显式/默认正下限）。零
+    // after-traces < 5 → "insufficient_data" early return。
+    let cfg = ForgeConfig::default();
     let monitor = DeploymentMonitor::new(cfg, registry.clone());
 
     let mut artifact = make_artifact("ins1", 10, ArtifactStatus::Active);
@@ -981,6 +981,86 @@ fn test_s8_evaluate_artifact_before_traces_insufficient_after() {
     assert_eq!(outcomes[0].artifact_id, id);
     assert_eq!(outcomes[0].verdict, "insufficient_data");
     assert_eq!(outcomes[0].sample_size, 0);
+}
+
+// ---- BUG-20261121-064 回归锁：monitor 显式 0 配置直接采信 ----
+// （旧 `== 0 → 默认值` 回落臂已删，同 BUG-20261113-161 / -029 家族裁决：
+//  serde default 已给默认，0 的唯一入口是用户显式配置，静默改回默认 =
+//  silently overriding user-configured value。）
+
+#[test]
+fn test_evaluate_explicit_zero_min_samples_guard_off() {
+    // 显式 min_outcome_samples=0 = 不设样本下限（护栏关）→ usage=1 也
+    // 进评估。旧回落臂下 1 < 5 → observing；护栏关后 improvement
+    // 0.9-0.5=0.4 > 0.1 → positive。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.min_outcome_samples = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry);
+
+    let mut artifact = make_artifact("z1", 1, ArtifactStatus::Active);
+    artifact.success_rate = 0.9;
+    let result = monitor.evaluate(&artifact);
+    assert_eq!(result.verdict, "positive");
+    assert_eq!(result.sample_size, 1);
+}
+
+#[test]
+fn test_evaluate_outcomes_zero_window_days_honest_empty() {
+    // 显式 monitor_window_days=0 = 观察窗口归零 → 窗内无轨迹 → 无实效
+    // 分析（诚实空转）。对照臂：同轨迹 + 默认窗口 7 → outcome 照常产出
+    // ——证明空结果来自窗口归零而非其他过滤。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut artifact = make_artifact("zw1", 10, ArtifactStatus::Active);
+    artifact.tool_signature = vec!["file_read".to_string()];
+    registry.add(artifact);
+
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.monitor_window_days = 0;
+    let monitor = DeploymentMonitor::new(cfg, Arc::clone(&registry));
+
+    let old = (chrono::Local::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let mut trace = make_trace(3, 100, &["file_read"], false);
+    trace.start_time = old;
+    let outcomes = monitor.evaluate_outcomes(&[trace]);
+    assert!(
+        outcomes.is_empty(),
+        "窗口归零后轨迹必须全部出窗（旧回落臂会静默按 7 天窗产出 outcome）"
+    );
+
+    let trace7 = make_trace(3, 100, &["file_read"], false);
+    let mut cfg7 = ForgeConfig::default();
+    cfg7.learning.monitor_window_days = 7;
+    let monitor7 = DeploymentMonitor::new(cfg7, registry);
+    let outcomes7 = monitor7.evaluate_outcomes(&[trace7]);
+    assert_eq!(outcomes7.len(), 1, "默认 7 天窗同轨迹必须产出 outcome");
+}
+
+#[test]
+fn test_evaluate_artifact_explicit_zero_min_samples_produces_outcome() {
+    // evaluate_artifact 同族回落臂：显式 min_outcome_samples=0 = 护栏关
+    // → after 1 条子轨迹也照常出真实结论。旧回落臂下 1 < 5 →
+    // insufficient_data。before 空 + after 全成功 → improvement 0 →
+    // neutral（空 before 约定见 test_evaluate_outcomes_insufficient_
+    // does_not_overwrite_efficacy 注释）。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut artifact = make_artifact("za1", 10, ArtifactStatus::Active);
+    artifact.tool_signature = vec!["t".to_string()];
+    artifact.created_at = (chrono::Local::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let id = registry.add(artifact);
+
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.min_outcome_samples = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry);
+
+    let artifact = monitor.registry.get(&id).unwrap();
+    let trace = make_trace_with_steps(&[(true, 100)]);
+    let outcome = monitor
+        .evaluate_artifact(&artifact, &[&trace])
+        .expect("护栏关后必须产出 outcome");
+    assert_eq!(outcome.artifact_id, id);
+    assert_eq!(outcome.verdict, "neutral");
+    assert_eq!(outcome.sample_size, 1);
 }
 
 #[test]
@@ -1349,7 +1429,9 @@ fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
     // outcome 的 `_ =>` 忽略语义对齐；outcome 本身仍进返回值（可观测）。
     let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
     let mut cfg = ForgeConfig::default();
-    cfg.learning.min_outcome_samples = 0; // → 默认下限 5 生效
+    // BUG-20261121-064：显式 0 语义 = 护栏关（不设下限），不再回落 5；
+    // 触发 insufficient_data 路径用显式下限 5。
+    cfg.learning.min_outcome_samples = 5;
     let monitor = DeploymentMonitor::new(cfg, registry.clone());
 
     let mut artifact = make_artifact("eff1", 10, ArtifactStatus::Active);
@@ -1516,4 +1598,41 @@ fn test_evaluate_artifact_splits_long_session_across_deploy_point() {
         .expect("D3 拆桶评估应写回快照");
     assert_eq!(snap.samples_after, 1);
     assert_eq!(snap.samples_before, 1);
+}
+
+#[test]
+fn test_evaluate_outcomes_huge_window_days_clamped_no_panic() {
+    // BUG-20261122-015：monitor_window_days 是 u32，全域 4.29e9 天远超
+    // DateTime 减法溢出带 ~9.6e7 天——裸喂 chrono 的巨值配置让实效评估
+    // 每次调用 panic。修复 = time_bounds::MAX_AGE_DAYS 上界钳制（R735
+    // 姊妹站点同款：episodic/cycle_store/experience_store/trace_store/
+    // reflector）。u32::MAX 是修复前必 panic 的探针值（构造不越
+    // TimeDelta 上限 1.07e11，panic 落在减法）。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.monitor_window_days = u32::MAX;
+    let monitor = DeploymentMonitor::new(cfg, registry);
+
+    let trace = make_trace(1, 10, &["file_read"], false);
+    // 修复前此处 panic（chrono 减法越界）；修复后钳制为 36500 天窗口，
+    // 「now」轨迹在窗内 → 过滤臂正常走完；空 registry → 无 artifact，
+    // outcomes 为空。
+    let outcomes = monitor.evaluate_outcomes(&[trace]);
+    assert!(outcomes.is_empty());
+}
+
+#[test]
+fn test_evaluate_outcomes_zero_window_semantics_preserved() {
+    // 钳制不得改变显式 0 语义（BUG-20261121-064 契约：显式 0 = 窗口
+    // 归零诚实空转，不静默改回默认）——0.min(MAX) == 0，同断言兜底。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.monitor_window_days = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry);
+
+    let trace = make_trace(1, 10, &["file_read"], false);
+    let outcomes = monitor.evaluate_outcomes(&[trace]);
+    // 窗口 0 → since=now，轨迹时间戳（早于 evaluate 时刻）恒被滤出
+    // recent_traces → 早退空 outcomes（诚实空转，非 panic）。
+    assert!(outcomes.is_empty());
 }

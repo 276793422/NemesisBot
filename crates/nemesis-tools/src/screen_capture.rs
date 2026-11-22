@@ -126,14 +126,19 @@ impl ScreenCaptureTool {
             "[Tools] Running capture script"
         );
 
-        let output = match tokio::time::timeout(
-            timeout,
-            tokio::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", script])
-                .output(),
-        )
-        .await
-        {
+        // BUG-20261122-017 双缺陷修复：① gateway 以 windows 子系统构建
+        // （main.rs `windows_subsystem = "windows"`），缺 CREATE_NO_WINDOW
+        // 的控制台子进程 spawn 会弹黑窗（exec_workspace / netsh_cmd /
+        // suppress_console 黑窗根修同族，本位点是漏网）；② BUG-20261119-203
+        // kill_on_drop 家族纪律——tokio Child 默认 kill_on_drop=false，超时
+        // 分支 drop 的只是 output() future，powershell 泄漏为孤儿。家族注释
+        // （desktop_automation::run_powershell）列举同款位点恰漏本文件。
+        let mut cmd = tokio::process::Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        cmd.kill_on_drop(true);
+        let output = match tokio::time::timeout(timeout, cmd.output()).await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 return ToolResult::error(&format!("screen capture failed: {}", e));

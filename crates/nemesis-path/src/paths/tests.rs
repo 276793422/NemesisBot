@@ -89,6 +89,104 @@ fn test_canonicalize_for_compare_representation_mismatch_normalized() {
     );
 }
 
+/// BUG-20261121-059 回归锁：悬空符号链接 = 界外（逃逸标记）。
+///
+/// 末段组件本身是符号链接入口而链接目标不存在（悬空）时 canonicalize
+/// 失败——旧实现让它滑进「最长存在祖先 + 词法尾巴」分支，归一结果 =
+/// canon(祖先) + [链接名] 落在界内 → 围栏放行 → 写操作跟随悬空 file
+/// symlink 在界外创建目标（实机复现：`ws\evil.txt` → 界外 target 逃逸
+/// 成功）。修复后归一结果必须是带前导 `..` 的逃逸标记（starts_with 任何
+/// 真实根恒 false）。同路径删除链接后必须恢复界内归一——只对真实链接
+/// 入口触发，不过度拒绝普通不存在路径。环境无 symlink 特权（Windows
+/// 非 dev-mode 常态）诚实跳过。
+#[test]
+fn b059_canonicalize_dangling_symlink_is_outside_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let target = dir.path().join("outside_target.txt");
+    std::fs::write(&target, b"x").unwrap();
+    let link = ws.join("evil.txt");
+    #[cfg(unix)]
+    let link_ok = std::os::unix::fs::symlink(&target, &link).is_ok();
+    #[cfg(windows)]
+    let link_ok = std::os::windows::fs::symlink_file(&target, &link).is_ok();
+    if !link_ok {
+        eprintln!("SKIP: symlink creation unavailable（无符号链接特权）");
+        return;
+    }
+
+    // 悬空化：删除链接目标，链接入口仍在。
+    std::fs::remove_file(&target).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link).unwrap().is_symlink(),
+        "fixture sanity：链接入口存在且 is_symlink"
+    );
+    assert!(
+        std::fs::canonicalize(&link).is_err(),
+        "fixture sanity：悬空链接 canonicalize 必失败（修复触发前提）"
+    );
+
+    let root = canonicalize_for_compare(&ws);
+    let resolved = canonicalize_for_compare(&link);
+    assert!(
+        !resolved.starts_with(&root),
+        "悬空链接必须判界外（旧实现归一成界内形态放行）: {resolved:?}"
+    );
+    assert_ne!(
+        resolved,
+        root.join("evil.txt"),
+        "不得回落祖先+词法尾巴的界内形态"
+    );
+    assert!(
+        resolved.components().next() == Some(std::path::Component::ParentDir),
+        "标记形态 = 前导 `..`（比较专用值，文档承诺）: {resolved:?}"
+    );
+
+    // 删除链接后同路径 = 普通不存在文件 → 恢复界内归一（不过度拒绝）。
+    let _ = std::fs::remove_file(&link);
+    let resolved_again = canonicalize_for_compare(&link);
+    assert!(
+        resolved_again.starts_with(&root),
+        "普通不存在路径必须照常界内归一: {resolved_again:?}"
+    );
+}
+
+/// BUG-20261121-059 同族钉子：活链接（链接目标存在）→ canonicalize 成功
+/// 解析到界外真实位置 → 前缀判断拒绝。修复前后行为不变（防 marker 分支
+/// 误吞活链接形态——marker 只该出现在悬空态）。
+#[test]
+fn b059_canonicalize_live_symlink_outside_resolves_outside() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let target = dir.path().join("outside_target.txt");
+    std::fs::write(&target, b"x").unwrap();
+    let link = ws.join("live.txt");
+    #[cfg(unix)]
+    let link_ok = std::os::unix::fs::symlink(&target, &link).is_ok();
+    #[cfg(windows)]
+    let link_ok = std::os::windows::fs::symlink_file(&target, &link).is_ok();
+    if !link_ok {
+        eprintln!("SKIP: symlink creation unavailable（无符号链接特权）");
+        return;
+    }
+
+    let root = canonicalize_for_compare(&ws);
+    let resolved = canonicalize_for_compare(&link);
+    assert!(
+        !resolved.starts_with(&root),
+        "活链接指向界外必须判界外: {resolved:?}"
+    );
+    assert_eq!(
+        resolved,
+        canonicalize_for_compare(&target),
+        "活链接解析到链接目标的真实位置（canonicalize 主路径不变）"
+    );
+}
+
 #[test]
 fn test_path_manager_default() {
     let pm = PathManager::new();

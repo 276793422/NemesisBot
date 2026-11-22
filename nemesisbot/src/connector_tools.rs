@@ -1830,8 +1830,14 @@ impl ConnectorInvokeTool {
             // unwrap_or_default 静默吞错，模型把残缺响应当真、凭条把传输
             // 异常记成正常 executed——与 read_error_body「不伪装完整错误
             // 体」纪律同族不对称）→ UnknownOutcome 保留账目（决策表第四臂）。
-            match resp.text().await {
-                Ok(t) => t,
+            // BUG-20261121-056：成功体有帽读取（BUG-20261115-024 挂账收尾）——
+            // 旧「全量读后 chars().take(HTTP_BODY_CAP) 显示帽」是
+            // BUG-20261101-273 哲学原文反例（核对前已灌内存）。4MB 帽 =
+            // connector 回执合法载荷 × 大余量；超帽读入中途断开，同走 037
+            // UnknownOutcome 诚实臂（2xx 已受理 = 预算保留语义不变）。
+            const INVOKE_BODY_CAP: u64 = 4 * 1024 * 1024;
+            match nemesis_utils::http_cap::read_body_capped(resp, INVOKE_BODY_CAP).await {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(e) => {
                     return Ok(InvocationOutcome::UnknownOutcome {
                         summary: "HTTP 响应体读取中断（结果不完整）".to_string(),

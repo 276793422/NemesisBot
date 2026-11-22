@@ -521,6 +521,10 @@ impl Channel for WebSocketChannel {
                     }
                     Err(e) => {
                         warn!(error = %e, "[WebSocketChannel] accept error");
+                        // accept 错误退避（BUG-20261122-019）：无退避的循环
+                        // 在重置风暴下热自旋（CPU 烧 + 日志洪泛）。
+                        tokio::time::sleep(nemesis_utils::accept_retry::accept_error_backoff(&e))
+                            .await;
                     }
                 }
             }

@@ -119,13 +119,30 @@ fn test_truncate_unicode_characters() {
 
 #[test]
 fn test_random_id_unique() {
-    // IDs should differ (extremely unlikely to collide)
+    // BUG-20261122-001 回归：进程内序数混入后，连续两次调用输入必不相同
+    //（同 tick 同 nanos 亦然——奇数常数乘法 u64 双射 + splitmix64 双射），
+    // 全长 16 hex 输出确定性互异。修复前旧注释「might be the same
+    // nanosecond, so we just check format」即同 tick 确定性碰撞的知情弱化。
     let id1 = random_id();
     let id2 = random_id();
-    // Note: in fast tests they might be the same nanosecond,
-    // so we just check format
+    assert_ne!(id1, id2, "consecutive random_id() calls must differ");
     assert_eq!(id1.len(), 16);
     assert_eq!(id2.len(), 16);
+}
+
+/// BUG-20261122-001 回归：紧凑循环内大量调用不得出现确定性碰撞。
+/// 修复前纯时间戳输入在 Windows 毫秒级刷新粒度下，同 tick 内的调用
+/// 全部产出相同 id（循环 5000 次 ≈ 亚毫秒完成，几乎必然全部同 tick）；
+/// 修复后同 tick 调用经序数区分，确定性互异。跨 tick 调用由 nanos
+/// 区分（64 位熵不减）。
+#[test]
+fn test_random_id_no_same_tick_collision() {
+    let n = 5000;
+    let mut seen = std::collections::HashSet::with_capacity(n);
+    for _ in 0..n {
+        assert!(seen.insert(random_id()), "duplicate id in tight loop");
+    }
+    assert_eq!(seen.len(), n);
 }
 
 #[test]

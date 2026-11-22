@@ -272,7 +272,9 @@ impl Channel for SignalChannel {
                     let sender = inner.source_number.as_deref().unwrap_or("unknown");
 
                     // Filter by allow_from
-                    if !allow_from.is_empty() && !allow_from.iter().any(|a| a == sender) {
+                    if !allow_from.is_empty()
+                        && !crate::base::allow_list_contains(&allow_from, sender)
+                    {
                         continue;
                     }
 

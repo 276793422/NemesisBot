@@ -65,3 +65,50 @@ fn save_app_config_roundtrip_preserves_fields() {
     assert_eq!(loaded.token, "cov-secret-token");
     assert_eq!(loaded.node_name, "CovNode");
 }
+
+// ---- BUG-20261122-003：形状闸（visit_seq 零元素臂）回归锁 ----
+//
+// AppConfig 全字段带 default，`[]` 文档曾从 serde visit_seq 零元素臂静默
+// 通过 = 「全默认 AppConfig」合法值——连 load_app_config 的 WARN 宽容臂都
+// 不经过（Ok 臂不 warn），「配置写了却不生效」成为无声黑洞。
+
+#[test]
+fn app_config_from_str_rejects_array_document() {
+    let err = app_config_from_str("[]").unwrap_err();
+    assert!(err.contains("must be a JSON object"), "err={err}");
+    assert!(err.contains("array"), "err={err}");
+}
+
+#[test]
+fn app_config_from_str_rejects_scalar_documents() {
+    for content in ["null", "\"cluster\"", "42", "true"] {
+        let err = app_config_from_str(content).unwrap_err();
+        assert!(
+            err.contains("must be a JSON object"),
+            "content={content} err={err}"
+        );
+    }
+}
+
+#[test]
+fn app_config_from_str_still_accepts_object_document() {
+    // 最小 object（字段全 default，缺键合法）——闸不误伤。
+    let cfg = app_config_from_str(r#"{"enabled": true}"#).expect("object doc parses");
+    assert!(cfg.enabled, "判别字段确从文档消费（非 vacuous Ok）");
+    // 其余字段仍落 default。
+    assert_eq!(cfg.rpc_port, 21949);
+}
+
+/// lenient loader 端到端：`[]` 文档落 WARN 臂 → 默认配置（与坏 JSON 同
+/// 语义，不再静默成功）。
+#[test]
+fn load_app_config_array_document_warns_and_defaults() {
+    let ws = temp_ws("array-doc");
+    let path = nemesis_path::resolve_cluster_config_path_in_workspace(&ws);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "[]").unwrap();
+
+    let cfg = load_app_config(&ws);
+    assert!(!cfg.enabled, "默认态 cluster 关（WARN 臂兜底）");
+    let _ = std::fs::remove_dir_all(&ws);
+}

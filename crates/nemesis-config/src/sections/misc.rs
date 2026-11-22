@@ -810,7 +810,9 @@ pub struct SecurityAlertsConfig {
     pub webhooks: Vec<String>,
     /// 同 (rule, session_key) 限频窗口秒数（缺省 60；0 视为缺省）。
     pub cooldown_secs: u64,
-    /// 每出口每分钟最多派发条数，超出聚合 digest（缺省 20；0 = 不限）。
+    /// 每出口每分钟最多派发条数，超出聚合 digest（缺省 20；0 视为缺省，
+    /// 与 cooldown 同款归一——消费面 `nemesis_security::alert::configure`
+    /// 对 0 回落 DEFAULT_BUDGET_PER_MIN，不存在「0 = 不限」形态）。
     pub budget_per_min: u32,
     /// 用户告警规则（空 = 内置「critical 全量」；非空 = 完全替代）。
     pub rules: Vec<AlertRuleConfig>,

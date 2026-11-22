@@ -33,7 +33,12 @@ pub type SendCallback = Arc<dyn Fn(&str, &str, &str) -> Result<(), String> + Sen
 /// assert_eq!(result, "[rpc:corr-123] Hello world");
 /// ```
 pub fn format_rpc_prefix(correlation_id: &str, content: &str) -> String {
-    format!("[rpc:{}] {}", correlation_id, content)
+    format!(
+        "{}{}] {}",
+        nemesis_types::constants::RPC_CORRELATION_PREFIX,
+        correlation_id,
+        content
+    )
 }
 
 /// Extracts the correlation ID from content that starts with `[rpc:<id>]`.
@@ -41,7 +46,7 @@ pub fn format_rpc_prefix(correlation_id: &str, content: &str) -> String {
 /// Returns `Some(correlation_id)` if the prefix is found and well-formed,
 /// or `None` otherwise.
 pub fn extract_correlation_id(content: &str) -> Option<String> {
-    let rest = content.strip_prefix("[rpc:")?;
+    let rest = content.strip_prefix(nemesis_types::constants::RPC_CORRELATION_PREFIX)?;
     let end = rest.find(']')?;
     if end == 0 {
         return None;
@@ -53,7 +58,7 @@ pub fn extract_correlation_id(content: &str) -> Option<String> {
 ///
 /// If the content does not start with the RPC prefix, it is returned unchanged.
 pub fn strip_rpc_prefix(content: &str) -> String {
-    if let Some(rest) = content.strip_prefix("[rpc:")
+    if let Some(rest) = content.strip_prefix(nemesis_types::constants::RPC_CORRELATION_PREFIX)
         && let Some(end) = rest.find(']')
     {
         let after = &rest[end + 1..];

@@ -19,13 +19,13 @@
 | 模块 | 内容 | 消费方 |
 |------|------|--------|
 | `system.rs` | pro 分层体系：`Layer`/`Segment`/`render_layer` + `SEGMENTS` 注册表（17 段）+ `Entrance` 入口变体（Interactive/Headless/Acp，`render_layer_for`；Interactive 恒空=字节不变）+ `SOFT_BUDGET_BYTES`（28KB 池预算） | nemesis-agent `prompt.rs` |
-| `aux_prompts.rs`（`#[path]` 挂 `aux` 模块——`aux` 是 Windows 保留设备名，文件名须避开） | aux 调用文本：压缩指令/合并模板/标题生成/粘贴数据段/外部通道段 | nemesis-agent |
-| `subagents.rs` | `SubagentRole` 十角色模板 + `render_system_prompt` + `slug`/`from_slug`/`catalog`（spawn schema 单一真相源） | nemesis-agent |
+| `aux_prompts.rs`（`#[path]` 挂 `aux` 模块——`aux` 是 Windows 保留设备名，文件名须避开） | aux 调用文本：compact 六节结构化摘要（schema 常量 + 渲染函数）/合并模板/标题生成/粘贴数据段/外部通道段 | nemesis-agent |
+| `subagents.rs` | `SubagentRole` 十七角色模板（目录 + 分档供给 `roles_visible_to`） + `render_system_prompt` + `slug`/`from_slug`/`catalog`（spawn schema 单一真相源） | nemesis-agent |
 | `slash.rs` | 内置 slash 深度模板（security-review/code-review/debug/fix，`lookup`+`expand`）——斜杠=提示词模板机制的产品内置层 | nemesis-agent（rewrite 链第 3 段） |
 | `tools.rs` | `TOOL_DESCRIPTIONS` 49 条（lean/full 双档 `.md`；计数锚 = tests.rs `EXPECTED_TOOL_ENTRIES`）+ `description_for` + `first_sentence`（权威实现） | nemesis-agent（经 tier 门控） |
 | `guardian.rs` | `GUARDIAN_PROMPT`（LLM judge 语义二审） | nemesis-security |
-| `forge.rs` | `quality_review_prompt` + 两个 reviewer system prompt + 技能/脚本生成四 prompt（author×2/generator/fixer） | nemesis-forge |
-| `board.rs` | planner/review（含 `ReviewTier` 分层 + `render_precedents_block` 判例块）/project_summary/conflict_resolver | nemesis-board、nemesisbot |
+| `forge.rs` | `quality_review_prompt`/`skill_distillation_prompt` 两构造 + 五 system prompt（质量评审/语义分析/技能生成/修复/蒸馏） | nemesis-forge |
+| `board.rs` | planner/review（`ReviewTier` 双档 + lens 分镜 + `render_precedents_block` 判例块）/replan/draft_ac/spec_distill/project_summary/conflict_resolver | nemesis-board、nemesisbot |
 | `workflow.rs` | classifier/extractor 两个模板（`{classes}`/`{parameters}` 占位） | nemesis-workflow |
 | `spawn.rs` | spawn/subagent 工具的两个子代理 system prompt | nemesis-tools |
 | `persona_gen.rs` | 集群人格生成三阶段（extract/author 模板 + 四取向常量 + audit） | nemesis-web |
@@ -57,7 +57,7 @@
 
 ```rust
 // crates/nemesis-agent/src/prompt.rs（门面）
-pub use nemesis_prompts::aux::{COMPACT_INSTRUCTION, ...};
+pub use nemesis_prompts::aux::{SUMMARY_SCHEMA_SECTIONS, render_summary_instruction, ...};
 pub use nemesis_prompts::guardian::GUARDIAN_PROMPT; // ← 实际在 security crate 直接 pub use
 ```
 
@@ -97,7 +97,7 @@ tool_description(name, fallback, tier)
 3. spawn schema 的 role enum 从 `catalog()` 生成——补全目录即自动跟上；`tests.rs` 角色数组与目录计数同步。
 
 **故意不补的（治理边界，防「凑数量式攀比」漂移）**：
-- **角色凑满数量**：业界常见实现 15 角色中约半数是其私有运行时/产品特性角色（无派发路径 = 死文本 + 小模型选型干扰）。本仓 spawn 角色只扩「有真实派发理由」的通用角色（当前 10 个）；产品特性型评审/分析角色已由结构化子系统提示词覆盖（board 四件、forge 两件、guardian、persona_gen 三件、workflow 两件——共 20+ 个角色化 LLM 提示词）。
+- **角色凑满数量**：业界常见实现 15 角色中约半数是其私有运行时/产品特性角色（无派发路径 = 死文本 + 小模型选型干扰）。本仓 spawn 角色只扩「有真实派发理由」的通用角色（当前 17 个）；产品特性型评审/分析角色已由结构化子系统提示词覆盖（board 八件、forge 五件、guardian 一件、persona_gen 三件、workflow 两件——共 19 个角色化 LLM 提示词）。
 - **入口三变体全量差异化**：Interactive 恒空是字节不变红线；变体只给运行语境真正不同的 headless/ACP。
 - **「批准不可代传」提示词版**：审批不可转移已由代码级审批卡保证（`WebApprovalManager` 超时即拒、`ChannelApprovalManager` 回源发起对话），提示词层再申明一次是冗余防线，不加。
 

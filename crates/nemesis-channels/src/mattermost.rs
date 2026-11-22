@@ -570,7 +570,10 @@ impl MattermostChannel {
             return None;
         }
 
-        // 用户白名单过滤（allow_from；匹配 user_id 或用户名，空 = 全部）
+        // 用户白名单过滤（allow_from；匹配 user_id 或用户名，空 = 全部）。
+        // BUG-20261121-057：条目侧卫生 trim——手滑空白不得静默击穿白名单
+        //（与 base::allow_list_contains / peer_allowed 同口径；此处是
+        // user_id/用户名/`@用户名` 三臂复合匹配，保留臂结构只 trim 条目）。
         let sender_name = data["sender_name"]
             .as_str()
             .unwrap_or("")
@@ -578,9 +581,10 @@ impl MattermostChannel {
             .to_string();
         if !allow_from.is_empty()
             && !allow_from.iter().any(|u| {
-                *u == user_id
+                let u = u.trim();
+                u == user_id
                     || (!sender_name.is_empty()
-                        && (*u == sender_name || *u == format!("@{sender_name}")))
+                        && (u == sender_name || u == format!("@{sender_name}")))
             })
         {
             debug!("[MattermostChannel] 忽略白名单外用户 {user_id}");

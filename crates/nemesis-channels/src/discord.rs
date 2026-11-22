@@ -770,7 +770,7 @@ impl DiscordChannel {
         }
 
         // Filter by allowed users
-        if !allow_from.is_empty() && !allow_from.iter().any(|u| u == author_id) {
+        if !allow_from.is_empty() && !crate::base::allow_list_contains(allow_from, author_id) {
             debug!("[DiscordChannel] ignoring message from unlisted user {author_id}");
             return None;
         }

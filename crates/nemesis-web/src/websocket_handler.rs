@@ -19,6 +19,7 @@ use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -891,7 +892,8 @@ fn handle_chat_send(
         .filter(|s| !s.is_empty())
         .map(|sid| {
             format!(
-                "agent:main:session:{}",
+                "{}{}",
+                WEB_SESSION_KEY_PREFIX,
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             )
         });

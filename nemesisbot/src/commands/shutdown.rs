@@ -44,33 +44,34 @@ pub fn run(local: bool) -> Result<()> {
     if let Ok(data) = nemesis_utils::fsutil::read_config_string(common::config_path(&home))
         && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
     {
-        let port = cfg
-            .get("channels")
-            .and_then(|c| c.get("web"))
-            .and_then(|w| w.get("port"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(8080);
         let token = cfg
             .pointer("/channels/web/auth_token")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        match post_internal_shutdown(port as u16, &token) {
-            Ok(200) => {
-                println!("  Shutdown requested via HTTP API (/api/internal).");
-                let _ = nemesis_utils::fsutil::remove_file_resilient(&signal_path);
-                return Ok(());
-            }
-            Ok(401) => {
-                // Token 配置不一致：gateway 的 web.auth_token 与本地 config
-                // 不匹配。如实提示，与原实现一致地继续走收尾提示。
-                println!("  Gateway rejected shutdown (HTTP 401): auth_token mismatch.");
-            }
-            Ok(status) => {
-                println!("  Gateway responded with status: {}", status);
-            }
-            Err(err) => {
-                println!("  Gateway HTTP API not reachable at port {}: {}", port, err);
+        match resolve_shutdown_port(&cfg) {
+            Ok(port) => match post_internal_shutdown(port, &token) {
+                Ok(200) => {
+                    println!("  Shutdown requested via HTTP API (/api/internal).");
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&signal_path);
+                    return Ok(());
+                }
+                Ok(401) => {
+                    // Token 配置不一致：gateway 的 web.auth_token 与本地 config
+                    // 不匹配。如实提示，与原实现一致地继续走收尾提示。
+                    println!("  Gateway rejected shutdown (HTTP 401): auth_token mismatch.");
+                }
+                Ok(status) => {
+                    println!("  Gateway responded with status: {}", status);
+                }
+                Err(err) => {
+                    println!("  Gateway HTTP API not reachable at port {}: {}", port, err);
+                }
+            },
+            // (BUG-20261122-009) 越域/非法 = 诚实跳过 HTTP 臂：gateway 同配置
+            // 根本起不来（装配侧同字段 loud 拒绝），打任何端口都无意义。
+            Err(reason) => {
+                println!("  HTTP shutdown arm skipped: {reason}");
             }
         }
     }
@@ -80,6 +81,39 @@ pub fn run(local: bool) -> Result<()> {
     println!("  The gateway will complete in-progress operations before stopping.");
     println!("  Make sure the gateway is running: nemesisbot gateway");
     Ok(())
+}
+
+/// config → 停机目标端口（真相源 [`nemesis_config::config_port_to_u16`]）。
+///
+/// (BUG-20261122-009) 旧形态 `as_u64().unwrap_or(8080)` + 裸 `port as u16`
+/// 是裸截断——config `channels.web.port: 70000` 静默回绕成 4464，POST
+/// /api/internal（含 X-Auth-Token 凭据头）打到回绕端口的无关本机服务。
+/// gateway 装配侧同字段早走 `config_port_to_u16` loud 拒绝
+///（commands/gateway/web_init.rs channels.web.port），本命令是该家族
+/// 横扫漏网站点（port_normalization_tests 钦定纪律）。语义：
+/// - 缺键 / null = 默认 8080（既有约定不变）；
+/// - 整数 / 字符串整数 = 归一（字符串形态与 gateway typed 侧
+///   `deserialize_flexible_i64` 兼容历史 CLI 写入的口径一致——raw 读侧
+///   若拒字符串会制造「gateway 跑着、shutdown 拒发」的口径分裂）；
+/// - 其余（负数 / 越域 / 非整数形态）= Err 诚实拒绝走 HTTP 臂。
+fn resolve_shutdown_port(cfg: &serde_json::Value) -> Result<u16, String> {
+    let raw = cfg
+        .get("channels")
+        .and_then(|c| c.get("web"))
+        .and_then(|w| w.get("port"));
+    let value = match raw {
+        None | Some(serde_json::Value::Null) => return Ok(8080),
+        Some(v) => v,
+    };
+    let Some(port_i) = value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+    else {
+        return Err(format!(
+            "channels.web.port 值非法（{value}），gateway 同配置也无法启动"
+        ));
+    };
+    nemesis_config::config_port_to_u16(port_i, "channels.web.port").map_err(|e| e.to_string())
 }
 
 /// Fire-and-forget POST `{ "cmd": "shutdown" }` to `/api/internal`.

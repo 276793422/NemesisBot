@@ -161,14 +161,20 @@ impl TrustStore {
     }
 
     /// Remove a key by signer name. Returns true if a key was removed.
+    /// 同名异钥时移除 (added_at, public_key) 字典序最早者（BUG-20261122-012：
+    /// 旧实现走 HashMap 迭代序=任意取，CLI 每进程新 RandomState 下跨 run
+    /// 翻转；CLI 吊销面经 resolve_trust_entry 拒歧义后走 by-public-key
+    /// 变体，本方法只兜底直调）。
     pub fn remove_key(&self, name: &str) -> bool {
         // 同 add_key：先 refresh 同步盘上真相再改（BUG-20261114-033）。
         self.refresh();
         let mut keys = self.keys.write();
-        let b64 = keys
-            .iter()
-            .find(|(_, v)| v.name == name)
-            .map(|(k, _)| k.clone());
+        let mut matches: Vec<(&String, &TrustedKey)> =
+            keys.iter().filter(|(_, v)| v.name == name).collect();
+        matches.sort_by(|a, b| {
+            (&a.1.added_at, &a.1.public_key).cmp(&(&b.1.added_at, &b.1.public_key))
+        });
+        let b64 = matches.into_iter().next().map(|(k, _)| k.clone());
         if let Some(b64) = b64 {
             keys.remove(&b64);
             drop(keys);
@@ -234,14 +240,18 @@ impl TrustStore {
     }
 
     /// Revoke a key by signer name. Returns an error string if the key was not found.
+    /// 同名异钥时吊销 (added_at, public_key) 字典序最早者（确定性，同
+    /// remove_key 的 BUG-20261122-012 修复；CLI 吊销面走 by-public-key）。
     pub fn revoke_key(&self, name: &str) -> Result<(), String> {
         // 同 add_key：先 refresh 同步盘上真相再改（BUG-20261114-033）。
         self.refresh();
         let mut keys = self.keys.write();
-        let b64 = keys
-            .iter()
-            .find(|(_, v)| v.name == name)
-            .map(|(k, _)| k.clone());
+        let mut matches: Vec<(&String, &TrustedKey)> =
+            keys.iter().filter(|(_, v)| v.name == name).collect();
+        matches.sort_by(|a, b| {
+            (&a.1.added_at, &a.1.public_key).cmp(&(&b.1.added_at, &b.1.public_key))
+        });
+        let b64 = matches.into_iter().next().map(|(k, _)| k.clone());
         if let Some(b64) = b64
             && let Some(entry) = keys.get_mut(&b64)
         {
@@ -287,9 +297,30 @@ impl TrustStore {
         self.keys.read().get(public_key).cloned()
     }
 
-    /// Get a key by its signer name.
+    /// Get all keys matching a signer name, sorted deterministically by
+    /// `(added_at, public_key)`（BUG-20261122-012：HashMap 迭代序跨进程
+    /// 不稳定——CLI 每次启动新 RandomState，同名异钥时按名解析可在不同
+    /// run 落到不同公钥条目）。added_at 为 RFC3339 字符串，同机同偏移下
+    /// 字典序=时序；跨偏移手工编辑的极端场景退化为确定性字典序（仍是
+    /// 确定序，只是非时序）。信任吊销面应全量取回后拒歧义（见
+    /// nemesisbot resolve_trust_entry）。
+    pub fn get_keys_by_name(&self, name: &str) -> Vec<TrustedKey> {
+        let mut matches: Vec<TrustedKey> = self
+            .keys
+            .read()
+            .values()
+            .filter(|k| k.name == name)
+            .cloned()
+            .collect();
+        matches.sort_by(|a, b| (&a.added_at, &a.public_key).cmp(&(&b.added_at, &b.public_key)));
+        matches
+    }
+
+    /// Get a key by its signer name. 同名异钥时返回 `(added_at,
+    /// public_key)` 字典序最早者（BUG-20261122-012 确定性修复）；信任
+    /// 吊销面请改用 [`Self::get_keys_by_name`] 全量取回后拒歧义。
     pub fn get_key_by_name(&self, name: &str) -> Option<TrustedKey> {
-        self.keys.read().values().find(|k| k.name == name).cloned()
+        self.get_keys_by_name(name).into_iter().next()
     }
 
     /// Number of keys in the trust store.

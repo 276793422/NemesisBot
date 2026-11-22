@@ -41,6 +41,15 @@ const saving = ref(false)
 const saveError = ref<string>('')
 // 用户编辑器有未保存修改时，5s 轮询不得覆写表单（否则编辑被冲掉）。
 const rulesDirty = ref(false)
+// 编辑世代计数（BUG-20261122-005）：load 的 rules.get 与 saveRules 的
+// rules.save 都有飞行窗口——窗口内用户可能落键。世代号区分「保存已覆盖的
+// 旧编辑」与「窗口内新到的编辑」：成功路径仅世代未变才清 rulesDirty，否则
+// 保留 dirty（轮询继续避让表单）并提示再存；load 侧 await 后复核再覆写。
+let editSeq = 0
+function markDirty() {
+  rulesDirty.value = true
+  editSeq++
+}
 // 规则表单卡模型（load 时 parseRules；编辑直接改表单字段，保存时 serializeRule）。
 const forms = ref<RuleForm[]>([])
 
@@ -350,7 +359,11 @@ async function load() {
     sysCurrent.value = st?.sys_current || null
     if (!saving.value && !rulesDirty.value) {
       const rd = await request('events', 'rules.get')
-      forms.value = parseRules(rd?.rules ?? [])
+      // 复核（BUG-20261122-005 TOCTOU）：rules.get 飞行窗口内用户开始编辑
+      // （或进入保存）则放弃覆写——守卫检查在 await 之前，不设防飞行窗口。
+      if (!saving.value && !rulesDirty.value) {
+        forms.value = parseRules(rd?.rules ?? [])
+      }
     }
   } catch {
     // events 泵未装配（feature 裁剪 / 旧网关）→ 诚实降级
@@ -378,15 +391,25 @@ async function saveRules() {
     return
   }
   saving.value = true
+  const seqAtSave = editSeq
   try {
     const res = await request('events', 'rules.save', { rules: serialized })
     const warns: string[] = res?.warnings || []
+    const newEdits = editSeq !== seqAtSave
+    if (newEdits) {
+      // 保存飞行窗口内又有新编辑（BUG-20261122-005 同族）：保存的是进入时
+      // 快照，新编辑仍未落盘——保留 dirty（轮询继续避让表单），提示再存。
+      rulesDirty.value = true
+    } else {
+      rulesDirty.value = false
+    }
     if (warns.length > 0) {
       toast.warn('已保存，校验提示：' + warns.join('；'))
+    } else if (newEdits) {
+      toast.warn('已保存，但保存期间又有新的本地修改——请再点一次「保存规则」')
     } else {
       toast.success('规则已保存（泵 ≤250ms 热重载）')
     }
-    rulesDirty.value = false
     await load()
   } catch (e: any) {
     // 后端校验拒绝——错误原文回显保存钮旁（不弹窗），文件未动。
@@ -408,7 +431,7 @@ async function toggleRule(ruleId: string) {
   }
   const f = forms.value[i]
   f.dEnabled = !f.dEnabled
-  rulesDirty.value = true
+  markDirty()
   await saveRules()
 }
 
@@ -484,7 +507,7 @@ function pickSid(sid: string) {
   forms.value[pickerIdx.value].dSessionKey = `agent:main:session:${sid}`
   // 程序化改字段不触发 DOM input 事件，卡片容器的 @input/@change 抓不到——
   // 必须手动置脏，否则 5s 轮询覆盖 forms 会把所选会话静默冲掉。
-  rulesDirty.value = true
+  markDirty()
   pickerIdx.value = null
 }
 
@@ -729,8 +752,8 @@ onUnmounted(() => {
               :key="i"
               class="ev-rule-card"
               :data-testid="'rule-card-' + i"
-              @input="rulesDirty = true"
-              @change="rulesDirty = true"
+              @input="markDirty"
+              @change="markDirty"
             >
               <div class="ev-rule-head">
                 <input
@@ -868,34 +891,6 @@ onUnmounted(() => {
                       :data-testid="'session-key-' + i"
                     />
                     <button class="btn" :data-testid="'pick-session-' + i" @click="openPicker(i, $event)">选会话 ▾</button>
-                    <Teleport to="body">
-                      <div
-                        v-if="pickerIdx === i"
-                        ref="pickerRoot"
-                        class="ev-picker"
-                        :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
-                      >
-                      <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
-                      <div class="ev-picker-list">
-                        <div
-                          v-for="s in pickerRows"
-                          :key="s.id"
-                          class="ev-picker-item"
-                          :class="{ 'ev-picker-item--picked': isPickedSid(s.id) }"
-                          @click="pickSid(s.id)"
-                        >
-                          <span class="ev-picker-item-title">{{ s.title || s.id }}</span>
-                          <span v-if="s.projectId" class="ev-picker-item-badge">{{ projectBadgeOf(s.id) ?? '📁' }}</span>
-                          <span class="ev-picker-item-sid">{{ s.id }}</span>
-                        </div>
-                        <div v-if="!pickerRows.length" style="padding: var(--space-3); color: var(--text-muted); font-size: var(--text-xs);">无匹配会话</div>
-                      </div>
-                      <div class="ev-picker-footer">
-                        <span style="color: var(--text-muted); font-size: var(--text-xs);">单选——点击行即选定；群组形态（agents:）走手输</span>
-                        <button class="btn btn-sm" @click="pickerIdx = null">关闭</button>
-                      </div>
-                      </div>
-                    </Teleport>
                   </div>
                 </div>
                 <div class="ev-field">
@@ -923,6 +918,40 @@ onUnmounted(() => {
                 </div>
               </template>
             </div>
+            <!-- 会话 picker（BUG-20261122-004）：单实例，提升在规则卡 v-for
+                 之外——template ref 在 v-for 作用域内会被 Vue 3 数组化，watch
+                 定位算式读 offsetHeight 得 undefined → pickerPos 全 NaN →
+                 向上翻转/视口钳制静默死码（锚点近视口底部时弹层 footer 不可
+                 达）。picker 内容只依赖 pickerIdx/pickerRows，不引用卡内局部
+                 变量，可安全提升。 -->
+            <Teleport to="body">
+              <div
+                v-if="pickerIdx !== null"
+                ref="pickerRoot"
+                class="ev-picker"
+                :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
+              >
+                <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
+                <div class="ev-picker-list">
+                  <div
+                    v-for="s in pickerRows"
+                    :key="s.id"
+                    class="ev-picker-item"
+                    :class="{ 'ev-picker-item--picked': isPickedSid(s.id) }"
+                    @click="pickSid(s.id)"
+                  >
+                    <span class="ev-picker-item-title">{{ s.title || s.id }}</span>
+                    <span v-if="s.projectId" class="ev-picker-item-badge">{{ projectBadgeOf(s.id) ?? '📁' }}</span>
+                    <span class="ev-picker-item-sid">{{ s.id }}</span>
+                  </div>
+                  <div v-if="!pickerRows.length" style="padding: var(--space-3); color: var(--text-muted); font-size: var(--text-xs);">无匹配会话</div>
+                </div>
+                <div class="ev-picker-footer">
+                  <span style="color: var(--text-muted); font-size: var(--text-xs);">单选——点击行即选定；群组形态（agents:）走手输</span>
+                  <button class="btn btn-sm" @click="pickerIdx = null">关闭</button>
+                </div>
+              </div>
+            </Teleport>
           </div>
         </div>
       </template>

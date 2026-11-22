@@ -19,6 +19,7 @@
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -125,7 +126,8 @@ pub async fn handle_upload_image(
         .filter(|s| !s.is_empty())
         .and_then(|sid| {
             let session_key = format!(
-                "agent:main:session:{}",
+                "{}{}",
+                WEB_SESSION_KEY_PREFIX,
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             );
             nemesis_agent::session_home::resolve_session_home(&workspace, &session_key)

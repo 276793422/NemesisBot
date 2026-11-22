@@ -1027,8 +1027,10 @@ impl SessionStore {
                 Ok(data) => {
                     if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&data) {
                         if v.get("key").and_then(|k| k.as_str()) == Some("agent:main:main") {
-                            v["key"] =
-                                serde_json::Value::String("agent:main:session:legacy".to_string());
+                            v["key"] = serde_json::Value::String(format!(
+                                "{}legacy",
+                                crate::cc_hooks::WEB_SESSION_KEY_PREFIX
+                            ));
                         }
                         if let Ok(out) = serde_json::to_string_pretty(&v)
                             // 原子写（同文件 save 路径 756 行同源）：裸写半截

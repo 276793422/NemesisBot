@@ -29,6 +29,8 @@ mod types;
 mod drift_tests;
 #[cfg(test)]
 mod identity_tests;
+#[cfg(test)]
+mod trust_book_tests;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};

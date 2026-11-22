@@ -1361,7 +1361,14 @@ fn scanner_config_from_raw(config: &serde_json::Value) -> crate::clamav::scanner
     if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
         scanner_config.enabled = enabled;
     }
-    if let Some(timeout) = config.get("timeout_secs").and_then(|v| v.as_u64()) {
+    // BUG-20261121-062：0 视作缺省——`Duration::from_secs(0)` 会让
+    // ClamAV INSTREAM 的 `tokio::time::timeout` 立即触发，安全第 7 层
+    // 扫描必败（与 exec 族「0 视作缺省」惯例同源；schema 承诺 default）。
+    if let Some(timeout) = config
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .filter(|n| *n > 0)
+    {
         scanner_config.timeout = std::time::Duration::from_secs(timeout);
     }
     if let Some(size) = config.get("max_file_size").and_then(|v| v.as_u64()) {

@@ -9,6 +9,7 @@ fn test_constants_values() {
         crate::constants::SUBAGENT_CONTINUATION_PREFIX,
         "subagent_continuation:"
     );
+    assert_eq!(crate::constants::RPC_CORRELATION_PREFIX, "[rpc:");
     assert_eq!(crate::RPC_CHANNEL_TIMEOUT_SECS, 86400);
     assert_eq!(crate::BUS_CHANNEL_CAPACITY, 1024);
     assert_eq!(crate::CLEANUP_INTERVAL_SECS, 30);

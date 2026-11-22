@@ -26,9 +26,8 @@ pub mod workflow;
 // 见 constants.rs 模块注释。）
 pub use constants::{
     BUS_CHANNEL_CAPACITY, CLEANUP_INTERVAL_SECS, CLUSTER_CONTINUATION_PREFIX, INTERNAL_CHANNELS,
-    RPC_CHANNEL_TIMEOUT_SECS, is_internal_channel,
+    RPC_CHANNEL_TIMEOUT_SECS, RPC_CORRELATION_PREFIX, is_internal_channel,
 };
-
 // Test modules
 #[cfg(test)]
 mod tests;

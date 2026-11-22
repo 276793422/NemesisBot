@@ -40,6 +40,14 @@ impl Default for WebSearchConfig {
     }
 }
 
+/// Brave Web Search API 端点（生产；测试经 [`WebSearchTool::search_brave_at`]
+/// 注入 loopback）。
+const BRAVE_SEARCH_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
+
+/// DuckDuckGo HTML 抓取端点（生产；测试经 [`WebSearchTool::search_duckduckgo_at`]
+/// 注入 loopback）。
+const DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+
 /// Web search tool that queries search engines.
 ///
 /// Supports multiple providers with a configurable fallback chain:
@@ -111,18 +119,20 @@ impl WebSearchTool {
             .map_err(|e| format!("failed to create HTTP client: {}", e))
     }
 
+    /// 生产入口（端点常量）。测试经 [`Self::search_brave_at`] 注入 loopback。
     pub(super) async fn search_brave(&self, query: &str) -> Result<String, String> {
+        self.search_brave_at(BRAVE_SEARCH_ENDPOINT, query).await
+    }
+
+    /// 端点可注入形态（测试打真实 HTTP 往返；生产薄包装走常量）。
+    pub(super) async fn search_brave_at(&self, base: &str, query: &str) -> Result<String, String> {
         let api_key = match &self.config.brave_api_key {
             Some(k) if !k.is_empty() => k.clone(),
             _ => return Err("Brave API key not configured".to_string()),
         };
         let count = self.config.brave_max_results;
 
-        let url = format!(
-            "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-            urlencoding(query),
-            count
-        );
+        let url = format!("{base}?q={}&count={}", urlencoding(query), count);
 
         let client = Self::cred_search_client(10)?;
 
@@ -134,10 +144,25 @@ impl WebSearchTool {
             .await
             .map_err(|e| format!("request failed: {}", e))?;
 
+        // BUG-20261122-016：非 2xx 必须报错而非进解析——Brave 4xx/429 的错误体
+        // （如 {"error":[{"id":"RATE_LIMITED"}]}）没有 "web" 键，下方
+        // #[serde(default)] typed struct 会把它静默解析成「零结果成功」，
+        // 配额耗尽被伪装成「网上没有结果」，agent 无从触发重试/降级。
+        // BUG-20261115-017 同款修复曾落在 nemesis-tools::web 孪生实现（该
+        // web 模块全仓零消费点）——生产注册路径（loop_tools::registry）
+        // 从未被修，本次移植；错误体预览 200 字符与孪生版一致。
+        // cred_search_client 的跨源 stop() 策略以「上层按非成功响应诚实
+        // 处理」为消费端契约（见其注释），本闸即该契约的落实点：3xx 透传
+        // 到此 = 非 2xx = 报错。
+        let status = resp.status();
         let body = resp
             .text()
             .await
             .map_err(|e| format!("failed to read response: {}", e))?;
+        if !status.is_success() {
+            let preview: String = body.chars().take(200).collect();
+            return Err(format!("Brave HTTP {status}: {preview}"));
+        }
 
         #[derive(serde::Deserialize)]
         struct SearchResult {
@@ -177,10 +202,20 @@ impl WebSearchTool {
         Ok(lines.join("\n"))
     }
 
-    async fn search_duckduckgo(&self, query: &str) -> Result<String, String> {
+    /// 生产入口（端点常量）。测试经 [`Self::search_duckduckgo_at`] 注入 loopback。
+    pub(super) async fn search_duckduckgo(&self, query: &str) -> Result<String, String> {
+        self.search_duckduckgo_at(DDG_HTML_ENDPOINT, query).await
+    }
+
+    /// 端点可注入形态（测试打真实 HTTP 往返；生产薄包装走常量）。
+    pub(super) async fn search_duckduckgo_at(
+        &self,
+        base: &str,
+        query: &str,
+    ) -> Result<String, String> {
         let count = self.config.duckduckgo_max_results;
 
-        let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
+        let url = format!("{base}?q={}", urlencoding(query));
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -194,10 +229,18 @@ impl WebSearchTool {
             .await
             .map_err(|e| expand_error("request failed", &e))?;
 
+        // BUG-20261122-016：同 Brave 闸——DDG 403 验证码页/429 限流页正文
+        // 零命中时旧形态静默返回「No results found or extraction failed」，
+        // 被封伪装成无结果（agent 无从降级/换源）。
+        let status = resp.status();
         let html = resp
             .text()
             .await
             .map_err(|e| format!("failed to read response: {}", e))?;
+        if !status.is_success() {
+            let preview: String = html.chars().take(200).collect();
+            return Err(format!("DuckDuckGo HTTP {status}: {preview}"));
+        }
 
         // Extract results from DDG HTML
         let link_re = regex::Regex::new(
@@ -379,26 +422,41 @@ pub(super) fn url_decode_query_param(url: &str, param: &str) -> Option<String> {
     None
 }
 
-/// Simple percent-decoding.
+/// Percent-decoding（query 参数值解码）。
+///
+/// 按 UTF-8 字节序列整体重组（BUG-20261122-018，同族先例 oauth.rs
+/// url_decode / wechat.rs percent_decode）：旧形态逐字节 `byte as char`
+/// 是 Latin-1 映射——multibyte 序列（`中` = %E4%B8%AD）被拆成三个独立
+/// 码位产出 mojibake，web_search 的 uddg 解包对一切非 ASCII 目标 URL
+/// 产出乱码。字节收集后 from_utf8_lossy：合法 UTF-8 正确还原，非法序列
+/// U+FFFD 诚实降级；`+` 视作空格，非法 % 序列原样保留。
 pub(super) fn percent_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
-            } else {
-                result.push('%');
-                result.push_str(&hex);
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex_part = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                if let Ok(v) = u8::from_str_radix(hex_part, 16) {
+                    out.push(v);
+                    i += 3;
+                } else {
+                    out.push(b'%');
+                    i += 1;
+                }
             }
-        } else if c == '+' {
-            result.push(' ');
-        } else {
-            result.push(c);
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
-    result
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// web_fetch 手动重定向循环的跳数上限。严于 reqwest

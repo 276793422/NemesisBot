@@ -412,3 +412,72 @@ describe('EventsView 表单化 · 编辑守护与会话 picker', () => {
     expect((sk.element as HTMLInputElement).value).toBe('agent:main:session:s-2')
   })
 })
+
+// ---------------------------------------------------------------------------
+// R2231 回归锁（BUG-20261122-004 / BUG-20261122-005）
+// ---------------------------------------------------------------------------
+
+describe('EventsView · picker 定位与编辑守护回归锁', () => {
+  it('BUG-20261122-004：pickerRoot 单元素 ref + pickerPos 有限值（修复前 ref 在 v-for 内被数组化，watch 定位算式读 undefined → NaN 死码）', async () => {
+    setRules([MINIMAL_RULES[0]])
+    const w = await mountView()
+    await w.find('[data-testid="pick-session-0"]').trigger('click')
+    await flushPromises()
+    const vm = w.vm as any
+    // 修复（Teleport 提升出 v-for）前：Array.isArray(pickerRoot) === true
+    // 且 pickerPos = {top: NaN, left: NaN}（实测探针证据）。
+    expect(Array.isArray(vm.pickerRoot)).toBe(false)
+    expect(Number.isNaN(vm.pickerPos?.top)).toBe(false)
+    expect(Number.isNaN(vm.pickerPos?.left)).toBe(false)
+  })
+
+  it('BUG-20261122-005：rules.get 飞行窗口内开始编辑 → await 后复核放弃覆写', async () => {
+    setRules(MINIMAL_RULES)
+    const w = await mountView()
+    // rules.get 换成手动放行版：轮询发出后挂起，编辑落在飞行窗口内
+    // （守卫第一道检查已通过——检查在 await 前，正是原缺陷的洞）。
+    let release!: (v: any) => void
+    requestMock.mockImplementation((m: string, cmd: string) => {
+      if (m === 'sessions' && cmd === 'list') return Promise.resolve({ sessions: SESSION_ROWS, bindings: {} })
+      if (m === 'projects' && cmd === 'list') return Promise.resolve({ projects: [{ id: 'p1', name: '运维项目', path: 'C:/ops' }] })
+      if (m === 'events' && cmd === 'status') return Promise.resolve({ stats: {}, rules: projectStatus(MINIMAL_RULES), pending: [] })
+      if (m === 'events' && cmd === 'rules.get') return new Promise(r => { release = r })
+      if (m === 'tasks' && cmd === 'cron.list') return Promise.resolve({ jobs: [] })
+      return Promise.resolve({})
+    })
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    await w.find('[data-testid="fs-path-0"]').setValue('C:/typed-in-flight')
+    release({ rules: [{ id: 'polluted', watch: { kind: 'fs', path: 'C:/polluted' }, deliver: { session_key: 'agent:main:session:s-1', prompt: 'p' } }] })
+    await flushPromises()
+    const cards = w.findAll('[data-testid^="rule-card-"]')
+    expect((cards[0].find('[data-testid="fs-path-0"]').element as HTMLInputElement).value).toBe('C:/typed-in-flight')
+  })
+
+  it('BUG-20261122-005 同族：保存飞行窗口内新编辑 → dirty 保留 + 轮询避让 + 提示再存', async () => {
+    setRules(MINIMAL_RULES)
+    const w = await mountView()
+    let release!: (v: any) => void
+    requestMock.mockImplementation((m: string, cmd: string) => {
+      if (m === 'sessions' && cmd === 'list') return Promise.resolve({ sessions: SESSION_ROWS, bindings: {} })
+      if (m === 'projects' && cmd === 'list') return Promise.resolve({ projects: [{ id: 'p1', name: '运维项目', path: 'C:/ops' }] })
+      if (m === 'events' && cmd === 'status') return Promise.resolve({ stats: {}, rules: projectStatus(MINIMAL_RULES), pending: [] })
+      if (m === 'events' && cmd === 'rules.get') return Promise.resolve({ rules: MINIMAL_RULES })
+      if (m === 'events' && cmd === 'rules.save') return new Promise(r => { release = r })
+      if (m === 'tasks' && cmd === 'cron.list') return Promise.resolve({ jobs: [] })
+      return Promise.resolve({})
+    })
+    await w.find('[data-testid="save-rules-btn"]').trigger('click')
+    await flushPromises()
+    // 保存挂起期间落键。
+    await w.find('[data-testid="fs-path-0"]').setValue('C:/during-save')
+    release({ warnings: [] })
+    await flushPromises()
+    // 提示再存；dirty 保留 → 后续轮询不得冲掉飞行窗口内的编辑。
+    expect(useToast().toasts.some(t => t.type === 'warn' && t.message.includes('再点一次'))).toBe(true)
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    const cards = w.findAll('[data-testid^="rule-card-"]')
+    expect((cards[0].find('[data-testid="fs-path-0"]').element as HTMLInputElement).value).toBe('C:/during-save')
+  })
+})

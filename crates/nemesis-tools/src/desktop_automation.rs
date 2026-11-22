@@ -627,24 +627,26 @@ $results | ConvertTo-Json -Compress
         // PowerShell 调用方生效，拿到的是真实标题而非替换符）。
         let utf8_script =
             format!("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; {script}");
-        let output = tokio::time::timeout(
-            timeout,
-            tokio::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &utf8_script])
-                // BUG-20261119-203（kill_on_drop 家族纪律对齐）：tokio Child
-                // 默认 kill_on_drop=false——超时分支 drop 的只是 output()
-                // future（连同其中的 Child），powershell 泄漏为孤儿进程；
-                // SendWait 挂死场景下孤儿还会在挂起解除后把积压键序注入
-                // 失焦窗口。kill_on_drop(true) 让 drop = 收杀（exec /
-                // cc_hooks / events::command_probe / lsp::install 同款纪
-                // 律）；正常完成路径 Child 被 output() 消费，Drop-kill 永
-                // 不触发。
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| "PowerShell execution timed out".to_string())?
-        .map_err(|e| format!("failed to execute PowerShell: {}", e))?;
+        let mut cmd = tokio::process::Command::new("powershell.exe");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &utf8_script]);
+        // BUG-20261122-017：gateway 以 windows 子系统构建（main.rs
+        // `windows_subsystem = "windows"`），缺 CREATE_NO_WINDOW 的控制台
+        // 子进程 spawn 会弹黑窗（黑窗根修同族漏网位点）。
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        // BUG-20261119-203（kill_on_drop 家族纪律对齐）：tokio Child
+        // 默认 kill_on_drop=false——超时分支 drop 的只是 output()
+        // future（连同其中的 Child），powershell 泄漏为孤儿进程；
+        // SendWait 挂死场景下孤儿还会在挂起解除后把积压键序注入
+        // 失焦窗口。kill_on_drop(true) 让 drop = 收杀（exec /
+        // cc_hooks / events::command_probe / lsp::install 同款纪
+        // 律）；正常完成路径 Child 被 output() 消费，Drop-kill 永
+        // 不触发。
+        cmd.kill_on_drop(true);
+        let output = tokio::time::timeout(timeout, cmd.output())
+            .await
+            .map_err(|_| "PowerShell execution timed out".to_string())?
+            .map_err(|e| format!("failed to execute PowerShell: {}", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 

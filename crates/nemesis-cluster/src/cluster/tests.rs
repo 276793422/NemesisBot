@@ -6981,6 +6981,70 @@ fn test_upgrade_peer_in_peers_toml_bom_file_upgrades_in_place() {
     assert!(content.contains("[node]"), "[node] 段必须保留: {}", content);
 }
 
+// BUG-20261121-071 回归锁：upgrade 快照写必须与 update_peers_node/append/
+// remove 同锁互斥——config_write_lock 被他者持有时 upgrade 不得完成写入
+// （旧行为无锁直写：dashboard 身份编辑与 announce 占位升级交错时，一方的
+// 整文件原子写静默丢掉另一方改动）。锁释放后照常完成 = 锁内 persist 分支
+// 走 _locked 变体、非重入嵌套未死锁的结构性证明。
+#[test]
+fn test_upgrade_peer_in_peers_toml_blocks_on_config_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\nid = \"local-node-001\"\n\n[peers.\"Node-A\"]\naddress = \"10.0.0.1:9000\"\n",
+    )
+    .unwrap();
+
+    let guard = nemesis_config::config_write_lock();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let dir_path = dir.path().to_path_buf();
+    let h = std::thread::spawn(move || {
+        let cluster = Cluster::with_workspace(make_config(), dir_path);
+        cluster.upgrade_peer_in_peers_toml(
+            "Node-A",
+            "real-lock",
+            &RealNodeInfo {
+                id: "real-lock".into(),
+                name: "Lock Peer".into(),
+                address: "10.0.0.1:21949".into(),
+                rpc_port: 0,
+                addresses: Vec::new(),
+                role: nemesis_types::cluster::NodeRole::Worker,
+                category: "test".into(),
+                capabilities: vec![],
+                tags: Vec::new(),
+                professions: Vec::new(),
+                tier: None,
+                agents: Vec::new(),
+                runtime_backend: None,
+                node_type: "agent".into(),
+                build: String::new(),
+                security_level: None,
+            },
+        );
+        tx.send(()).expect("send completion signal");
+    });
+    // 持锁窗口内 upgrade 不得完成（完成信号缺席 = 在等锁，而非裸奔直写）
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "upgrade must block while config_write_lock is held elsewhere"
+    );
+    drop(guard);
+    h.join()
+        .expect("upgrade thread must complete after lock release (no nested-lock deadlock)");
+
+    let content = std::fs::read_to_string(cluster_dir.join("peers.toml")).unwrap();
+    assert!(
+        content.contains("real-lock"),
+        "真实条目在锁释放后落盘: {content}"
+    );
+    assert!(!content.contains("Node-A"), "占位条目被摘除: {content}");
+    assert!(content.contains("[node]"), "[node] 段保留: {content}");
+}
+
 #[test]
 fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
     let dir = tempfile::tempdir().unwrap();

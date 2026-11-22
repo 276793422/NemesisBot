@@ -5,6 +5,7 @@
 
 use crate::handlers::require_home;
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 
 pub struct AgentHandler;
 
@@ -94,10 +95,10 @@ impl AgentHandler {
             .unwrap_or("")
             .to_string();
         let session_key = if sid.is_empty() {
-            "agent:main:session:legacy".to_string()
+            format!("{WEB_SESSION_KEY_PREFIX}legacy")
         } else {
             format!(
-                "agent:main:session:{}",
+                "{WEB_SESSION_KEY_PREFIX}{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(&sid)
             )
         };
@@ -144,10 +145,10 @@ impl AgentHandler {
             .unwrap_or("")
             .to_string();
         let session_key = if sid.is_empty() {
-            "agent:main:session:legacy".to_string()
+            format!("{WEB_SESSION_KEY_PREFIX}legacy")
         } else {
             format!(
-                "agent:main:session:{}",
+                "{WEB_SESSION_KEY_PREFIX}{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(&sid)
             )
         };
@@ -232,7 +233,7 @@ impl AgentHandler {
         {
             Some(sid) => {
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{WEB_SESSION_KEY_PREFIX}{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
                 let agent_loop =
@@ -294,7 +295,8 @@ impl AgentHandler {
             .filter(|s| !s.is_empty())
             .ok_or("missing session_id (agent.rewind is session-scoped)")?;
         let session_key = format!(
-            "agent:main:session:{}",
+            "{}{}",
+            WEB_SESSION_KEY_PREFIX,
             nemesis_agent::session::SessionStore::sanitize_session_id(sid)
         );
         let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
@@ -332,7 +334,8 @@ impl AgentHandler {
         {
             Some(sid) => {
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
                 Some(crate::handlers::projects::resolve_session_loop(

@@ -975,7 +975,8 @@ fn test_trust_store_add_multiple_same_name_different_keys() {
     store.add_key("key-2", "alice", TrustLevel::Verified);
     // Both keys are stored since they have different public_key values
     assert_eq!(store.key_count(), 2);
-    // get_key_by_name returns the first match
+    // get_key_by_name returns a match（BUG-20261122-012 起 = (added_at,
+    // public_key) 字典序最早者，确定序而非 HashMap 迭代序任意首个）。
     let key = store.get_key_by_name("alice");
     assert!(key.is_some());
 }
@@ -1828,4 +1829,89 @@ fn test_cross_process_remove_not_resurrected_by_save() {
         "被 CLI 删除的条目不得被常驻进程的全量 save 复活"
     );
     assert_eq!(after.key_count(), 2);
+}
+
+// BUG-20261122-012 回归锁：同名异钥按名解析必须是确定序。旧实现走
+// HashMap 迭代序任意取——CLI 每进程新 RandomState，同一信任库同一
+// --name 在不同 run 可落到不同公钥条目（信任吊销面跨 run 翻转）。
+// 期望序从数据自身推导（(added_at, public_key) 字典序），不假设
+// add_key 的时钟精度（同毫秒双 add 时 added_at 可能相同，public_key
+// 决胜仍确定）。
+#[test]
+fn test_by_name_resolution_deterministic_on_duplicate_names() {
+    let kp1 = generate_key_pair().unwrap();
+    let key1 = SigningKey::from_bytes(&hex_decode_32(&kp1.private_key).unwrap());
+    let pk1 = export_public_key(&key1.verifying_key());
+    let kp2 = generate_key_pair().unwrap();
+    let key2 = SigningKey::from_bytes(&hex_decode_32(&kp2.private_key).unwrap());
+    let pk2 = export_public_key(&key2.verifying_key());
+
+    let store = TrustStore::in_memory();
+    store.add_key(&pk1, "signer-a", TrustLevel::Verified);
+    store.add_key(&pk2, "signer-a", TrustLevel::Verified);
+
+    // 期望序：从 list_keys 数据自身按 (added_at, public_key) 排序推导。
+    let mut expected = store.list_keys();
+    expected.sort_by(|a, b| (&a.added_at, &a.public_key).cmp(&(&b.added_at, &b.public_key)));
+    assert_ne!(
+        expected[0].public_key, expected[1].public_key,
+        "两条异钥条目决胜后不得重合"
+    );
+
+    // 全量取回：两条都在且序确定。
+    let matches = store.get_keys_by_name("signer-a");
+    assert_eq!(matches.len(), 2, "同名异钥必须全量可见");
+    assert_eq!(matches[0].public_key, expected[0].public_key);
+    assert_eq!(matches[1].public_key, expected[1].public_key);
+
+    // 单条解析：恒等确定序最早者（不再随 HashMap 迭代序翻转）。
+    let first = store.get_key_by_name("signer-a").expect("同名解析必须命中");
+    assert_eq!(first.public_key, expected[0].public_key);
+
+    // remove_key（兜底直调路径）：移除的是确定序最早者，另一条保留。
+    assert!(store.remove_key("signer-a"));
+    assert_eq!(store.key_count(), 1);
+    let remain = store.get_keys_by_name("signer-a");
+    assert_eq!(remain.len(), 1);
+    assert_eq!(
+        remain[0].public_key, expected[1].public_key,
+        "必须保留的是确定序较晚条目"
+    );
+}
+
+// BUG-20261122-012 回归锁：revoke_key 按名吊销同样必须钉死确定序最早者
+// （吊销面错改条目 = 错误的信任状态，比 remove 更敏感）。
+#[test]
+fn test_revoke_key_by_name_targets_earliest_deterministically() {
+    let kp1 = generate_key_pair().unwrap();
+    let key1 = SigningKey::from_bytes(&hex_decode_32(&kp1.private_key).unwrap());
+    let pk1 = export_public_key(&key1.verifying_key());
+    let kp2 = generate_key_pair().unwrap();
+    let key2 = SigningKey::from_bytes(&hex_decode_32(&kp2.private_key).unwrap());
+    let pk2 = export_public_key(&key2.verifying_key());
+
+    let store = TrustStore::in_memory();
+    store.add_key(&pk1, "signer-a", TrustLevel::Verified);
+    store.add_key(&pk2, "signer-a", TrustLevel::Verified);
+
+    let mut expected = store.list_keys();
+    expected.sort_by(|a, b| (&a.added_at, &a.public_key).cmp(&(&b.added_at, &b.public_key)));
+
+    store.revoke_key("signer-a").expect("按名吊销必须成功");
+    let matches = store.get_keys_by_name("signer-a");
+    assert_eq!(matches.len(), 2, "吊销不移除条目，两条都在");
+    let revoked = matches
+        .iter()
+        .find(|k| k.public_key == expected[0].public_key)
+        .expect("最早条目必须仍在");
+    let other = matches
+        .iter()
+        .find(|k| k.public_key == expected[1].public_key)
+        .expect("较晚条目必须仍在");
+    assert_eq!(
+        revoked.level,
+        TrustLevel::Revoked,
+        "吊销必须落在确定序最早条目"
+    );
+    assert_eq!(other.level, TrustLevel::Verified, "较晚条目必须不受牵连");
 }

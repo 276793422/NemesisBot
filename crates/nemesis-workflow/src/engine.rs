@@ -1409,8 +1409,15 @@ impl WorkflowEngine {
     }
 
     /// List all registered workflow names.
+    ///
+    /// 按名字升序返回：底层是 DashMap，分片迭代序跨调用/跨平台都不稳定，
+    /// 不排序则 workflow.list 响应（Dashboard 工作流页）每次刷新乱跳。
+    /// 与 [`Self::list_executions`]（显式排序）、ws_router commands_registry
+    /// 同纪律。
     pub fn list_workflows(&self) -> Vec<String> {
-        self.workflows.iter().map(|r| r.key().clone()).collect()
+        let mut names: Vec<String> = self.workflows.iter().map(|r| r.key().clone()).collect();
+        names.sort();
+        names
     }
 
     /// Set the directory where workflow definition YAML/JSON files are
@@ -1485,14 +1492,19 @@ impl WorkflowEngine {
     /// the UI's workflow list view. Includes trigger driver status (the
     /// single source of truth — the UI does not hardcode this) and the
     /// next cron fire time when applicable.
+    ///
+    /// 按 name 升序返回（DashMap 分片迭代序不稳定——见 [`Self::list_workflows`]）。
     pub fn list_workflows_detailed(&self) -> Vec<WorkflowSummary> {
-        self.workflows
+        let mut list: Vec<WorkflowSummary> = self
+            .workflows
             .iter()
             .map(|entry| {
                 let wf = entry.value();
                 self.build_workflow_summary(wf)
             })
-            .collect()
+            .collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list
     }
 
     pub fn build_workflow_summary(&self, wf: &Workflow) -> WorkflowSummary {
