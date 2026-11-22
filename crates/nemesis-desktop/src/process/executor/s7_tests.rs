@@ -1,12 +1,15 @@
-//! 冲刺覆盖测试：process/executor.rs 的 stderr 数据读取分支和
+//! 冲刺覆盖测试：process/executor.rs 的 stderr 排水线程快照分支和
 //! 对已退出进程发优雅终止信号失败的分支。
 //!
 //! 子进程全部用无害命令（cmd /C... / sh -c...），不弹窗、不碰生产数据。
 
 use super::*;
 
+// BUG-20261123-002 同族回归锁：spawn_child 起的 stderr 排水线程必须把
+// 子进程 stderr 收进环形尾快照（piped 无排水 = 话痨子进程写满管道缓冲
+// 冻死，窗口失去响应 / approval 结果永不到达）。
 #[test]
-fn s7_read_stderr_line_captures_child_stderr() {
+fn s7_stderr_drain_thread_captures_child_stderr_tail() {
     let executor = DefaultPlatformExecutor::with_defaults();
     let (exe, args): (&str, Vec<String>) = if cfg!(windows) {
         (
@@ -21,20 +24,16 @@ fn s7_read_stderr_line_captures_child_stderr() {
     };
     let mut child = executor.spawn_child(exe, &args).expect("spawn child");
 
-    // 一直读到 EOF：先命中 Ok(n) 数据分支，再命中 Ok(0)。
-    let mut buf = Vec::new();
-    loop {
-        let n = child.read_stderr_line(&mut buf).unwrap();
-        if n == 0 {
+    // 排水线程异步收数：轮询等快照出现标记（线程调度无界，10s 上限）。
+    let mut text = String::new();
+    for _ in 0..100 {
+        text = child.stderr_snapshot();
+        if text.contains("s7-stderr-marker") {
             break;
         }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    let text = String::from_utf8_lossy(&buf);
-    assert!(
-        text.contains("s7-stderr-marker"),
-        "stderr content: {}",
-        text
-    );
+    assert!(text.contains("s7-stderr-marker"), "stderr tail: {text}");
 
     executor.cleanup(&mut child).unwrap();
 }

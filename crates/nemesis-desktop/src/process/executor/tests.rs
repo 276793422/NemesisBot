@@ -30,7 +30,6 @@ fn test_default_platform_executor_spawn() {
         assert!(child.pid > 0);
         assert!(child.stdin_pipe.is_some());
         assert!(child.stdout_pipe.is_some());
-        assert!(child.stderr_pipe.is_some());
         let _ = executor.terminate_child(&mut child);
     }
 }
@@ -149,11 +148,10 @@ fn test_child_process_try_wait_no_child() {
 
 #[test]
 fn test_child_process_read_stderr_no_pipe() {
-    let mut cp = ChildProcess::new("test".to_string(), 1, "test".to_string());
-    let mut buf = Vec::new();
-    let result = cp.read_stderr_line(&mut buf);
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);
+    // stderr 管道归 spawn_child 的排水线程（BUG-20261123-002 同族），
+    // ChildProcess 自身只持有环形尾快照；未 spawn 时快照恒空。
+    let cp = ChildProcess::new("test".to_string(), 1, "test".to_string());
+    assert!(cp.stderr_snapshot().is_empty());
 }
 
 #[test]
@@ -161,7 +159,7 @@ fn test_child_process_pipes_none_initially() {
     let cp = ChildProcess::new("test".to_string(), 1, "test".to_string());
     assert!(cp.stdin().is_none());
     assert!(cp.stdout().is_none());
-    assert!(cp.stderr().is_none());
+    assert!(cp.stderr_snapshot().is_empty());
 }
 
 #[test]
@@ -295,12 +293,9 @@ fn test_send_message_no_pipe_returns_error() {
 
 #[test]
 fn test_read_stderr_no_pipe_returns_zero() {
-    let mut cp = ChildProcess::new("test".to_string(), 1, "test".to_string());
-    let mut buf = Vec::new();
-    let result = cp.read_stderr_line(&mut buf);
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);
-    assert!(buf.is_empty());
+    // 同上：stderr 走排水线程 + 快照面，未 spawn 时快照恒空。
+    let cp = ChildProcess::new("test".to_string(), 1, "test".to_string());
+    assert!(cp.stderr_snapshot().is_empty());
 }
 
 #[test]
@@ -308,7 +303,7 @@ fn test_child_process_pipes_initially_none() {
     let cp = ChildProcess::new("test".to_string(), 1, "test".to_string());
     assert!(cp.stdin().is_none());
     assert!(cp.stdout().is_none());
-    assert!(cp.stderr().is_none());
+    assert!(cp.stderr_snapshot().is_empty());
     assert!(cp.child.is_none());
 }
 
@@ -389,11 +384,13 @@ fn test_cleanup_closes_pipes() {
     if let Ok(mut child) = executor.spawn_child(exe, &args) {
         assert!(child.stdin().is_some());
         assert!(child.stdout().is_some());
-        assert!(child.stderr().is_some());
+        // stderr 不再以访问器暴露（BUG-20261123-002 同族）：管道归排水线程，
+        // 宿主侧只留环形尾快照；echo 无 stderr 输出，快照保持为空。
+        assert!(child.stderr_snapshot().is_empty());
         executor.cleanup(&mut child).unwrap();
         assert!(child.stdin().is_none());
         assert!(child.stdout().is_none());
-        assert!(child.stderr().is_none());
+        assert!(child.stderr_snapshot().is_empty());
         assert!(child.child.is_none());
         assert_eq!(child.status, ProcessStatus::Terminated);
         assert!(!child.is_alive());
@@ -463,7 +460,7 @@ fn test_child_process_send_and_cleanup() {
         assert!(child.child.is_none());
         assert!(child.stdin().is_none());
         assert!(child.stdout().is_none());
-        assert!(child.stderr().is_none());
+        assert!(child.stderr_snapshot().is_empty());
     }
 }
 
@@ -486,27 +483,9 @@ fn test_terminate_child_with_real_process() {
     }
 }
 
-#[test]
-fn test_read_stderr_with_real_process() {
-    let executor = DefaultPlatformExecutor::with_defaults();
-    // Use a process that may produce stderr and exits quickly
-    // （Linux 臂曾是裸 `cat`：无参 cat 永远读 stdin、不写 stderr 不退出，
-    // 而 read_stderr_line 是无超时阻塞读 → 测试挂死（远端全量
-    // 首跑暴露，nemesis-desktop 卡死根因）。改为写 stderr 即退的 sh。）
-    let exe = if cfg!(windows) { "cmd" } else { "sh" };
-    let args: Vec<String> = if cfg!(windows) {
-        vec!["/c".to_string(), "echo".to_string(), "test".to_string()]
-    } else {
-        vec!["-c".to_string(), "echo test >&2".to_string()]
-    };
-
-    if let Ok(mut child) = executor.spawn_child(exe, &args) {
-        let mut buf = Vec::new();
-        // May or may not have stderr data
-        let _ = child.read_stderr_line(&mut buf);
-        let _ = executor.cleanup(&mut child);
-    }
-}
+// test_read_stderr_with_real_process 已删（BUG-20261123-002 同族）：
+// read_stderr_line API 退役，真进程 stderr 捕获由
+// s7_stderr_drain_thread_captures_child_stderr_tail 覆盖。
 
 #[test]
 fn test_try_wait_with_real_process() {
