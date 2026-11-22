@@ -44,8 +44,27 @@ pub const ACTION_MERGED: &str = "changeset_merged";
 /// 合并评论对仍在评论流，不排除会把旧锚误判成本轮停摆）。
 pub(crate) const MERGE_NOTICE_MARKER: &str = "🔀 ";
 
-/// 档案回灌入口（on_landed 回调；同步、ms 级——回调在 transfer.end 的
-/// handler 内触发）。
+/// 多线程 runtime 下把阻塞段让出 worker 调度权（BUG-20261122-022）。本模块
+/// 的全部入口都跑在 tokio worker 上：transfer.end sync RPC handler（dispatch
+/// async 链内直调，BUG-20261118-172 已定性）、peer_chat_callback spawn 任务
+/// （cluster_init.rs）、estop resume watcher spawn 任务、WSAPI async handler。
+/// 其中的韧性删除（fsutil retry 最坏 ~4.4s）与 libgit2 三方合并（含内部
+/// sweep_deleted_workdir_files）在 Windows AV/句柄争用下可秒级占死 worker，
+/// 同 worker 的 WS/SSE 心跳随之停摆（anchors.rs `run_anchors_dual_ext_blocking`
+/// 注释同款失效模式）。无 runtime（CLI 直驱/测试直调）或单线程 runtime =
+/// 直接跑（block_in_place 在 current_thread runtime 会 panic）。
+fn offload_worker_blocking<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
+/// 档案回灌入口（on_landed 回调；同步入口、重段 offload——回调在
+/// transfer.end 的 handler 内触发，即 tokio worker，见
+/// [`offload_worker_blocking`]）。
 ///
 /// 安置布局：`<project_dir>/records/<issue.number>/execution/<ts>/`，其下
 /// 直接是执行记录文件 + `manifest.json`（传输核验凭据）+ `landed.json`。
@@ -153,8 +172,9 @@ pub fn ingest_landed(store: &BoardStore, task_id: &str, inbox_dir: &Path) -> Opt
         tracing::warn!("[BoardArchive] timeline 写入失败（不阻塞）: {e}");
     }
     // 韧性删除：收件箱刚被资产管线写过，瞬时句柄常见；重试耗尽由包装内部
-    // warn 留痕（残留交启动清扫兜底）。
-    nemesis_utils::fsutil::remove_dir_all_resilient(inbox_dir);
+    // warn 留痕（残留交启动清扫兜底）。退避 sleep 最坏 ~4.4s，offload 出
+    // worker（BUG-20261122-022）。
+    offload_worker_blocking(|| nemesis_utils::fsutil::remove_dir_all_resilient(inbox_dir));
     tracing::info!(
         task_id = %task_id,
         issue = %issue.number,
@@ -747,7 +767,10 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
             .collect(),
         deletions: manifest.deletions,
     };
-    match nemesis_board::git_repo::merge_changeset(&root, &input) {
+    // merge_changeset 内部：libgit2 三方合并 + 工作区落盘 + 收尾
+    // sweep_deleted_workdir_files（remove_file_resilient 最坏 ~4.4s）——
+    // 整段 offload 出 worker（BUG-20261122-022）。
+    match offload_worker_blocking(|| nemesis_board::git_repo::merge_changeset(&root, &input)) {
         Ok(nemesis_board::git_repo::MergeOutcome::Merged { commit_oid }) => {
             MERGED
                 .lock()
@@ -1217,7 +1240,9 @@ fn replay_one_pending(
             .collect(),
         deletions: manifest.deletions,
     };
-    match nemesis_board::git_repo::merge_changeset(root, &input) {
+    // 同 merge_and_maybe_review_with 的合并段：offload 出 worker
+    // （BUG-20261122-022）。
+    match offload_worker_blocking(|| nemesis_board::git_repo::merge_changeset(root, &input)) {
         Ok(nemesis_board::git_repo::MergeOutcome::Merged { commit_oid }) => {
             MERGED
                 .lock()

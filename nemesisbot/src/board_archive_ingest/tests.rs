@@ -2056,3 +2056,25 @@ mod w5r2 {
         assert!(err.contains("人工解 commit 失败"), "{err}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261122-022：offload_worker_blocking 双 flavor 守卫。
+// 无 runtime（CLI 直驱/纯 #[test]）= 直跑分支；multi_thread runtime =
+// block_in_place 分支（真阻塞段在 worker 上照常完成且不 panic）。
+// current_thread flavor 刻意不进 block_in_place——那正是会 panic 的组合，
+// helper 的 flavor 判别就是为此；单测覆盖两合法分支即可。
+#[test]
+fn offload_worker_blocking_direct_without_runtime() {
+    let v = super::offload_worker_blocking(|| 21 * 2);
+    assert_eq!(v, 42);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offload_worker_blocking_multi_thread_no_panic() {
+    let v = super::offload_worker_blocking(|| {
+        // 真阻塞形态（韧性删除的 sleep 退避同款）。
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        "merged"
+    });
+    assert_eq!(v, "merged");
+}
