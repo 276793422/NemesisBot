@@ -12,7 +12,7 @@ fn entry_new_generates_valid_id() {
 
 #[test]
 fn entry_builder_methods_work() {
-    let mut meta = HashMap::new();
+    let mut meta = BTreeMap::new();
     meta.insert("source".to_string(), "test".to_string());
 
     let entry = Entry::new(MemoryType::ShortTerm, "hello".to_string())
@@ -44,7 +44,7 @@ fn vector_config_default_values() {
 
 #[test]
 fn entry_serialization_roundtrip() {
-    let mut meta = HashMap::new();
+    let mut meta = BTreeMap::new();
     meta.insert("key1".to_string(), "value1".to_string());
     let entry = Entry::new(MemoryType::LongTerm, "test content".to_string())
         .with_tags(vec!["tag1".to_string(), "tag2".to_string()])
@@ -187,7 +187,7 @@ fn entry_with_empty_tags() {
 #[test]
 fn entry_with_empty_metadata() {
     let entry =
-        Entry::new(MemoryType::LongTerm, "no meta".to_string()).with_metadata(HashMap::new());
+        Entry::new(MemoryType::LongTerm, "no meta".to_string()).with_metadata(BTreeMap::new());
     assert!(entry.metadata.is_empty());
 }
 
@@ -214,4 +214,25 @@ fn entry_content_very_long() {
     let content = "a".repeat(1_000_000);
     let entry = Entry::new(MemoryType::LongTerm, content.clone());
     assert_eq!(entry.content.len(), 1_000_000);
+}
+
+/// BUG-20261122-045 回归：Entry.metadata BTreeMap 化——vector store
+/// rewrite_persist_file 全量重写直接 `serde_json::to_string` 落盘，
+/// 两个独立反序列化实例字节必须恒等（HashMap 每进程随机种子曾使
+/// 同内容相邻两次 rewrite 行内键序漂移）。
+#[test]
+fn entry_metadata_roundtrip_bytes_deterministic() {
+    let raw = r#"{"id":"e1","type":"LongTerm","content":"c","metadata":{"zz":"1","aa":"2","mm":"3"},"tags":[],"created_at":"2026-11-22T10:00:00+08:00","updated_at":"2026-11-22T10:00:00+08:00"}"#;
+    let a: Entry = serde_json::from_str(raw).unwrap();
+    let b: Entry = serde_json::from_str(raw).unwrap();
+    let sa = serde_json::to_string(&a).unwrap();
+    let sb = serde_json::to_string(&b).unwrap();
+    assert_eq!(sa, sb, "两个独立实例的序列化字节必须恒等");
+    let pos_aa = sa.find(r#""aa":"2""#).expect("aa key");
+    let pos_mm = sa.find(r#""mm":"3""#).expect("mm key");
+    let pos_zz = sa.find(r#""zz":"1""#).expect("zz key");
+    assert!(
+        pos_aa < pos_mm && pos_mm < pos_zz,
+        "metadata 键序必须字典序（jsonl 落盘字节确定性）"
+    );
 }

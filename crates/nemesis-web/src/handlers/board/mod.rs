@@ -1763,7 +1763,7 @@ fn board_config_set(
             // 静默纠偏——round-trip 值比对按原值核，静默归一会假红）。空对象
             // = 契约关闭；空串键 = 全局兜底规则（合法，保留）。
             "review.required_checks" => {
-                let rules: std::collections::HashMap<String, Vec<String>> =
+                let rules: std::collections::BTreeMap<String, Vec<String>> =
                     serde_json::from_value(value.clone()).map_err(|e| {
                         format!("review.required_checks 需要 {{匹配键: [锚点 id]}} 对象: {e}")
                     })?;
@@ -2070,7 +2070,7 @@ fn board_config_set(
 /// 职能预设条目三维度全空时顺手删除（null 清除维度的收尾；防
 /// `professions` map 积灰全空条目）。
 fn drop_if_empty(
-    map: &mut std::collections::HashMap<String, nemesis_config::BoardProfessionReviewPreset>,
+    map: &mut std::collections::BTreeMap<String, nemesis_config::BoardProfessionReviewPreset>,
     slug: &str,
 ) {
     if map.get(slug).is_some_and(|p| *p == Default::default()) {

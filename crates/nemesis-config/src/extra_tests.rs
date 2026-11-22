@@ -627,7 +627,7 @@ fn extra_save_scanner_config_writes_valid_file() {
     let path = dir.path().join("config.scanner.json");
     let cfg = ScannerFullConfig {
         enabled: vec!["clamav".into()],
-        engines: std::collections::HashMap::new(),
+        engines: std::collections::BTreeMap::new(),
     };
     save_scanner_config(&path, &cfg).unwrap();
     assert!(path.exists());
@@ -1258,7 +1258,7 @@ fn extra_agent_binding_roundtrip_with_peer() {
 
 #[test]
 fn extra_session_config_with_identity_links() {
-    let mut links = std::collections::HashMap::new();
+    let mut links = std::collections::BTreeMap::new();
     links.insert("k".to_string(), vec!["v1".to_string(), "v2".to_string()]);
     let cfg = SessionConfig {
         dm_scope: "scope".into(),

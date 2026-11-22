@@ -1229,9 +1229,9 @@ fn anchor_id_matches(check_id: &str, anchor: &AnchorCheck) -> bool {
 /// 算出未满足覆盖的必需项列表。命中任一标签键 → 各键列表并集生效；无标
 /// 签命中 → 空串键全局兜底（无空串键 = 无要求）。已产出双检结果的锚点
 ///（过或不过）= 覆盖满足——裁决归 FAIL 短路，本判定只管「跑没跑」。
-/// 输出按规则键字典序排列（HashMap 无序，评论与测试需要确定性）。
+/// 输出按规则键字典序排列（BTreeMap 化后 keys 天然字典序，sort 保留作防御；评论与测试需要确定性）。
 pub fn required_check_gaps(
-    rules: &std::collections::HashMap<String, Vec<String>>,
+    rules: &std::collections::BTreeMap<String, Vec<String>>,
     issue_tags: &[String],
     anchors: &[AnchorCheck],
     results: &[AnchorResult],

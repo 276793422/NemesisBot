@@ -502,7 +502,7 @@ pub struct BoardReviewConfig {
     /// 检查员防单评委漏判）——config 同名键**逐维度覆盖**内置预设。
     /// 缺键零迁移（`#[serde(default)]`，空 map = 全部走全局/内置）。
     #[serde(default)]
-    pub professions: std::collections::HashMap<String, BoardProfessionReviewPreset>,
+    pub professions: std::collections::BTreeMap<String, BoardProfessionReviewPreset>,
     /// 父单收口 FAIL 自动返工承接轮数上限（默认 **2**，**0 = 关**
     /// = 旧行为恒转人工）。FAIL（差距具体）时自动创建「返工：」子单承接差距
     /// 并派发，返工单落定后 sync 链自动复评父单；UNSURE（证据不足）不在此列
@@ -548,7 +548,7 @@ pub struct BoardReviewConfig {
     /// 哪个锚点/为何未满足）。已运行（过或不过）= 覆盖满足，裁决归锚点
     /// 双检既有短路。空 map = 契约关闭（默认，零回归）。
     #[serde(default)]
-    pub required_checks: std::collections::HashMap<String, Vec<String>>,
+    pub required_checks: std::collections::BTreeMap<String, Vec<String>>,
     /// 必检计划闸（外循环，；默认 **false** 烧入期）。开启后
     /// 验收 PASS 前对账必检计划：单据正文反引号包裹的多词命令（如
     /// `` `cargo test` ``）= 本单必检项，worker 交付证据 `checks[]` 里没有
@@ -620,7 +620,7 @@ impl BoardReviewConfig {
 /// 不在写入点归一（board.config.set 白名单不覆盖本嵌套 map），匹配侧统一
 /// 宽和：trim + ASCII 大小写不敏感。线性扫描（职能目录 ≤17 项，开销可忽略）。
 fn profession_preset_lookup<'a>(
-    map: &'a std::collections::HashMap<String, BoardProfessionReviewPreset>,
+    map: &'a std::collections::BTreeMap<String, BoardProfessionReviewPreset>,
     key: &str,
 ) -> Option<&'a BoardProfessionReviewPreset> {
     map.iter()
@@ -693,13 +693,13 @@ impl Default for BoardReviewConfig {
             exec_anchor_timeout_secs: 120,
             failure_retries: 1,
             max_unsure_streak: 2,
-            professions: std::collections::HashMap::new(),
+            professions: std::collections::BTreeMap::new(),
             parent_remediation_max: 2,
             transient_retry_max: 6,
             transient_retry_delay_secs: 60,
             require_delivery_evidence: false,
             evidence_typed_required: false,
-            required_checks: std::collections::HashMap::new(),
+            required_checks: std::collections::BTreeMap::new(),
             require_check_plan: false,
         }
     }

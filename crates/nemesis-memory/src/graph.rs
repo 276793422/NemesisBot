@@ -8,7 +8,7 @@
 //! entities and triples are saved as JSONL files (`entities.jsonl` and `triples.jsonl`)
 //! and reloaded on startup, mirroring the Go `graph.Store` implementation.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -31,8 +31,11 @@ pub struct GraphTriple {
     /// Object entity name.
     pub object: String,
     /// Arbitrary metadata attached to the relationship.
+    /// BTreeMap：Triple 直接 `serde_json::to_string` 落盘 jsonl（write_entities/
+    /// write_triples 全量重写），HashMap 每进程随机种子 → 行内键序随实例漂移
+    ///（BUG-20261122-045）。
     #[serde(default)]
-    pub metadata: HashMap<String, String>,
+    pub metadata: BTreeMap<String, String>,
     /// Confidence score in [0, 1].
     #[serde(default)]
     pub confidence: f64,
@@ -47,7 +50,7 @@ impl GraphTriple {
             subject,
             predicate,
             object,
-            metadata: HashMap::new(),
+            metadata: BTreeMap::new(),
             confidence: 1.0,
             created_at: Local::now(),
         }
@@ -69,8 +72,10 @@ pub struct GraphEntity {
     #[serde(rename = "type")]
     pub typ: String,
     /// Arbitrary properties.
+    /// BTreeMap：同 Triple.metadata——直接序列化落盘 jsonl，键序确定性
+    ///（BUG-20261122-045）。
     #[serde(default)]
-    pub properties: HashMap<String, String>,
+    pub properties: BTreeMap<String, String>,
     /// When this entity was created.
     pub created_at: DateTime<Local>,
 }
@@ -81,7 +86,7 @@ impl GraphEntity {
         Self {
             name,
             typ,
-            properties: HashMap::new(),
+            properties: BTreeMap::new(),
             created_at: Local::now(),
         }
     }

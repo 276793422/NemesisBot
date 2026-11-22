@@ -178,7 +178,9 @@ pub fn build_agent_loop(
     // new_bus 硬编码默认）；identity_links 注入 route_message 的 RouteInput。
     // 全部键缺省 = 与硬编码默认同形，零回归。
     agent_loop.set_route_resolver(build_route_resolver(&cfg));
-    agent_loop.set_identity_links(cfg.session.identity_links.clone());
+    // config 侧 identity_links 已 BTreeMap 化（BUG-20261122-045 字节确定性），
+    // routing 运行时链保持 HashMap（读侧 session_key 已排序兜底），显式收集桥接。
+    agent_loop.set_identity_links(cfg.session.identity_links.clone().into_iter().collect());
     // D-4（多会话并行清账）：loop 级并发 turn 上限（安全阀，
     // 默认 8；0 = 不设限）。泵统一 gate+spawn 后跨会话天然并发，此值防
     // 极端场景无界并发。

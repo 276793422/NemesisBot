@@ -2321,7 +2321,7 @@ async fn test_search_displays_episodic_tags() {
         role: "user".to_string(),
         content: "unique-zephyr-content".to_string(),
         timestamp: chrono::Local::now(),
-        metadata: std::collections::HashMap::new(),
+        metadata: std::collections::BTreeMap::new(),
         tags: vec!["tag-a".to_string(), "tag-b".to_string()],
     };
     mgr.append_episode(episode).await.unwrap();
@@ -2389,7 +2389,7 @@ async fn test_list_status_shows_session_keys() {
         role: "assistant".to_string(),
         content: "hello".to_string(),
         timestamp: chrono::Local::now(),
-        metadata: std::collections::HashMap::new(),
+        metadata: std::collections::BTreeMap::new(),
         tags: Vec::new(),
     };
     mgr.append_episode(episode).await.unwrap();

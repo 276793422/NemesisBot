@@ -6,7 +6,7 @@
 //! (semantic search). It exposes high-level operations mirroring the Go
 //! `Manager`: `store`, `query`, `get`, `delete`, `close`, `init_vector_store`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1230,7 +1230,7 @@ impl MemoryManager {
     ) -> Result<String, String> {
         let entry = Entry::new(MemoryType::Episodic, content.to_string())
             .with_metadata({
-                let mut meta = HashMap::new();
+                let mut meta = BTreeMap::new();
                 meta.insert("session_key".to_string(), session_key.to_string());
                 meta.insert("role".to_string(), role.to_string());
                 meta

@@ -53,7 +53,7 @@ fn encode_parse_roundtrip() {
         vec!["p1".to_string(), "p2".to_string()],
         "wsapi",
     );
-    let mut meta = std::collections::HashMap::new();
+    let mut meta = std::collections::BTreeMap::new();
     mark_quarantine(&mut meta, &rec);
     assert!(is_quarantined(&meta));
     let parsed = parse_quarantine(&meta).expect("parse");
@@ -66,7 +66,7 @@ fn encode_parse_roundtrip() {
 /// fail-closed：章值损坏（非法 JSON）→ is_quarantined 恒 true，解析 None。
 #[test]
 fn corrupt_record_still_quarantined() {
-    let mut meta = std::collections::HashMap::new();
+    let mut meta = std::collections::BTreeMap::new();
     meta.insert(META_QUARANTINE.to_string(), "{not-json".to_string());
     assert!(is_quarantined(&meta), "章在场即隔离（fail-closed）");
     assert!(parse_quarantine(&meta).is_none(), "损坏章解析 None");
@@ -75,7 +75,7 @@ fn corrupt_record_still_quarantined() {
 #[test]
 fn unmark_removes_and_returns_raw() {
     let rec = QuarantineRecord::new("r".to_string(), Vec::new(), "test");
-    let mut meta = std::collections::HashMap::new();
+    let mut meta = std::collections::BTreeMap::new();
     assert!(unmark_quarantine(&mut meta).is_none(), "无章摘除 = None");
     mark_quarantine(&mut meta, &rec);
     let raw = unmark_quarantine(&mut meta).expect("raw");
@@ -88,7 +88,7 @@ fn unmark_removes_and_returns_raw() {
 
 #[test]
 fn absent_mark_is_clean() {
-    let meta: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let meta: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     assert!(!is_quarantined(&meta));
     assert!(parse_quarantine(&meta).is_none());
 }
@@ -265,7 +265,7 @@ fn episode(content: &str, session: &str, quarantined: bool) -> Episode {
         role: "assistant".to_string(),
         content: content.to_string(),
         timestamp: chrono::Local::now(),
-        metadata: std::collections::HashMap::new(),
+        metadata: std::collections::BTreeMap::new(),
         tags: Vec::new(),
     };
     if quarantined {

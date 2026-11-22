@@ -37,7 +37,7 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -199,7 +199,10 @@ pub struct WeChatConfig {
     /// 允许的发送者 ID（空 = 不限；被过滤的消息仍 ack 200 防平台重试）。
     pub allow_from: Vec<String>,
     /// 联系人映射：user_id → 备注别名（命中时写入 metadata `contact_alias`）。
-    pub contacts: HashMap<String, String>,
+    /// BTreeMap：typed config 直接 `to_string_pretty` 落盘 config.json，
+    /// HashMap 每进程随机种子 → 同一份 config 两次保存字节不同（同族纪律
+    /// 见 nemesis-config sections/models.rs BTreeMap 注释；BUG-20261122-045）。
+    pub contacts: BTreeMap<String, String>,
 }
 
 crate::debug_redact::impl_redacted_debug!(WeChatConfig {
@@ -217,7 +220,7 @@ impl Default for WeChatConfig {
             callback_path: DEFAULT_CALLBACK_PATH.to_string(),
             signature_scheme: "hmac-sha256".to_string(),
             allow_from: Vec::new(),
-            contacts: HashMap::new(),
+            contacts: BTreeMap::new(),
         }
     }
 }

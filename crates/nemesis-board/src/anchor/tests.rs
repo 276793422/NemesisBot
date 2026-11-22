@@ -1157,7 +1157,7 @@ fn res(a: &AnchorCheck, passed: bool) -> AnchorResult {
     }
 }
 
-fn rules(pairs: &[(&str, &[&str])]) -> std::collections::HashMap<String, Vec<String>> {
+fn rules(pairs: &[(&str, &[&str])]) -> std::collections::BTreeMap<String, Vec<String>> {
     pairs
         .iter()
         .map(|(k, ids)| {
@@ -1338,7 +1338,7 @@ fn required_checks_multi_key_union_and_pattern_and_ordering() {
 #[test]
 fn required_checks_empty_rules_no_gaps() {
     let g = required_check_gaps(
-        &std::collections::HashMap::new(),
+        &std::collections::BTreeMap::new(),
         &["dev".into()],
         &[],
         &[],

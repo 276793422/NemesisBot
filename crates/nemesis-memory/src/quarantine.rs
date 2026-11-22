@@ -24,7 +24,7 @@
 //! `is_quarantined` **fail-closed**：章在场即隔离（解析失败按隔离处理）
 //! ——放行路径是唯一能摘章的面，读面绝不因章损坏而误放行。
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 pub const META_QUARANTINE: &str = "quarantine";
 
 /// 隔离记录（章的值；JSON 序列化进 metadata——metadata 是
-/// `HashMap<String, String>`，结构化信息以字符串形态承载）。
+/// `BTreeMap<String, String>`，结构化信息以字符串形态承载）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuarantineRecord {
     /// 人读原因（注入检测命中 / 规则命中摘要首条等）。
@@ -67,24 +67,24 @@ impl QuarantineRecord {
 }
 
 /// 是否隔离（**fail-closed**：章在场即隔离，不看值能否解析）。
-pub fn is_quarantined(metadata: &HashMap<String, String>) -> bool {
+pub fn is_quarantined(metadata: &BTreeMap<String, String>) -> bool {
     metadata.contains_key(META_QUARANTINE)
 }
 
 /// 解析章值；损坏（非法 JSON）→ None 但 [`is_quarantined`] 仍为 true
 /// （展示面给「章损坏」注记，放行面按摘章处理）。
-pub fn parse_quarantine(metadata: &HashMap<String, String>) -> Option<QuarantineRecord> {
+pub fn parse_quarantine(metadata: &BTreeMap<String, String>) -> Option<QuarantineRecord> {
     let raw = metadata.get(META_QUARANTINE)?;
     serde_json::from_str(raw).ok()
 }
 
 /// 盖章（写入面：manager / memory_tools 在 store 前 mark）。
-pub fn mark_quarantine(metadata: &mut HashMap<String, String>, record: &QuarantineRecord) {
+pub fn mark_quarantine(metadata: &mut BTreeMap<String, String>, record: &QuarantineRecord) {
     metadata.insert(META_QUARANTINE.to_string(), record.encode());
 }
 
 /// 摘章（放行面唯一入口）：返回被摘除的原始章值（无章 = None）。
-pub fn unmark_quarantine(metadata: &mut HashMap<String, String>) -> Option<String> {
+pub fn unmark_quarantine(metadata: &mut BTreeMap<String, String>) -> Option<String> {
     metadata.remove(META_QUARANTINE)
 }
 

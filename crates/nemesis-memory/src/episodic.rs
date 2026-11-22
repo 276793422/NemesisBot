@@ -4,7 +4,7 @@
 //! `FileEpisodicStore` persists episodes as JSONL (one JSON object per line)
 //! inside a directory organised by session key.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -31,8 +31,10 @@ pub struct Episode {
     /// When this episode was created.
     pub timestamp: DateTime<Local>,
     /// Arbitrary metadata.
+    /// BTreeMap：Episode 直接 `serde_json::to_string` 落盘 jsonl，HashMap
+    /// 每进程随机种子 → 行内键序随实例漂移（BUG-20261122-045）。
     #[serde(default)]
-    pub metadata: HashMap<String, String>,
+    pub metadata: BTreeMap<String, String>,
     /// Free-form tags.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -47,7 +49,7 @@ impl Episode {
             role,
             content,
             timestamp: Local::now(),
-            metadata: HashMap::new(),
+            metadata: BTreeMap::new(),
             tags: Vec::new(),
         }
     }

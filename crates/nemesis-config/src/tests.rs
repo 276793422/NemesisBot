@@ -284,7 +284,7 @@ fn test_save_and_load_scanner_config() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.scanner.json");
-    let mut engines = std::collections::HashMap::new();
+    let mut engines = std::collections::BTreeMap::new();
     engines.insert(
         "clamav".to_string(),
         serde_json::json!({"url": "tcp://localhost:3310"}),
@@ -5022,5 +5022,66 @@ fn test_config_partial_irc_section_tls_matches_absent_section() {
     assert_eq!(
         partial.channels.irc.use_tls, absent.channels.irc.use_tls,
         "部分节（字段缺）必须与缺席节同值——裸 default 曾给 false = 明文连 IRC"
+    );
+}
+
+/// BUG-20261122-045 回归：typed config 树内 map 字段 BTreeMap 化——同一份
+/// config 两个独立 load 实例 → save 产出字节恒等。此前 identity_links /
+/// wecom.webhooks / wechat.contacts / review.professions /
+/// review.required_checks / scanner engines 为 HashMap，每进程随机种子
+/// 使同内容两次保存字节不同（同族纪律见 sections/models.rs 注释）。
+#[test]
+fn test_typed_config_map_fields_roundtrip_bytes_deterministic() {
+    let raw = r#"{
+        "model_list": [],
+        "session": { "identity_links": { "zoe": ["a", "b"], "alice": ["c"] } },
+        "channels": {
+            "wecom": { "webhooks": { "zz": "u1", "aa": "u2" } },
+            "wechat": { "contacts": { "zz": "b", "aa": "a", "mm": "c" } }
+        },
+        "board": {
+            "review": {
+                "professions": { "zz": {}, "aa": { "checkers": 2 } },
+                "required_checks": { "zz": ["x"], "aa": ["y"] }
+            }
+        }
+    }"#;
+    let a: crate::Config = serde_json::from_str(raw).unwrap();
+    let b: crate::Config = serde_json::from_str(raw).unwrap();
+    let sa = serde_json::to_string_pretty(&a).unwrap();
+    let sb = serde_json::to_string_pretty(&b).unwrap();
+    assert_eq!(
+        sa, sb,
+        "两个独立反序列化实例的全档序列化字节必须恒等（键序确定性）"
+    );
+    let pos = |hay: &str, needle: &str| hay.find(needle).expect(needle);
+    assert!(
+        pos(&sa, r#""alice""#) < pos(&sa, r#""zoe""#),
+        "session.identity_links 键序必须字典序"
+    );
+    assert!(
+        pos(&sa, r#""aa": "u2""#) < pos(&sa, r#""zz": "u1""#),
+        "channels.wecom.webhooks 键序必须字典序"
+    );
+    assert!(
+        pos(&sa, r#""aa": "a""#) < pos(&sa, r#""mm": "c""#)
+            && pos(&sa, r#""mm": "c""#) < pos(&sa, r#""zz": "b""#),
+        "channels.wechat.contacts 键序必须字典序"
+    );
+    assert!(
+        pos(&sa, r#""aa""#) < pos(&sa, r#""zz""#),
+        "board.review 两 map 键序必须字典序"
+    );
+
+    // scanner 段独立文件（config.scanner.json）同链同族：engines 键序钉死。
+    let scan_raw = r#"{ "engines": { "zz": {"type": "clamav"}, "aa": {"type": "clamav"} } }"#;
+    let sc_a: crate::ScannerFullConfig = serde_json::from_str(scan_raw).unwrap();
+    let sc_b: crate::ScannerFullConfig = serde_json::from_str(scan_raw).unwrap();
+    let s1 = serde_json::to_string_pretty(&sc_a).unwrap();
+    let s2 = serde_json::to_string_pretty(&sc_b).unwrap();
+    assert_eq!(s1, s2, "scanner engines 两个独立实例序列化字节必须恒等");
+    assert!(
+        s1.find(r#""aa""#).unwrap() < s1.find(r#""zz""#).unwrap(),
+        "scanner.engines 键序必须字典序"
     );
 }

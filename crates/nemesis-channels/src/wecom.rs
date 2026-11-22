@@ -13,7 +13,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -45,8 +45,11 @@ pub struct WeComConfig {
     #[serde(default)]
     pub webhook_url: String,
     /// chat_id → 群机器人 webhook 路由表（多群出站；chat_id 命中优先于默认）。
+    /// BTreeMap：typed config 直接 `to_string_pretty` 落盘 config.json，
+    /// HashMap 每进程随机种子 → 同一份 config 两次保存字节不同（同族纪律
+    /// 见 nemesis-config sections/models.rs BTreeMap 注释；BUG-20261122-045）。
     #[serde(default)]
-    pub webhooks: HashMap<String, String>,
+    pub webhooks: BTreeMap<String, String>,
     /// 回调验签 token（企业微信后台配置的 Token）。
     #[serde(default)]
     pub token: String,

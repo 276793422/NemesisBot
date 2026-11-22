@@ -40,7 +40,7 @@ pub struct SessionConfig {
     #[serde(default)]
     pub dm_scope: String,
     #[serde(default)]
-    pub identity_links: std::collections::HashMap<String, Vec<String>>,
+    pub identity_links: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 // ============================================================================
@@ -701,7 +701,7 @@ pub struct WeComConfig {
     pub webhook_url: String,
     /// chat_id → 群机器人 webhook 路由表（多群出站；chat_id 命中优先于默认）。
     #[serde(default)]
-    pub webhooks: std::collections::HashMap<String, String>,
+    pub webhooks: std::collections::BTreeMap<String, String>,
     /// 回调验签 token（企业微信后台配置；鉴权验证类，支持引用）。
     #[serde(default)]
     pub token: String,
@@ -955,7 +955,7 @@ pub struct WeChatConfig {
     pub allow_from: Vec<String>,
     /// 联系人映射：user_id → 备注别名（命中时写入 metadata `contact_alias`）。
     #[serde(default)]
-    pub contacts: std::collections::HashMap<String, String>,
+    pub contacts: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub sync_to: Vec<String>,
 }
@@ -971,7 +971,7 @@ impl Default for WeChatConfig {
             callback_path: "/wechat/callback".to_string(),
             signature_scheme: "hmac-sha256".to_string(),
             allow_from: vec![],
-            contacts: std::collections::HashMap::new(),
+            contacts: std::collections::BTreeMap::new(),
             sync_to: vec![],
         }
     }
