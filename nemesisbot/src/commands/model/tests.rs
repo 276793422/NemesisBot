@@ -2174,6 +2174,69 @@ fn test_update_model_entry_empty_name_never_matches() {
     assert!(update_model_entry_for_test(&mut config, "glm-4.7", |_| {}));
 }
 
+// BUG-20261122-028 红证（修复前 panic）：model_list 含非对象条目（手改坏
+// config.json）时，`.get()` 对标量恒 None 使 full/alias 双空串，空串 name
+// 误配回调 → 回调内 `e["key"] = ...` IndexMut 在标量上 panic（"cannot
+// access key in JSON scalar"）。修复后非对象条目被跳过，永不应答匹配。
+#[test]
+fn test_update_model_entry_skips_non_object_entries() {
+    use crate::commands::model::update_model_entry_for_test;
+    let mut config = serde_json::json!({
+        "model_list": [
+            "oops-bare-string",
+            42,
+            { "model": "zhipu/glm-4.7", "model_name": "glm-4.7" }
+        ]
+    });
+    // 修复前：空 name 误配首个标量条目 → 闭包在 String 上 IndexMut panic。
+    assert!(!update_model_entry_for_test(&mut config, "", |e| {
+        e["model_tier"] = serde_json::Value::String("mini".into());
+    }));
+    // 对照：正规条目仍按别名命中
+    assert!(update_model_entry_for_test(&mut config, "glm-4.7", |_| {}));
+    // 纯畸形列表：任何名字都不命中、不 panic
+    let mut bad = serde_json::json!({ "model_list": ["a", 1, true, null] });
+    assert!(!update_model_entry_for_test(&mut bad, "anything", |_| {}));
+}
+
+// BUG-20261122-028：Set* 族空模型名（含空白串）loud 拒绝（对齐 Prices 臂
+// 「模型名不能为空」先例）——守卫在 cfg_path 探测前，不触 home/fs。
+#[tokio::test]
+async fn test_run_set_family_empty_name_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let actions = [
+        super::ModelAction::SetTier {
+            name: "  ".into(),
+            tier: "mini".into(),
+        },
+        super::ModelAction::SetSize {
+            name: "".into(),
+            size: "30B".into(),
+        },
+        super::ModelAction::SetRealName {
+            name: "".into(),
+            real_name: "Qwen3-30B".into(),
+        },
+        super::ModelAction::SetStream {
+            name: "".into(),
+            stream: "yes".into(),
+        },
+        super::ModelAction::SetCompactContext {
+            name: "".into(),
+            tokens: "1000".into(),
+        },
+    ];
+    for action in actions {
+        let err = super::run(action, false).await.unwrap_err();
+        assert!(
+            err.to_string().contains("模型名不能为空"),
+            "Set* 空名必须 loud 拒绝，got: {err}"
+        );
+    }
+}
+
 // ===========================================================================
 // wave_b（coverage 补测）：miss 行清零补洞。
 //

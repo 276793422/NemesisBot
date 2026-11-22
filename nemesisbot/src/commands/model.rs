@@ -914,6 +914,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
         }
         ModelAction::SetTier { name, tier } => {
+            if name.trim().is_empty() {
+                anyhow::bail!("模型名不能为空");
+            }
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
@@ -983,6 +986,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
         }
         ModelAction::SetSize { name, size } => {
+            if name.trim().is_empty() {
+                anyhow::bail!("模型名不能为空");
+            }
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
             }
@@ -1017,6 +1023,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
         }
         ModelAction::SetRealName { name, real_name } => {
+            if name.trim().is_empty() {
+                anyhow::bail!("模型名不能为空");
+            }
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
             }
@@ -1044,6 +1053,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
         }
         ModelAction::SetStream { name, stream } => {
+            if name.trim().is_empty() {
+                anyhow::bail!("模型名不能为空");
+            }
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
             }
@@ -1085,6 +1097,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
         }
         ModelAction::SetCompactContext { name, tokens } => {
+            if name.trim().is_empty() {
+                anyhow::bail!("模型名不能为空");
+            }
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
             }
@@ -1548,6 +1563,14 @@ where
         None => return false,
     };
     for m in arr.iter_mut() {
+        // BUG-20261122-028：非对象条目（手改坏 config.json）不参与匹配——
+        // `.get()` 对标量恒 None 使 full/alias 双空串，name 为空串时误配
+        // 回调，回调内 `e["key"] = ...` IndexMut 在 String/Array 上 panic
+        // （"cannot access key in JSON scalar"）。非对象条目本就不可能
+        // 携带合法模型名，跳过是语义正确的顺带加固。
+        if !m.is_object() {
+            continue;
+        }
         let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         let alias = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
         if full == name || alias == name || full.ends_with(&format!("/{}", name)) {
