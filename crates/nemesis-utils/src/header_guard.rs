@@ -79,4 +79,5 @@ pub fn filter_valid_header_pairs(
         .collect()
 }
 
+#[cfg(test)]
 mod tests;

@@ -1460,3 +1460,108 @@ async fn t16_voice_transcribe_removes_temp_ogg_on_failure() {
         leaked.display()
     );
 }
+
+// ===== BUG-20261122-039：render_inline 受保护区（代码 span / href 属性）回归 =====
+//
+// 旧顺序（链接/删除线/粗体 → 代码 → 斜体后置扫描）里，斜体扫描跑在含
+// HTML 标签的串上：代码 span 内容与 href 属性值里的 `*`/`_` 被误当标记
+// → <code><i>…</code> 错误跨标签嵌套 / href 属性损坏 → Telegram parse
+// 400 → 整块回退纯文本、同块全部格式丢失。修复后这些区域受保护。
+
+/// 代码 span 内的 `*` 不是斜体标记（glob 形态 `` `*.rs` ``）。
+#[test]
+fn test_markdown_code_span_star_not_italicized() {
+    let result = TelegramChannel::markdown_to_telegram_html("run `*.rs` files");
+    assert!(
+        result.contains("<code>*.rs</code>"),
+        "代码 span 内容须字面保留: {result}"
+    );
+    assert!(
+        !result.contains("<i>"),
+        "代码 span 内 * 不得触发斜体: {result}"
+    );
+}
+
+/// 代码 span 内的 `_` 同理（`` `_a` `` / `` `x_y` `` 形态）。
+#[test]
+fn test_markdown_code_span_underscore_not_italicized() {
+    let result = TelegramChannel::markdown_to_telegram_html("`_a` and `x_y`");
+    assert!(result.contains("<code>_a</code>"), "span1 字面: {result}");
+    assert!(result.contains("<code>x_y</code>"), "span2 字面: {result}");
+    assert!(!result.contains("<i>"), "span 内 _ 不得触发斜体: {result}");
+}
+
+/// href 属性值内 `/` 邻接的 `_` 不是标记（`_root` URL 高频形态）。
+#[test]
+fn test_markdown_href_attr_underscore_not_italicized() {
+    let result = TelegramChannel::markdown_to_telegram_html("[a](https://x.com/_root)");
+    assert_eq!(result, r#"<a href="https://x.com/_root">a</a>"#);
+}
+
+/// 代码 span 内 `**` 不是粗体标记。
+#[test]
+fn test_markdown_code_span_double_star_literal() {
+    let result = TelegramChannel::markdown_to_telegram_html("`**x**`");
+    assert_eq!(result, "<code>**x**</code>");
+}
+
+/// 代码 span 内链接语法保持字面。
+#[test]
+fn test_markdown_code_span_link_syntax_literal() {
+    let result = TelegramChannel::markdown_to_telegram_html("`[a](b)`");
+    assert_eq!(result, "<code>[a](b)</code>");
+}
+
+/// 代码 span 内删除线语法保持字面。
+#[test]
+fn test_markdown_code_span_strikethrough_literal() {
+    let result = TelegramChannel::markdown_to_telegram_html("`~~x~~`");
+    assert_eq!(result, "<code>~~x~~</code>");
+}
+
+/// 正常斜体不受保护机制影响（代码区外标记照常工作）。
+#[test]
+fn test_markdown_italic_still_works_outside_protected() {
+    let result = TelegramChannel::markdown_to_telegram_html("`code` and *it* and _em_");
+    assert!(result.contains("<code>code</code>"), "代码照常: {result}");
+    assert!(result.contains("<i>it</i>"), "星号斜体照常: {result}");
+    assert!(result.contains("<i>em</i>"), "下划线斜体照常: {result}");
+}
+
+/// intraword 下划线保持字面（词边界规则不变）。
+#[test]
+fn test_markdown_snake_case_stays_literal() {
+    let result = TelegramChannel::markdown_to_telegram_html("use snake_case names");
+    assert!(
+        !result.contains("<i>"),
+        "intraword _ 不得触发斜体: {result}"
+    );
+    assert!(result.contains("snake_case"));
+}
+
+/// 代码 + 粗体混合：精确输出 + 标签平衡。
+#[test]
+fn test_markdown_mixed_code_bold_balanced() {
+    let result = TelegramChannel::markdown_to_telegram_html("`*.md` and **bold**");
+    assert_eq!(result, "<code>*.md</code> and <b>bold</b>");
+}
+
+/// URL 含裸引号 → href 内转义 &quot;（属性上下文），属性不提前终结。
+#[test]
+fn test_markdown_url_quote_escaped_in_href() {
+    let result = TelegramChannel::markdown_to_telegram_html(r#"[a](https://x.com/"q")"#);
+    assert_eq!(result, r#"<a href="https://x.com/&quot;q&quot;">a</a>"#);
+}
+
+/// 代码 + 链接混合：代码字面、href 受保护、链接正常转换。
+#[test]
+fn test_markdown_code_and_link_mixed() {
+    let result =
+        TelegramChannel::markdown_to_telegram_html("see `[a](b)` and [x](https://y.com/_z)");
+    assert!(result.contains("<code>[a](b)</code>"), "代码字面: {result}");
+    assert!(
+        result.contains(r#"<a href="https://y.com/_z">x</a>"#),
+        "链接正常且 href 完整: {result}"
+    );
+    assert!(!result.contains("<i>"), "受保护区不得触发斜体: {result}");
+}

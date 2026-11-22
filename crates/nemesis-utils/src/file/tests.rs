@@ -554,3 +554,56 @@ fn test_write_file_atomic_sync_write_through_symlink_keeps_link() {
     );
     assert_eq!(fs::read_to_string(&real).unwrap(), "after");
 }
+
+// ===== BUG-20261122-040：canonicalize_write_target 并发替换安全契约 =====
+
+/// 普通文件：父目录规范化 + 原文件名（绝不产出 $Extend\$Deleted 伪路径
+/// 形态的整路径句柄解析结果）。
+#[test]
+fn test_canonicalize_target_regular_file_parent_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("race.txt");
+    fs::write(&file, b"x").unwrap();
+
+    let got = canonicalize_write_target(&file);
+
+    assert_eq!(
+        got.file_name(),
+        Some(std::ffi::OsStr::new("race.txt")),
+        "文件名必须原样保留: {}",
+        got.display()
+    );
+    let canon_parent = dir.path().canonicalize().unwrap();
+    assert_eq!(
+        got.parent(),
+        Some(canon_parent.as_path()),
+        "父目录必须为规范化形态: {}",
+        got.display()
+    );
+}
+
+/// 不存在的目标：原路径直用（create 语义，含父目录未建场景）。
+#[test]
+fn test_canonicalize_target_missing_path_passthrough() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("not-yet.txt");
+    assert_eq!(canonicalize_write_target(&file), file);
+}
+
+/// symlink 目标：整路径解析落真实目标（BUG-20261117-074 保链语义保持）。
+#[cfg(unix)]
+#[test]
+fn test_canonicalize_target_symlink_follows() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real.txt");
+    fs::write(&real, b"x").unwrap();
+    let link = dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let got = canonicalize_write_target(&link);
+    assert_eq!(
+        got,
+        real.canonicalize().unwrap(),
+        "symlink 须解析到真实目标"
+    );
+}

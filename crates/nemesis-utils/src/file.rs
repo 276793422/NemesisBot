@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// [`write_file_atomic`] 临时文件名前缀。临时名形如
@@ -74,7 +74,10 @@ pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), Strin
     // 会话 sidecar 等用户文件，dotfiles symlink 模式的常见对象）会把
     // symlink 条目整体替换成普通文件，用户 dotfile 静默脱管。临时文件落
     // 真实目标同目录 ⇒ rename 恒同目录原子（symlink 指向跨设备时也成立）。
-    let p = raw.canonicalize().unwrap_or_else(|_| raw.to_path_buf());
+    // 规范化走 `canonicalize_write_target`（BUG-20261122-040）：整路径
+    // canonicalize 在 Windows 按句柄解析，并发写者替换目标的瞬间会产出
+    // `$Extend\$Deleted` 伪路径——并发替换安全形态由该 helper 单点保证。
+    let p = canonicalize_write_target(raw);
     let parent = p.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("atomic write {}: mkdir: {e}", p.display()))?;
 
@@ -118,6 +121,35 @@ pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), Strin
     result
 }
 
+/// 目标路径规范化——并发替换安全形态（BUG-20261122-040，sync/async 共用
+/// 单一真相源）：
+/// - 最后一跳是 **symlink** → 整路径 canonicalize 保链（rename 落真实
+///   目标，BUG-20261117-074 语义）。symlink 被并发替换的窗口极窄且解析
+///   结果自洽（解析当下真实存在的链接目标），不属本 BUG 修复面。
+/// - 目标是**普通文件** → 只规范化**父目录**再拼回原文件名。整路径
+///   canonicalize 在 Windows 走按句柄解析（GetFinalPathNameByHandle）：
+///   并发写者 `rename(tmp→target)` 替换目标的瞬间，本任务已打开的句柄
+///   变成「最后链接已删」态，句柄解析返回
+///   `\\?\C:\$Extend\$Deleted\<FRN>` 伪路径并被当成写入目标——mkdir
+///   系统目录拒绝访问（诚实报错，实测被并发测试拦出）；若 mkdir 可过
+///   则内容写到伪路径、目标静默丢更新。父目录不受并发文件替换影响，
+///   窗口关闭。
+/// - 目标**不存在**（含父目录未建）→ 原路径直用（create 语义；整路径
+///   canonicalize 对不存在路径本就失败回落原路径，行为一致）。
+fn canonicalize_write_target(path: &Path) -> PathBuf {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_symlink() => path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+        Ok(_) => {
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            match (parent.canonicalize(), path.file_name()) {
+                (Ok(p), Some(name)) => p.join(name),
+                _ => path.to_path_buf(),
+            }
+        }
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 /// Async 版 [`write_file_atomic`]——agent 文件工具（write_file/edit_file/
 /// multiedit）的写盘单一入口（BUG-20261116-010）：裸 `tokio::fs::write`
 /// 非原子直写，写中段进程死亡 = 源文件撕裂（半截新内容覆盖旧文件）。
@@ -140,13 +172,13 @@ pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), Strin
 /// - AV 扫描/打开句柄占用目标时 rename 失败属预期（同 sync 版），由调用方
 ///   决定重试或上报。
 pub async fn write_file_atomic_async(path: &Path, data: &[u8], perm: u32) -> Result<(), String> {
-    let target = match tokio::fs::canonicalize(path).await {
-        Ok(p) => p,
-        Err(_) => path.to_path_buf(),
-    };
-
+    // 规范化（含 symlink 保链）统一交 sync 单一真相源
+    // `canonicalize_write_target` 在阻塞线程内完成（BUG-20261122-040）：
+    // async 侧自己的整路径 tokio::fs::canonicalize 是同一竞态窗口的另一
+    // 入口（并发写者替换目标瞬间产出 $Extend\$Deleted 伪路径），且重复
+    // 规范化只剩开销没有增益，已删除。
     #[cfg(unix)]
-    let perm = match fs::metadata(&target) {
+    let perm = match fs::metadata(path) {
         Ok(meta) => {
             use std::os::unix::fs::PermissionsExt;
             meta.permissions().mode() & 0o7777
@@ -156,7 +188,7 @@ pub async fn write_file_atomic_async(path: &Path, data: &[u8], perm: u32) -> Res
     #[cfg(not(unix))]
     let _ = perm;
 
-    let target_str = match target.into_os_string().into_string() {
+    let path_str = match path.to_path_buf().into_os_string().into_string() {
         Ok(s) => s,
         Err(os) => {
             return Err(format!(
@@ -166,7 +198,7 @@ pub async fn write_file_atomic_async(path: &Path, data: &[u8], perm: u32) -> Res
         }
     };
     let data = data.to_vec();
-    tokio::task::spawn_blocking(move || write_file_atomic(&target_str, &data, perm))
+    tokio::task::spawn_blocking(move || write_file_atomic(&path_str, &data, perm))
         .await
         .map_err(|e| format!("atomic write task join: {e}"))?
 }

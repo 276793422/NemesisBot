@@ -1422,62 +1422,20 @@ fn parse_ordered_item(line: &str) -> Option<&str> {
 fn render_inline(text: &str) -> String {
     let mut result = escape_html(text);
 
-    // Links: [text](url) → <a href="url">text</a>
-    while let Some(bracket_start) = result.find('[') {
-        if let Some(rel) = result[bracket_start..].find("](") {
-            let bracket_end = bracket_start + rel;
-            if let Some(paren_rel) = result[bracket_end + 2..].find(')') {
-                let paren_end = bracket_end + 2 + paren_rel;
-                let link_text = result[bracket_start + 1..bracket_end].to_string();
-                let url = result[bracket_end + 2..paren_end].to_string();
-                result = format!(
-                    "{}<a href=\"{}\">{}</a>{}",
-                    &result[..bracket_start],
-                    url,
-                    link_text,
-                    &result[paren_end + 1..]
-                );
-                continue;
-            }
-        }
-        break;
-    }
-
-    // Strikethrough: ~~text~~ → <s>text</s>
-    while let Some(start) = result.find("~~") {
-        if let Some(end_rel) = result[start + 2..].find("~~") {
-            let end = start + 2 + end_rel;
-            let inner = result[start + 2..end].to_string();
-            result = format!("{}<s>{}</s>{}", &result[..start], inner, &result[end + 2..]);
-        } else {
-            break;
-        }
-    }
-
-    // Bold: **text** → <b>text</b>
-    while let Some(start) = result.find("**") {
-        if let Some(end_rel) = result[start + 2..].find("**") {
-            let end = start + 2 + end_rel;
-            let inner = result[start + 2..end].to_string();
-            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
-        } else {
-            break;
-        }
-    }
-
-    // Bold: __text__ → <b>text</b>
-    while let Some(start) = result.find("__") {
-        if let Some(end_rel) = result[start + 2..].find("__") {
-            let end = start + 2 + end_rel;
-            let inner = result[start + 2..end].to_string();
-            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
-        } else {
-            break;
-        }
-    }
-
-    // Inline code: `text` → <code>text</code>
-    while let Some(start) = result.find('`') {
+    // Inline code FIRST（BUG-20261122-039）：`text` → <code>text</code>。
+    // 旧顺序把链接/删除线/粗体排在代码之前、斜体扫描最后跑在整个串上
+    // （含已生成的 HTML 标签区），产生两族真实故障：
+    // 1) 代码 span 内容里的 `*`/`_` 被斜体扫描当标记（`` `*.rs` `` 的
+    //    glob 星号 prev=`>` next=`.` 非星邻接即命中）→ <code><i>…</code>
+    //    且收尾补的 </i> 落在标签外 → 错误跨标签嵌套 → Telegram parse
+    //    400 → 整块回退纯文本、全部格式丢失；
+    // 2) <a href="…"> 属性值里 `/`/`.` 邻接的 `_` 被当标记 → href 属性
+    //    被插入 <i> → 属性损坏必 400。
+    // 修复 = 代码 span 最先转换，其余 pass（链接/删除线/粗体/斜体）对
+    // 受保护区（<code>…</code> 全区间 + href 属性值）跳过。原始文本经
+    // escape_html 不可能再造出标签形态，区间扫描只认本函数自产的标签。
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    while let Some(start) = find_outside_from(&result, "`", &ranges, 0) {
         if let Some(end_rel) = result[start + 1..].find('`') {
             let end = start + 1 + end_rel;
             let inner = result[start + 1..end].to_string();
@@ -1487,6 +1445,67 @@ fn render_inline(text: &str) -> String {
                 inner,
                 &result[end + 1..]
             );
+            ranges = protected_ranges(&result);
+        } else {
+            break;
+        }
+    }
+    ranges = protected_ranges(&result);
+
+    // Links: [text](url) → <a href="url">text</a>（三段查找全部跳过受保
+    // 护区——`` `[a](b)` `` 代码 span 保持字面；URL 里的 ) 不被更早的代码
+    // span 截断）。转换后 href 属性区加入受保护集。
+    while let Some(bracket_start) = find_outside_from(&result, "[", &ranges, 0) {
+        if let Some(bracket_end) = find_outside_from(&result, "](", &ranges, bracket_start + 1)
+            && let Some(paren_end) = find_outside_from(&result, ")", &ranges, bracket_end + 2)
+        {
+            let link_text = result[bracket_start + 1..bracket_end].to_string();
+            // URL 落属性上下文：escape_html 不转义引号，裸 `"` 会提前
+            // 终结 href 属性 → 属性损坏 → Telegram parse 400 → 整块
+            // 降级（BUG-20261122-039 同族失败链）。`&quot;` 不含裸引号
+            // 字节，protected_ranges 的属性区间扫描也随之保持正确。
+            let url = result[bracket_end + 2..paren_end].replace('"', "&quot;");
+            result = format!(
+                "{}<a href=\"{}\">{}</a>{}",
+                &result[..bracket_start],
+                url,
+                link_text,
+                &result[paren_end + 1..]
+            );
+            ranges = protected_ranges(&result);
+            continue;
+        }
+        break;
+    }
+
+    // Strikethrough: ~~text~~ → <s>text</s>
+    while let Some(start) = find_outside_from(&result, "~~", &ranges, 0) {
+        if let Some(end) = find_outside_from(&result, "~~", &ranges, start + 2) {
+            let inner = result[start + 2..end].to_string();
+            result = format!("{}<s>{}</s>{}", &result[..start], inner, &result[end + 2..]);
+            ranges = protected_ranges(&result);
+        } else {
+            break;
+        }
+    }
+
+    // Bold: **text** → <b>text</b>
+    while let Some(start) = find_outside_from(&result, "**", &ranges, 0) {
+        if let Some(end) = find_outside_from(&result, "**", &ranges, start + 2) {
+            let inner = result[start + 2..end].to_string();
+            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
+            ranges = protected_ranges(&result);
+        } else {
+            break;
+        }
+    }
+
+    // Bold: __text__ → <b>text</b>
+    while let Some(start) = find_outside_from(&result, "__", &ranges, 0) {
+        if let Some(end) = find_outside_from(&result, "__", &ranges, start + 2) {
+            let inner = result[start + 2..end].to_string();
+            result = format!("{}<b>{}</b>{}", &result[..start], inner, &result[end + 2..]);
+            ranges = protected_ranges(&result);
         } else {
             break;
         }
@@ -1497,8 +1516,18 @@ fn render_inline(text: &str) -> String {
     // unambiguous. For _ we additionally require a word boundary on at least
     // one side (CommonMark: _ only emphasizes at word edges) so that intraword
     // underscores like `snake_case` / `file_name` stay literal.
+    // 受保护区间内的 `*`/`_`（代码 span 内容、href 属性值）不是标记——
+    // 这是 BUG-20261122-039 的主修复点。
     let mut out = String::with_capacity(result.len());
     let chars: Vec<char> = result.chars().collect();
+    let mut prot_char: Vec<bool> = Vec::with_capacity(chars.len());
+    {
+        let mut off = 0usize;
+        for c in &chars {
+            prot_char.push(in_ranges(&ranges, off));
+            off += c.len_utf8();
+        }
+    }
     let mut idx = 0;
     let mut in_italic = false;
     while idx < chars.len() {
@@ -1510,8 +1539,9 @@ fn render_inline(text: &str) -> String {
             Some(chars[idx + 1])
         };
 
-        let star_marker = c == '*' && (prev != Some('*')) && (next != Some('*'));
-        let underscore_marker = c == '_'
+        let star_marker = !prot_char[idx] && c == '*' && (prev != Some('*')) && (next != Some('*'));
+        let underscore_marker = !prot_char[idx]
+            && c == '_'
             && (prev != Some('_'))
             && (next != Some('_'))
             && !(prev.is_some_and(|p| p.is_alphanumeric())
@@ -1533,12 +1563,71 @@ fn render_inline(text: &str) -> String {
     // 奇数个孤立标记（「3 * 4 = 12」「wildcard * matches」）会让 <i> 悬空
     // 不闭合——Telegram HTML parse mode 拒收不闭合标签，sendMessage 400
     // → 整块回退纯文本，同块内全部格式（代码/加粗/链接）丢失。收尾补
-    // 闭合，输出恒平衡。
+    // 闭合，输出恒平衡。（斜体切换只发生在非保护区，补闭合不会再跨进
+    // 标签内部——错误嵌套形态已被受保护区消灭。）
     if in_italic {
         out.push_str("</i>");
     }
 
     out
+}
+
+/// 受保护区间（BUG-20261122-039）：字符串里「后续标记扫描必须跳过」的
+/// 字节区间列表——`<code>…</code>` 全区间与 `<a href="…">` 的属性值
+/// （含闭引号）。只扫描本函数家族自产的两类标签形态（原文经
+/// escape_html 后不可能再造出真标签，无误认面）。未闭合形态保护到串尾
+/// （转换器成对产出，理论不可达，防御性兜底）。
+fn protected_ranges(s: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(b"<code>") {
+            let content_start = i + "<code>".len();
+            if let Some(rel) = s[content_start..].find("</code>") {
+                let end = content_start + rel + "</code>".len();
+                ranges.push((i, end));
+                i = end;
+                continue;
+            }
+            ranges.push((i, s.len()));
+            break;
+        }
+        if b[i..].starts_with(b"<a href=\"") {
+            let attr_start = i + "<a href=\"".len();
+            if let Some(rel) = s[attr_start..].find('"') {
+                let end = attr_start + rel + 1;
+                ranges.push((i, end));
+                i = end;
+                continue;
+            }
+            ranges.push((i, s.len()));
+            break;
+        }
+        i += 1;
+    }
+    ranges
+}
+
+/// 字节位是否落在任一受保护区间内（半开区间 [start, end)）。
+fn in_ranges(ranges: &[(usize, usize)], pos: usize) -> bool {
+    ranges.iter().any(|&(s, e)| pos >= s && pos < e)
+}
+
+/// 从 `from` 起找 `pat` 的下一次出现，跳过落在受保护区间的命中（hit 是
+/// 字符边界；pat 全 ASCII，hit+pat.len() 仍是边界）。全部命中都在区内
+/// → None。
+fn find_outside_from(s: &str, pat: &str, ranges: &[(usize, usize)], from: usize) -> Option<usize> {
+    let mut at = from;
+    while at < s.len() {
+        let rel = s[at..].find(pat)?;
+        let hit = at + rel;
+        if !in_ranges(ranges, hit) {
+            return Some(hit);
+        }
+        at = hit + pat.len();
+    }
+    None
 }
 
 #[async_trait]
