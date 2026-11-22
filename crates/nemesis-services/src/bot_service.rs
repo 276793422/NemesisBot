@@ -555,24 +555,21 @@ impl BotService {
     /// 3. Initialize components
     /// 4. Start services
     pub fn start(&self) -> nemesis_types::error::Result<()> {
+        // 同款 check-then-act 占坑原子化（BUG-20261123-008 家族横扫）：检查
+        // 与 Starting 占坑同一 write 锁区间，并发双 start 赛跑第二个诚实拒绝。
         {
-            let inner = self.inner.read();
+            let mut inner = self.inner.write();
             if inner.state.is_running() || inner.state == BotState::Starting {
                 return Err(nemesis_types::error::NemesisError::Other(format!(
                     "bot is already {}",
                     inner.state
                 )));
             }
-        }
-
-        info!("[BotService] Starting bot service...");
-
-        // Set state to Starting
-        {
-            let mut inner = self.inner.write();
             inner.state = BotState::Starting;
             inner.last_error = None;
         }
+
+        info!("[BotService] Starting bot service...");
 
         // Create cancellation channel
         let (cancel_tx, _) = tokio::sync::broadcast::channel(1);
@@ -642,14 +639,21 @@ impl BotService {
 
     /// Stop all components gracefully.
     pub fn stop(&self) -> nemesis_types::error::Result<()> {
+        // BUG-20261123-008：can_stop 检查与 Stopping 占坑必须在同一 write
+        // 锁区间原子完成——此前检查在 read 锁、写回在停机动作之后的 write
+        // 锁，check-then-act 竞态窗口内 Ctrl+C 信号臂与 /api/internal mpsc
+        // 接收环（双停机源赛跑）可双双通过 can_stop、双调 stop_all（守卫
+        // 存在但失效）。Stopping 占坑后 can_stop=false，并发第二个 stop
+        // 诚实 Err。
         {
-            let inner = self.inner.read();
+            let mut inner = self.inner.write();
             if !inner.state.can_stop() {
                 return Err(nemesis_types::error::NemesisError::Other(format!(
                     "bot is not running (current state: {})",
                     inner.state
                 )));
             }
+            inner.state = BotState::Stopping;
         }
 
         info!("[BotService] Stopping bot service...");

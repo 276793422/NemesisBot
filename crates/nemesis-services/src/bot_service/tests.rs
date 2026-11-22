@@ -156,6 +156,31 @@ fn test_stop_when_not_running_fails() {
 }
 
 #[test]
+fn test_stopping_state_rejects_second_stop() {
+    // BUG-20261123-008 回归锁：stop() 占坑原子化后，并发第二个 stop（Ctrl+C
+    // 信号臂与 /api/internal 双停机源赛跑）落在 Stopping 占坑态上必须诚实
+    // Err——此前 check-then-act 分离，双 stop 都能通过 can_stop、双调
+    // stop_all。确定性等价：手动置 Stopping（真实 stop() 占坑后的同一状态）
+    // 断言 stop() 拒绝；can_stop(Stopping)=false 谓词断言在 state/tests.rs。
+    let svc = BotService::new(make_config());
+    {
+        let mut inner = svc.inner.write();
+        inner.state = BotState::Stopping;
+    }
+    let result = svc.stop();
+    assert!(result.is_err(), "Stopping 占坑态必须拒绝第二次 stop");
+    if let Err(e) = result {
+        let msg = format!("{}", e);
+        assert!(
+            msg.contains("stopping"),
+            "拒绝信息必须如实反映占坑态，得到: {msg}"
+        );
+    }
+    // 占坑态不被失败的 stop 破坏（状态仍 Stopping，等真正停机流程写回）
+    assert_eq!(svc.get_state(), BotState::Stopping);
+}
+
+#[test]
 fn test_restart_when_not_running_starts() {
     let svc = BotService::new(make_config());
     // Restart on a stopped bot will try to start and fail due to missing config
