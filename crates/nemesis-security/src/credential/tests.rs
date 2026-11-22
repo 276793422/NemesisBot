@@ -35,6 +35,12 @@ fn test_aws_key_detected() {
     let result = scanner.scan_content("key=AKIANCDC6VFQTFGRMBKW");
     assert!(result.has_matches);
     assert_eq!(result.action, "block");
+    // BUG-20261122-044 横向扫同族：ASIA（STS 临时凭据）同被拦。
+    let sts = scanner.scan_content("key=ASIANCDC6VFQTFGRMBKW");
+    assert!(sts.has_matches, "STS ASIA key must be detected");
+    // 同长度非 key 串不误拦（前缀闸）。
+    let noise = scanner.scan_content("key=BKIANCDC6VFQTFGRMBKW");
+    assert!(!noise.has_matches, "non-AWS prefix must not be flagged");
 }
 
 #[test]
@@ -42,6 +48,34 @@ fn test_github_token_detected() {
     let scanner = Scanner::new(true, "block");
     let result = scanner.scan_content("token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij");
     assert!(result.has_matches);
+}
+
+// BUG-20261122-044 回归：细粒度 PAT（github_pat_ 前缀，GitHub 2022 年起
+// 默认签发形态）曾零命中——旧 pattern `gh[pousr]_` 对 "github_pat_..."
+// 的 "gh" 后是 "i" 不在字符类内，全串无第二处 "gh"。扩展后经典 + 细粒度
+// 双形态都拦；文档占位符（后缀 < 50）不误拦。
+#[test]
+fn test_github_fine_grained_pat_detected() {
+    let scanner = Scanner::new(true, "block");
+    // 真实形态：github_pat_ + 22 + _ + 59（前缀后 82 字符 ≥ {50,}）。
+    let result = scanner.scan_content(
+        "pat=github_pat_11AbCdEfGhIjKlMnOpQrSt_BcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AbCdEfGhIjKlMnOpQrStUvWxYzA",
+    );
+    assert!(
+        result.has_matches,
+        "fine-grained PAT must be detected: {:?}",
+        result.matches
+    );
+    // 文档占位符（前缀后 16 字符 < 50）不误拦。
+    let placeholder = scanner.scan_content("token: github_pat_YOUR_TOKEN_HERE");
+    assert!(
+        !placeholder.has_matches,
+        "placeholder must not be flagged: {:?}",
+        placeholder.matches
+    );
+    // 经典形态回归（扩 alternation 不破旧路）。
+    let classic = scanner.scan_content("token=ghs_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij");
+    assert!(classic.has_matches);
 }
 
 #[test]

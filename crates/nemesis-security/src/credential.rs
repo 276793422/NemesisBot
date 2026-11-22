@@ -323,7 +323,11 @@ fn get_credential_patterns() -> &'static CredentialPatterns {
     PATTERNS.get_or_init(|| {
         let raw: Vec<(&str, &str)> = vec![
             // AWS
-            ("aws_access_key", r"AKIA[0-9A-Z]{16}"),
+            // 双前缀：AKIA（长期 key ID）+ ASIA（STS 临时凭据 key ID，
+            // aws sts get-session-token 输出形态，同为 20 字符真实现发
+            // 格式——BUG-20261122-044 横向扫同族）。其余 ABC/ABIA 类前缀
+            // 非常规签发形态不收（防误拦面扩张）。
+            ("aws_access_key", r"A(?:KIA|SIA)[0-9A-Z]{16}"),
             ("aws_secret_key", r"(?i)aws_secret_access_key\s*[=:]\s*[A-Za-z0-9/+=]{40}"),
             ("aws_session_token", r"(?i)aws_session_token\s*[=:]\s*[A-Za-z0-9/+=]{100,}"),
             // GCP
@@ -340,7 +344,14 @@ fn get_credential_patterns() -> &'static CredentialPatterns {
             ("azure_connection_string", r"(?i)AccountName=[A-Za-z0-9]+;AccountKey=[A-Za-z0-9+/=]{64,}"),
             ("azure_tenant_id", r"(?i)azure\s*tenant\s*(?:id)?\s*[=:]\s*[a-f0-9-]{36}"),
             // GitHub
-            ("github_token", r"gh[pousr]_[A-Za-z0-9_]{36,}"),
+            // 双形态：经典 token（ghp/gho/ghu/ghs/ghr 前缀）+ 细粒度 PAT
+            // （github_pat_ 前缀，2022 年起 GitHub 默认签发形态，总长约 93
+            // = 前缀 11 + 22 + `_` + 59）。旧 pattern `gh[pousr]_` 对
+            // "github_pat_..." 零命中（gh 后是 i 不在字符类内，全串无第二处
+            // "gh"）——细粒度 PAT 明文过闸泄漏（BUG-20261122-044）。{50,}
+            // 挡住文档占位符（github_pat_YOUR_TOKEN_HERE 等后缀 16 < 50），
+            // 真实 82 ≥ 50 零漏检面（2026-11-11 横扫批同款取下限哲学）。
+            ("github_token", r"gh[pousr]_[A-Za-z0-9_]{36,}|github_pat_[A-Za-z0-9_]{50,}"),
             ("github_oauth", r"(?i)github[_-]?oauth\s*[=:]\s*[a-f0-9]{40}"),
             // Slack
             ("slack_token", r"xox[baprs]-[0-9]{10,}-[A-Za-z0-9]{24,}"),
