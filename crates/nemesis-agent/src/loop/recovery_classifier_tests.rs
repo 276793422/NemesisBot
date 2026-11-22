@@ -817,3 +817,96 @@ async fn connect_error_exhaustion_gets_actionable_hint_with_raw_in_history() {
         assistant_err.content
     );
 }
+
+// -- BUG-20261123-011 回归锁：限流/超时文案携带 token 字样不得进压缩环 -------
+
+#[tokio::test(start_paused = true)]
+async fn anthropic_rate_limit_wording_with_token_enters_rate_limit_ring_not_compression() {
+    // Anthropic RPM 限流原文含 "request tokens"——泛词臂 contains("token")
+    // 会把分类器已定性 RateLimit（status 429）的错误抢在限流环之前送进
+    // 压缩环：2 次必败重呼 + summary cache 强制推进 + 限流退避梯子不走。
+    // fail_times=3 区分两环：压缩环 2 发子弹 = 3 次调用 Error 终局；
+    // 限流环梯子 = 第 4 次调用成功恢复。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 3,
+        err_text: "status 429: Number of request tokens has exceeded your \
+                   per-minute rate limit. Please retry in 23 seconds."
+            .to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "限流文案含 token 必须进限流环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        4,
+        "首败 + 限流环 3 次重试 = 恰好 4 次调用（压缩环截胡路由 = 3 次即 Error 终局）"
+    );
+    let mut saw_rate_limit_label = false;
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("上游限流") {
+            saw_rate_limit_label = true;
+        }
+    }
+    assert!(
+        saw_rate_limit_label,
+        "进度通知必须带「上游限流」标签（钉限流环归属，非压缩/transient 环）"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn timeout_wording_with_token_enters_transient_ring_not_compression() {
+    // 同族对照面：超时文案携带 "tokens" 字样——分类器 Timeout（status 504）
+    // 必须压过泛词臂，进 transient 环（3 发预算）而非压缩环（2 发）。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 3,
+        err_text: "status 504: gateway timed out while streaming tokens for \
+                   the requested model"
+            .to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "超时文案含 token 必须进 transient 环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        4,
+        "首败 + transient 环 3 次重试 = 恰好 4 次调用（压缩环截胡路由 = 3 次即 Error 终局）"
+    );
+}
