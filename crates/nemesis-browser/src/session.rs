@@ -163,7 +163,7 @@ impl BrowserSession {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
         // env 窄版闸（家族闸纪律：三方进程 spawn 点显式接闸——
-        // BUG-20261123-011 横向修齐）：浏览器进程不继承 bot 内部命名
+        // BUG-20261123-012 横向修齐）：浏览器进程不继承 bot 内部命名
         // 空间变量（NEMESISBOT_VAULT_PASSPHRASE 主口令通道等）。窄剥
         // 不碰 PATH/HOME 等浏览器启动底座。
         let _stripped_env = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);

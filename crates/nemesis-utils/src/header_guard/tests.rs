@@ -1,4 +1,4 @@
-//! header_guard 单元测试（BUG-20261122-038）。
+//! header_guard 单元测试（BUG-20261122-038；语义探针 BUG-20261123-013）。
 use super::*;
 
 #[test]
@@ -50,6 +50,7 @@ fn credential_tab_allowed() {
 #[cfg(feature = "http")]
 mod http_gated {
     use super::filter_valid_header_pairs;
+    use super::validate_header_pair;
 
     #[test]
     fn filter_drops_invalid_name_and_value() {
@@ -76,5 +77,73 @@ mod http_gated {
     fn filter_empty_map_noop() {
         let out = filter_valid_header_pairs("test-lane", &Default::default());
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn validate_pair_names_key_not_value() {
+        // BUG-20261123-013：单对校验（filter 的单一真相源）。
+        assert!(validate_header_pair("X-Ok", "fine").is_ok());
+        // 值非法：点名头名、不回显值（SEC-002）。
+        let e = validate_header_pair("X-Multi", "a\nb").unwrap_err();
+        assert!(e.contains("X-Multi"), "错误须点名头名: {e}");
+        assert!(!e.contains("a\nb"), "错误不得回显值: {e}");
+        // 名非法：点名头名。
+        let e = validate_header_pair("bad name", "v").unwrap_err();
+        assert!(e.contains("bad name"), "错误须点名头名: {e}");
+        // HeaderValue 允许字符放行（与 filter 同语义）。
+        assert!(validate_header_pair("X-Tab", "a\tb").is_ok());
+        assert!(validate_header_pair("X-Obs", "caf\u{e9}").is_ok());
+    }
+}
+
+/// BUG-20261123-013 语义探针（reqwest 真实行为实证钉，dev-dep reqwest
+/// 无 http feature 照常编译——同 llm_error_class 先例）：reqwest 0.12.x
+/// 对非法头名/头值**不是 panic**——builder poison，`send()` 立即返回
+/// "builder error"，网络零触达。038 原记录的 panic 叙事由此证伪钉死。
+/// 测试通过本身 = 无 panic 且错误形态可辨识（builder error）。
+mod header_probe {
+    // 拒连端口（loopback :1 无监听 = 立即 RST，无外呼、无端口占用）。
+    const NEVER: &str = "http://127.0.0.1:1/never-reached";
+
+    #[tokio::test]
+    async fn invalid_header_value_is_builder_error_not_panic() {
+        let client = reqwest::Client::new();
+        let r = client.get(NEVER).header("X-Probe", "a\nb").send().await;
+        let err = r.expect_err("非法头值必须 Err；测试走到这里本身就证明没有 panic");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("builder error"),
+            "非法头值应产出 builder error 形态（预网络失败）: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_bearer_token_is_builder_error_not_panic() {
+        // bearer_auth（038 记录的另一形态）：组合 "Bearer tok\nen" 同 poison。
+        let client = reqwest::Client::new();
+        let r = client.get(NEVER).bearer_auth("tok\nen").send().await;
+        let err = r.expect_err("bearer_auth 非法 token 必须 Err 且不得 panic");
+        assert!(
+            err.to_string().contains("builder error"),
+            "bearer_auth 非法 token 应产出 builder error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn valid_header_fails_at_network_not_builder() {
+        // 阳性对照（防探针管道自证假绿）：合法头值不打 builder error——
+        // 失败发生在网络层（拒连），证明 builder error 是可辨识的预网络
+        // 失败类别，而非一切失败的通用形态。
+        let client = reqwest::Client::new();
+        let r = client
+            .get(NEVER)
+            .header("X-Probe", "fine-value")
+            .send()
+            .await;
+        let err = r.expect_err("拒连端口必须 Err");
+        assert!(
+            !err.to_string().contains("builder error"),
+            "合法头值不应产出 builder error（失败应发生在网络层）: {err}"
+        );
     }
 }

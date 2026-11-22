@@ -864,6 +864,42 @@ fn test_b_header_pairs_vault_reference_resolved() {
     assert_eq!(out, vec![("X-Auth".into(), "vaulted-hdr-value".into())]);
 }
 
+#[test]
+fn test_b_header_pairs_resolved_value_control_chars_skipped() {
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    // BUG-20261123-013：解析后真值补校验——validate_mcp_header_line 只验
+    // 行语法（头名/引用名形态），env:/vault:/yaml: 解析出的真值可携带
+    // 换行/控制字符：原样注入会在每请求报不点名的 builder error（reqwest
+    // builder poison），server 表现为「整 server 挂但看不出为什么」。非法对
+    // WARN 跳过；tab 放行（HeaderValue 允许）。
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| match alias {
+        "mcp-hdr-multiline" => Ok("tok\nen".into()),
+        "mcp-hdr-ctl" => Ok("a\u{1}b".into()),
+        "mcp-hdr-good" => Ok("tok\ttab-ok".into()),
+        _ => Err(format!("别名不存在: {alias}")),
+    }));
+    let out = resolved_header_pairs(&[
+        "X-Multi: vault:mcp-hdr-multiline".into(),
+        "X-Ctl: vault:mcp-hdr-ctl".into(),
+        "X-Tab: vault:mcp-hdr-good".into(),
+        "X-Plain: keep".into(),
+    ]);
+    nemesis_config::clear_global_vault_resolver();
+    assert_eq!(
+        out,
+        vec![
+            ("X-Tab".into(), "tok\ttab-ok".into()),
+            ("X-Plain".into(), "keep".into()),
+        ],
+        "解析后含换行/控制字符的值必须跳过；tab 放行（HeaderValue 允许）"
+    );
+
+    // 字面量转义换行同闸：TOML/JSON 基本串 "\n" 落成真换行，行语法校验
+    // 不拦值段内容——同一补校验兜住。
+    let out = resolved_header_pairs(&["X-Lit: line1\nline2".into(), "X-Keep: v".into()]);
+    assert_eq!(out, vec![("X-Keep".into(), "v".into())]);
+}
+
 #[tokio::test]
 // 锁必须横跨 await（serialize 的正是 connect/send 期间的进程 env 态）；
 // 锁内只 await 自方 wiremock/transport，无其他测试会反向等这把锁——无死锁面。

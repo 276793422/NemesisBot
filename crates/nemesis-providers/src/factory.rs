@@ -267,13 +267,14 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
 pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, String> {
     let sel = resolve_provider_selection(cfg)?;
 
-    // BUG-20261122-038 构造期请求头防线：api_key/account_id 落请求头
-    // （Bearer/x-api-key/Chatgpt-Account-Id），reqwest .header() 对含换行/
-    // 控制字符的值是 panic 语义——粘贴 key 带尾随换行会在首次请求炸掉
-    // 请求任务（流式链路 panic→tx drop→rx None 伪装成可重试 Timeout）。
-    // 在唯一生产装配点 trim+拒绝，消费凭据的进程内 lane（Anthropic/Codex/
-    // HttpCompat）覆盖；CLI 型 lane 不消费该字段（factory.rs 文档）、
-    // Copilot config 也不消费 api_key（copilot_config 无此字段）——不误拒。
+    // BUG-20261122-038 构造期请求头防线；语义勘误 BUG-20261123-013：
+    // reqwest .header() 对含换行/控制字符的值**不是 panic**（builder poison，
+    // send() 立即报 "builder error"，vendored 源码核实+探针钉死）——真病象
+    // 是错误不点名哪个字段：粘贴 key 带尾随换行时首个 LLM 请求全挂且看不出
+    // 原因。在唯一生产装配点 trim+拒绝，把排障上提为构造期点名报错。消费
+    // 凭据的进程内 lane（Anthropic/Codex/HttpCompat）覆盖；CLI 型 lane 不
+    // 消费该字段（factory.rs 文档）、Copilot config 也不消费 api_key
+    // （copilot_config 无此字段）——不误拒。
     let mut sel = sel;
     if matches!(
         sel.provider_type,
@@ -282,15 +283,14 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
         sel.api_key = nemesis_utils::header_guard::header_safe_credential("api_key", &sel.api_key)
             .map_err(|e| format!("model {} 拒绝装配：{e}", sel.model))?;
     }
-    if !sel.account_id.is_empty() {
-        if let Err(e) =
+    if !sel.account_id.is_empty()
+        && let Err(e) =
             nemesis_utils::header_guard::header_safe_credential("account_id", &sel.account_id)
-        {
-            // account_id 是可选头：非法 → 置空（header 省略）+ WARN 降级，
-            // 不拒装配（与 api_key 的凭据地位不同）。
-            tracing::warn!("[Factory] {e}；Chatgpt-Account-Id 头已省略");
-            sel.account_id.clear();
-        }
+    {
+        // account_id 是可选头：非法 → 置空（header 省略）+ WARN 降级，
+        // 不拒装配（与 api_key 的凭据地位不同）。
+        tracing::warn!("[Factory] {e}；Chatgpt-Account-Id 头已省略");
+        sel.account_id.clear();
     }
 
     // cache_breakpoints 仅 anthropic lane 消费；其他 lane 显式开启 =
@@ -367,7 +367,8 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 default_model: sel.model,
                 timeout_secs: effective_timeout(sel.timeout_secs),
                 // BUG-20261122-038：自定义头对构造期拦截（非法名/值原样透传
-                // 会 panic 请求任务）；非法对丢弃 + WARN（值不落日志）。
+                // 会在首请求报不点名的 builder error）；非法对丢弃 + WARN
+                //（值不落日志）。
                 headers: nemesis_utils::header_guard::filter_valid_header_pairs(
                     "http-compat",
                     &cfg.headers,

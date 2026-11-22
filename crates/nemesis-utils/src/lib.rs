@@ -38,8 +38,9 @@ pub mod http_retry;
 pub mod http_redirect;
 // 请求头防线（BUG-20261122-038）：凭据 trim+控制字符拒绝（纯字符串）+
 // 自定义头对 HeaderName/HeaderValue::from_str 精确拦截（http 门控）——
-// reqwest .header() 对非法名/值 panic（粘贴 key 带换行 = 首次请求炸任务
-// 且流式链路伪装成 Timeout），构造咽喉点 create_provider 同源消费。
+// reqwest .header() 对非法名/值报不点名的 builder error（粘贴 key 带换行
+// = 首请求全挂看不出原因；语义勘误 BUG-20261123-013：builder poison 非
+// panic，探针钉死），构造咽喉点 create_provider 同源消费。
 pub mod header_guard;
 // 带帽单行读（横扫角度 B 续——行帧形态）：外部流行读统一实现，
 // 裸 read_line 无界积累防 OOM；nemesis-mcp stdio 与 nemesis-channels

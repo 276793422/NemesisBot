@@ -515,7 +515,7 @@ impl DelegateManager {
         #[cfg(not(target_os = "windows"))]
         cmd.process_group(0);
 
-        // env 窄版闸（家族闸纪律：spawn 点必须显式接闸——BUG-20261123-011
+        // env 窄版闸（家族闸纪律：spawn 点必须显式接闸——BUG-20261123-012
         // 回归修复，此前漏接）：三方 CLI 子代理不继承 bot 内部命名空间变量
         // （NEMESISBOT_VAULT_PASSPHRASE 主口令通道；executor 场景的
         // ROLE / EXECUTOR_PIPE 协议端点路径——管道名泄漏给三方进程 =
