@@ -129,6 +129,11 @@ pub mod turn_guard;
 pub mod turn_wal;
 pub mod types;
 pub mod user_profile;
+/// wip 侧车（批二 A，2026-11-22）：turn 内执行现场逐事件落盘
+/// `logs/wip/<session_key>.jsonl`，重启打断后下一轮一次性注入「中断现场
+/// 恢复」节；正常收尾折叠。范围=主 loop 注册会话（detached/集群 worker
+/// 由构造保证零写）。
+pub mod wip_journal;
 /// Work 时间线（ChatPanel 长任务时间线改造）：turn 级「叙述+工具」累加器，
 /// 落盘随行 + `chat.work_current` 活查询。
 pub mod work_timeline;

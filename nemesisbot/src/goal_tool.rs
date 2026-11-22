@@ -96,7 +96,10 @@ impl nemesis_agent::r#loop::Tool for GoalTool {
          human-created goals may be blocked by config \
          `goals.allow_agent_disable`). You cannot mark a goal done or \
          re-enable it — only the evaluation gate decides completion and \
-         only a human unlocks."
+         only a human unlocks. For long tasks (likely dozens of tool \
+         rounds), call `add` at the start with verifiable acceptance \
+         criteria — the gate, not self-reporting, decides when the task \
+         is done."
             .to_string()
     }
 

@@ -702,14 +702,19 @@ async fn spawn_mock_relay_on_same_port(
 }
 
 /// 同口重绑（有界退避重试）：全量并行下重绑会撞旧 listener/accepted 流的
-/// 短暂残留窗口（WSAEADDRINUSE；test_welcome_rejected_then_retry /
+/// 残留窗口（WSAEADDRINUSE；test_welcome_rejected_then_retry /
 /// test_kick_reconnect_skips_backoff_wait 全量跑 rebind 假红、单测复跑恒
 /// 绿）——有界退避重试代替一步 expect。客户端退避重连循环会等到监听者
 /// 出现，延迟不破坏用例语义。统一定义：同口重绑一律走这里。
+/// 预算 6s（60×100ms）：初版 10×100ms=1s 在 4700 测试全量高并发下不够
+/// （socket 分配密集时 OS 可把已放口的 ephemeral 端口短暂分给别人 /
+/// TIME_WAIT 残留超 1s——2026-11-22 nemesisbot 全量首跑
+/// test_handshake_malformed_first_frames_reconnect 同族假红第三例，单测/
+/// 分组复跑恒绿），拉长预算仍在有界内、语义不变。
 async fn bind_with_retry(port: u16) -> tokio::net::TcpListener {
     let mut bound = None;
     let mut last_err = None;
-    for _ in 0..10 {
+    for _ in 0..60 {
         match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(l) => {
                 bound = Some(l);

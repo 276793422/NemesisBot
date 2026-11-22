@@ -422,6 +422,47 @@ function saveTtlFamily(key: string, e: any) {
   saveField(`logs.${key}`, n)
 }
 
+// --- C（2026-11-22 批二）：logs.usage 占用统计（数据治理 TTL 卡片头部
+// 占用摘要条）。on-demand——只在展开/刷新时拉，不随页面加载预热
+// （request_logs 675MB 级递归游走由后端 spawn_blocking 承载，前端懒触发）。
+const usageOpen = ref(false)
+const usageLoading = ref(false)
+const usageFamilies = ref<Record<string, { bytes: number; entries: number }> | null>(null)
+const usageTotal = ref<number | null>(null)
+
+async function loadLogsUsage() {
+  if (usageLoading.value) return
+  usageLoading.value = true
+  try {
+    const out: any = await request('logs', 'usage', {})
+    usageFamilies.value = out?.families ?? null
+    usageTotal.value = typeof out?.total_bytes === 'number' ? out.total_bytes : null
+  } catch (e: any) {
+    toast.error('占用统计失败: ' + e)
+  } finally {
+    usageLoading.value = false
+  }
+}
+
+async function toggleUsage() {
+  usageOpen.value = !usageOpen.value
+  // 首次展开自动拉一次（之后只随「刷新」按钮走，不做轮询——占用数字是
+  // 慢变量，TTL 清扫 6h 一拍）。
+  if (usageOpen.value && usageFamilies.value === null) await loadLogsUsage()
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return n + ' B'
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = -1
+  do {
+    v /= 1024
+    i++
+  } while (v >= 1024 && i < units.length - 1)
+  return v.toFixed(v >= 100 ? 0 : 1) + ' ' + units[i]
+}
+
 // checkpoint.gc 缺省（enabled=false / keep_turns=200 / keep_days=7）。
 function gcField(path: 'enabled' | 'keep_turns' | 'keep_days'): any {
   const gc = config.value.checkpoint?.gc
@@ -907,12 +948,13 @@ onMounted(async () => {
                 <option value="full">full（完整请求/响应原文）</option>
                 <option value="truncated">truncated（参数与长文截断预览）</option>
               </select>
+              <span class="form-hint">重启生效。历史遗留的 summary 档已按 truncated 生效并在下次任意保存配置时自愈回写，不再是可选值。</span>
             </div>
             <div class="form-group">
               <label class="form-label">保存原始字节（logging.llm.save_raw）</label>
               <div class="toggle" :class="{ active: config.logging?.llm?.save_raw === true }"
                 @click="toggleService('logging.llm.save_raw', config.logging?.llm?.save_raw === true)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.llm?.save_raw === true ? '已启用（磁盘开销更大）' : '已禁用（默认）' }}</span>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.llm?.save_raw === true ? '已启用（磁盘开销更大）' : '已禁用（默认）' }}；重启生效。</span>
             </div>
             <div class="form-group">
               <label class="form-label">通用日志文件（logging.general.file）</label>
@@ -931,8 +973,23 @@ onMounted(async () => {
           <div class="card" style="margin-bottom: var(--space-4);">
             <div class="card-header"><h3>日志保留期（16 族 TTL）</h3></div>
             <div class="card-body">
-              <div style="padding: var(--space-3); margin-bottom: var(--space-4); background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
+              <div style="padding: var(--space-3); margin-bottom: var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
                 清扫器 gateway 启动扫一次、之后每 6 小时一拍（每族每拍限量 200 件防 IO 尖峰）——<strong>改动保存即落盘，无需重启，下一拍生效</strong>（最迟 6 小时）。0 = 该族关闭清扫。清理按日志目录内条目的最后修改时间判定。
+              </div>
+              <!-- C（2026-11-22 批二）：占用摘要条（logs.usage on-demand——
+                   展开首拉、手动刷新，不轮询）。 -->
+              <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3);" data-test="usage-strip">
+                <span style="font-size: var(--text-sm); color: var(--text-secondary);">当前占用：</span>
+                <span v-if="usageTotal !== null" data-test="usage-total" style="font-weight: 600; font-variant-numeric: tabular-nums;">{{ formatBytes(usageTotal) }}</span>
+                <span v-else style="font-size: var(--text-sm); color: var(--text-muted);">未加载</span>
+                <button class="btn" style="padding: 2px 10px; font-size: var(--text-xs);" data-test="usage-toggle" @click="toggleUsage">{{ usageOpen ? '收起逐族' : '展开逐族' }}</button>
+                <button class="btn" style="padding: 2px 10px; font-size: var(--text-xs);" data-test="usage-refresh" :disabled="usageLoading" @click="loadLogsUsage">{{ usageLoading ? '统计中…' : '刷新' }}</button>
+              </div>
+              <div v-if="usageOpen && usageFamilies" style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2) var(--space-4); margin-bottom: var(--space-3);" data-test="usage-families">
+                <div v-for="f in LOG_TTL_FAMILIES" :key="'usage-' + f.key" style="display: flex; align-items: center; gap: var(--space-2);">
+                  <span style="flex: 1; font-size: var(--text-sm); color: var(--text-secondary);">{{ f.label }}</span>
+                  <span style="font-size: var(--text-sm); font-variant-numeric: tabular-nums;" data-test="usage-family-value">{{ usageFamilies[f.key] ? formatBytes(usageFamilies[f.key].bytes) + ' · ' + usageFamilies[f.key].entries + ' 件' : '—' }}</span>
+                </div>
               </div>
               <div class="form-group">
                 <label class="form-label">预设档（一次设全 16 族）</label>

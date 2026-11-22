@@ -713,7 +713,7 @@ fn extra_serde_default_max_results_for_perplexity() {
 fn extra_serde_default_detail_level_for_llm_log() {
     let json = r#"{}"#;
     let cfg: LlmLogConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.detail_level, "full");
+    assert_eq!(cfg.detail_level, LlmDetailLevel::Full);
 }
 
 #[test]

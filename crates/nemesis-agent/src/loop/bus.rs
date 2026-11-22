@@ -169,6 +169,7 @@ impl AgentLoop {
             registry: Some(registry),
             session_stats: parking_lot::RwLock::new(None),
             work_recorder: crate::work_timeline::WorkRecorder::default(),
+            wip_journal: crate::wip_journal::WipJournal::default(),
             effort_overrides: parking_lot::RwLock::new(HashMap::new()),
             state_manager: None,
             session_store: Some(session_store),

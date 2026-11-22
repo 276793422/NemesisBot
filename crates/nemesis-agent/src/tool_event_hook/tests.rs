@@ -240,6 +240,7 @@ async fn sanitizer_masks_result_preview_but_not_chain_return() {
         Some(Arc::new(|_tool: &str, r: &str| {
             r.replace("sk-live-abcdef0123456789", "[REDACTED]")
         })),
+        crate::wip_journal::WipJournal::default(),
     );
 
     let returned = hook
@@ -302,6 +303,7 @@ async fn sanitizer_runs_before_truncation() {
                 r.to_string()
             }
         })),
+        crate::wip_journal::WipJournal::default(),
     );
     hook.around_tool_use(sample_call("{}"), next_returns(secret))
         .await;

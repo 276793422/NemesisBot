@@ -366,18 +366,18 @@ fn cmd_llm_config(
     }
 
     if let Some(detail_level) = detail_level {
-        let valid = ["full", "truncated"];
-        if !valid.contains(&detail_level) {
-            println!(
-                "Error: Invalid detail level '{}'. Valid: {:?}",
-                detail_level, valid
-            );
-            std::process::exit(1);
-        }
+        // 校验+解析同一真相源：typed LlmDetailLevel::parse（手写 valid 表退役）。
+        let level = match nemesis_config::LlmDetailLevel::parse(detail_level) {
+            Ok(v) => v,
+            Err(msg) => {
+                println!("{msg}");
+                std::process::exit(1);
+            }
+        };
         if let Some(llm) = logging.get_mut("llm").and_then(|v| v.as_object_mut()) {
             llm.insert(
                 "detail_level".to_string(),
-                serde_json::Value::String(detail_level.to_string()),
+                serde_json::Value::String(level.as_str().to_string()),
             );
         }
         changed = true;

@@ -1,23 +1,34 @@
-//! Todo 收尾提醒 hook（2026-09-24，`todowrite` 记账兜底）。
+//! Todo 收尾提醒 hook（2026-09-24，`todowrite` 记账兜底；2026-11-22
+//! 语义反转：从「收摊整理器」改为「续跑发动机」，见
+//! docs/REPORT/2026-11-22_长任务中途检查点停车根因分析 同日修复批）。
 //!
-//! 背景：`todowrite` 是全量提交式工具，清单收尾全靠模型自觉（few-shot
-//! 是软纪律，无硬约束）——模型经常把活干完、最终答复都发出去了，却忘记
-//! 最后调一次 todowrite 把 `in_progress` 收掉（2026-09-24 用户实测：汇总
-//! 报告正文已交付，清单停在 3/4）。本模块是 turn-end lifecycle hook
-//! 的内建实现：终答案被接受后读 todo 落盘文件，还有未完成项 →
-//! [`TurnEndDecision::Continue`] 注入一次性提醒（模型下一轮先收尾清单
-//! 再答复；清单收不回来的暂停项诚实改回 `pending`）。
+//! 背景（v1）：`todowrite` 是全量提交式工具，清单收尾全靠模型自觉——
+//! 模型经常把活干完、最终答复都发出去了，却忘记最后调一次 todowrite
+//! 把 `in_progress` 收掉。v1 是 turn-end lifecycle hook：终答案被接受后
+//! 读 todo 落盘文件，还有未完成项 → [`TurnEndDecision::Continue`] 注入
+//! 一次性收尾提醒。
 //!
-//! 缓存纪律（prompt cache 命中率不受影响的根据）：注入走 既有路径
+//! v2 反转（2026-11-22 长任务停车根因批）：v1 实测把「汇报收摊」合法化
+//! 了——feedback 文案引导「如实说明进度与剩余工作」，模型照做：拦停 →
+//! todowrite → 检查点汇报照样发出。v2 改为两段升级模板：
+//!
+//! - **首次拦停**（`stop_hook_active=false`）：未完成项是用户任务的一部分，
+//!   **继续用工具执行**；每完成一项 todowrite 更新；全部完成才给最终答复；
+//!   确属用户专属域阻塞的项才保留未完成（最终答复列明尝试记录）。
+//! - **升级拦停**（`stop_hook_active=true`，即本轮已被 Continue 过一次）：
+//!   「你已被告知继续执行却再次停车」——确属用户专属域阻塞就列证据清单
+//!   （试了什么、为何只有用户能做）；否则立即继续执行工具。
+//! - 第 3 次停车不再拦：loop 侧 [`crate::hooks::MAX_TURN_END_CONTINUES`]
+//!   硬封顶 fail-open 放行——真阻塞有合法出口，不会无限拉锯。
+//!
+//! 缓存纪律（prompt cache 命中率不受影响的根据）：注入走既有路径
 //! `instance.add_user_message(feedback)`——追加在消息列表**尾部**（本轮
 //! 全量列表字节不变 → 增量前缀缓存全命中；只有提醒本体按新增输入计费），
 //! 与 max_tokens 续写提示 / cc-hooks feedback 同槽位。绝不进头部 system
 //! prompt 或每轮合并快照注入点（那两处字节变化会打穿缓存前缀）。
 //!
-//! 预算：`stop_hook_active`（本轮已有任何 Continue，含用户脚本）时自限
-//! 跳过 = 每 turn 至多一次；loop 侧 [`crate::hooks:MAX_TURN_END_CONTINUES`]
-//! 硬封顶 fail-open。heartbeat / GiveUp / 错误路径不经过 turn-end hooks
-//! （`judge_final_answer` 只在正常 Accept 路径跑 hooks）。
+//! heartbeat / GiveUp / 错误路径不经过 turn-end hooks（
+//! `judge_final_answer` 只在正常 Accept 路径跑 hooks）。
 //!
 //! 装配：gateway 侧 agent_factory 主 loop / 项目 loop 各注册一次
 //! （workspace 分别 = 主工作区 / 项目目录）；与 todowrite 工具落盘同根
@@ -47,6 +58,38 @@ impl TodoCloseoutHook {
     }
 }
 
+/// 首次拦停模板：继续执行，不是汇报收摊。
+fn first_block_feedback(unfinished: &[String]) -> String {
+    format!(
+        "<system-reminder>\n你要结束本轮，但本会话的 todo 清单还有 {} 项未完成：\n{}\n\
+         未完成项是用户任务的一部分，**继续用工具执行**，不要以汇报收摊：\n\
+         1. 按清单继续调用工具执行剩余项；每完成一项，调用 todowrite 标记 completed\
+         （全量提交——每次调用替换整个清单，所有条目都要带上，包括没变的）。\n\
+         2. 全部完成后才给最终答复。\n\
+         3. 确属只有用户能做的阻塞（凭据/授权/物理接入/外部系统权限，且已穷尽替代手段）\
+         的项才保留未完成；最终答复中列明每项的尝试记录与需要用户做什么。\n\
+         不要虚报完成；清单状态必须与实际一致。\n</system-reminder>",
+        unfinished.len(),
+        // todo 内容是模型转写的工具产物文本（可含对话注入的标记），进自帧
+        // 前过闭合标签逃逸——大小写折叠 `</system-reminder>` 变体同样构成
+        // 闭合（BUG-20261123-006，统一实现同源）。两个模板同一防线。
+        nemesis_utils::sanitize::escape_closing_tag(&unfinished.join("\n"), "system-reminder")
+    )
+}
+
+/// 升级拦停模板（本轮已被拦过一次仍停车）：要么列证据，要么继续干活。
+fn escalation_feedback(unfinished: &[String]) -> String {
+    format!(
+        "<system-reminder>\n你已被告知继续执行却再次以未完成清单停车（仍有 {} 项）：\n{}\n\
+         二选一，不要再用进度总结收摊：\n\
+         1. 若剩余项确属只有用户能做的阻塞：在最终答复列出证据清单——每项写清\
+         试了什么手段、失败原因、为何落在用户专属域（凭据/授权/物理接入/外部系统权限）。\n\
+         2. 否则立即继续调用工具执行剩余项，完成后再给最终答复。\n</system-reminder>",
+        unfinished.len(),
+        nemesis_utils::sanitize::escape_closing_tag(&unfinished.join("\n"), "system-reminder")
+    )
+}
+
 #[async_trait]
 impl LifecycleHook for TodoCloseoutHook {
     fn name(&self) -> String {
@@ -54,11 +97,6 @@ impl LifecycleHook for TodoCloseoutHook {
     }
 
     async fn on_turn_end(&self, end: &HookTurnEnd) -> TurnEndDecision {
-        // 每 turn 至多一次：本轮已有任何 hook Continue（含用户脚本）就
-        // 不再叠加——防止提醒与用户 hook 轮流拉锯烧预算（fail-open 方向）。
-        if end.stop_hook_active {
-            return TurnEndDecision::Stop;
-        }
         // 读清单：缺失 = 会话没用过 todowrite（没有可收尾的东西）；损坏 =
         // fail-open（提醒兜底不该把会话卡死）。两种情况都放行停轮。
         let raw = match std::fs::read_to_string(self.todo_path_for(&end.session_key)) {
@@ -84,29 +122,25 @@ impl LifecycleHook for TodoCloseoutHook {
         if unfinished.is_empty() {
             return TurnEndDecision::Stop;
         }
+        // stop_hook_active = 本轮已被任何 hook Continue 过（含用户脚本）——
+        // 升级信号：模型被告知继续后仍停车，换升级模板再拦一次；第 3 次
+        // 由 loop 侧 MAX_TURN_END_CONTINUES 硬封顶 fail-open 放行。
+        let feedback = if end.stop_hook_active {
+            escalation_feedback(&unfinished)
+        } else {
+            first_block_feedback(&unfinished)
+        };
         tracing::info!(
-            "[todo-closeout] session '{}' ends with {} unfinished todo item(s); one more round",
+            "[todo-closeout] session '{}' ends with {} unfinished todo item(s); {} round",
             end.session_key,
-            unfinished.len()
+            unfinished.len(),
+            if end.stop_hook_active {
+                "escalation"
+            } else {
+                "one more"
+            }
         );
-        TurnEndDecision::Continue {
-            // todo 内容是模型转写的工具产物文本（可含对话注入的标记），
-            // 进自帧前过闭合标签逃逸——大小写折叠 `</system-reminder>` 变体
-            // 同样构成闭合（BUG-20261123-006，统一实现同源）。
-            feedback: format!(
-                "<system-reminder>\n你要结束本轮，但本会话的 todo 清单还有 {} 项未完成：\n{}\n\
-                 请先如实收尾再给最终答复：\n\
-                 1. 已完成的项：调用 todowrite 标记 completed（全量提交——每次调用替换整个清单，\
-                 所有条目都要带上，包括没变的）。\n\
-                 2. 确实还没做/本轮不做的项：标记改回 pending，并在答复里如实说明进度与剩余工作。\n\
-                 不要虚报完成；清单状态必须与实际一致。\n</system-reminder>",
-                unfinished.len(),
-                nemesis_utils::sanitize::escape_closing_tag(
-                    &unfinished.join("\n"),
-                    "system-reminder"
-                )
-            ),
-        }
+        TurnEndDecision::Continue { feedback }
     }
 }
 

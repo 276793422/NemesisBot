@@ -1176,7 +1176,7 @@ fn test_logging_sub_configs_default_match_serde() {
 
     let l = LlmLogConfig::default();
     let l2: LlmLogConfig = serde_json::from_str("{}").unwrap();
-    assert_eq!(l.detail_level, "full");
+    assert_eq!(l.detail_level, LlmDetailLevel::Full);
     assert_eq!(l.detail_level, l2.detail_level);
 }
 
@@ -1619,8 +1619,8 @@ fn test_llm_log_config_default() {
     let cfg = LlmLogConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.log_dir.is_empty());
-    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值（"full"）。
-    assert_eq!(cfg.detail_level, "full");
+    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值（Full）。
+    assert_eq!(cfg.detail_level, LlmDetailLevel::Full);
 }
 
 #[test]
@@ -2778,7 +2778,7 @@ fn test_adjust_paths_for_environment_log_dir() {
         llm: Some(LlmLogConfig {
             enabled: true,
             log_dir: String::new(),
-            detail_level: "full".to_string(),
+            detail_level: LlmDetailLevel::Full,
             save_raw: false,
         }),
         general: None,
@@ -2804,7 +2804,7 @@ fn test_adjust_paths_for_environment_existing_log_dir() {
         llm: Some(LlmLogConfig {
             enabled: true,
             log_dir: "custom/logs".to_string(),
-            detail_level: "full".to_string(),
+            detail_level: LlmDetailLevel::Full,
             save_raw: false,
         }),
         general: None,
@@ -2956,8 +2956,72 @@ fn test_llm_log_config_defaults_v2() {
     let cfg = LlmLogConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.log_dir.is_empty());
-    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值（"full"）。
-    assert_eq!(cfg.detail_level, "full");
+    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值（Full）。
+    assert_eq!(cfg.detail_level, LlmDetailLevel::Full);
+}
+
+// detail_level 值域根治（2026-11-22）：typed LlmDetailLevel 的迁移/自愈/闸门
+// 契约——出厂模板曾带 "summary"（从未单独实现的档位）。
+
+/// 存量别名迁移：`"summary"` 反序列化 → Truncated（兑现模板承诺的精简档），
+/// 重序列化回写规范字面 `"truncated"`（typed 保存自愈，不留永久别名）。
+#[test]
+fn test_llm_detail_level_summary_alias_migrates_and_self_heals() {
+    let cfg: LlmLogConfig = serde_json::from_str(
+        r#"{"enabled":true,"log_dir":"logs/request_logs","detail_level":"summary","save_raw":false}"#,
+    )
+    .unwrap();
+    assert_eq!(cfg.detail_level, LlmDetailLevel::Truncated);
+    let round: LlmLogConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(round.detail_level, LlmDetailLevel::Truncated);
+    // 自愈回写：序列化产物里不再有 "summary"。
+    let s = serde_json::to_string(&cfg).unwrap();
+    assert!(
+        s.contains("\"truncated\"") && !s.contains("summary"),
+        "typed save 必须回写规范字面 truncated，got: {s}"
+    );
+}
+
+/// 非法值按旧行为归 Full（从静默变 WARN），序列化同样归一规范字面。
+#[test]
+fn test_llm_detail_level_illegal_value_falls_back_full() {
+    let cfg: LlmLogConfig = serde_json::from_str(r#"{"detail_level":"bogus"}"#).unwrap();
+    assert_eq!(cfg.detail_level, LlmDetailLevel::Full);
+    let s = serde_json::to_string(&cfg).unwrap();
+    assert!(s.contains("\"full\""), "序列化归一规范字面 full，got: {s}");
+}
+
+/// 合法二值 round-trip 无损；CLI parse 与反序列化同值域。
+#[test]
+fn test_llm_detail_level_round_trip_and_parse() {
+    for (lit, want) in [
+        ("full", LlmDetailLevel::Full),
+        ("truncated", LlmDetailLevel::Truncated),
+    ] {
+        let cfg: LlmLogConfig =
+            serde_json::from_str(&format!(r#"{{"detail_level":"{lit}"}}"#)).unwrap();
+        assert_eq!(cfg.detail_level, want);
+        assert_eq!(LlmDetailLevel::parse(lit).unwrap(), want);
+        assert_eq!(want.as_str(), lit);
+    }
+    // "summary" 是加载期迁移别名，不是可设值——parse 必须拒绝（CLI loud 报错），
+    // set_field 的 typed RMW round-trip 校验（reserialize ≠ 请求值）据此天然拒绝。
+    assert!(LlmDetailLevel::parse("summary").is_err());
+    assert!(LlmDetailLevel::parse("").is_err());
+}
+
+/// 全配置 round-trip：logging 段 typed 保存自愈同契约在 Config 级成立
+/// （save_config / set_field 的 `to_value(&Config)` 全量重序列化路径）。
+#[test]
+fn test_config_level_typed_save_heals_summary_detail_level() {
+    let raw = r#"{"logging":{"llm":{"enabled":true,"log_dir":"logs/request_logs","detail_level":"summary","save_raw":false}}}"#;
+    let cfg: Config = serde_json::from_str(raw).unwrap();
+    let json = serde_json::to_value(&cfg).unwrap();
+    let healed = json
+        .pointer("/logging/llm/detail_level")
+        .and_then(|v| v.as_str())
+        .expect("logging.llm.detail_level 在场");
+    assert_eq!(healed, "truncated", "typed 保存自愈 summary→truncated");
 }
 
 // Additional tests to improve coverage from 72% to 80%+ ----

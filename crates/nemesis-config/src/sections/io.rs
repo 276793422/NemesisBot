@@ -616,7 +616,7 @@ pub fn default_config() -> Config {
             llm: Some(LlmLogConfig {
                 enabled: false,
                 log_dir: "logs/request_logs".to_string(),
-                detail_level: "full".to_string(),
+                detail_level: LlmDetailLevel::Full,
                 save_raw: false,
             }),
             general: None,

@@ -455,9 +455,15 @@ pub(crate) fn register_request_logger_observer(
     }
     let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
         enabled: true,
-        detail_level: match llm_cfg.detail_level.as_str() {
-            "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
-            _ => nemesis_agent::request_logger::DetailLevel::Full,
+        // typed 值域（2026-11-22 detail_level 根治）：config 枚举 → 执行侧
+        // 表示一次 arm 对 arm 映射；stringly match 已随裸 String 字段退役。
+        detail_level: match llm_cfg.detail_level {
+            nemesis_config::LlmDetailLevel::Full => {
+                nemesis_agent::request_logger::DetailLevel::Full
+            }
+            nemesis_config::LlmDetailLevel::Truncated => {
+                nemesis_agent::request_logger::DetailLevel::Truncated
+            }
         },
         log_dir: if llm_cfg.log_dir.is_empty() {
             "logs/request_logs".to_string()

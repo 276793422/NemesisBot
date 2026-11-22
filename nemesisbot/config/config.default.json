@@ -211,7 +211,7 @@
     "llm": {
       "enabled": false,
       "log_dir": "logs/request_logs",
-      "detail_level": "summary",
+      "detail_level": "truncated",
       "save_raw": false
     },
     "general": {
