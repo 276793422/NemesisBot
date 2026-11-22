@@ -267,6 +267,32 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
 pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, String> {
     let sel = resolve_provider_selection(cfg)?;
 
+    // BUG-20261122-038 构造期请求头防线：api_key/account_id 落请求头
+    // （Bearer/x-api-key/Chatgpt-Account-Id），reqwest .header() 对含换行/
+    // 控制字符的值是 panic 语义——粘贴 key 带尾随换行会在首次请求炸掉
+    // 请求任务（流式链路 panic→tx drop→rx None 伪装成可重试 Timeout）。
+    // 在唯一生产装配点 trim+拒绝，消费凭据的进程内 lane（Anthropic/Codex/
+    // HttpCompat）覆盖；CLI 型 lane 不消费该字段（factory.rs 文档）、
+    // Copilot config 也不消费 api_key（copilot_config 无此字段）——不误拒。
+    let mut sel = sel;
+    if matches!(
+        sel.provider_type,
+        ProviderType::Anthropic | ProviderType::Codex | ProviderType::HttpCompat
+    ) {
+        sel.api_key = nemesis_utils::header_guard::header_safe_credential("api_key", &sel.api_key)
+            .map_err(|e| format!("model {} 拒绝装配：{e}", sel.model))?;
+    }
+    if !sel.account_id.is_empty() {
+        if let Err(e) =
+            nemesis_utils::header_guard::header_safe_credential("account_id", &sel.account_id)
+        {
+            // account_id 是可选头：非法 → 置空（header 省略）+ WARN 降级，
+            // 不拒装配（与 api_key 的凭据地位不同）。
+            tracing::warn!("[Factory] {e}；Chatgpt-Account-Id 头已省略");
+            sel.account_id.clear();
+        }
+    }
+
     // cache_breakpoints 仅 anthropic lane 消费；其他 lane 显式开启 =
     // 配置对该 lane 无效，进程内一次 WARN（Once 锁——provider 构造虽是
     // 低频事件，仍不逐次刷屏），行为照旧不失败。
@@ -340,7 +366,12 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 api_key: sel.api_key,
                 default_model: sel.model,
                 timeout_secs: effective_timeout(sel.timeout_secs),
-                headers: cfg.headers.clone(),
+                // BUG-20261122-038：自定义头对构造期拦截（非法名/值原样透传
+                // 会 panic 请求任务）；非法对丢弃 + WARN（值不落日志）。
+                headers: nemesis_utils::header_guard::filter_valid_header_pairs(
+                    "http-compat",
+                    &cfg.headers,
+                ),
                 proxy: opt_proxy(cfg),
                 preserve_prefix: false,
                 stream_mode: cfg.stream_mode.clone(),

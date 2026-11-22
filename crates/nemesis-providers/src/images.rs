@@ -48,6 +48,10 @@ pub async fn generate_image(
     if api_key.trim().is_empty() {
         return Err("图像端点未配置 API key".to_string());
     }
+    // BUG-20261122-038：bearer_auth 对含换行/控制字符的 key 同为 panic
+    // 语义——构造期入口拦截，诚实 Err（与 chat lane factory 防线同源）。
+    nemesis_utils::header_guard::header_safe_credential("api_key", api_key)
+        .map_err(|e| format!("图像生成拒绝：{e}"))?;
     if request.prompt.trim().is_empty() {
         return Err("prompt 为空".to_string());
     }

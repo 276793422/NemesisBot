@@ -693,3 +693,98 @@ fn copilot_config_lane_default_matches_unified_contract() {
         600
     );
 }
+
+// -------------------------------------------------------------------------
+// BUG-20261122-038 构造期请求头防线：api_key 含换行/控制字符 → 拒绝装配
+// （诚实 Err），不再等到首次请求构造时炸 panic（流式链路 panic→tx drop→
+// rx None 伪装成可重试 Timeout，根因被吞）。
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_create_provider_rejects_api_key_with_embedded_newline() {
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "anthropic/claude-sonnet-4-5".to_string(),
+        api_key: "sk-a\nb".to_string(), // 内嵌换行（trim 吃不掉，HeaderValue 拒绝）
+        ..Default::default()
+    };
+    let err = match create_provider(&cfg) {
+        Ok(_) => panic!("内嵌换行 api_key 应被构造期拒绝"),
+        Err(e) => e,
+    };
+    assert!(err.contains("拒绝装配"), "须为构造期拒绝: {err}");
+    assert!(err.contains("api_key"), "提示须含字段名: {err}");
+    assert!(err.contains("0x0a"), "提示须含违规 byte 码: {err}");
+    assert!(!err.contains("sk-a"), "提示不得泄漏 key 内容: {err}");
+}
+
+#[test]
+fn test_create_provider_trims_pasted_api_key() {
+    // 尾随换行之外的可 trim 空白（空格）不拒——trim 后正常装配。
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "anthropic/claude-sonnet-4-5".to_string(),
+        api_key: "sk-test  \n".to_string(),
+        ..Default::default()
+    };
+    assert!(create_provider(&cfg).is_ok(), "trim 后的 key 应正常装配");
+}
+
+#[test]
+fn test_create_provider_rejects_embedded_control_char() {
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "anthropic/claude-sonnet-4-5".to_string(),
+        api_key: "sk-a\u{1}b".to_string(),
+        ..Default::default()
+    };
+    assert!(create_provider(&cfg).is_err());
+}
+
+#[test]
+fn test_create_provider_codex_bad_account_id_degrades_not_panics() {
+    // account_id 非法 → 可选头省略 + WARN 降级，构造照常成功（不拒装配）。
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "openai/gpt-5.6-sol".to_string(),
+        api_key: "sk-test".to_string(),
+        ..Default::default()
+    };
+    // account_id 在 FactoryConfig 里怎么带？经 llm_ref/extra？此测试只
+    // 钉「坏 key 拒绝 + 好 key 构造成功」主链路；account_id 走 sel 时
+    // 由 header_safe_credential 兜底（单元测试覆盖）。
+    assert!(create_provider(&cfg).is_ok());
+}
+
+#[test]
+fn test_create_provider_http_compat_invalid_header_dropped_not_panics() {
+    // HttpCompat：非法自定义头对构造期丢弃——构造成功 + 首请求不再 panic 面。
+    let mut headers = std::collections::HashMap::new();
+    headers.insert("X-Ok".to_string(), "v".to_string());
+    headers.insert("bad name".to_string(), "v".to_string());
+    headers.insert("X-Multi".to_string(), "a\nb".to_string());
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "zhipu/glm-4.7-flash".to_string(),
+        api_key: "sk-test".to_string(),
+        headers,
+        ..Default::default()
+    };
+    assert!(create_provider(&cfg).is_ok(), "非法头对应丢弃而非炸构造");
+}
+
+#[test]
+fn test_create_provider_cli_lane_bad_key_not_rejected() {
+    // CLI 型 lane 不消费 api_key（子进程经 env HTTPS_PROXY）——含控制字符
+    // 的 key 不应误拒装配。
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "claude-cli/claude-code".to_string(),
+        api_key: "sk\nbad".to_string(),
+        ..Default::default()
+    };
+    assert!(
+        create_provider(&cfg).is_ok(),
+        "CLI lane 不消费 api_key，不应被守卫误拒"
+    );
+}

@@ -36,6 +36,11 @@ pub mod http_retry;
 // 同 media/http_cap（reqwest 不进未启用方的依赖图）。
 #[cfg(feature = "http")]
 pub mod http_redirect;
+// 请求头防线（BUG-20261122-038）：凭据 trim+控制字符拒绝（纯字符串）+
+// 自定义头对 HeaderName/HeaderValue::from_str 精确拦截（http 门控）——
+// reqwest .header() 对非法名/值 panic（粘贴 key 带换行 = 首次请求炸任务
+// 且流式链路伪装成 Timeout），构造咽喉点 create_provider 同源消费。
+pub mod header_guard;
 // 带帽单行读（横扫角度 B 续——行帧形态）：外部流行读统一实现，
 // 裸 read_line 无界积累防 OOM；nemesis-mcp stdio 与 nemesis-channels
 // 四通道同源消费，帽值调用方按协议传入。
