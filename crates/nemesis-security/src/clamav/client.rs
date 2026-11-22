@@ -3,7 +3,11 @@
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncWriteExt, BufReader};
+// tests.rs 的假 clamd harness 经 `use super::*` 取用（生产代码已无
+// read_line 消费点——BUG-20261122-020 后全部走 read_response_line_capped）。
+#[cfg(test)]
+use tokio::io::AsyncBufReadExt;
 use tokio::net::TcpStream;
 
 /// Scan result from clamd.
@@ -26,6 +30,43 @@ pub struct Client {
     address: String,
     timeout: Duration,
     socket_addr: SocketAddr,
+}
+
+/// clamd 响应单行帽（字节）。clamd 是本机第三方守护进程，响应行不受我方
+/// 完全控制（DB 重载卡死/被替换/版本 bug 都可能吐垃圾）——无界 read_line
+/// 是 OOM 面（BUG-20261122-020）。真实 clamd 判据行（OK / FOUND / ERROR）
+/// 远低于此帽；超帽 = 协议失步，诚实 Err（fail-closed——安全判据宁可
+/// 失败不给假 clean）。
+const MAX_RESPONSE_LINE_BYTES: usize = 64 * 1024;
+
+/// clamd 响应单行的带帽读 + 一次性 lossy 解码（BUG-20261122-020；正解
+/// 先例 = [`nemesis_utils::line_cap`]，MCP stdio stderr 排水同族）。
+enum ReadLineOutcome {
+    Eof,
+    Line(String),
+    Io(std::io::Error),
+    Oversize,
+}
+
+async fn read_response_line_capped<R: AsyncBufRead + Unpin>(reader: &mut R) -> ReadLineOutcome {
+    match nemesis_utils::line_cap::read_line_capped(reader, MAX_RESPONSE_LINE_BYTES).await {
+        Err(e) => ReadLineOutcome::Io(e),
+        Ok(None) => ReadLineOutcome::Eof,
+        Ok(Some((mut raw, truncated))) => {
+            if truncated {
+                return ReadLineOutcome::Oversize;
+            }
+            // 剥尾部换行；字节收齐后一次性 lossy（分块 lossy 劈多字节
+            // 字符的纪律见 line_cap 模块）。
+            if raw.last() == Some(&b'\n') {
+                raw.pop();
+            }
+            if raw.last() == Some(&b'\r') {
+                raw.pop();
+            }
+            ReadLineOutcome::Line(String::from_utf8_lossy(&raw).into_owned())
+        }
+    }
 }
 
 impl Client {
@@ -144,13 +185,19 @@ impl Client {
                 .await
                 .map_err(|e| format!("send termination: {}", e))?;
 
-            // Read response
+            // Read response（带帽行读：BUG-20261122-020）
             let mut reader = BufReader::new(stream);
-            let mut resp_line = String::new();
-            reader
-                .read_line(&mut resp_line)
-                .await
-                .map_err(|e| format!("read response: {}", e))?;
+            let resp_line = match read_response_line_capped(&mut reader).await {
+                ReadLineOutcome::Line(l) => l,
+                ReadLineOutcome::Oversize => {
+                    return Err(format!(
+                        "clamd response line exceeds {}KB cap — verdict refused",
+                        MAX_RESPONSE_LINE_BYTES / 1024
+                    ));
+                }
+                ReadLineOutcome::Eof => String::new(),
+                ReadLineOutcome::Io(e) => return Err(format!("read response: {e}")),
+            };
 
             // 空应答（clamd 收完 INSTREAM 后直接关连接、不给结论）必须报 Err，
             // 与 send_command 的空应答处理对称。原实现把空串喂给
@@ -206,8 +253,8 @@ impl Client {
         let mut lines = Vec::new();
 
         loop {
-            let mut line = String::new();
-            let read = tokio::time::timeout_at(deadline, reader.read_line(&mut line)).await;
+            let read =
+                tokio::time::timeout_at(deadline, read_response_line_capped(&mut reader)).await;
             match read {
                 Err(_) => {
                     return Err(format!(
@@ -215,8 +262,15 @@ impl Client {
                         self.address
                     ));
                 }
-                Ok(Ok(0)) => break,
-                Ok(Ok(_)) => {
+                Ok(ReadLineOutcome::Eof) => break,
+                Ok(ReadLineOutcome::Oversize) => {
+                    return Err(format!(
+                        "clamd response line exceeds {}KB cap — verdict refused",
+                        MAX_RESPONSE_LINE_BYTES / 1024
+                    ));
+                }
+                Ok(ReadLineOutcome::Io(_)) => break,
+                Ok(ReadLineOutcome::Line(line)) => {
                     let trimmed = line.trim().to_string();
                     if !trimmed.is_empty() {
                         lines.push(trimmed);
@@ -225,7 +279,6 @@ impl Client {
                         break;
                     }
                 }
-                Ok(Err(_)) => break,
             }
         }
 

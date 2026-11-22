@@ -40,7 +40,7 @@
 //! mxc_spawn hook）+ WSAPI/CLI status。本模块**不读 config**（nemesis-sandbox
 //! 刻意不依赖 nemesis-config）——策略入参由调用方解析后传入。
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -357,6 +357,36 @@ pub fn build_container_request(
 
 /// 策略路径存在性判定：自身在场，或父目录在场（父在场 = 「文件稍后创建
 /// 仍被拒绝」的声明合法）。两者皆缺 → 该策略条目无意义，调用方过滤。
+/// MXC 协议响应单行帽（字节）。
+const RESPONSE_LINE_CAP_BYTES: usize = 64 * 1024;
+
+/// stdout 协议响应行的带帽读 + 一次性 lossy 解码（BUG-20261122-020）：
+/// 容器应用输出不受我方控制，无换行巨行会在裸 read_line 的无界积累里
+/// 打爆宿主内存——超帽截断 + 注记（宁协议解析失败不 OOM）；非 UTF-8
+/// 输出一行从 InvalidData 读取错误降级为解析层失败。EOF 且无字节 =
+/// 空串 = 无响应（与裸 read_line 的 Ok(0) 同语义）。
+fn read_response_line_capped_sync<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<String> {
+    match nemesis_utils::line_cap::read_line_capped_sync(reader, RESPONSE_LINE_CAP_BYTES) {
+        Ok(Some((mut raw, truncated))) => {
+            // 剥尾部换行；字节收齐后一次性 lossy（分块 lossy 劈多字节
+            // 字符的纪律见 line_cap 模块）。
+            if raw.last() == Some(&b'\n') {
+                raw.pop();
+            }
+            if raw.last() == Some(&b'\r') {
+                raw.pop();
+            }
+            let mut line = String::from_utf8_lossy(&raw).into_owned();
+            if truncated {
+                line.push_str("...[line truncated]");
+            }
+            Ok(line)
+        }
+        Ok(None) => Ok(String::new()),
+        Err(e) => Err(e),
+    }
+}
+
 fn path_self_or_parent_exists(p: &str) -> bool {
     let path = std::path::Path::new(p);
     path.exists() || path.parent().is_some_and(|parent| parent.exists())
@@ -442,9 +472,9 @@ pub fn spawn_contained(
     });
 
     // stdout 首行 = 协议响应行（读到 EOF = 无响应退出/超时被杀）。
+    // 带帽行读（BUG-20261122-020）：helper 见 read_response_line_capped_sync。
     let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    let read = reader.read_line(&mut line);
+    let read = read_response_line_capped_sync(&mut reader);
 
     let wait = proc.wait();
     let stderr_tail = stderr_thread.join().unwrap_or_default();
@@ -470,7 +500,7 @@ pub fn spawn_contained(
         Err(e) => Err(format!(
             "MXC 子进程 stdout 读取失败: {e}（stderr: {stderr_tail}）"
         )),
-        _ => {
+        Ok(line) => {
             let trimmed = line.trim_end();
             Ok(MxcCallOutcome {
                 response: if trimmed.is_empty() {

@@ -841,3 +841,55 @@ async fn test_bug375_send_command_read_is_bounded_when_daemon_silent() {
         start.elapsed()
     );
 }
+
+// ============================================================
+// BUG-20261122-020：响应行带帽读（无界巨行 = OOM 面；超帽 fail-closed）
+// ============================================================
+
+#[tokio::test]
+async fn scan_file_oversize_response_is_refused_not_false_clean() {
+    let addr = serve_clamd(Arc::new(|_cmd| {
+        // 判据行超帽（真实 clamd 判据行只有几十字节）= 协议失步/垃圾流。
+        let mut v = b"stream: ".to_vec();
+        v.resize(v.len() + 80 * 1024, b'x');
+        v.extend_from_slice(b" FOUND\n");
+        v
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("victim.txt");
+    std::fs::write(&file, "x").unwrap();
+    let result = client.scan_file(&file).await;
+    let err = result.expect_err("超帽响应必须拒绝，不得喂假 clean");
+    assert!(err.contains("cap"), "错误须点名帽闸: {err}");
+}
+
+#[tokio::test]
+async fn ping_oversize_response_is_refused() {
+    let addr = serve_clamd(Arc::new(|_cmd| {
+        let mut v = b"PONG! ".to_vec();
+        v.resize(v.len() + 80 * 1024, b'y');
+        v.push(b'\n');
+        v
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let err = client.ping().await.expect_err("超帽 PONG 必须拒绝");
+    assert!(err.contains("cap"), "错误须点名帽闸: {err}");
+}
+
+#[tokio::test]
+async fn scan_file_normal_response_still_works_after_cap() {
+    let addr = serve_clamd(Arc::new(|_cmd| {
+        b"/tmp/victim.txt: Eicar-Test-Signature FOUND\n".to_vec()
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("victim.txt");
+    std::fs::write(&file, "x").unwrap();
+    let result = client.scan_file(&file).await.unwrap();
+    assert!(result.infected, "正常帽内判据行不受带帽读影响");
+    assert_eq!(result.virus, "Eicar-Test-Signature");
+}
