@@ -729,11 +729,19 @@ impl TransferSink {
                 error: None,
             };
         }
-        // 4. staging：同 transfer_id 且同 content_hash = 断点续传（收集已收块）；
-        //    否则新建（旧 staging 属不同传输，清掉）。
+        // 4. staging：同 transfer_id 且同 content_hash **且同 chunk_size**
+        //    = 断点续传（收集已收块）；否则新建（旧 staging 属不同传输，
+        //    清掉）。chunk_size 必须同——content_hash 是文件清单指纹不含
+        //    块大小（BUG-20261123-009），计划不同则旧块序号到新计划错位
+        //    （长度恰好一致的块可混进 have，end 组装 sha256 兜住报 Err，
+        //    sender 重试 begin 又拿到同一批错位 have = 死循环，且重试持续
+        //    刷新 staging mtime 令按龄清扫永不清——staging 卡死）。正常
+        //    sender 的 transfer_id 编码 chunk_size（outbox 确定性 id 公式）
+        //    保证同 id 同块大小；此处校验把不变式升格为双方约束，异常/
+        //    异实现对端违反时诚实走全新 staging 自愈。
         let st = self.staging_dir(&req.transfer_id);
         let resume = read_staging_manifest(&st)
-            .map(|m| m.content_hash == req.content_hash)
+            .map(|m| m.content_hash == req.content_hash && m.chunk_size == req.chunk_size)
             .unwrap_or(false);
         if resume {
             write_staging_manifest(&st, req);
@@ -1082,6 +1090,20 @@ fn validate_manifest(req: &TransferBegin) -> Result<(), String> {
     }
     if req.content_hash.is_empty() {
         return Err("content_hash 不能为空".into());
+    }
+    // content_hash 必须与 files 清单一致（BUG-20261123-009）：去重键与
+    // 确定性 transfer_id 全建立在此指纹上，远端可任意声明——只查非空
+    // 等于防线开洞。同 task_id 换内容重传（worker 改进交付）声明旧
+    // hash 可误命中 dedup 闸 → 新交付被「dedup」假命中挡死；重算清单
+    // 指纹比对 = 零成本闭环（sender 侧 hash 本就是 content_hash(&files)
+    // 的输出，恒过）。与 chunk_size 续传闸（begin resume）同族：协议
+    // 不变式不能只靠 sender 自觉。
+    let expect_hash = content_hash(&req.files);
+    if expect_hash != req.content_hash {
+        return Err(format!(
+            "content_hash 与清单不一致（声明 {} 实算 {expect_hash}）",
+            req.content_hash
+        ));
     }
     Ok(())
 }

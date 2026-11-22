@@ -302,6 +302,120 @@ fn bug198_torn_chunk_not_reported_in_resume_have() {
     );
 }
 
+/// BUG-20261123-009A：续传 resume 判定必须同 chunk_size。content_hash 是
+/// 文件清单指纹不含块大小——同 transfer_id + 同清单 + 异 chunk_size 的
+/// begin 若被当续传，旧计划的块序号到新计划错位（长度恰好一致的块混进
+/// have），end 组装 sha256 兜住报 Err，sender 重试 begin 又拿同一批错位
+/// have = 死循环，且重试刷新 staging mtime 令按龄清扫永不清（卡死）。
+/// 修复：chunk_size 不同 = 计划不同 = 清掉旧 staging 全新开始（have 空）。
+#[test]
+fn bug20261123_009a_chunk_size_mismatch_rejects_resume() {
+    let root = temp_root("bug009a");
+    let src = root.join("src");
+    let payload = vec![3u8; 4096];
+    make_source(&src, &[("data.bin", &payload)]);
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    // 同 transfer_id / 同 task_id / 同内容；块大小 1024 → 512 变更。
+    let begin = prepare_begin(&src, "xf-b009a", "task-b009a", 1024); // 4 块
+
+    // 第一轮：旧块大小推 0、1 块后「中断」。
+    assert_eq!(sink.begin(&begin).status, "ok");
+    push_chunk(&sink, &begin, &src, 0);
+    push_chunk(&sink, &begin, &src, 1);
+
+    // 第二轮：同 id 同 hash 但块大小变更——不得当续传（have 必须为空，
+    // 全量重发自愈；旧块在新计划下错位不可信）。
+    let begin2 = prepare_begin(&src, "xf-b009a", "task-b009a", 512); // 8 块
+    assert_eq!(
+        begin2.content_hash, begin.content_hash,
+        "前置：同清单同指纹"
+    );
+    let reply = sink.begin(&begin2);
+    assert_eq!(reply.status, "ok");
+    assert!(
+        reply.have.is_empty(),
+        "chunk_size 变更不得复用旧块：have = {:?}",
+        reply.have
+    );
+    // 全量重推（新计划 8 块）→ end 成功，落地内容逐字节一致。
+    let end = push_all(&sink, &begin2, &src, &[]);
+    assert_eq!(end.status, "ok");
+    assert_eq!(
+        std::fs::read(
+            sink.inbox_root()
+                .join("task-b009a")
+                .join("files")
+                .join("data.bin")
+        )
+        .unwrap(),
+        payload
+    );
+}
+
+/// BUG-20261123-009B：begin 的 content_hash 必须与 files 清单一致。去重
+/// 闸与确定性 transfer_id 全建立在此指纹上，只查非空 = 远端可任意声明
+/// ——同 task_id 换内容重传（worker 改进交付）声明旧 hash 可误命中
+/// dedup，新交付被假命中挡死。receiver 零成本重算比对 = 防线闭环。
+#[test]
+fn bug20261123_009b_declared_content_hash_must_match_manifest() {
+    let root = temp_root("bug009b");
+    let src = root.join("src");
+    make_source(&src, &[("data.bin", &[1u8; 256])]);
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let mut begin = prepare_begin(&src, "xf-b009b", "task-b009b", 1024);
+
+    // 声明一个非空但与清单不符的指纹（64 hex 形态，最迷惑的伪造）。
+    begin.content_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into();
+    let reply = sink.begin(&begin);
+    assert_eq!(reply.status, "error", "假指纹必须诚实拒绝");
+    assert!(
+        reply
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("content_hash 与清单不一致"),
+        "错误须指明指纹不一致：{:?}",
+        reply.error
+    );
+    // 同批载荷指纹改回真值即通过（排除「载荷本身非法」假阳性）。
+    let files = collect_dir_files(&src).unwrap();
+    begin.content_hash = content_hash(&files);
+    assert_eq!(sink.begin(&begin).status, "ok");
+}
+
+/// BUG-20261123-009B 配套：chunk_size 续传闸不影响合法续传——同 id 同
+/// hash 同 chunk_size 的 resume 行为与修复前完全一致（回归防线）。
+#[test]
+fn bug20261123_009_same_chunk_size_resume_unchanged() {
+    let root = temp_root("bug009ctl");
+    let src = root.join("src");
+    let payload = vec![5u8; 3072];
+    make_source(&src, &[("data.bin", &payload)]);
+    let sink = TransferSink::new(&root.join("ws"), 0);
+    let begin = prepare_begin(&src, "xf-b009c", "task-b009c", 1024); // 3 块
+
+    assert_eq!(sink.begin(&begin).status, "ok");
+    push_chunk(&sink, &begin, &src, 0);
+    let reply = sink.begin(&begin);
+    assert_eq!(reply.status, "ok");
+    assert_eq!(reply.have, vec![0], "同 chunk_size 合法续传不受影响");
+    // 只推剩余块，续传完成。
+    push_chunk(&sink, &begin, &src, 1);
+    push_chunk(&sink, &begin, &src, 2);
+    sink.end(&begin.transfer_id)
+        .expect("同块大小续传 end 应成功");
+    assert_eq!(
+        std::fs::read(
+            sink.inbox_root()
+                .join("task-b009c")
+                .join("files")
+                .join("data.bin")
+        )
+        .unwrap(),
+        payload
+    );
+}
+
 /// BUG-20261030-198 配套：seq → 计划块长算术（不物化计划）的边界形态
 /// ——末块短块、空文件不占序号、跨文件序号连续、越界 None。
 #[test]
@@ -492,20 +606,26 @@ fn end_fails_honestly_on_corrupted_chunk_and_missing_chunk() {
 fn begin_rejects_invalid_paths_in_manifest() {
     let root = temp_root("badpath");
     let sink = TransferSink::new(&root.join("ws"), 0);
-    let mk = |path: &str| TransferBegin {
-        transfer_id: "xf-9".into(),
-        task_id: "task-9".into(),
-        kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
-        source_node: "w".into(),
-        total_bytes: 1,
-        chunk_size: 64,
-        chunk_count: 1,
-        content_hash: "h".into(),
-        files: vec![TransferFileEntry {
+    // content_hash 必须与清单一致（BUG-20261123-009B 校验）——夹具按实
+    // 构造真指纹，被测维度（路径围栏）外的载荷保持合法。
+    let mk = |path: &str| {
+        let files = vec![TransferFileEntry {
             path: path.into(),
             size: 1,
             sha256: "x".into(),
-        }],
+        }];
+        let content_hash = content_hash(&files);
+        TransferBegin {
+            transfer_id: "xf-9".into(),
+            task_id: "task-9".into(),
+            kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
+            source_node: "w".into(),
+            total_bytes: 1,
+            chunk_size: 64,
+            chunk_count: 1,
+            content_hash,
+            files,
+        }
     };
     for bad in [
         "../escape.md",
@@ -1064,22 +1184,28 @@ fn callback_panics_do_not_poison_and_reentrant_set_is_safe() {
 /// 不再放行到传输层撞 16MiB 帧；闸值内通过结构校验。
 #[test]
 fn manifest_file_count_gate() {
-    let mk = |n: usize| TransferBegin {
-        transfer_id: "tr-gate".into(),
-        task_id: "t-gate".into(),
-        kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
-        source_node: "node-a".into(),
-        total_bytes: 0,
-        chunk_size: 64 * 1024,
-        chunk_count: 0,
-        content_hash: "h".into(),
-        files: (0..n)
+    let mk = |n: usize| {
+        let files: Vec<_> = (0..n)
             .map(|i| TransferFileEntry {
                 path: format!("f/{i}.txt"),
                 size: 0,
                 sha256: String::new(),
             })
-            .collect(),
+            .collect();
+        // content_hash 与清单一致（BUG-20261123-009B 校验）——夹具按实
+        // 构造真指纹，被测维度（条数闸）外的载荷保持合法。
+        let content_hash = content_hash(&files);
+        TransferBegin {
+            transfer_id: "tr-gate".into(),
+            task_id: "t-gate".into(),
+            kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
+            source_node: "node-a".into(),
+            total_bytes: 0,
+            chunk_size: 64 * 1024,
+            chunk_count: 0,
+            content_hash,
+            files,
+        }
     };
     let over = mk(MAX_MANIFEST_FILES + 1);
     let err = validate_manifest(&over).unwrap_err();
