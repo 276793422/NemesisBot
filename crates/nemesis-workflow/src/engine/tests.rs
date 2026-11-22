@@ -50,9 +50,35 @@ async fn test_list_workflows() {
         .register_workflow(make_workflow("wf_b", vec![make_node("n1", "llm", vec![])]))
         .unwrap();
 
-    let mut names = engine.list_workflows();
-    names.sort();
-    assert_eq!(names, vec!["wf_a", "wf_b"]);
+    // BUG-20261122-021：list_workflows 按名字升序返回（DashMap 分片迭代序
+    // 不稳定）。逆序注册证明序由生产侧保证，测试不再替生产 sort。
+    engine
+        .register_workflow(make_workflow("wf_c", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow("wf_aa", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+    let names = engine.list_workflows();
+    assert_eq!(names, vec!["wf_a", "wf_aa", "wf_b", "wf_c"]);
+}
+
+#[tokio::test]
+async fn test_list_workflows_detailed_sorted_by_name() {
+    let engine = WorkflowEngine::new();
+    // 逆序注册：DashMap 分片序若泄漏，收集序大概率是 zeta 先出。
+    engine
+        .register_workflow(make_workflow("zeta", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow("alpha", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow("mid", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let summaries = engine.list_workflows_detailed();
+    let names: Vec<&str> = summaries.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "mid", "zeta"]);
 }
 
 #[tokio::test]
