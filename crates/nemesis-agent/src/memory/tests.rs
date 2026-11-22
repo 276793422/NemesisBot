@@ -245,6 +245,71 @@ fn memory_store_append_today() {
     assert!(content.contains("Second note."));
 }
 
+/// BUG-20261122-046 回归锁（判别腿）：RMW 读腿只允许 NotFound 降级为空
+/// （建头语义）；目录占位等非 NotFound 读失败必须诚实上抛——空默认会
+/// 误走建头分支 → write_file_atomic 整文件替换 = 当日笔记静默清空。
+#[test]
+fn append_today_read_leg_discriminates_not_found_from_other_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = MemoryStore::new(tmp.path().to_str().unwrap());
+
+    // 文件不存在 → Ok("")（合法首写建头）。
+    let missing = store.memory_dir.join("209912/20991231.md");
+    assert_eq!(
+        MemoryStore::read_daily_note_leg(&missing).unwrap(),
+        "",
+        "文件不存在必须落到建头语义（空默认）"
+    );
+
+    // 目录占位（读取必失败且非 NotFound）→ Err 诚实上抛，不得空默认。
+    let occupied = store.memory_dir.join("209912/20991230.md");
+    std::fs::create_dir_all(&occupied).unwrap();
+    let err = MemoryStore::read_daily_note_leg(&occupied).unwrap_err();
+    assert_ne!(
+        err.kind(),
+        std::io::ErrorKind::NotFound,
+        "目录占位读失败不得误判 NotFound: {err}"
+    );
+}
+
+/// BUG-20261122-046 回归锁（用户可见契约）：读失败窗口内 append 失败
+/// 绝不破坏既有当日笔记。Windows 形态：share_mode(0) 独占句柄模拟
+/// AV/索引器瞬时锁（read_to_string 报共享冲突，非 NotFound）。
+#[cfg(windows)]
+#[test]
+fn append_today_read_failure_never_wipes_existing_notes() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let store = MemoryStore::new(tmp.path().to_str().unwrap());
+    store.append_today("first note\n").unwrap();
+
+    // 独占句柄（不共享任何访问）→ 并发 read_to_string 报共享冲突。
+    let path = store.today_file();
+    let guard = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .expect("打开独占句柄");
+
+    // 读腿失败 → append_today 诚实 Err（不得吞错继续走建头覆写）。
+    let err = store.append_today("second note\n").unwrap_err();
+    assert_ne!(
+        err.kind(),
+        std::io::ErrorKind::NotFound,
+        "共享冲突不得误判 NotFound: {err}"
+    );
+    drop(guard);
+
+    // 既有笔记完好，失败 append 不得落盘。
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("first note"), "既有笔记不得丢失: {body}");
+    assert!(
+        !body.contains("second note"),
+        "失败 append 不得落盘: {body}"
+    );
+}
+
 #[test]
 fn memory_store_read_today_empty_when_no_file() {
     let tmp = tempfile::tempdir().unwrap();

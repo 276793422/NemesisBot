@@ -8,7 +8,7 @@
 //!   1. plugin_onnx.dll: cd plugins/plugin-onnx && cargo build --release
 //!   2. Test model: bash test-tools/plugin-onnx-test/scripts/setup-test.sh
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use nemesis_memory::__test_fixture;
 use nemesis_memory::vector::{StoreConfig, VectorEntry, VectorStore};
@@ -18,7 +18,7 @@ fn make_entry(id: &str, content: &str) -> VectorEntry {
         id: id.into(),
         entry_type: "long_term".into(),
         content: content.into(),
-        metadata: HashMap::new(),
+        metadata: BTreeMap::new(),
         tags: vec![],
         score: 0.0,
         created_at: chrono::Local::now().to_rfc3339(),

@@ -676,6 +676,16 @@ pub(crate) async fn init_post_agent(
         agent_loop_ref.clone(),
     ));
 
+    // 主循环 panic 监督的重启回调（BUG-20261123-003）：监督任务检测到
+    // 非停机的任务死亡 → supervisor_restart（退避 + 熔断 + stop/start
+    // 重建 fresh loop）。未装配 = 监督只留痕不自动重启。
+    {
+        let adapter_for_restart = Arc::clone(&agent_adapter);
+        agent_adapter.set_restart_hook(Arc::new(move || {
+            adapter_for_restart.supervisor_restart();
+        }));
+    }
+
     // ---：项目常驻 loop 启动（对话/项目双分组）---
     // 共享主 loop 内建的同一 SessionStore Arc（存储全局集中、会话隔离靠
     // session_key）；注册表缺失/损坏走 lenient 空表，目录消失的项目
@@ -691,6 +701,15 @@ pub(crate) async fn init_post_agent(
             main_store,
             bus.clone(),
         ));
+        // 项目 loop 监督重启钩子（BUG-20261123-003；必须在 start_all /
+        // projects.create 之前注入——spawn 时快照）。闭包捕获 manager Arc
+        // 调 supervisor_restart_project（stop 摘条目 → spawn 重建）。
+        {
+            let mgr_for_restart = mgr.clone();
+            mgr.set_restart_hook(Arc::new(move |pid: &str| {
+                mgr_for_restart.supervisor_restart_project(pid);
+            }));
+        }
         // 时序返工（项目 home 收编真机 E2E）：start_all 移到
         // agents seed 块之后——loop 构建期 from_project 现查全局 manager
         // 槽拿 home_path，槽未装/记录缺位 = home 面整体降级（围栏单根/

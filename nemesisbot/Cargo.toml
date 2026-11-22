@@ -374,6 +374,9 @@ toml = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+# 监督任务体测试（BUG-20261123-003）：start_paused 虚拟时间自动推进
+# （resolver 2：dev-dep features 不泄漏到正常构建）。
+tokio = { workspace = true, features = ["test-util", "macros"] }
 # generate_image 工具落盘链路假端点（集群专业职能框架 M4）。
 wiremock = "0.6"
 # F2 回归锁（三轮复评 2026-10-21）：DB 删除失败注入用 SQLite 触发器

@@ -462,7 +462,7 @@ impl MemoryToolExecutor {
             role,
             content,
             timestamp: chrono::Local::now(),
-            metadata: std::collections::HashMap::new(),
+            metadata: std::collections::BTreeMap::new(),
             tags,
         };
 
@@ -517,7 +517,7 @@ impl MemoryToolExecutor {
                 .unwrap_or("concept")
                 .to_string();
 
-            let properties: std::collections::HashMap<String, String> = args["entity_properties"]
+            let properties: std::collections::BTreeMap<String, String> = args["entity_properties"]
                 .as_object()
                 .map(|obj| {
                     obj.iter()

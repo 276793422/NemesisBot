@@ -202,7 +202,7 @@ fn build_engine_response(
 /// 已按名排序，本位点 BUG-20261121-021 漏排。单引擎点名路径序无关。
 fn ordered_engine_check_names(
     target_name: Option<&str>,
-    engines: &std::collections::HashMap<String, serde_json::Value>,
+    engines: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Vec<String> {
     match target_name {
         Some(name) => vec![name.to_string()],

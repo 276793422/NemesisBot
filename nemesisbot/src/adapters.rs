@@ -189,8 +189,9 @@ struct AgentLoopState {
     agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
     /// Handle to the inbound bridge task (bus broadcast → mpsc).
     bridge_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Handle to the agent loop task.
-    agent_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the agent loop task. Arc 包装供监督任务与 stop() 共享
+    /// （`abort`/`is_finished` 均为 `&self`，Arc 解引用直接可用）。
+    agent_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
 }
 
 /// 运行期 loop 级接线 stash（BUG-20261108-012 横向收尾）：gateway 装配
@@ -245,6 +246,21 @@ pub struct AgentLoopServiceAdapter {
     /// Needed because tray callbacks run on the winit thread (no tokio context),
     /// but `start()` needs to spawn async tasks on the tokio runtime.
     rt: tokio::runtime::Handle,
+    /// 主循环任务监督（BUG-20261123-003）：回合体除工具执行（tool_dispatch
+    /// 的 catch_unwind）外无 panic 隔离（admission.rs SessionBusyGuard 注释
+    /// 自证），任务 panic = 主循环静默死亡——`agent_handle` 存 state 后从不
+    /// await（JoinError 永远取不出）、`is_running()` 查 bridge_handle 假绿、
+    /// inbound bridge 要等下一条消息才 warn 断桥（BUG-20261113-138 臂），
+    /// 空闲期 panic = bot 全瘫只留一条 stderr panic 日志。监督任务轮询
+    /// `is_finished()`：非期望停机的任务死亡 → 触发 restart_hook
+    /// （stop+start 重建 fresh loop，绕开半死实例——stop take 丢弃）。
+    /// 退避 1s/10s/60s，第 4 次+只留痕不重启（panic 风暴 = 系统性问题，
+    /// 人工介入；计数进程生命周期累计，gateway 重启清零）。
+    expected_stop: Arc<AtomicBool>,
+    panic_restart_count: std::sync::atomic::AtomicU64,
+    /// 重启回调（gateway 装配点注入 `adapter.supervisor_restart` 包装闭包）。
+    /// None = 只 error! 留痕不自动重启（诚实降级，监督观测面仍在）。
+    restart_hook: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl AgentLoopServiceAdapter {
@@ -268,6 +284,43 @@ impl AgentLoopServiceAdapter {
             runtime_wiring: std::sync::Mutex::new(RuntimeWiring::default()),
             skip_predicate: std::sync::OnceLock::new(),
             rt: tokio::runtime::Handle::current(),
+            expected_stop: Arc::new(AtomicBool::new(false)),
+            panic_restart_count: std::sync::atomic::AtomicU64::new(0),
+            restart_hook: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// 装配主循环 panic 重启回调（gateway 装配点调用一次）。闭包内容 =
+    /// `Arc<AgentLoopServiceAdapter>` 捕获后调 [`Self::supervisor_restart`]。
+    /// 未装配 = 监督只留痕不重启。
+    pub fn set_restart_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.restart_hook.lock().unwrap() = Some(hook);
+    }
+
+    /// 监督任务的唯一行动入口：退避重启 + 熔断计数。
+    /// 退避表 [1s, 10s, 60s]；第 4 次+检测到死亡只留痕不再重启。
+    /// pub 仅因 gateway 装配的 restart hook 闭包跨模块调用
+    /// （监督任务自身经 hook 间接触达，不直接调本方法）。
+    pub fn supervisor_restart(&self) {
+        let n = self.panic_restart_count.fetch_add(1, Ordering::SeqCst);
+        if n >= 3 {
+            tracing::error!(
+                "[AgentAdapter] agent loop task died unexpectedly again (panic death #{}) — \
+                 auto-restart disabled for this process (threshold 3); manual gateway restart required",
+                n + 1
+            );
+            return;
+        }
+        tracing::error!(
+            "[AgentAdapter] agent loop task died unexpectedly (panic death #{} of 3) — restarting",
+            n + 1
+        );
+        // stop 是重启前置的尽力清理（内部已各自留痕），失败不阻断重启。
+        let _ = self.stop();
+        if let Err(e) = self.start() {
+            // 重启装配失败（如 bus/端口状态异常）：错误大声留痕——监督
+            // 语义下这是第 4 次死亡等价的终局面，需人工介入。
+            tracing::error!("[AgentAdapter] supervisor restart start() failed: {e}");
         }
     }
 
@@ -348,10 +401,25 @@ impl AgentLoopServiceAdapter {
             loop_arc.set_question_asker(asker.clone());
         }
     }
+
+    /// 主循环任务监督 spawn（BUG-20261123-003）：任务体在 free fn
+    /// `agent_loop_supervisor_task`（单测直驱）。钩子/计数 spawn 时快照
+    /// （钩子在 gateway 装配期先于 start 注入）。
+    fn spawn_loop_supervisor(&self, handle: Arc<tokio::task::JoinHandle<()>>) {
+        let expected = Arc::clone(&self.expected_stop);
+        let hook = self.restart_hook.lock().unwrap().clone();
+        let count = self.panic_restart_count.load(Ordering::SeqCst);
+        self.rt
+            .spawn(agent_loop_supervisor_task(handle, expected, hook, count));
+    }
 }
 
 impl LifecycleService for AgentLoopServiceAdapter {
     fn start(&self) -> Result<(), String> {
+        // 显式 start = 全新运行意图：清监督的期望停机标志（stop→start 循环
+        // 后监督臂照常生效）。死亡计数**不清**（进程生命周期累计，熔断
+        // 语义见 supervisor_restart；gateway 重启才归零）。
+        self.expected_stop.store(false, Ordering::SeqCst);
         let mut state = self.state.lock().unwrap();
 
         if state.agent_loop.is_some() && state.bridge_handle.is_some() {
@@ -499,22 +567,31 @@ impl LifecycleService for AgentLoopServiceAdapter {
             }
         });
 
-        // Spawn the agent loop
+        // Spawn the agent loop（Arc 包装：state 存一份供 stop abort，监督
+        // 任务持一份轮询 is_finished——JoinHandle 非 Clone，Arc 共享）。
         let agent_loop_clone = agent_loop.clone();
-        let agent_task = self.rt.spawn(async move {
+        let agent_task = Arc::new(self.rt.spawn(async move {
             agent_loop_clone.run_bus_arc(agent_inbound_rx).await;
-        });
+        }));
 
         // Store everything in state (still holding the lock).
         state.agent_loop = Some(agent_loop);
         state.bridge_handle = Some(bridge);
-        state.agent_handle = Some(agent_task);
+        state.agent_handle = Some(Arc::clone(&agent_task));
+        drop(state);
+
+        // 监督任务（锁外 spawn：其 panic 臂经 hook 走 stop/start 会拿同一把
+        // state 锁——锁内 spawn 无直接死锁（监督 5s 后才行动）但没必要）。
+        self.spawn_loop_supervisor(agent_task);
 
         tracing::info!("[AgentAdapter] start: agent loop started, listening on bus");
         Ok(())
     }
 
     fn stop(&self) -> Result<(), String> {
+        // 先置期望停机标志：监督任务见到即收班（不再把本次停机误判为
+        // 异常死亡触发重启）。幂等 stop 同样置位无害。
+        self.expected_stop.store(true, Ordering::SeqCst);
         let mut state = self.state.lock().unwrap();
 
         if state.agent_loop.is_none() {
@@ -585,6 +662,63 @@ impl AgentLoopServiceTrait for AgentLoopServiceAdapter {
         } else {
             0
         }
+    }
+}
+
+/// 主循环监督任务体（BUG-20261123-003；独立 free fn 供单测直驱——
+/// 构造整个 adapter 太重）。每 5s 轮询 `is_finished()`：期望停机标志
+/// （stop() 置位）= 正常退出臂；任务死亡且非期望停机 = panic/异常终止
+/// → 按 `death_seq` 退避（1s/10s/60s）后触发 restart 回调（None = 只
+/// error! 留痕）。行动后本任务即退——重启产生的新任务由新监督接管。
+/// 期望停机即退（stop 后最多 5s 收尾）。
+async fn agent_loop_supervisor_task(
+    handle: Arc<tokio::task::JoinHandle<()>>,
+    expected: Arc<AtomicBool>,
+    hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    death_seq: u64,
+) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    tick.tick().await; // interval 首 tick 立即返回，跳过
+    loop {
+        tick.tick().await;
+        if expected.load(Ordering::SeqCst) {
+            return; // 正常 stop 流程，监督收班
+        }
+        if !handle.is_finished() {
+            continue;
+        }
+        // 任务已结束且非期望停机 = 异常死亡（panic unwind / 非 stop
+        // 终止）。is_running()（查 bridge_handle）此刻仍假绿、bridge
+        // 要等下一条消息才断——这里是唯一可靠的死亡观测点。
+        match hook {
+            Some(restart) => {
+                // 退避：panic 风暴不无限快重启（1s/10s/60s，第 4 次+
+                // 由 supervisor_restart 熔断只留痕）。
+                let backoff = match death_seq {
+                    0 => std::time::Duration::from_secs(1),
+                    1 => std::time::Duration::from_secs(10),
+                    _ => std::time::Duration::from_secs(60),
+                };
+                tracing::error!(
+                    "[AgentAdapter] agent loop task finished unexpectedly (not a stop) — \
+                     supervisor restart in {}s (prior deaths: {death_seq})",
+                    backoff.as_secs()
+                );
+                tokio::time::sleep(backoff).await;
+                // 退避窗口内来了显式 stop → 尊重，不重启。
+                if expected.load(Ordering::SeqCst) {
+                    return;
+                }
+                restart();
+            }
+            None => {
+                tracing::error!(
+                    "[AgentAdapter] agent loop task finished unexpectedly (not a stop); \
+                     no restart hook wired — manual restart required"
+                );
+            }
+        }
+        return;
     }
 }
 

@@ -3,7 +3,7 @@
 //! Re-exports core types from `nemesis_types::memory` and defines extended
 //! types for search results, vector configuration, and graph/episodic entries.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -22,8 +22,11 @@ pub struct Entry {
     /// Main content body.
     pub content: String,
     /// Arbitrary key-value metadata.
+    /// BTreeMap：本类型直接 `serde_json::to_string` 落盘 vector store 持久化
+    /// jsonl（store.rs rewrite 全量重写），HashMap 每进程随机种子 → 同内容
+    /// 相邻两次 rewrite 行内键序漂移（BUG-20261122-045）。
     #[serde(default)]
-    pub metadata: HashMap<String, String>,
+    pub metadata: BTreeMap<String, String>,
     /// Free-form tags for categorisation.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -43,7 +46,7 @@ impl Entry {
             id: uuid::Uuid::new_v4().to_string(),
             typ,
             content,
-            metadata: HashMap::new(),
+            metadata: BTreeMap::new(),
             tags: Vec::new(),
             score: None,
             created_at: now,
@@ -58,7 +61,7 @@ impl Entry {
     }
 
     /// Builder-style method to attach metadata.
-    pub fn with_metadata(mut self, metadata: HashMap<String, String>) -> Self {
+    pub fn with_metadata(mut self, metadata: BTreeMap<String, String>) -> Self {
         self.metadata = metadata;
         self
     }

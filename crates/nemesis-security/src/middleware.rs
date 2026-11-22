@@ -1050,17 +1050,21 @@ impl<'a> SecureProcessWrapper<'a> {
             command,
         );
 
+        // stdio 三 null（BUG-20261123-002 同族）：detached spawn 的输出无人
+        // 读——旧形态 piped + 后台任务只 wait 不排水，话痨子进程写满管道缓冲
+        // 后写阻塞永久冻死（注释宣称「discards output」但 wait() 从不读管道，
+        // 从未成立）。null 让子进程直写 NUL 设备，同语义零死锁面。
         let mut child = shell_command(command)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| format!("failed to spawn process: {}", e))?;
 
         let pid = child.id().unwrap_or(0);
         // Detach: let the child run independently.
-        // We must not drop the Child without awaiting, otherwise it is killed.
-        // Instead, spawn a background task that waits and discards output.
+        // Background task reaps the child (zombie hygiene); tokio Child is
+        // NOT kill-on-drop, so even if this task is lost the process survives.
         tokio::spawn(async move {
             let _ = child.wait().await;
         });

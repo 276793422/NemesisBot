@@ -2,7 +2,7 @@
 //!
 //! Tests store → persist → load → query roundtrips and edge cases.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use nemesis_memory::__test_fixture;
 use nemesis_memory::vector::{VectorEntry, VectorStore};
@@ -12,7 +12,7 @@ fn make_entry(id: &str, content: &str) -> VectorEntry {
         id: id.into(),
         entry_type: "long_term".into(),
         content: content.into(),
-        metadata: HashMap::new(),
+        metadata: BTreeMap::new(),
         tags: vec![],
         score: 0.0,
         created_at: chrono::Local::now().to_rfc3339(),

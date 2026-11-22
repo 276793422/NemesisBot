@@ -134,6 +134,24 @@ fn path_snippet_append_is_idempotent() -> Result<()> {
     Ok(())
 }
 
+/// BUG-20261122-046 回归锁：读失败（非 NotFound）不得按空默认误判
+/// 「哨兵缺席」→ 哨兵块重复追加（幂等承诺破）。目录占位 profile 读取
+/// 必失败且非 NotFound → 诚实 Err（错误信息带「读取 profile 失败」，
+/// 区别于旧形态走到打开腿的「打开 profile 失败」）。
+#[test]
+fn path_snippet_read_failure_is_honest() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let profile = tmp.path().join(".profile");
+    std::fs::create_dir(&profile)?; // 目录占位：read_to_string 必失败（EISDIR，非 ENOENT）
+
+    let err = append_path_snippet_at(&profile).unwrap_err();
+    assert!(
+        err.to_string().contains("读取 profile 失败"),
+        "错误应来自读腿（防误判重复追加）而非打开腿: {err}"
+    );
+    Ok(())
+}
+
 // ---------- 证书文件层（tempdir 注入，不碰真实信任库） ----------
 
 #[test]

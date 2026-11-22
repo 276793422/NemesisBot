@@ -154,6 +154,29 @@ impl ExternalChannel {
                 }
             };
 
+            // stderr 排水（BUG-20261123-002 同族）：input EXE 是长寿命通道
+            // 进程，piped 不排水 = 第三方 EXE 话痨 stderr 写满管道缓冲后整体
+            // 写阻塞——stdout 读循环再也收不到行，通道静默瘫痪。有帽行读落
+            // debug 日志；EOF/取消 kill 后随进程退出自然收尾（句柄 detach）。
+            if let Some(stderr) = child.stderr.take() {
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stderr);
+                    loop {
+                        match read_line_capped(&mut reader, MAX_EXTERNAL_LINE_BYTES).await {
+                            Ok(None) | Err(_) => break,
+                            Ok(Some((raw, truncated))) => {
+                                let line = String::from_utf8_lossy(&raw);
+                                tracing::debug!(
+                                    truncated,
+                                    line = %line.trim_end(),
+                                    "[ExternalChannel] input EXE stderr"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+
             let mut reader = BufReader::new(stdout);
             let mut cancel_rx = cancel_rx;
 

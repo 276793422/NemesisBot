@@ -8,9 +8,9 @@
 //! lifecycle management.
 
 use std::io::{Read, Write};
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Arc;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,10 @@ pub enum ProcessStatus {
     Terminated,
     Failed,
 }
+
+/// stderr 环形尾容量（字节）。排水线程只保留最近 16KB 作诊断面，
+/// 防话痨子进程无限吃宿主内存。
+const STDERR_TAIL_CAP_BYTES: usize = 16 * 1024;
 
 /// Represents a managed child process with piped I/O.
 pub struct ChildProcess {
@@ -45,8 +49,15 @@ pub struct ChildProcess {
     stdin_pipe: Option<ChildStdin>,
     /// Stdout pipe for reading data from the child.
     stdout_pipe: Option<ChildStdout>,
-    /// Stderr pipe for reading error output from the child.
-    stderr_pipe: Option<ChildStderr>,
+    /// stderr 后台排水的环形尾（最近 [`STDERR_TAIL_CAP_BYTES`] 字节）。
+    ///
+    /// BUG-20261123-002 同族：子进程（nemesisbot child_mode + plugin-ui
+    /// DLL）是长寿命进程且 stderr 话痨（child_mode 15+ eprintln!、Linux
+    /// GTK/WebKitGTK 运行期警告流）——piped 而不排水，写满 OS 管道缓冲后
+    /// 子进程写阻塞永久冻死（窗口失去响应 / approval 结果永不到达）。
+    /// spawn_child 起独立排水线程持续收走，本字段是保留最近字节的诊断面
+    /// （[`Self::stderr_snapshot`]）。
+    stderr_tail: Arc<Mutex<Vec<u8>>>,
     /// Flag indicating the child process has exited.
     exited: Arc<AtomicBool>,
 }
@@ -63,7 +74,7 @@ impl ChildProcess {
             created_at: SystemTime::now(),
             stdin_pipe: None,
             stdout_pipe: None,
-            stderr_pipe: None,
+            stderr_tail: Arc::new(Mutex::new(Vec::new())),
             exited: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -145,21 +156,14 @@ impl ChildProcess {
         }
     }
 
-    /// Read a chunk from stderr.
-    pub fn read_stderr_line(&mut self, buf: &mut Vec<u8>) -> Result<usize, String> {
-        if let Some(ref mut stderr) = self.stderr_pipe {
-            let mut tmp = [0u8; 4096];
-            match stderr.read(&mut tmp) {
-                Ok(0) => Ok(0),
-                Ok(n) => {
-                    buf.extend_from_slice(&tmp[..n]);
-                    Ok(n)
-                }
-                Err(e) => Err(format!("read stderr: {}", e)),
-            }
-        } else {
-            Ok(0)
-        }
+    /// Snapshot the drained stderr tail (most recent bytes last, capped at
+    /// [`STDERR_TAIL_CAP_BYTES`]).
+    ///
+    /// 取代旧 `read_stderr_line`（生产侧零调用、与排水线程抢同一管道）：
+    /// 排水职责已上移到 spawn_child 的专用线程，诊断面改为读快照。
+    pub fn stderr_snapshot(&self) -> String {
+        let tail = self.stderr_tail.lock().unwrap_or_else(|p| p.into_inner());
+        String::from_utf8_lossy(&tail).into_owned()
     }
 
     /// Terminate the process (graceful then forced).
@@ -212,11 +216,6 @@ impl ChildProcess {
     /// Get a reference to the stdout pipe.
     pub fn stdout(&self) -> Option<&ChildStdout> {
         self.stdout_pipe.as_ref()
-    }
-
-    /// Get a reference to the stderr pipe.
-    pub fn stderr(&self) -> Option<&ChildStderr> {
-        self.stderr_pipe.as_ref()
     }
 }
 
@@ -416,7 +415,34 @@ impl PlatformExecutor for DefaultPlatformExecutor {
         cp.child = Some(child);
         cp.stdin_pipe = stdin_pipe;
         cp.stdout_pipe = stdout_pipe;
-        cp.stderr_pipe = stderr_pipe;
+
+        // stderr 独立排水线程（BUG-20261123-002 同族）：piped 而无人读 =
+        // 话痨子进程（child_mode eprintln! / GTK 运行期警告）写满管道缓冲
+        // 后写阻塞冻死。线程持续收走并保留最近 16KB 到环形尾；子进程死亡
+        // （EOF）后自然退出，无需 join。孤儿孙进程继承句柄时线程随最后
+        // 写者退出，尾缓冲有界不吃内存（与 read_message_timeout 的 grandchild
+        // 语义一致）。
+        if let Some(stderr) = stderr_pipe {
+            let tail = Arc::clone(&cp.stderr_tail);
+            std::thread::spawn(move || {
+                let mut reader = stderr;
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let mut tail = tail.lock().unwrap_or_else(|p| p.into_inner());
+                            tail.extend_from_slice(&buf[..n]);
+                            let over = tail.len().saturating_sub(STDERR_TAIL_CAP_BYTES);
+                            if over > 0 {
+                                tail.drain(..over);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         cp.status = ProcessStatus::Running;
 
         info!("[ProcessManager] Child spawned with PID {}", pid);
@@ -493,10 +519,8 @@ impl PlatformExecutor for DefaultPlatformExecutor {
             drop(pipe);
         }
 
-        // Close stderr pipe
-        if let Some(pipe) = child.stderr_pipe.take() {
-            drop(pipe);
-        }
+        // stderr 管道归排水线程所有（spawn_child 起已移交）；kill 后 EOF
+        // 线程自退，无需也无法在此收。
 
         // Kill and wait for process if still alive
         if let Some(ref mut c) = child.child {

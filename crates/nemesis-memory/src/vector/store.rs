@@ -4,7 +4,7 @@
 //! embedded using the configured embedding function and stored for
 //! similarity-based retrieval.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use parking_lot::RwLock;
@@ -55,8 +55,11 @@ pub struct VectorEntry {
     /// Content text.
     pub content: String,
     /// Metadata key-value pairs.
+    /// BTreeMap：rewrite_persist_file 全量重写直接 `serde_json::to_string`
+    /// 落盘，HashMap 每进程随机种子 → 同内容相邻两次 rewrite 行内键序漂移
+    ///（BUG-20261122-045）。
     #[serde(default)]
-    pub metadata: HashMap<String, String>,
+    pub metadata: BTreeMap<String, String>,
     /// Tags.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -377,7 +380,7 @@ impl VectorStore {
     pub fn patch_entry_fields(
         &self,
         id: &str,
-        metadata: &HashMap<String, String>,
+        metadata: &BTreeMap<String, String>,
         tags: &[String],
         entry_type: Option<&str>,
         updated_at: Option<&str>,

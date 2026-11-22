@@ -1107,3 +1107,95 @@ async fn s2_external_send_broken_pipe_on_output_exe_logs_error() {
     let _ = std::fs::remove_file(&out_bat);
     ch.stop().await.unwrap();
 }
+
+// ===========================================================================
+// BUG-20261123-002 同族回归锁：input EXE 的 stderr 必须有排水任务——
+// 旧形态 stderr piped 无消费者，长寿命 input EXE stderr 洪泛（> 管道缓冲）
+// 后写阻塞冻死，stdout 的 READY 行永不到达总线（通道静默瘫痪判别面）。
+// 修复后 stderr 排水与 stdout 读并发，READY 照常发布。
+// Windows 臂用 .bat；Unix 臂 sh 脚本（Linux nightly 兜底）。
+// ===========================================================================
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn input_exe_stderr_flood_does_not_block_stdout_lines_windows() {
+    let in_bat = w4c_write_bat(
+        "w4c_ext_stderr_flood_in",
+        "@echo off\r\nfor /L %%i in (1,1,4000) do @echo 0123456789012345678901234567890123456789 1>&2\r\necho READY\r\nping -n 30 127.0.0.1 >nul\r\n",
+    );
+    let out_bat = w4c_write_bat("w4c_ext_stderr_flood_out", "@echo off\r\n");
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: in_bat.to_string_lossy().to_string(),
+        output_exe: out_bat.to_string_lossy().to_string(),
+        chat_id: "w4c-flood".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    // READY 行必须在窗口内到达（洪灌 ~164KB 先行，排水并发收走）。
+    let mut got = None;
+    for _ in 0..150 {
+        match rx.try_recv() {
+            Ok(msg) => {
+                got = Some(msg);
+                break;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(_) => break,
+        }
+    }
+    let msg = got
+        .expect("READY line never arrived: input EXE wedged writing to an undrained stderr pipe");
+    assert_eq!(msg.content, "READY");
+
+    let _ = std::fs::remove_file(&in_bat);
+    let _ = std::fs::remove_file(&out_bat);
+    ch.stop().await.unwrap();
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn input_exe_stderr_flood_does_not_block_stdout_lines_unix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let script = tmp.path().join("input_flood.sh");
+    std::fs::write(
+        &script,
+        "head -c 200000 /dev/zero 1>&2\necho READY\nsleep 30\n",
+    )
+    .unwrap();
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: script.to_string_lossy().to_string(),
+        output_exe: "true".to_string(),
+        chat_id: "flood-chat".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    let mut got = None;
+    for _ in 0..150 {
+        match rx.try_recv() {
+            Ok(msg) => {
+                got = Some(msg);
+                break;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(_) => break,
+        }
+    }
+    let msg = got
+        .expect("READY line never arrived: input EXE wedged writing to an undrained stderr pipe");
+    assert_eq!(msg.content, "READY");
+    ch.stop().await.unwrap();
+}

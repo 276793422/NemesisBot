@@ -1090,3 +1090,66 @@ async fn test_agent_last_channel_provider_serves_heartbeat_state_manager() {
         Arc::new(AgentLastChannelProvider::new(adapter2));
     assert_eq!(state2.get_last_channel(), "");
 }
+
+// -------------------------------------------------------------------------
+// 主循环监督任务体 agent_loop_supervisor_task（BUG-20261123-003）
+// -------------------------------------------------------------------------
+
+/// panic 任务死亡 + 非期望停机 → 退避后触发 restart 钩子。
+/// start_paused 虚拟时间自动推进（5s 轮询 + 1s 退避零真实等待；真实墙钟
+/// 上限仅作死锁兜底）。
+#[tokio::test(start_paused = true)]
+async fn supervisor_task_panic_death_triggers_restart_hook() {
+    let handle = Arc::new(tokio::spawn(async { panic!("supervised task boom") }));
+    let expected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let restarted = Arc::new(std::sync::Mutex::new(0usize));
+    let restarted_for_hook = Arc::clone(&restarted);
+    let hook: Option<Arc<dyn Fn() + Send + Sync>> =
+        Some(Arc::new(move || *restarted_for_hook.lock().unwrap() += 1));
+
+    let sup = tokio::spawn(super::agent_loop_supervisor_task(
+        Arc::clone(&handle),
+        Arc::clone(&expected),
+        hook,
+        0,
+    ));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while *restarted.lock().unwrap() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "restart hook never fired for panicked task"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    sup.abort();
+}
+
+/// 期望停机（expected=true，stop() 置位形态）→ 监督自行收班，钩子不触发。
+#[tokio::test(start_paused = true)]
+async fn supervisor_task_expected_stop_exits_without_restart() {
+    let handle = Arc::new(tokio::spawn(async {}));
+    let expected = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let restarted = Arc::new(std::sync::Mutex::new(0usize));
+    let restarted_for_hook = Arc::clone(&restarted);
+    let hook: Option<Arc<dyn Fn() + Send + Sync>> =
+        Some(Arc::new(move || *restarted_for_hook.lock().unwrap() += 1));
+
+    let sup = tokio::spawn(super::agent_loop_supervisor_task(handle, expected, hook, 0));
+    let _ = sup.await; // 首检见 expected=true 即退，不挂
+    assert_eq!(
+        *restarted.lock().unwrap(),
+        0,
+        "expected stop must not trigger restart hook"
+    );
+}
+
+/// 无钩子（未装配）+ panic 死亡 → 只 error! 留痕臂：监督自行退出不挂、
+/// 不 panic（测试进程内 panic 由被监督任务自身产生，与本任务无关）。
+#[tokio::test(start_paused = true)]
+async fn supervisor_task_death_without_hook_exits_cleanly() {
+    let handle = Arc::new(tokio::spawn(async { panic!("boom without hook") }));
+    let expected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sup = tokio::spawn(super::agent_loop_supervisor_task(handle, expected, None, 0));
+    let _ = sup.await;
+}

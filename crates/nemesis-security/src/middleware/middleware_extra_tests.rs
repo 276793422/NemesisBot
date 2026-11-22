@@ -1094,6 +1094,46 @@ async fn extra_process_spawn_blocked_by_preset() {
     assert!(result.is_err());
 }
 
+// BUG-20261123-002 同族回归锁：detached spawn 的 stdio 必须 null——旧形态
+// piped + 后台任务只 wait 不排水，子进程 stdout 洪泛（> 管道缓冲）即写
+// 阻塞冻死，洪泛之后的语句永不执行。本用例「先洪泛后写 marker」：null
+// 修复后 marker 在窗口内出现；旧形态下子进程卡死在洪泛上 marker 永不
+// 出现（判别面）。末尾 kill 收尸（含旧形态下卡死的子进程）。
+#[tokio::test]
+async fn extra_process_spawn_flood_before_marker_still_completes() {
+    let mw = make_middleware_with_preset(PermissionPreset::Elevated, "allow");
+    let w = SecureProcessWrapper::new(&mw);
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("spawn_flood_marker.txt");
+    let m = marker.to_string_lossy().to_string();
+    // ~200KB stdout 洪泛先行，marker 写入殿后。
+    let cmd = if cfg!(target_os = "windows") {
+        format!(
+            "(for /L %i in (1,1,4000) do @echo 0123456789012345678901234567890123456789) & type nul > \"{m}\""
+        )
+    } else {
+        format!("head -c 200000 /dev/zero | tr '\\0' x; : > \"{m}\"")
+    };
+    let pid = w.spawn(&cmd).await.expect("spawn");
+    assert!(pid > 0);
+
+    let mut appeared = false;
+    for _ in 0..100 {
+        if marker.exists() {
+            appeared = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        appeared,
+        "marker never appeared: detached child wedged writing to an \
+         undrained pipe (spawn stdio must be null)"
+    );
+    // 收尸：洪泛完成后子进程大多已自行退出（kill 对死 pid 是无害报错面）。
+    let _ = w.kill(pid).await;
+}
+
 #[tokio::test]
 async fn extra_process_kill_returns_ok_for_invalid_pid() {
     let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");

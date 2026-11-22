@@ -98,6 +98,11 @@ mod exec_timeout_tests;
 // 裁决纯函数全平台单测；真进程 e2e 用例 unix 门控。
 #[cfg(test)]
 mod exec_async_signal_tests;
+// AsyncExecTool stdio 恒 null 回归（BUG-20261123-002 同族）：旧普通臂
+// piped 在「still running」臂 drop Child 关读端——Unix SIGPIPE 杀后台命令。
+// unix 门控 e2e 锁「返回后写 stdout 仍存活」；全平台契约 smoke。
+#[cfg(test)]
+mod exec_async_stdio_tests;
 // exec deny 词表接线测试（2026-11-08 激活 tools.exec.* 死键：
 // 默认词表/替换语义/全无效回落/execute 拒绝面/异步同源）。
 #[cfg(test)]

@@ -2358,8 +2358,6 @@ impl Tool for AsyncExecTool {
                 c.arg("-c").arg(command);
                 c
             };
-            // workspace-dacl 受限模式下 std piped 必死
-            //（ShellOutputCapture 注释）；本工具本就不读输出 → 直接 null。
             c.current_dir(cwd);
             // console 治理与五工具同源（黑窗根修：普通模式默认臂
             // 即 CREATE_NO_WINDOW；本工具不在 MOVE_TOOLS、gateway 从不把
@@ -2376,17 +2374,17 @@ impl Tool for AsyncExecTool {
             if stripped > 0 {
                 debug!("[Tools] env sanitized: {stripped} vars stripped");
             }
-            if ShellOutputCapture::is_restricted() {
-                c.stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-            } else {
-                c.stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-            }
-            .spawn()
-            .map_err(|e| format!("Failed to start command: {}", e))?
+            // stdio 恒 null（BUG-20261123-002 同族）：本工具不读输出——piped
+            // 的 Child 在「still running」臂随函数返回被 drop，管道读端随之
+            // 关闭：Unix 侧常驻命令首次写 stdout 即 SIGPIPE 静默死亡（Windows
+            // 侧写错误），「后台启动」契约被管道配置亲手破坏；workspace-dacl
+            // 受限令牌下 piped 本就必死（ShellOutputCapture 注释）。两臂统一
+            // 为三 null，contract = 后台进程对 stdio 写入永远安全。
+            c.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| format!("Failed to start command: {}", e))?
         };
 
         // Wait briefly to confirm startup

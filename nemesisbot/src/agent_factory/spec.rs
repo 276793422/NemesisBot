@@ -346,7 +346,9 @@ pub fn build_agent_loop_from_spec(
     // 项目 loop 与主 loop 同源路由 config（web 会话键预置
     // agent: 前缀走 honor 分支不受影响；缺省 = 硬编码默认同形零回归）。
     agent_loop.set_route_resolver(build_route_resolver(&cfg));
-    agent_loop.set_identity_links(cfg.session.identity_links.clone());
+    // config 侧 identity_links 已 BTreeMap 化（BUG-20261122-045 字节确定性），
+    // routing 运行时链保持 HashMap（读侧 session_key 已排序兜底），显式收集桥接。
+    agent_loop.set_identity_links(cfg.session.identity_links.clone().into_iter().collect());
     // D-4（多会话并行清账）：项目 loop 同主 loop——并发 turn
     // 上限安全阀（同会话仍串行）。
     agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);

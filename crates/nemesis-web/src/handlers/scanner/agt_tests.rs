@@ -215,14 +215,14 @@ async fn agt_update_db_inner_prefers_data_dir_and_fails_without_freshclam() {
     assert!(err2.contains("freshclam not found"), "err2: {err2}");
 }
 
-// BUG-20261121-021：批量引擎检查名清单按名字典序——engines 是 HashMap，
+// BUG-20261121-021：批量引擎检查名清单按名字典序——engines 已 BTreeMap 化（BUG-20261122-045），
 // 迭代序跨进程随机（RandomState 每进程换种），无序 collect 直出 =
 // `scanner check` 结果数组顺序随重启漂移；与 build_all_engines_status
 // 的 sort_by(name) 口径对齐。点名路径单元素透传、空表返回空。
 
 #[test]
 fn agt_scanner_check_names_deterministic_order() {
-    let mk = |names: &[&str]| -> std::collections::HashMap<String, serde_json::Value> {
+    let mk = |names: &[&str]| -> std::collections::BTreeMap<String, serde_json::Value> {
         names
             .iter()
             .map(|n| (n.to_string(), serde_json::json!({ "type": "clamav" })))
@@ -239,8 +239,8 @@ fn agt_scanner_check_names_deterministic_order() {
     assert_eq!(names, vec!["zulu"]);
 
     // 点名 + 空 map：同上透传（历史行为：逐名 get 缺失 continue）。
-    let empty: std::collections::HashMap<String, serde_json::Value> =
-        std::collections::HashMap::new();
+    let empty: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
     let names = ordered_engine_check_names(Some("any"), &empty);
     assert_eq!(names, vec!["any"]);
 

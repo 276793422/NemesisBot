@@ -8,7 +8,7 @@ pub struct ScannerFullConfig {
     #[serde(default)]
     pub enabled: Vec<String>,
     #[serde(default)]
-    pub engines: std::collections::HashMap<String, serde_json::Value>,
+    pub engines: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Engine state tracking for scanner engines.

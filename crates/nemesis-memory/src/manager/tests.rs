@@ -888,7 +888,7 @@ async fn test_store_entry_with_metadata() {
     let config = Config::new(dir.path());
     let mgr = MemoryManager::new(&config);
 
-    let mut meta = HashMap::new();
+    let mut meta = BTreeMap::new();
     meta.insert("source".to_string(), "test".to_string());
     let entry = Entry::new(MemoryType::LongTerm, "metadata test".to_string()).with_metadata(meta);
 
