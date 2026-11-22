@@ -41,3 +41,33 @@ fn skipped_midnight_does_not_panic_and_lands_after_transition() {
     let now = Havana.with_ymd_and_hms(2026, 3, 7, 14, 0, 0).unwrap();
     assert_eq!(secs_until_next_local_midnight(now), 10 * 3600);
 }
+
+/// BUG-20261122-033 回归锁：spawn_daily_cleanup 的 per-label once-guard。
+///
+/// 缺陷背景：`build_*_agent_loop` 在 agent 重建（persona 激活/恢复/
+/// 删除-active 的 restart_agent stop→start 链、集群人格切换）时会再跑——
+/// 旧形态无闸，每次重建叠加一个 immortal 午夜清理任务并钉住一份建时快照
+/// 的陈旧 SessionStore（兄弟 sweep spawn_rpc_cache_cleanup /
+/// spawn_daily_spill_cleanup 各自带进程级 OnceGuard，本 sweep 因有
+/// Main/Cluster 两个调用方而漏挂）。修复 = 按 label 分桶：同 label 重复
+/// 调用跳过（返回 false），不同 label 各自放行（两条构建线互不吞并）。
+#[tokio::test]
+async fn daily_cleanup_once_guard_is_per_label() {
+    let store = std::sync::Arc::new(nemesis_agent::session::SessionStore::new_in_memory());
+    assert!(
+        super::shared::spawn_daily_cleanup(store.clone(), "bugfix-r2346-guard-a", None),
+        "首次调用（未见于守卫表）必须放行 spawn"
+    );
+    assert!(
+        !super::shared::spawn_daily_cleanup(store, "bugfix-r2346-guard-a", None),
+        "同 label 二次调用必须跳过——agent 重建再入工厂不叠加午夜任务"
+    );
+    assert!(
+        super::shared::spawn_daily_cleanup(
+            std::sync::Arc::new(nemesis_agent::session::SessionStore::new_in_memory()),
+            "bugfix-r2346-guard-b",
+            None,
+        ),
+        "不同 label 必须各自放行——Main/Cluster 分桶互不吞并"
+    );
+}

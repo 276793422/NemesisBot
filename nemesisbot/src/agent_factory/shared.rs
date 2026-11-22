@@ -1640,6 +1640,18 @@ pub(super) fn secs_until_next_local_midnight<Tz: chrono::TimeZone>(
         .max(60) as u64
 }
 
+/// Per-label once-guard registry（BUG-20261122-033）：`build_*_agent_loop`
+/// 在 agent 重建（persona 激活/恢复/删除-active 的 restart_agent stop→start
+/// 链、集群人格切换）时会再跑——不设闸的话每次重建都叠加一个 immortal 午夜
+/// 清理任务，并钉住一份建时快照的陈旧 SessionStore（内存会话 map 不随重建
+/// 释放，长驻 gateway 随切换次数线性增长）。与
+/// [`spawn_rpc_cache_cleanup`] / [`spawn_daily_spill_cleanup`] 的进程级
+/// OnceGuard 同族纪律；本 sweep 有 Main/Cluster 两个调用方，闸按 label
+/// 分桶——两条构建线互不吞并（Cluster 首建不因 Main 先行而丢清扫）。
+static DAILY_CLEANUP_SPAWNED_LABELS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<&'static str>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
 /// Spawn a background task that runs `cleanup_old_sessions(7)` every day at local midnight.
 ///
 /// The task sleeps until the next local midnight, runs cleanup, then loops.
@@ -1647,12 +1659,22 @@ pub(super) fn secs_until_next_local_midnight<Tz: chrono::TimeZone>(
 /// no further cleanups run — startup cleanup in `build_*_agent_loop` covers
 /// the next start.
 ///
-/// `label` is used for logging only ("Main" / "Cluster").
+/// `label` 兼任 once-guard 分桶键（"Main" / "Cluster"）：同 label 重复调用
+/// （agent 重建再入工厂）直接跳过并返回 `false`。午夜清扫是磁盘驱动
+/// （`cleanup_old_sessions_detailed` 走 read_dir + remove_file，删除一次
+/// 性——并发实例不会双触发 SessionEnd），首个实例足以覆盖；重复实例只会
+/// 白扫目录 + 钉死陈旧 store 快照。返回 `true` = 本调用负责 spawn。
 pub(super) fn spawn_daily_cleanup(
     store: Arc<nemesis_agent::session::SessionStore>,
-    label: &str,
+    label: &'static str,
     cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
-) {
+) -> bool {
+    {
+        let mut spawned = DAILY_CLEANUP_SPAWNED_LABELS.lock().unwrap();
+        if !spawned.insert(label) {
+            return false;
+        }
+    }
     let label = label.to_string();
     tokio::spawn(async move {
         loop {
@@ -1692,6 +1714,7 @@ pub(super) fn spawn_daily_cleanup(
             }
         }
     });
+    true
 }
 
 /// rpc_cache continuation-snapshot TTL sweep (mirrors `spawn_daily_cleanup`).

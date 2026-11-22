@@ -655,6 +655,9 @@ fn attach_semantic_embedder_none_and_with_memory_both_no_panic() {
 // 的 spawn 扫盘在并行测试下不确定会让断言 flake。扫盘分支代码
 // 由空目录路径吃到（stale_task_ids 在空目录上返回空集）。spill/SessionStore
 // 清扫（deleted>0 → info!）才是确定性断言目标。
+// BUG-20261122-033 起 SessionStore 午夜任务（spawn_daily_cleanup）与
+// rpc_cache 同族 once-guard（按 label 分桶）——同 label 只首个 build spawn；
+// 启动同步清扫不受影响仍逐 build 执行，断言面不变。
 // 798-817（log_cb tool_call 等臂）：callback 是私有闭包、仅经 loop 的
 // emit_observer_sync 在真实 LLM 轮次触发，standalone 无法注入 trace_id
 // —— 结构性放弃，不在此批覆盖。
