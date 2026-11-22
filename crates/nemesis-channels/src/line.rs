@@ -499,6 +499,12 @@ impl Channel for LineChannel {
                     Ok(s) => s,
                     Err(e) => {
                         warn!("[LineChannel] webhook accept error: {e}");
+                        // accept 错误退避（BUG-20261122-019）：裸 continue 在
+                        // Windows WSAECONNRESET 重置风暴（扫描/健康检查连后
+                        // 即 RST）下是热自旋——分诊退避单一真相源
+                        // nemesis_utils::accept_retry。
+                        tokio::time::sleep(nemesis_utils::accept_retry::accept_error_backoff(&e))
+                            .await;
                         continue;
                     }
                 };

@@ -301,9 +301,12 @@ impl OAuthProviderConfig {
             let (stream, _) = match listener.accept().await {
                 Ok(v) => v,
                 // accept 常见 per-connection 瞬态（连接在 accept 前被对端
-                // 重置等），继续收下一个；外层超时兜底。
+                // 重置等），继续收下一个；外层超时兜底。退避（
+                // BUG-20261122-019）：300s 窗口内的 RST 风暴（本地扫描/
+                // 健康检查连后即 RST）无退避 continue 就是热自旋。
                 Err(e) => {
                     tracing::warn!(error = %e, "[oauth] callback accept failed, continuing");
+                    tokio::time::sleep(nemesis_utils::accept_retry::accept_error_backoff(&e)).await;
                     continue;
                 }
             };

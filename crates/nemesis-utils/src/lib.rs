@@ -16,6 +16,9 @@ pub mod child_decode;
 pub mod degraded;
 pub mod file;
 pub mod fsutil;
+// TCP accept 循环韧性退避（BUG-20261122-019）：瞬态/资源耗尽/未知三分诊
+// + 差异化退避——家族正解先例 nemesis-guest::serve_tcp 收敛为共享 API。
+pub mod accept_retry;
 // HTTP 响应体流式累计闸（BUG-20261107-005）：「bytes() 全量读入后才查上限」
 // 形态的 workspace 共享单一真相源——读入中途超限即断。同 media/http_retry
 // 走 http 门控（reqwest 不进未启用方的依赖图）。

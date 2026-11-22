@@ -287,26 +287,17 @@ impl GuestAgent {
 
 /// accept 瞬态错误判定（`serve_tcp` 韧性）：连接级抖动重试即可恢复；
 /// 不在表内的错误（listener 本体损坏）传播退出。
+///
+/// 实现下沉共享层（BUG-20261122-019，薄委托——分类单一真相源
+/// `nemesis_utils::accept_retry`，家族先例=本文件原实现）。
 fn transient_accept_error(e: &std::io::Error) -> bool {
-    use std::io::ErrorKind;
-    matches!(
-        e.kind(),
-        ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
-    ) || resource_exhausted_accept(e)
+    nemesis_utils::accept_retry::transient_accept_error(e)
 }
 
-/// accept 的资源耗尽类错误（EMFILE/ENFILE/ENOMEM/ENOBUFS）：Rust 的
-/// `ErrorKind` 对 fd 耗尽族无稳定映射（落 Uncategorized），按 raw OS
-/// 错误码判定。非 unix 恒 false（Windows accept 无此错误族）。
-#[cfg(unix)]
+/// accept 的资源耗尽类错误（EMFILE/ENFILE/ENOMEM/ENOBUFS）——实现下沉
+/// 共享层（薄委托）。
 fn resource_exhausted_accept(e: &std::io::Error) -> bool {
-    // musl/glibc 同值：EMFILE=24 ENFILE=23 ENOMEM=12 ENOBUFS=105。
-    matches!(e.raw_os_error(), Some(24) | Some(23) | Some(12) | Some(105))
-}
-
-#[cfg(not(unix))]
-fn resource_exhausted_accept(_e: &std::io::Error) -> bool {
-    false
+    nemesis_utils::accept_retry::resource_exhausted_accept(e)
 }
 
 /// 常数时间字符串比较（token 比对用）。XOR 折叠全字节——长度不同立即

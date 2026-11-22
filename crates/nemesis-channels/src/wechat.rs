@@ -748,6 +748,10 @@ impl WeChatChannel {
                     Ok(s) => s,
                     Err(e) => {
                         warn!(error = %e, "[WeChatChannel] callback accept error");
+                        // accept 错误退避（BUG-20261122-019，line.rs 同款）：
+                        // 裸 continue 在重置风暴下热自旋。
+                        tokio::time::sleep(nemesis_utils::accept_retry::accept_error_backoff(&e))
+                            .await;
                         continue;
                     }
                 };

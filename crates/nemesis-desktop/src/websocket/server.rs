@@ -270,6 +270,11 @@ impl WebSocketServer {
                     }
                     Err(e) => {
                         warn!("[WebSocketServer] Accept error: {}", e);
+                        // accept 错误退避（BUG-20261122-019）：无退避的循环
+                        // 在重置风暴下热自旋（子窗口 WS 端口同样会被本地
+                        // 进程反复敲）。
+                        tokio::time::sleep(nemesis_utils::accept_retry::accept_error_backoff(&e))
+                            .await;
                     }
                 }
             }
