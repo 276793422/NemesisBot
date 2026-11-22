@@ -64,13 +64,9 @@ pub(super) fn inject_project_spawn_fn(
     // `__ASYNC__` 路径）入册时 loop 自己读（该路径在 loop 内部
     // tool_batch，够不着本闭包）。主 loop 不经此函数，缺省 `main`。
     loop_arc.set_loop_origin(loop_origin);
-    use std::sync::atomic::{AtomicU64, Ordering};
     let weak = Arc::downgrade(loop_arc);
     let bus = bus.clone();
     let loop_origin = loop_origin.to_string();
-    // 后台任务 id 计数器（同毫秒并发 spawn 防撞；与主 spawn 各自独立，
-    // task_id 带毫秒时间戳全局唯一性由时间戳承载）。
-    static BG_SPAWN_COUNTER: AtomicU64 = AtomicU64::new(0);
     let _ = spawn_slot.set(Arc::new(
         move |agent_id: &str,
               task: &str,
@@ -310,12 +306,12 @@ pub(super) fn inject_project_spawn_fn(
                 if let Some(bridge) = &cc_bridge {
                     bridge.dispatch_subagent_start(&info).await?;
                 }
-                let task_id = format!(
-                    "{}{}_{}",
-                    nemesis_agent::loop_continuation::BG_SPAWN_TASK_PREFIX,
-                    chrono::Utc::now().timestamp_millis(),
-                    BG_SPAWN_COUNTER.fetch_add(1, Ordering::Relaxed),
-                );
+                // task_id 取号走 loop_continuation 单一真相源
+                // next_bg_spawn_task_id（BUG-20261123-014：与主 spawn 各持
+                // per-file 计数器的旧形态在同毫秒等值时碰撞 → bg_park 槽
+                // 覆盖串台；「唯一性由时间戳承载」的前提失实——时间戳只有
+                // 1ms 粒度，同毫秒消歧靠计数器，计数器必须单例）。
+                let task_id = nemesis_agent::loop_continuation::next_bg_spawn_task_id();
                 let bg_agent_id = info.agent_id.clone();
                 let bg_task = info.task.clone();
                 let bg_profile = info.tools_profile.clone();

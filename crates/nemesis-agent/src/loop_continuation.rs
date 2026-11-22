@@ -587,10 +587,32 @@ impl ContinuationStore {
 // ---------------------------------------------------------------------------
 
 /// (devtool-upgrade)：后台 subagent 任务 ID 统一前缀。
-/// 生成端 = agent_factory 注入的 spawn 闭包（`bg_{millis}_{counter}`），
-/// 恢复端 = [`ContinuationManager::list_bg_spawn_pending_sync`]（按前缀筛
-/// pending 快照）。统一定义，防两端漂移。
+/// 生成端 = [`next_bg_spawn_task_id`]（本模块单一真相源），恢复端 =
+/// [`ContinuationManager::list_bg_spawn_pending_sync`]（按前缀筛 pending
+/// 快照）。统一定义，防两端漂移。
 pub const BG_SPAWN_TASK_PREFIX: &str = "bg_";
+
+/// 后台 subagent 任务 ID 单一真相源：`{BG_SPAWN_TASK_PREFIX}{millis}_{seq}`。
+///
+/// 计数器必须是进程级单例——曾经 agent_factory 的主 spawn（shared.rs）与
+/// 项目 spawn（project.rs）两路各持一份 per-file `static BG_SPAWN_COUNTER`，
+/// 两路在同一毫秒内各派发一个后台子代理且计数值相等（重启后首派 = 0 对
+/// 0）时产出同一 task_id；`bg_park` 的注册槽是 `HashMap::insert` 覆盖语义，
+/// 同 id 第二注册会把第一任务的投递目标（session_key/chat_id）覆盖成第二
+/// 任务的父亲会话——完成回灌时结果跨会话串台（BUG-20261123-014）。时间戳
+/// 只有 1ms 粒度，同毫秒消歧的唯一裁决者就是计数器：命名空间全局唯一性由
+/// 「单一计数器」承载，不由时间戳承载。恢复端只按前缀筛（`starts_with`），
+/// 不解析 millis/counter——本函数是唯一取号入口，新增 spawn 面禁止自持
+/// 计数器。
+pub fn next_bg_spawn_task_id() -> String {
+    static BG_SPAWN_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{}{}_{}",
+        BG_SPAWN_TASK_PREFIX,
+        chrono::Utc::now().timestamp_millis(),
+        BG_SPAWN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    )
+}
 
 /// Manages continuation snapshots with the save-barrier pattern.
 ///
