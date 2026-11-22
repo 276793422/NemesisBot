@@ -382,3 +382,87 @@ async fn read_actions_allow_numeric_count_and_plain_paths() {
         "plain path must pass through, got: {diff}"
     );
 }
+
+// --- BUG-20261123-004：失败文本走 stdout 的命令被三态当成功上报 ------------
+// 阳性对照实证：`git stash pop` 冲突 = CONFLICT 行+状态打 stdout、stderr 空、
+// exit 1。旧三态「stdout 非空即 Ok」把冲突当成功；修后 success 旗标优先，
+// stderr 空 → stdout 兜底 detail，Err 语义对齐 commit 专用路径。
+
+#[tokio::test]
+async fn stash_pop_conflict_is_honest_err() {
+    let tmp = TempDir::new().unwrap();
+    assert!(init_repo(tmp.path()), "git must be available");
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+
+    write_file(tmp.path(), "f.txt", "base\n");
+    run(&tool, r#"{"action":"add","paths":"f.txt"}"#)
+        .await
+        .unwrap();
+    run(&tool, r#"{"action":"commit","message":"base"}"#)
+        .await
+        .unwrap();
+
+    // 本地修改 → stash → 上游推进同一文件 → pop 必冲突
+    write_file(tmp.path(), "f.txt", "mine\n");
+    run(&tool, r#"{"action":"stash","args":"push"}"#)
+        .await
+        .expect("stash push must succeed");
+    write_file(tmp.path(), "f.txt", "theirs\n");
+    run(&tool, r#"{"action":"add","paths":"f.txt"}"#)
+        .await
+        .unwrap();
+    run(&tool, r#"{"action":"commit","message":"upstream"}"#)
+        .await
+        .unwrap();
+
+    let err = run(&tool, r#"{"action":"stash","args":"pop"}"#)
+        .await
+        .expect_err("conflict pop must be an honest Err, not a false-success Ok");
+    assert!(
+        err.contains("git stash failed"),
+        "conflict must map to Err with the shared failure prefix, got: {err}"
+    );
+    assert!(
+        err.contains("CONFLICT"),
+        "stdout-borne conflict detail must be surfaced in the Err, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn stash_roundtrip_and_no_stash_err_unregressed() {
+    let tmp = TempDir::new().unwrap();
+    assert!(init_repo(tmp.path()), "git must be available");
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+
+    // 干净路径不回归：push → pop 正常往返（stdout 非空 + success → Ok）
+    write_file(tmp.path(), "f.txt", "work\n");
+    run(&tool, r#"{"action":"add","paths":"f.txt"}"#)
+        .await
+        .unwrap();
+    run(&tool, r#"{"action":"commit","message":"c1"}"#)
+        .await
+        .unwrap();
+    write_file(tmp.path(), "f.txt", "wip\n");
+    let pushed = run(&tool, r#"{"action":"stash","args":"push"}"#)
+        .await
+        .expect("stash push must succeed");
+    assert!(!pushed.contains("failed"), "got: {pushed}");
+    let popped = run(&tool, r#"{"action":"stash","args":"pop"}"#)
+        .await
+        .expect("clean stash pop must stay Ok");
+    assert!(
+        popped.contains("f.txt") || !popped.contains("failed"),
+        "got: {popped}"
+    );
+    let restored = std::fs::read_to_string(tmp.path().join("f.txt")).unwrap();
+    assert_eq!(restored, "wip\n", "pop must restore stashed content");
+
+    // 空 stash 报错不回归：stdout 空 + stderr "No stash entries found" → Err
+    let err = run(&tool, r#"{"action":"stash","args":"pop"}"#)
+        .await
+        .expect_err("pop with empty stash must stay an Err");
+    assert!(
+        err.contains("git stash failed") && err.contains("No stash entries"),
+        "got: {err}"
+    );
+}
