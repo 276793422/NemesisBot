@@ -848,13 +848,15 @@ fn move_dir_contents(src_dir: &std::path::Path, dst_dir: &std::path::Path) -> Re
                     e
                 ))
             })?;
-            std::fs::write(&dst_path, &data).map_err(|e| {
-                NemesisError::Other(format!(
-                    "failed to write {}: {}",
-                    file_name.to_string_lossy(),
-                    e
-                ))
-            })?;
+            // 原子落盘（BUG-20261123-007，家族唯一真相源）。
+            nemesis_utils::file::write_file_atomic(&dst_path.to_string_lossy(), &data, 0o644)
+                .map_err(|e| {
+                    NemesisError::Other(format!(
+                        "failed to write {}: {}",
+                        file_name.to_string_lossy(),
+                        e
+                    ))
+                })?;
         }
     }
 

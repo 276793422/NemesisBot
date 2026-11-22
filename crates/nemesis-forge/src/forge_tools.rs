@@ -979,9 +979,20 @@ impl ForgeToolExecutor {
                 .join(format!("{}-forge", skill_slug));
             // 副本失败 WARN 留痕不回滚：registry 内容已在上方更新、forge 主
             // 副本在，缺副本=skills 列表看不见新版（横扫族 C 四轮，2026-11-06）。
-            let copy_result = match tokio::fs::create_dir_all(&skills_dir).await {
-                Ok(()) => tokio::fs::write(skills_dir.join("SKILL.md"), &content).await,
-                Err(e) => Err(e),
+            // 原子落盘（BUG-20261123-007）：副本是 skills 列表消费的权威载荷，
+            // 走家族唯一真相源（async 版委托 sync 单点）；失败 WARN 留痕
+            // 不回滚语义不变。
+            let copy_result: Result<(), String> = match tokio::fs::create_dir_all(&skills_dir).await
+            {
+                Ok(()) => {
+                    nemesis_utils::file::write_file_atomic_async(
+                        &skills_dir.join("SKILL.md"),
+                        content.as_bytes(),
+                        0o644,
+                    )
+                    .await
+                }
+                Err(e) => Err(e.to_string()),
             };
             if let Err(e) = copy_result {
                 tracing::warn!(

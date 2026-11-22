@@ -654,8 +654,13 @@ impl ModelScopeRegistry {
                     )));
                 }
             }
-            std::fs::write(&dest, content)
-                .map_err(|e| NemesisError::Other(format!("write failed: {}", e)))?;
+            // 原子落盘（BUG-20261123-007，家族唯一真相源）。
+            nemesis_utils::file::write_file_atomic(
+                &dest.to_string_lossy(),
+                content.as_bytes(),
+                0o644,
+            )
+            .map_err(|e| NemesisError::Other(format!("write failed: {}", e)))?;
         }
 
         Ok(InstallResult {
