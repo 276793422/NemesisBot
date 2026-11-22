@@ -201,13 +201,18 @@ pub fn build_inventory(
             .unwrap_or(0);
 
     // memory 统计（feature 门控；复用 memory handler 的 stats 投影）。
+    // config_dir 与 memory.rs WSAPI 主路径同源（nemesis_path::
+    // workspace_config_dir —— <workspace>/config 单一真相源）。此前手搓
+    // home.join("config") 是错层路径（<home>/config ≠ <home>/workspace/config，
+    // BUG-20261122-042）：生产 home 恒 Some（web_init.rs 装配），每次资产页
+    // 查询 / skills 安装刷新都会在 <home>/config 下 load-or-create 默认
+    // embedding 配置 = 错位置写盘 + 统计读错文件；home=None 臂更落
+    // Path::new("")（相对进程 cwd 落盘——crate 源码树被测试进程污染的实锤
+    // 现场）。workspace 参数就在手边，直接同源，home 不参与本段。
     #[cfg(feature = "memory")]
     let memory = {
-        let config_dir = home.map(|h| PathBuf::from(h).join("config"));
-        match crate::handlers::memory::MemoryHandler.stats(
-            config_dir.as_deref().unwrap_or(std::path::Path::new("")),
-            workspace,
-        ) {
+        let config_dir = nemesis_path::workspace_config_dir(std::path::Path::new(workspace));
+        match crate::handlers::memory::MemoryHandler.stats(&config_dir, workspace) {
             Ok(Some(mut v)) => {
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert("enabled".into(), json!(state.memory_manager.is_some()));

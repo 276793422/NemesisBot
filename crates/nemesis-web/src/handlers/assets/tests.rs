@@ -199,3 +199,110 @@ fn write_snapshot_creates_dirs_and_parses_back() {
     // 幂等重写（周期刷新同路径覆盖）。
     write_snapshot(ws.to_str().unwrap(), &doc).expect("rewrite is idempotent");
 }
+
+// BUG-20261122-042 回归：build_inventory 的 memory 统计 config_dir 错层/
+// 空路径。修复前 assets.rs 手搓 `home.join("config")`（错层：<home>/config
+// ≠ <home>/workspace/config 真相源——生产 home 恒 Some，每次资产页查询 /
+// skills 安装刷新都在 <home>/config 下 load-or-create 默认 embedding 配置
+// = 错位置写盘 + 统计读错文件）；home=None 臂更兜底 `Path::new("")`
+// （load_embedding_config("") = 相对进程 cwd 落盘——crate 源码树被测试
+// 进程撒 config.enhanced_memory.json 的实锤现场）。修复后与 memory.rs
+// WSAPI 主路径同源（nemesis_path::workspace_config_dir(workspace)）。
+// 本测试 home=None + tempdir workspace：断言 embedding 配置 load-or-create
+// 落在 <workspace>/config/ 真相源、进程 cwd 无落盘。
+// 字面量 AppState 构造打破本文件「不测聚合主函数」的既有口径，理由：
+// 聚合函数存在路径副作用回归且缺陷恰在聚合装配段（段函数测不到）。
+#[cfg(feature = "memory")]
+#[test]
+fn memory_stats_config_dir_follows_workspace_truth_source() {
+    use crate::api_handlers::AppState;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::time::Instant;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ws = dir.path().to_string_lossy().to_string();
+    let state = Arc::new(AppState {
+        cors_manager: None,
+        events_snapshot: None,
+        auth_token: String::new(),
+        session_count: Arc::new(AtomicUsize::new(0)),
+        workspace: Some(ws.clone()),
+        home: None, // 缺陷臂：home 缺失曾兜底空路径 → 相对 cwd 落盘
+        version: "test".to_string(),
+        start_time: Instant::now(),
+        model_name: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
+        event_hub: Arc::new(crate::events::EventHub::new()),
+        running: Arc::new(AtomicBool::new(true)),
+        session_manager: Arc::new(crate::session::SessionManager::with_default_timeout()),
+        inbound_tx: None,
+        streaming_provider: None,
+        ws_router: None,
+        agent_service: None,
+        data_store: None,
+        memory_manager: None,
+        forge: None,
+        agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+        cluster: None,
+        quic_relay: None,
+        mail_plugin: None,
+        cluster_service: None,
+        cluster_log_dir: None,
+        workflow_engine: None,
+        // AppState 双声明字段（workflow 门控真臂 / `Arc<()>` stub 臂）——
+        // per-combo 构造让本测试在任意 feature 组合下编译（fork_route_tests
+        // make_state 同款形态）。
+        #[cfg(feature = "workflow")]
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(feature = "workflow")]
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
+        internal_cmd_tx: None,
+        estop: None,
+        estop_audit: None,
+        background_registry: None,
+        signature_verify: None,
+        skills_install_gate: None,
+        session_stats: None,
+        cron: None,
+        board: None,
+    });
+
+    let cwd_file = std::env::current_dir()
+        .expect("cwd")
+        .join("config.enhanced_memory.json");
+    let had_cwd_file = cwd_file.exists();
+
+    let out = super::build_inventory(&state, &ws, None);
+
+    assert_eq!(
+        out["memory"]["enabled"], false,
+        "memory_manager 未装配 = enabled false（诚实缺省）"
+    );
+    assert!(
+        out["memory"]["active_tier"].is_string(),
+        "stats 走通（active_tier 来自 embedding 配置，config_dir 由 workspace 真相源解析）: {}",
+        out["memory"]
+    );
+    assert!(
+        dir.path()
+            .join("config")
+            .join("config.enhanced_memory.json")
+            .exists(),
+        "embedding 配置 load-or-create 落在 <workspace>/config/ 真相源"
+    );
+    if !had_cwd_file {
+        assert!(
+            !cwd_file.exists(),
+            "BUG-20261122-042 回归：默认 embedding 配置被写到进程 cwd（{}）",
+            cwd_file.display()
+        );
+    }
+}
