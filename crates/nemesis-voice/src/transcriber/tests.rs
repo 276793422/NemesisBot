@@ -864,3 +864,49 @@ async fn test_transcribe_bytes_url_construction_with_mock() {
     let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Wav).await;
     assert!(result.is_ok());
 }
+
+/// BUG-20261123-001 回归锁（重定向策略挂载）：本请求带 `Authorization: Bearer`
+/// + multipart 音频正文，reqwest 默认重定向策略对 307/308 保方法转发 body——
+/// 恶意/被劫持的 provider 返回跨源 3xx 会把用户语音内容（和跟随语义下的凭据）
+/// 带到重定向目标。统一策略（nemesis_utils::http_redirect）必须终停并把 3xx
+/// 透传为最终响应（诚实 Err "status 307"）。
+/// 注意 wiremock 两个实例同 host（127.0.0.1）异端口——统一策略的 origin 键
+/// 含端口，比 reqwest 默认「同 host 即跟随」更严，能精确判别两条路径：
+/// 挂了策略 → Err(307)；漏挂 → reqwest 跟随到 B → Ok("SHOULD_NOT_FOLLOW")。
+#[tokio::test]
+async fn test_transcribe_cross_origin_redirect_stops_not_follows() {
+    let target_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/audio/transcriptions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "text": "SHOULD_NOT_FOLLOW"
+        })))
+        .mount(&target_server)
+        .await;
+
+    let redirect_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/audio/transcriptions"))
+        .respond_with(ResponseTemplate::new(307).insert_header(
+            "Location",
+            format!("{}/audio/transcriptions", target_server.uri()).as_str(),
+        ))
+        .mount(&redirect_server)
+        .await;
+
+    let t = Transcriber::with_url(&redirect_server.uri(), Some("key"));
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("audio.wav");
+    std::fs::write(&file_path, b"fake voice audio").unwrap();
+
+    let result = t.transcribe_file(&file_path).await;
+    let err_msg = result.expect_err("跨源 307 必须被终停为 Err，不得跟随成功");
+    assert!(
+        err_msg.to_string().contains("307"),
+        "3xx 必须透传为最终响应（诚实报 307），实际错误: {err_msg}"
+    );
+    assert!(
+        !err_msg.to_string().contains("SHOULD_NOT_FOLLOW"),
+        "跟随成功即回归（语音正文流向重定向目标）: {err_msg}"
+    );
+}
