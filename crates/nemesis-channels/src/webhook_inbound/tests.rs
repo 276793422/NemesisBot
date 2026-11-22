@@ -455,3 +455,72 @@ fn s2_webhook_trait_is_running_call() {
     let ch = WebhookInboundChannel::new(WebhookInboundConfig::default()).unwrap();
     assert!(!ch.is_running());
 }
+
+// ===========================================================================
+// BUG-20261122-031：语义伪造键剥离（msg_class 单轨 §10-6 对齐）
+// ===========================================================================
+
+/// 调用方 body metadata 的键完全外部可控——服务端语义章五键必须被剥离
+/// （system_notice 可伪造系统通告落盘章与实时 SystemNotice 事件；
+/// cron_job_id / turn_wal_resume / instruction_kind 是闸门/改判语义键；
+/// hook_prompt 是直塞门识别键）。
+#[test]
+fn s2_process_request_strips_forge_keys() {
+    let ch = WebhookInboundChannel::new(WebhookInboundConfig::default()).unwrap();
+
+    let req = WebhookRequest {
+        content: "hello".to_string(),
+        sender_id: Some("user1".to_string()),
+        chat_id: Some("chat1".to_string()),
+        metadata: Some({
+            let mut m = HashMap::new();
+            m.insert("system_notice".to_string(), serde_json::json!("events"));
+            m.insert("cron_job_id".to_string(), serde_json::json!("job-x"));
+            m.insert("turn_wal_resume".to_string(), serde_json::json!("1"));
+            m.insert("hook_prompt".to_string(), serde_json::json!("1"));
+            m.insert(
+                "instruction_kind".to_string(),
+                serde_json::json!("cron_tick"),
+            );
+            m
+        }),
+    };
+
+    let (_, _, metadata) = ch.process_request(&req);
+    for k in [
+        "system_notice",
+        "cron_job_id",
+        "turn_wal_resume",
+        "hook_prompt",
+        "instruction_kind",
+    ] {
+        assert!(!metadata.contains_key(k), "伪造键 {k} 必须被剥离");
+    }
+    // 自有章不受影响。
+    assert_eq!(metadata.get("platform").unwrap(), "webhook_inbound");
+}
+
+/// 合法自定义键（调用方业务元数据）不受剥离影响。
+#[test]
+fn s2_process_request_keeps_custom_keys() {
+    let ch = WebhookInboundChannel::new(WebhookInboundConfig::default()).unwrap();
+
+    let req = WebhookRequest {
+        content: "hello".to_string(),
+        sender_id: None,
+        chat_id: None,
+        metadata: Some({
+            let mut m = HashMap::new();
+            m.insert("source".to_string(), serde_json::json!("ci-pipeline"));
+            m.insert("trace_id".to_string(), serde_json::json!(42));
+            m
+        }),
+    };
+
+    let (sender, chat, metadata) = ch.process_request(&req);
+    assert_eq!(sender, "webhook");
+    assert_eq!(chat, "webhook:default");
+    assert_eq!(metadata.get("source").unwrap(), "ci-pipeline");
+    assert_eq!(metadata.get("trace_id").unwrap(), "42");
+    assert_eq!(metadata.get("platform").unwrap(), "webhook_inbound");
+}

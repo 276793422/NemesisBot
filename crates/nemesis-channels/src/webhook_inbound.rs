@@ -12,6 +12,9 @@
 //! - 未来接线时按当轮设计重审语义（阻塞响应/会话路由/鉴权默认不照本
 //!   模块现状默认采信）；装配五件套与参考先例（LINE 总线注入 /
 //!   wecom axum 端点）已在 2026-11-18 调查中摸清。
+//! - msg_class 单轨的语义伪造键剥离面已对齐（2026-11-22
+//!   BUG-20261122-031：process_request 对调用方 body metadata 过
+//!   strip_forge_keys，与 web ingress 同清单同函数）。
 //!
 //! Original design intent: Receives HTTP POST requests, publishes them to
 //! the message bus as InboundMessages, and returns the resulting
@@ -204,6 +207,16 @@ impl WebhookInboundChannel {
                 metadata.insert(k.clone(), val);
             }
         }
+
+        // 语义伪造键剥离（msg_class 单轨 §10-6 对齐，BUG-20261122-031）：
+        // 调用方 body 的 metadata 键完全外部可控——`system_notice` 可伪造
+        // 系统通告落盘章与实时 SystemNotice 事件、`cron_job_id`/
+        // `turn_wal_resume`/`instruction_kind` 是闸门/改判语义键、
+        // `hook_prompt` 是直塞门识别键。与 web ingress（nemesis-web
+        // server.rs chat.send）同一清单同一函数（strip_forge_keys 单一
+        // 真相源）；未接线保留件先补闸，未来接线时不再依赖「接线当轮
+        // 重审」兜住本面。
+        let metadata = nemesis_types::channel::strip_forge_keys(metadata);
 
         (sender_id, chat_id, metadata)
     }
