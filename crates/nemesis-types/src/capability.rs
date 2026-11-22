@@ -682,14 +682,43 @@ fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
     if l.contains("qwen") && QWEN_API_TIER_WORDS.iter().any(|w| l.contains(w)) {
         return Some(ModelTier::Big);
     }
+    // 已知小杯 API 档位词族（BUG-20261123-010）：与 qwen 旗舰词修复**反向**
+    // 的同族缺口——国产厂商 API 档位命名里**确定小**的档位词（zhipu
+    // glm-4-flash/-flashx/-air/-airx ~9-32B / glm-4-lite、doubao-lite、
+    // ernie-lite/-tiny/-speed、hunyuan-lite、spark-lite/-tiny）不含尺寸
+    // 标记、不命中任何关键词 → 落到末尾默认 Big = 已知小模型拿全量工具面
+    // + 重试预算 2，恰是 tier 分级要防的反面（小模型参数错乱烧轮次）。
+    // 前缀守卫限定厂商（裸 "flash"/"lite" 太宽——gemini-2.0-flash 是中杯
+    // 且已被 big marker "gemini-2" 先行救回）；每词族只收**确定小**的档位
+    // 词：spark-max/glm-4-plus/doubao-pro 等旗舰词不收（保持默认 Big 宁大
+    // 勿小）。归 Mini 与尺寸档一致（9-35B）。qwen3-coder 无尺寸裸名同理
+    // 是 480B 旗舰——**不收进小杯表**，默认 Big 宁大勿小。
+    const SMALL_API_TIER_WORDS: &[(&str, &[&str])] = &[
+        ("glm", &["-flash", "-air", "-lite"]),
+        ("doubao", &["-lite"]),
+        ("ernie", &["-lite", "-tiny", "-speed"]),
+        ("hunyuan", &["-lite"]),
+        ("spark", &["-lite", "-tiny"]),
+    ];
+    if let Some((_, words)) = SMALL_API_TIER_WORDS.iter().find(|(p, _)| l.contains(p))
+        && words.iter().any(|w| l.contains(w))
+    {
+        return Some(ModelTier::Mini);
+    }
     // Known-small local families — absent a size marker, assume small.
+    // （BUG-20261123-010 第二点）qwen 裸前缀三件（"qwen-"/"qwen2.5-"/
+    // "qwen3-"）已删：裸前缀的实际覆盖面 = **无尺寸标记的 Qwen 家族名**
+    // （带尺寸的 7b/30b/72b 走 parse_size_marker 先行，根本到不了这里），
+    // 而无尺寸的 API 裸名（qwen3-coder 480B / qwen3-omni / qwen3-next /
+    // qwen-vl）全是旗舰/多模态 API —— 全被砍 Mini，违反「宁大勿小」
+    // （BUG-20261113-131 修了 -max/-plus/-turbo/-long 档位词，裸名是漏网
+    // 的另一半）。删除后裸名落 None → 默认 Big 宁大勿小；Ollama 裸 tag
+    // （qwen3 默认 8B）误判 Big 是该原则的可接受代价（用户可用 model
+    // probe / set-tier 校正，反向不可恢复）。
     let small_markers = [
         "llama-3-8",
         "llama-3.1-8",
         "llama-3.2-",
-        "qwen2.5-",
-        "qwen3-",
-        "qwen-",
         "mistral-7",
         "mistral-nemo",
         "gemma-",
