@@ -36,10 +36,21 @@ impl Default for RetryConfig {
 
 impl RetryConfig {
     /// Get delay for a given attempt number (0-indexed).
+    ///
+    /// BUG-20261122-032：指数退避产物先经 `try_from_secs_f64` 受检构造，
+    /// 无效值（负数 / NaN / inf / 超 u64::MAX 秒——`2.0^64` 已越界）回落
+    /// `max_delay`。旧形态 `Duration::from_secs_f64` 对这些值是 std 明确
+    /// panic，且 `min(max_delay)` 排在构造之后救不了溢出（attempt ≥ 64
+    /// 即爆）；生产重试环走线性退避不消费本函数，但它是 pub API——
+    /// 潜伏 panic 面在入口闭合，钳制语义对合法域（attempt ≤ 63）不变。
+    /// 附带闭合指数转换静默回绕：`attempt as i32` 对超 i32::MAX 的 u32
+    /// 回绕成负指数（延迟不增反减），先饱和到 i32 正域再转。
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
-        let delay_secs = self.initial_delay.as_secs_f64() * self.multiplier.powi(attempt as i32);
-        let delay = Duration::from_secs_f64(delay_secs);
-        delay.min(self.max_delay)
+        let exp = attempt.min(i32::MAX as u32) as i32;
+        let delay_secs = self.initial_delay.as_secs_f64() * self.multiplier.powi(exp);
+        Duration::try_from_secs_f64(delay_secs)
+            .unwrap_or(self.max_delay)
+            .min(self.max_delay)
     }
 }
 

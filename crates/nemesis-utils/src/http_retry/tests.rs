@@ -142,6 +142,38 @@ fn test_delay_capped_at_max() {
     assert!(d10 <= config.max_delay);
 }
 
+/// BUG-20261122-032：attempt ≥ 64 时 2.0^64 已超 u64::MAX 秒——旧形态
+/// `from_secs_f64` 在 `min(max_delay)` 之前 std panic。受检构造后必须
+/// 回落 max_delay 而非 panic（含 u32::MAX 极端档 = inf 产物）。
+#[test]
+fn test_delay_overflow_attempts_fall_back_to_max() {
+    let config = RetryConfig::default();
+    for attempt in [63u32, 64, 200, u32::MAX] {
+        let d = config.delay_for_attempt(attempt);
+        assert!(d <= config.max_delay, "attempt {attempt} overflowed");
+        assert_eq!(d, config.max_delay);
+    }
+}
+
+/// 负 multiplier / NaN initial（pub 字段可配坏值）同样不得 panic。
+#[test]
+fn test_delay_invalid_config_falls_back_to_max() {
+    let neg = RetryConfig {
+        multiplier: -2.0,
+        ..RetryConfig::default()
+    };
+    let d = neg.delay_for_attempt(3); // (-2)^3 = 负秒数
+    assert_eq!(d, neg.max_delay);
+
+    let nan = RetryConfig {
+        initial_delay: Duration::from_secs_f64(0.0),
+        multiplier: f64::NAN,
+        ..RetryConfig::default()
+    };
+    let d = nan.delay_for_attempt(1); // 0 * NaN = NaN
+    assert_eq!(d, nan.max_delay);
+}
+
 #[test]
 fn test_should_retry_all_codes() {
     // Retryable
