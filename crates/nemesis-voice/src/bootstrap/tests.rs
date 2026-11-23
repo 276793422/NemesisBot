@@ -864,3 +864,19 @@ fn download_cap_has_sane_headroom() {
     // （防「余量放大到事实上无界」的退化）。
     assert!((100 * 1024 * 1024..=2 * 1024 * 1024 * 1024).contains(&DOWNLOAD_ARCHIVE_MAX_BYTES));
 }
+
+// ---------------------------------------------------------------------------
+// Content-Length 归一（BUG-20261123-032）：Some(0) 谎报形态落「未知大小」
+// ---------------------------------------------------------------------------
+
+#[test]
+fn known_total_size_zero_content_length_is_unknown() {
+    // None（无 Content-Length 头）→ 未知，原样。
+    assert_eq!(known_total_size(None), None);
+    // Some(0)（服务器谎报空长度）→ 未知（零分母百分比 = +inf，不得
+    // 进「x / y MB（inf%）」文案）。
+    assert_eq!(known_total_size(Some(0)), None);
+    // 正常长度原样放行。
+    assert_eq!(known_total_size(Some(1)), Some(1));
+    assert_eq!(known_total_size(Some(1024 * 1024)), Some(1024 * 1024));
+}

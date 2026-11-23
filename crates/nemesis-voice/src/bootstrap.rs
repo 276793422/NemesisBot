@@ -47,6 +47,15 @@ pub(crate) fn over_download_cap(downloaded: u64, chunk_len: usize) -> bool {
     downloaded.saturating_add(chunk_len as u64) > DOWNLOAD_ARCHIVE_MAX_BYTES
 }
 
+/// Content-Length 归一：`Some(0)`（服务器谎报空长度）视作未知大小——
+/// 零分母百分比不可计算（`downloaded/0` = +inf，进度文案出「inf%」噪声），
+/// 诚实落「未知大小」展示臂（BUG-20261123-032；sherpa 与 AEC 两处下载
+/// 循环共用，over_download_cap 同款测试缝纪律）。
+#[cfg(all(target_os = "windows", feature = "download"))]
+pub(crate) fn known_total_size(content_length: Option<u64>) -> Option<u64> {
+    content_length.filter(|t| *t > 0)
+}
+
 #[cfg(target_os = "windows")]
 const REQUIRED_LIBS: &[&str] = &[
     "sherpa-onnx-c-api.dll",
@@ -413,7 +422,7 @@ async fn try_download_and_extract(
             bail!("HTTP {}", response.status());
         }
 
-        let total_size = response.content_length();
+        let total_size = known_total_size(response.content_length());
         let mut file = fs::File::create(&part_path)
             .with_context(|| format!("Failed to create temp file: {}", part_path.display()))?;
         let mut downloaded: u64 = 0;
@@ -761,7 +770,7 @@ async fn download_to(url: &str, archive_path: &Path, proxy_url: &str, label: &st
         bail!("HTTP {}", response.status());
     }
 
-    let total_size = response.content_length();
+    let total_size = known_total_size(response.content_length());
     let mut file = fs::File::create(&part_path)
         .with_context(|| format!("Failed to create temp file: {}", part_path.display()))?;
     let mut downloaded: u64 = 0;
