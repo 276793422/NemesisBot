@@ -13,13 +13,17 @@
 //! todowrite → 检查点汇报照样发出。v2 改为两段升级模板：
 //!
 //! - **首次拦停**（`stop_hook_active=false`）：未完成项是用户任务的一部分，
-//!   **继续用工具执行**；每完成一项 todowrite 更新；全部完成才给最终答复；
+//!   **继续用工具执行**；清单更新随活提交（下一轮干活顺带 todowrite，
+//!   不单开记账轮）；全部完成才给最终答复；
 //!   确属用户专属域阻塞的项才保留未完成（最终答复列明尝试记录）。
 //! - **升级拦停**（`stop_hook_active=true`，即本轮已被 Continue 过一次）：
 //!   「你已被告知继续执行却再次停车」——确属用户专属域阻塞就列证据清单
 //!   （试了什么、为何只有用户能做）；否则立即继续执行工具。
-//! - 第 3 次停车不再拦：loop 侧 [`crate::hooks::MAX_TURN_END_CONTINUES`]
-//!   硬封顶 fail-open 放行——真阻塞有合法出口，不会无限拉锯。
+//! - 拦停预算耗尽不再拦：loop 侧 `agents.turn_end_continues`
+//!   （缺省 2=旧常量行为，显式 0=不限 opt-in；有限帽时第 N+1 次停车）
+//!   fail-open 放行——真阻塞有合法出口，钩子故障也不会无限拉锯（兜底上界
+//!   = max_tool_iterations 迭代闸，2026-11-23 起该键缺省 0=不限，仅在
+//!   显式配置非 0 时存在）。
 //!
 //! 缓存纪律（prompt cache 命中率不受影响的根据）：注入走既有路径
 //! `instance.add_user_message(feedback)`——追加在消息列表**尾部**（本轮
@@ -63,8 +67,8 @@ fn first_block_feedback(unfinished: &[String]) -> String {
     format!(
         "<system-reminder>\n你要结束本轮，但本会话的 todo 清单还有 {} 项未完成：\n{}\n\
          未完成项是用户任务的一部分，**继续用工具执行**，不要以汇报收摊：\n\
-         1. 按清单继续调用工具执行剩余项；每完成一项，调用 todowrite 标记 completed\
-         （全量提交——每次调用替换整个清单，所有条目都要带上，包括没变的）。\n\
+         1. 按清单继续调用工具执行剩余项；清单更新随活提交——在下一次干活的同一轮里\
+         顺带调用 todowrite 标记 completed（全量提交），不要为更新清单单开一轮。\n\
          2. 全部完成后才给最终答复。\n\
          3. 确属只有用户能做的阻塞（凭据/授权/物理接入/外部系统权限，且已穷尽替代手段）\
          的项才保留未完成；最终答复中列明每项的尝试记录与需要用户做什么。\n\
@@ -123,8 +127,9 @@ impl LifecycleHook for TodoCloseoutHook {
             return TurnEndDecision::Stop;
         }
         // stop_hook_active = 本轮已被任何 hook Continue 过（含用户脚本）——
-        // 升级信号：模型被告知继续后仍停车，换升级模板再拦一次；第 3 次
-        // 由 loop 侧 MAX_TURN_END_CONTINUES 硬封顶 fail-open 放行。
+        // 升级信号：模型被告知继续后仍停车，换升级模板再拦一次；拦停预算
+        // 耗尽（agents.turn_end_continues，缺省 2=旧常量行为、显式
+        // 0=不限 opt-in）由 loop 侧 fail-open 放行。
         let feedback = if end.stop_hook_active {
             escalation_feedback(&unfinished)
         } else {

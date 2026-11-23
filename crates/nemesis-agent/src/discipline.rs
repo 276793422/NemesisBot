@@ -30,7 +30,8 @@
 //! **预算双帽（诚实注记）**：自有 [`MAX_FALSIFICATION_RUNS`]（耗尽 =
 //! 停车升级不静默——warn + falsification-{n}.json 留盘供看板评审注记；
 //! 交互会话的失败反馈早已逐轮可见 = 交还用户）+ 循环侧
-//! [`crate::hooks:MAX_TURN_END_CONTINUES`]（本钩子**首位注册**，纪律续轮
+//! `agents.turn_end_continues`（缺省 2=旧常量行为，显式 0=不限 opt-in；
+//! 本钩子**首位注册**，纪律续轮
 //! 计入共享帽——全局轮数有界，代价是与 Stop 方言续轮互相挤占）。
 //!
 //! **逃生门（全路径留痕）**：`/discipline off [理由]`（带理由时追加

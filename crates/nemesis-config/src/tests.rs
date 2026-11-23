@@ -712,6 +712,9 @@ fn test_full_config_roundtrip() {
             image_downscale: true,
             // B30 工具结果统一 cap（serde 缺省 8000）——全字段初始化器补齐。
             tool_result_cap: crate::default_tool_result_cap(),
+            // 持续性预算（serde 缺省 2=旧常量行为；显式 0=不限 opt-in）
+            // ——全字段初始化器补齐。
+            turn_end_continues: crate::default_turn_end_continues(),
             // 写租约开关（serde 缺省 true）——全字段初始化器补齐。
             lease_enabled: true,
             // /（内部专项批次：codemode / turn WAL / provider
@@ -903,7 +906,8 @@ fn test_agent_defaults_default() {
         nemesis_types::capability::DEFAULT_MAX_TOKENS
     );
     assert_eq!(defaults.temperature, 0.7);
-    assert_eq!(defaults.max_tool_iterations, 100);
+    // 2026-11-23 拍板：缺省 0 = 不限（原 100）。
+    assert_eq!(defaults.max_tool_iterations, 0);
 }
 
 #[test]

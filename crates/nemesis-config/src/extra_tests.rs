@@ -780,7 +780,8 @@ fn extra_serde_default_agent_defaults_via_json() {
         nemesis_types::capability::DEFAULT_MAX_TOKENS
     );
     assert!((cfg.temperature - 0.7).abs() < f64::EPSILON);
-    assert_eq!(cfg.max_tool_iterations, 100);
+    // 2026-11-23 拍板：缺省 0 = 不限（原 100，长任务撞顶中断现场后改）。
+    assert_eq!(cfg.max_tool_iterations, 0);
     // serde default flipped queue → steer (2026-11-03 决策：busy 默认可输入，
     // 防前端 inbox-status 刷新失败把 UI 死锁成永久 reject)。
     assert_eq!(cfg.concurrent_request_mode, "steer");

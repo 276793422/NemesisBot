@@ -228,6 +228,49 @@ fn b30_tool_result_cap_generation_snapshot_read() {
     assert_eq!(loop_.current_tool_result_cap(), 8000, "键缺席回落缺省");
 }
 
+/// （持续性预算，2026-11-23 拍板二次修订）：`agents.turn_end_continues`
+/// 世代快照读接线——绑定即见值 / 键缺席回落 **2 = 旧常量行为**（resolver
+/// 单一真相源在 nemesis-config，typed/raw 同源由 config 侧
+/// turn_end_continues_tests 钉死），此处只钉 L18 接线。
+#[test]
+fn turn_end_continues_generation_snapshot_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let loop_ = fresh_loop();
+    let write_with_mtime = |v: Option<u32>| {
+        let mut f = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        let cfg = match v {
+            Some(n) => serde_json::json!({"agents": {"turn_end_continues": n}}),
+            None => serde_json::json!({"agents": {"image_downscale": true}}),
+        };
+        f.write_all(serde_json::to_string(&cfg).unwrap().as_bytes())
+            .unwrap();
+        let seq = v.unwrap_or(300) as u64;
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seq * 3600))
+            .unwrap();
+    };
+    write_with_mtime(Some(5));
+    loop_.set_config_path(path.clone());
+    assert_eq!(
+        loop_.current_turn_end_continues(),
+        5,
+        "绑定即发布，读者见值"
+    );
+    // 显式 0 = 不限（opt-in 哨兵跨世代发布不丢）。
+    write_with_mtime(Some(0));
+    loop_.check_config_reload();
+    assert_eq!(loop_.current_turn_end_continues(), 0, "显式 0 = 不限透传");
+    // 键缺席（盘上改键并发布）→ 2 = 旧常量行为（兼容老版本拍板）。
+    write_with_mtime(None);
+    loop_.check_config_reload();
+    assert_eq!(
+        loop_.current_turn_end_continues(),
+        nemesis_config::DEFAULT_TURN_END_CONTINUES,
+        "键缺席 = 缺省 2（旧常量行为）"
+    );
+}
+
 #[test]
 fn l18_generation_monotonic_across_publications() {
     let dir = tempfile::tempdir().unwrap();
