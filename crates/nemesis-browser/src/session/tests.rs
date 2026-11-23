@@ -166,3 +166,209 @@ async fn spawn_with_dead_port_file_falls_through_to_launch() {
     };
     assert!(err.contains("启动浏览器"), "{err}");
 }
+
+// --- relaunch 收养 + 孤儿收尸 + stderr 语境（2026-11-23 修复 A/B/C）---
+
+#[test]
+fn stderr_tail_context_fresh_write_has_no_stale_note() {
+    // 本次进程有写入（mtime 晚于 spawn 起点）→ 正常尾部，不带历史注记。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("stderr.log");
+    std::fs::write(&p, "recent boom\n").unwrap();
+    let spawn_start = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let ctx = super::stderr_tail_context(&p, spawn_start);
+    assert!(ctx.contains("stderr 尾部"), "{ctx:?}");
+    assert!(ctx.contains("recent boom"));
+    assert!(!ctx.contains("历史日志"), "{ctx:?}");
+}
+
+#[test]
+fn stderr_tail_context_stale_write_notes_history() {
+    // 修复 C 回归锁：append 累积的旧日志（mtime 早于 spawn 起点）必须带
+    // 「历史日志」注记——11-23 现场：11-17 的 ERROR 尾部被当成 11-23 进程
+    // 的临终输出，误导诊断方向。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("stderr.log");
+    std::fs::write(&p, "ancient error\n").unwrap();
+    {
+        let f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
+    }
+    let ctx = super::stderr_tail_context(&p, std::time::SystemTime::now());
+    assert!(ctx.contains("历史日志"), "{ctx:?}");
+    assert!(ctx.contains("ancient error"), "{ctx:?}");
+}
+
+#[test]
+fn stderr_tail_context_absent_log_is_honest() {
+    // 日志文件不存在（进程零输出且文件未建）= 诚实「零写入」，不空串糊弄。
+    let ctx = super::stderr_tail_context(
+        std::path::Path::new("Z:/no/such/stderr.log"),
+        std::time::SystemTime::now(),
+    );
+    assert!(ctx.contains("零写入"), "{ctx:?}");
+}
+
+/// 写完 fresh DevToolsActivePort 后（可选延时命令）退出的 Windows 批处理
+/// （进程级回归锁的「Edge relaunch」替身：留下端口文件后退出）。
+/// `delay_cmd` 传 "" = 写完立即退（raw 先于轮询置位 → 终裁收养路径）；
+/// 传 ping 等 = 装配后才退（wait task 终裁路径）。
+fn write_relay_bat(
+    profile_dir: &std::path::Path,
+    port: u16,
+    delay_cmd: &str,
+) -> std::path::PathBuf {
+    let bat = profile_dir.join("relay.bat");
+    // @echo off = 零 stderr；> 重定向 = fresh mtime。
+    let content = format!(
+        "@echo off\r\n> \"{}\" (echo {}\r\necho /devtools/browser/relay)\r\n{}\r\n",
+        profile_dir.join(crate::cdp::DEVTOOLS_PORT_FILE).display(),
+        port,
+        delay_cmd
+    );
+    std::fs::write(&bat, content).unwrap();
+    bat
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn spawn_process_exit_with_fresh_port_file_is_adopted() {
+    // 修复 A 回归锁（11-23 现场）：进程退出 ≠ 启动失败。进程写了 fresh
+    // 端口文件再退出（Edge relaunch 接力成功形态）→ 终裁读文件 → 收养
+    // 装配（pid=0、会话活、端口来自文件）。
+    use crate::driver::DriverKind;
+
+    let port = spawn_canned_version_server();
+    let dir = tempfile::tempdir().unwrap();
+    let profile_root = dir.path().join("browser");
+    let profile_dir = profile_root.join("edge");
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    let bat = write_relay_bat(&profile_dir, port, "");
+
+    let s = super::BrowserSession::spawn("bR".to_string(), 1, DriverKind::Edge, bat, &profile_root)
+        .await
+        .expect("进程退出但 fresh 端口文件在 = relaunch 接力成功，应收养");
+    assert_eq!(s.port, port, "收养端口来自接力进程写的端口文件");
+    assert_eq!(s.pid, 0, "接力进程 pid 未知 = 0（F36 禁杀守卫）");
+    assert!(s.is_alive().await, "端点活 = 会话活");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn spawn_process_exit_after_ready_same_port_stays_alive() {
+    // 修复 A 终裁臂回归锁：装配成功（正常态）后原始进程才退出（relaunch
+    // 慢于轮询的形态）——wait task 终裁探装配端口：canned 端点仍活 = 同
+    // 端口接力 → 转探针不置死当旗标，会话保持可用投影（不误杀）。
+    use crate::driver::DriverKind;
+
+    let port = spawn_canned_version_server();
+    let dir = tempfile::tempdir().unwrap();
+    let profile_root = dir.path().join("browser");
+    let profile_dir = profile_root.join("edge");
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    // 写文件（轮询 ~250ms 读到 → 装配）→ ping ~2s（装配后才退出）。
+    let bat = write_relay_bat(&profile_dir, port, "ping -n 3 127.0.0.1 > nul");
+
+    let s = super::BrowserSession::spawn("bK".to_string(), 1, DriverKind::Edge, bat, &profile_root)
+        .await
+        .expect("端口文件在且端点活 = 装配成功");
+    // 等 bat 退出 + wait task 终裁探端口（bat ~2s + 终裁即时）。
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert!(
+        s.is_alive().await,
+        "装配后进程退出但端点活 = 终裁应转探针，不得误杀投影"
+    );
+    assert_eq!(s.summary()["alive"], serde_json::Value::Bool(true));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn spawn_process_exit_without_port_file_fails_fast() {
+    // 修复 A 加速器语义回归锁：进程退出 + 无端口文件 = 快速失败（不等满
+    // 120s——退出信号的价值就在这）；cmd 报错写 stderr（fresh）→ 尾部
+    // 进报错无历史注记。
+    use crate::driver::DriverKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let profile_root = dir.path().join("browser");
+    std::fs::create_dir_all(&profile_root).unwrap();
+    let t0 = std::time::Instant::now();
+    let Err(err) = super::BrowserSession::spawn(
+        "bF".to_string(),
+        1,
+        DriverKind::Edge,
+        std::path::PathBuf::from("cmd"),
+        &profile_root,
+    )
+    .await
+    else {
+        panic!("进程退出且无端口文件 = 必须失败");
+    };
+    assert!(err.contains("提前退出"), "{err}");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(30),
+        "退出信号应加速失败（实际 {:?}）",
+        t0.elapsed()
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn spawn_exit_with_fresh_port_but_dead_endpoint_fails_and_cleans() {
+    // 修复 A 终裁 + 修复 B 收尸回归锁：文件在但端点死（接力进程没起来）
+    // = wait_for_endpoint 失败 → Err + 树杀兜底诚实跑过（无匹配进程 0 杀）。
+    use crate::driver::DriverKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let profile_root = dir.path().join("browser");
+    let profile_dir = profile_root.join("edge");
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    // 死端口（1 无监听）：bat 写出 fresh 文件后立即退出。
+    let bat = write_relay_bat(&profile_dir, 1, "");
+
+    let Err(err) =
+        super::BrowserSession::spawn("bD".to_string(), 1, DriverKind::Edge, bat, &profile_root)
+            .await
+    else {
+        panic!("端口文件在但端点死 = 必须失败");
+    };
+    assert!(!err.is_empty(), "{err}");
+}
+
+#[cfg(windows)]
+#[test]
+fn kill_profile_tree_kills_matching_process() {
+    // 修复 B 回归锁：命令行含专用 profile 路径的进程被树杀；不含的不伤。
+    // 活靶用 PowerShell（cmd REM 形态实测立即退出不可靠）——CommandLine
+    // 含 profile 路径的睡眠进程；系统里其他 powershell 不含该路径不受扰。
+    let dir = tempfile::tempdir().unwrap();
+    let profile_dir = dir.path().join("edge");
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    use std::os::windows::process::CommandExt;
+    let mut child = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("$x='{}'; Start-Sleep -Seconds 30", profile_dir.display()),
+        ])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn()
+        .expect("powershell 活靶 spawn");
+    std::thread::sleep(std::time::Duration::from_millis(1500)); // 等 CommandLine 注册
+    assert!(child.try_wait().unwrap().is_none(), "活靶应在树杀前存活");
+    super::kill_profile_tree(&profile_dir);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut gone = false;
+    while std::time::Instant::now() < deadline {
+        if child.try_wait().unwrap().is_some() {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    assert!(gone, "树杀后活靶应退出");
+    // 无匹配目录 = 诚实 0 杀不 panic（空转 smoke）。
+    let empty = tempfile::tempdir().unwrap();
+    super::kill_profile_tree(empty.path());
+}

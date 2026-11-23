@@ -837,6 +837,19 @@ impl BrowserDriver for ChromiumCdpDriver {
                     // F33：对话框开着时 trusted 输入被渲染器静默吞（命令
                     // ok 但页面无反应）——派发前探测关闭 + 回执注明。
                     let dismissed = dismiss_dialog_if_open(&conn, None).await;
+                    // F55（2026-11-23 live 实证）：导航后首个合成输入事件会被
+                    // 输入管线静默吞——press+release 双双蒸发（5/6 现场，连
+                    // document 捕获级监听都收不到），第二个事件起稳定落盘，
+                    // 与坐标无关（(200,150) 首点同样被吞、(120,80) 作为第二
+                    // 点击精确命中）。selector 点击（JS eval）不走输入管线
+                    // 故无此症。先派 mouseMoved 暖场吸收这次丢弃——press 永不
+                    // 做首个事件，语义上也对齐真人输入（移动→按下→抬起）。
+                    conn.call(
+                        "Input.dispatchMouseEvent",
+                        json!({"type": "mouseMoved", "x": x, "y": y, "button": "none", "buttons": 0}),
+                        cdp::CDP_CMD_TIMEOUT,
+                    )
+                    .await?;
                     conn.call(
                         "Input.dispatchMouseEvent",
                         json!({"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 1}),

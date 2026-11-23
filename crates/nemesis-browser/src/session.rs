@@ -176,64 +176,161 @@ impl BrowserSession {
         // 写文件——spawn 前取，新浏览器写入的 mtime 必然晚于此）。
         let spawn_wall_start = std::time::SystemTime::now();
 
-        // 游离 spawn + reaping：reaper 持有 child 等退出置位标记；kill_on_drop
-        // 缺省 false——manager/session 生命周期与进程脱钩（gateway 退出不杀窗，
-        // D13）。注意：kill_on_drop=false 时 reaper task 泄漏到进程退出，与
-        // 「不杀窗」契约一致。
+        // 旗标组（2026-11-23 统一端口语义）：
+        // raw_exited = 原始进程 wait 完成信号——轮询循环的快速失败加速器，
+        //   **不直接等于死当**（终裁在消费点做）；
+        // exited = 死当投影旗标（is_alive/summary/close 唯一消费源）；
+        // adopted_gate = 收养装配标记（防 wait task 与专职探针重复投影）；
+        // port_cell = 装配端口（wait task 终裁消费；装配完成前退出 = 兜底
+        //   置位，无害——会话没装配出来无人读它）。
+        let raw_exited = Arc::new(AtomicBool::new(false));
         let exited = Arc::new(AtomicBool::new(false));
+        let adopted_gate = Arc::new(AtomicBool::new(false));
+        let port_cell = Arc::new(std::sync::OnceLock::<u16>::new());
+        // 游离 spawn + 智能终裁 reaping：wait 返回 ≠ 死当——Edge 启动增强
+        // 等 relaunch 形态把启动参数转发给接力进程后退出原始进程（11-23
+        // 现场：DevTools listening 已就绪、窗口开屏，被「提前退出」误杀）。
+        // 终裁（2026-11-23 relaunch 修复 A）：装配端口仍活 = 同端口接力成
+        // 功 → 转 3s 端口探针（F37 收养同款投影语义，不置位）；端口死 =
+        // 置位（ms 级，F27 手关投影不劣化——不设等待窗口）。换端口接力形
+        // 态 = 诚实死当 + warn（driver 端口运行期不可换）：重新点「启动」
+        // 由收养臂按新端口接管，可恢复不假活。kill_on_drop 缺省 false——
+        // manager/session 生命周期与进程脱钩（gateway 退出不杀窗，D13）。
         {
             let mut child = child;
             let flag = exited.clone();
+            let raw = raw_exited.clone();
+            let gate = adopted_gate.clone();
+            let cell = port_cell.clone();
+            let pf = profile_dir.clone();
             tokio::spawn(async move {
                 let _ = child.wait().await;
+                raw.store(true, Ordering::Release);
+                if gate.load(Ordering::Acquire) {
+                    return; // 收养装配的专职探针已接管死当投影
+                }
+                // 等装配完成（轮询 break → wait_for_endpoint → 装配段 set，
+                // 毫秒~秒级；进程退出快于轮询的形态必经此等待）。spawn 失
+                // 败路径 cell 永空 = 超时兜底置位，无害——会话没装配出来
+                // 无人消费 flag。
+                let p = {
+                    let deadline =
+                        tokio::time::Instant::now() + Duration::from_secs(cdp::SPAWN_READY_SECS);
+                    loop {
+                        if let Some(p) = cell.get().copied() {
+                            break p;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            flag.store(true, Ordering::Release);
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                };
+                // cell 就绪后复查 gate：装配段可能在等待窗口内发现收养形态
+                // （adopted）并置位——让位，防与专职探针双跑（双跑幂等无害
+                // 但白空转一个 task）。
+                if gate.load(Ordering::Acquire) {
+                    return;
+                }
+                if cdp::http_version(p).await.is_ok() {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        if cdp::http_version(p).await.is_err() {
+                            flag.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                    return;
+                }
+                if let Some((fp, _)) = cdp::read_devtools_active_port(&pf)
+                    && fp != p
+                {
+                    tracing::warn!(
+                        "[Browser] 原始进程退出且接力进程改用新 CDP 端口（{fp} ≠ {p}）：会话按已退出投影，重新启动将由收养臂接管"
+                    );
+                }
                 flag.store(true, Ordering::Release);
             });
         }
 
         // 等 DevToolsActivePort（≤ SPAWN_READY_SECS；动态端口标准做法——读
-        // 文件拿端口，Playwright/Puppeteer 同款）。三个失败臂都要杀孤儿：
-        // 进程已起而装配中断 = 窗口留在屏幕上且 manager 未注册（Dashboard
-        // 关闭按钮够不着，2026-11-15 复审 F10 根修）。
+        // 文件拿端口，Playwright/Puppeteer 同款）。失败臂都要收尸：进程已
+        // 起而装配中断 = 窗口留在屏幕上且 manager 未注册（Dashboard 关闭
+        // 按钮够不着，2026-11-15 复审 F10 根修）；relaunch 形态下接管进程
+        // pid 未知，树杀兜底（kill_profile_tree）补原始 pid 刀够不着的洞。
         macro_rules! fail {
             ($msg:expr) => {{
                 kill_process(pid);
+                kill_profile_tree(&profile_dir);
                 return Err($msg);
             }};
         }
+        // fresh 闸闭包（F29，2026-11-15 五审）：stale 端口文件闸——上方预
+        // 清理 remove 失败（AV/索引器瞬时句柄，Windows 常态）时旧文件残留，
+        // 会被误读成新端口 → wait_for_endpoint 撞死端口失败 → 杀掉健康新
+        // 浏览器 + 误导性报错。只认 spawn 起点之后写入的文件；metadata 瞬时
+        // sharing violation 按未就绪继续轮询（250ms 后重读，不误杀）。
+        let fresh_port = |pp: (u16, String)| -> Option<(u16, String)> {
+            let fresh = std::fs::metadata(&port_file)
+                .and_then(|m| m.modified())
+                .map(|t| t >= spawn_wall_start)
+                .unwrap_or(false);
+            if fresh { Some(pp) } else { None }
+        };
         let deadline = std::time::Instant::now() + Duration::from_secs(cdp::SPAWN_READY_SECS);
-        let (port, ws_path) = loop {
-            if exited.load(Ordering::Acquire) {
-                let tail = tail_file(&profile_dir.join("browser-stderr.log"), 40);
-                fail!(format!(
-                    "浏览器进程提前退出（pid {pid}）。stderr 尾部：\n{tail}"
-                ));
+        // 统一端口语义（2026-11-23 relaunch 收养修复 A）：CDP 端口活性是
+        // 启动成功的唯一判据。Edge 启动增强等 relaunch 形态把启动参数转发
+        // 给新进程后退出原始进程（11-23 现场：DevTools listening 已就绪、
+        // 窗口开屏，却被「提前退出」误杀，孤儿窗口留屏不可管理）——子进程
+        // 退出信号降级为两用：① 失败加速器（置位时端口终裁，死=快速 fail
+        // 不等满 120s）② 收养触发器（端口活=接力成功=装配走 F37 同款收养）。
+        // 不做「有一个活的就算成」：企业策略关 CDP 时窗口照常打开但永远
+        // 无 CDP，端口是 agent 七操作可用的唯一锚。
+        let (mut port, mut ws_path) = loop {
+            if let Some(pp) = cdp::read_devtools_active_port(&profile_dir).and_then(fresh_port) {
+                break pp;
             }
-            // F29（2026-11-15 五审）：stale 端口文件闸——上方预清理 remove
-            // 失败（AV/索引器瞬时句柄，Windows 常态）时旧文件残留，会被误读
-            // 成新端口 → wait_for_endpoint 撞死端口失败 → 杀掉健康新浏览器
-            // + 误导性报错。只认 spawn 起点之后写入的文件；metadata 瞬时
-            // sharing violation 按未就绪继续轮询（250ms 后重读，不误杀）。
-            if let Some(pp) = cdp::read_devtools_active_port(&profile_dir) {
-                let fresh = std::fs::metadata(&port_file)
-                    .and_then(|m| m.modified())
-                    .map(|t| t >= spawn_wall_start)
-                    .unwrap_or(false);
-                if fresh {
+            if raw_exited.load(Ordering::Acquire) {
+                // 进程已退出：终裁一次端口文件（wait 返回与浏览器 flush 端
+                // 口文件存在竞态——文件可能刚写出而本轮检查落在置位之前）。
+                // 文件在 = relaunch 接力成功，break 走装配路径（wait_for_
+                // endpoint 确认活性后按收养形态装配）；文件不在 = 真失败快
+                // 速报错。
+                if let Some(pp) = cdp::read_devtools_active_port(&profile_dir).and_then(fresh_port)
+                {
                     break pp;
                 }
+                fail!(format!(
+                    "浏览器进程提前退出（pid {pid}）。{}",
+                    stderr_tail_context(&profile_dir.join("browser-stderr.log"), spawn_wall_start)
+                ));
             }
             if std::time::Instant::now() >= deadline {
                 fail!(format!(
-                    "DevToolsActivePort 未在 {}s 内出现（profile: {}；企业策略 RemoteDebuggingAllowed 可能关死了 CDP）",
+                    "DevToolsActivePort 未在 {}s 内出现（profile: {}；企业策略 RemoteDebuggingAllowed 可能关死了 CDP）。{}",
                     cdp::SPAWN_READY_SECS,
-                    profile_dir.display()
+                    profile_dir.display(),
+                    stderr_tail_context(&profile_dir.join("browser-stderr.log"), spawn_wall_start)
                 ));
             }
             tokio::time::sleep(Duration::from_millis(PORT_POLL_MS)).await;
         };
 
         if let Err(e) = cdp::wait_for_endpoint(port).await {
-            fail!(e);
+            // 端口重写竞态加固（2026-11-23）：轮询读到的文件可能是原始进
+            // 程写的旧端口，接力进程随后重写新端口——重读一次，端口变了
+            // 且新端口活 = 用新端口装配（driver 与投影全链消费新值）。
+            if let Some((p2, ws2)) =
+                cdp::read_devtools_active_port(&profile_dir).and_then(fresh_port)
+                && p2 != port
+                && cdp::wait_for_endpoint(p2).await.is_ok()
+            {
+                port = p2;
+                ws_path = ws2;
+            } else {
+                fail!(e);
+            }
         }
 
         let driver = ChromiumCdpDriver::new(port, kind, ws_path);
@@ -246,6 +343,34 @@ impl BrowserSession {
             .ok()
             .and_then(|tabs| tabs.first().map(|t| t.id.clone()));
 
+        // 收养裁决（2026-11-23 relaunch 修复 A）：装配前一刻读 wait 完成
+        // 信号——置位 = 原始进程已退、CDP 由 relaunch 接力进程持有（pid
+        // 不可信）→ 收养形态装配（F37 同款：pid=0、专职 3s 端口探针接管
+        // 死当投影，wait task 经 adopted_gate 让位）。F36 守卫保证 0 号强
+        // 杀 no-op，孤儿收尸走树杀。同端口的装配后接力由 wait task 终裁
+        // 覆盖（端口活=转探针），两个形态殊途同归。
+        // 残余竞态（诚实注记）：装配前一刻读信号之后进程恰好退出的微秒窗
+        // 口会把接力会话装成正常态——wait task 终裁兜底（端口活=转探针）
+        // 已覆盖，无错误投影路径。
+        let adopted = raw_exited.load(Ordering::Acquire);
+        let _ = port_cell.set(port);
+        let pid_final = if adopted {
+            adopted_gate.store(true, Ordering::Release);
+            let flag = exited.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    if cdp::http_version(port).await.is_err() {
+                        flag.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+            });
+            0
+        } else {
+            pid
+        };
+
         Ok(Arc::new(Self {
             id,
             seq,
@@ -254,7 +379,7 @@ impl BrowserSession {
             profile_dir,
             port,
             started_at: Local::now(),
-            pid,
+            pid: pid_final,
             driver,
             working_tab: Mutex::new(working),
             operating: AtomicBool::new(false),
@@ -596,6 +721,63 @@ fn tail_file(path: &Path, max_lines: usize) -> String {
             lines[start..].join("\n")
         }
         Err(_) => String::new(),
+    }
+}
+
+/// 按 profile 目录树杀（spawn 失败收尸兜底，2026-11-23 relaunch 修复 B）。
+///
+/// relaunch 形态下接管进程 pid 未知：原始 pid 已死时 kill_process 是
+/// no-op，孤儿窗口留屏且 manager 未注册（Dashboard 关闭按钮够不着）。
+/// 按进程命令行含本会话专用 profile 绝对路径匹配全部进程杀树——路径
+/// 是 `<home>/browser/<slug>` 受控命名空间，不会匹配用户默认 profile
+/// 的浏览器。无匹配（进程已退/正在退出）= 诚实 0 杀。
+fn kill_profile_tree(profile_dir: &Path) {
+    let target = profile_dir.display().to_string();
+    #[cfg(windows)]
+    {
+        // 路径经环境变量传递避开引号/转义注入面（tempdir 路径可能含中文
+        // 用户名/空格）；CREATE_NO_WINDOW house 规则。无匹配进程 = 空管道
+        // 诚实跑过；已死进程 taskkill 报错被 2>$null 吞掉。
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$p=$env:NEMESIS_BROWSER_PROFILE_TREE; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like ('*' + $p + '*') } | ForEach-Object { taskkill /F /T /PID $_.ProcessId 2>$null }",
+            ])
+            .env("NEMESIS_BROWSER_PROFILE_TREE", &target)
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        // pkill -f 为 ERE 匹配：路径中的 . 等元字符按任意符解释——受控
+        // 命名空间（<home>/browser/<slug>）下误匹配面可忽略，诚实记录。
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", &target])
+            .output();
+    }
+}
+
+/// stderr 尾部 + 历史语境注记（2026-11-23 relaunch 修复 C）。
+///
+/// stderr 日志 append 模式跨 spawn 累积：本次进程静默退出（零写入——
+/// relaunch 形态转发参数后原样退出、或启动即崩无输出）时，尾部是上一
+/// 次会话的旧日志（11-23 现场：11-17 的 ERROR 尾部被当成 11-23 进程的
+/// 临终输出，误导向「ERROR 是根因」的歧途）。mtime 早于 spawn 起点 =
+/// 本次零写入，诚实注明，防旧日志误导诊断。
+fn stderr_tail_context(path: &Path, spawn_start: std::time::SystemTime) -> String {
+    let fresh_write = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| t >= spawn_start)
+        .unwrap_or(false);
+    let tail = tail_file(path, 40);
+    if fresh_write {
+        format!("stderr 尾部：\n{tail}")
+    } else if tail.is_empty() {
+        "stderr 无内容（本次进程零写入）".to_string()
+    } else {
+        format!("注意：stderr 日志本次无新写入，以下为历史日志（非本次进程输出）：\n{tail}")
     }
 }
 
