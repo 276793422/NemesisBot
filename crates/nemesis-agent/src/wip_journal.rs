@@ -173,7 +173,10 @@ impl WipJournal {
             return false;
         }
         let path = wip_path(root, session_key);
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        // 撕裂尾安全读（BUG-20261123-015）：wip 是 append 无 fsync 的
+        // jsonl，坏尾行（多字节截半）不得毒化整文件——上一轮恢复材料
+        // 前缀保全，坏行走下方 parse 失败跳过分支。
+        let Ok(raw) = nemesis_utils::file::read_lossy_to_string(&path) else {
             // 无盘上现场：清 stale pending（硬杀残留内存态）。
             self.0.pending.lock().remove(session_key);
             return false;
@@ -227,8 +230,10 @@ impl WipJournal {
             return;
         };
         // 滚动上限：触顶先压缩（丢最旧，保留 MAX-1 条），再写新事件。
+        // 撕裂尾安全读（BUG-20261123-015）：坏尾行降级 U+FFFD 文本行保留
+        // （压缩重写顺带把文件修回合法 UTF-8），下次 consume parse 失败跳过。
         if entry.events >= MAX_EVENTS
-            && let Ok(raw) = std::fs::read_to_string(&entry.path)
+            && let Ok(raw) = nemesis_utils::file::read_lossy_to_string(&entry.path)
         {
             let mut kept: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
             let overflow = kept.len().saturating_sub(MAX_EVENTS - 1);

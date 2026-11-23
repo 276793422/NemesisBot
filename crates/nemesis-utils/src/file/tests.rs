@@ -607,3 +607,48 @@ fn test_canonicalize_target_symlink_follows() {
         "symlink 须解析到真实目标"
     );
 }
+
+// ===== BUG-20261123-015：read_lossy_to_string 撕裂尾安全读契约 =====
+
+/// 合法 UTF-8 round-trip：与 read_to_string 等价（好文件零行为变化）。
+#[test]
+fn test_read_lossy_valid_utf8_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("good.jsonl");
+    fs::write(&path, "第一行\nsecond line\n").unwrap();
+    assert_eq!(
+        read_lossy_to_string(&path).unwrap(),
+        "第一行\nsecond line\n"
+    );
+}
+
+/// 撕裂尾（多字节字符截半）：Ok 而非 Err(InvalidData)，前缀行完好，
+/// 坏字节位置降级 U+FFFD。
+#[test]
+fn test_read_lossy_torn_multibyte_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("torn.jsonl");
+    // 完好前缀两行 + 「好」(E5 A5 BD) 截半只留首字节（断电撕裂真实形态）。
+    let mut bytes = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
+    bytes.push(0xE5);
+    fs::write(&path, &bytes).unwrap();
+
+    // 修复前 read_to_string 在此返回 Err(InvalidData)——坏一行毒化整文件。
+    let text = read_lossy_to_string(&path).unwrap();
+    assert!(
+        text.starts_with("{\"a\":1}\n{\"b\":2}\n"),
+        "前缀行必须逐字节保全: {text:?}"
+    );
+    assert!(
+        text.contains('\u{FFFD}'),
+        "坏字节位置应降级为 U+FFFD: {text:?}"
+    );
+}
+
+/// 文件不存在：错误照常上抛（不吞 IO 错误，只降级编码损坏）。
+#[test]
+fn test_read_lossy_missing_file_is_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nope.jsonl");
+    assert!(read_lossy_to_string(&path).is_err());
+}
