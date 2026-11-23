@@ -3052,6 +3052,145 @@ fn add_job_internal_bypasses_reservation() {
     );
 }
 
+// BUG-20261124-011：内部装配幂等挂载——同名先摘再登记。半挂形态
+// （cron add 落盘后映射回存失败/崩溃窗口）下重登记不得叠加同名作业
+// （双挂 = 每调度点双触发），存量双挂也要一次登记收敛为单份；
+// 用户面同名并存语义不变（不走旁路）。
+#[test]
+fn add_job_internal_replaces_same_name_stale_mount() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+
+    let j1 = svc
+        .add_job_internal(
+            "board-ap:7",
+            every_60s(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    // 半挂重登记：映射已丢（j1 的 id 不再被任何规则引用）+ 同名旧作业
+    // 仍挂 → 旁路登记必须替换而非叠加。
+    let j2 = svc
+        .add_job_internal(
+            "board-ap:7",
+            every_60s(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    assert_ne!(j1.id, j2.id, "替换挂载应产出新作业 id");
+    let same_name: Vec<_> = svc
+        .list_jobs(true)
+        .into_iter()
+        .filter(|j| j.name == "board-ap:7")
+        .collect();
+    assert_eq!(same_name.len(), 1, "同名半挂重登记后必须只剩单份");
+    assert_eq!(same_name[0].id, j2.id, "留存份必须是新登记的作业");
+    assert!(same_name[0].state.next_run_at_ms.is_some());
+
+    // 存量双挂（旧缺陷形态）：手工叠两份后一次登记收敛为单份。
+    let _ = svc
+        .add_job_internal(
+            "board-ap:8",
+            every_60s(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let _ = svc
+        .add_job_internal(
+            "board-ap:8",
+            every_60s(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let j3 = svc
+        .add_job_internal(
+            "board-ap:8",
+            every_60s(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    let dup: Vec<_> = svc
+        .list_jobs(true)
+        .into_iter()
+        .filter(|j| j.name == "board-ap:8")
+        .collect();
+    assert_eq!(dup.len(), 1, "存量双挂必须被一次登记收敛");
+    assert_eq!(dup[0].id, j3.id);
+
+    // 其他名字不受波及。
+    assert_eq!(
+        svc.list_jobs(true)
+            .into_iter()
+            .filter(|j| j.name == "board-ap:7")
+            .count(),
+        1
+    );
+
+    // 落盘一致：重开服务读回，同名仍只有各一份。
+    let svc2 = CronService::new(&path);
+    for name in ["board-ap:7", "board-ap:8"] {
+        assert_eq!(
+            svc2.list_jobs(true)
+                .into_iter()
+                .filter(|j| j.name == name)
+                .count(),
+            1,
+            "{name}: 盘上态同名必须单份"
+        );
+    }
+}
+
+#[test]
+fn add_job_user_face_same_name_still_coexists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    // 用户面（add_job）同名作业允许并存——幂等替换只属于内部装配旁路。
+    svc.add_job("user-task", every_60s(), "m1", false, None, None)
+        .unwrap();
+    svc.add_job("user-task", every_60s(), "m2", false, None, None)
+        .unwrap();
+    assert_eq!(
+        svc.list_jobs(true)
+            .into_iter()
+            .filter(|j| j.name == "user-task")
+            .count(),
+        2,
+        "用户面同名并存语义不得被内部旁路的幂等化波及"
+    );
+}
+
 #[test]
 fn reserved_names_rejected_on_rename_paths_and_name_unchanged() {
     // 改名入口（update_job / patch_job）此前不查保留前缀——

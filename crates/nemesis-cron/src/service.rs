@@ -733,6 +733,30 @@ impl CronService {
         max_rounds: Option<u32>,
         enabled: bool,
     ) -> Result<CronJob, String> {
+        // BUG-20261124-011：幂等挂载——同名作业先摘再登记。保留命名空间
+        // 作业的稳定身份是名字（`board-ap:{id}` / `memory-dreaming:sweep`，
+        // on_job 分派按名字解析），映射 id 只是簿记；board arm（plan.rs
+        // arm_autopilot_job_with）在「映射丢失/陈旧 + 同名旧作业仍挂」的
+        // 半挂形态（cron add 落盘后 set_autopilot_cron_job 失败/进程崩溃
+        // 窗口、或存量双挂）下走新登记路径，此前直接 push 第二份同名作业
+        // ——每个调度点双触发（autopilot 双建单），且未登记份 disarm 按
+        // 映射摘不到，要等下次启动 sync 孤儿清理才自愈；WSAPI
+        // autopilot.update 即时 arm 不经过 sync，半挂 + 一次 update 即
+        // 触发。摘除失败（落盘 Err）向上传播——Err 必须意味着「没换成」，
+        // 带病叠加正是本缺陷。用户面不受影响：add_job / add_job_ext 走
+        // add_job_internal_at，不经过本旁路（用户同名作业允许并存，既有
+        // 语义不变）。
+        let stale_ids: Vec<String> = {
+            let s = self.store.lock();
+            s.jobs
+                .iter()
+                .filter(|j| j.name == name)
+                .map(|j| j.id.clone())
+                .collect()
+        };
+        for id in &stale_ids {
+            self.remove_job(id)?;
+        }
         let now_ms = Local::now().timestamp_millis();
         self.add_job_internal_at(
             now_ms,
