@@ -29,6 +29,23 @@ const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 #[cfg(test)]
 const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// 下载体硬上限（BUG-20261123-026）：官方 win x64 便携包 ~220MB 压缩，
+/// 1GiB ≈ 4.5x 余量。`scanner add clamav --url` 允许任意第三方镜像
+/// （国内镜像常态），镜像被劫持/恶意 URL 的「无限流」会把
+/// `clamav-download.zip` 灌满整盘——家族纪律（BUG-20261114-059 同哲学）：
+/// 网络来源必须有界，在撑爆磁盘**之前**拒绝，与 Content-Length 无关
+/// （header 可撒谎/缺席）。测试态 64KB：回归锁用小封顶实测超限拒绝。
+#[cfg(not(test))]
+const DOWNLOAD_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+#[cfg(test)]
+const DOWNLOAD_MAX_BYTES: u64 = 64 * 1024;
+
+/// 解压总量硬上限：官方包解压 ~500-600MB，2GiB 足够任何真实发行版。
+/// `enclosed_name` 只防路径穿越不防解压炸弹（42.zip 类：压缩体极小、
+/// 解压后 TB 级灌盘）——逐块流式累计，超限在读入过程中断（同
+/// clawhub 分块预算拷贝形态），部分文件清理后拒绝。
+const EXTRACT_TOTAL_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// Install status constants.
 pub const INSTALL_STATUS_PENDING: &str = "pending";
 pub const INSTALL_STATUS_INSTALLED: &str = "installed";
@@ -704,6 +721,16 @@ impl InstallableEngine for ClamAVEngine {
                 chunk = stream.next() => {
                     match chunk {
                         Some(Ok(data)) => {
+                            // 下载体硬上限（BUG-20261123-026）：超限即断流 +
+                            // 清理临时文件（撑爆磁盘前拒绝）。
+                            if written + data.len() as u64 > DOWNLOAD_MAX_BYTES {
+                                drop(tmp_file);
+                                let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_path);
+                                return Err(format!(
+                                    "download exceeds size limit (>{} bytes): 拒绝无界下载（疑似恶意镜像或非数据库载荷）",
+                                    DOWNLOAD_MAX_BYTES
+                                ));
+                            }
                             tmp_file.write_all(&data)
                                 .await
                                 .map_err(|e| {
@@ -844,11 +871,28 @@ fn walkdir_recursive(dir: &Path, paths: &mut Vec<std::path::PathBuf>) -> Result<
 
 /// Extract a zip archive to the given directory.
 fn extract_zip_archive(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
+    extract_zip_archive_capped(zip_path, dest_dir, EXTRACT_TOTAL_MAX_BYTES)
+}
+
+/// [`extract_zip_archive`] 的可注入总量上限变体（测试用小 cap 钉行为；
+/// 生产包装传 [`EXTRACT_TOTAL_MAX_BYTES`]）。
+///
+/// 解压总量闸（BUG-20261123-026）：`enclosed_name` 只防路径穿越不防解压
+/// 炸弹——单条目 `std::io::copy` 把整条写完才返回，TB 级灌盘在返回前
+/// 已发生。改 16KB 分块预算拷贝（clawhub BUG-20261114-059 同形态）：
+/// 累计超 `total_cap` 立即断（关闭句柄后清理部分文件——Windows 删打开中
+/// 的文件会失败），「撑爆磁盘前拒绝」不变量成立。
+fn extract_zip_archive_capped(
+    zip_path: &Path,
+    dest_dir: &Path,
+    total_cap: u64,
+) -> Result<(), String> {
     let file =
         std::fs::File::open(zip_path).map_err(|e| format!("failed to open zip file: {}", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| format!("failed to read zip archive: {}", e))?;
 
+    let mut total_uncompressed: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -869,8 +913,27 @@ fn extract_zip_archive(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
             }
             let mut outfile = std::fs::File::create(&outpath)
                 .map_err(|e| format!("failed to create file {}: {}", outpath.display(), e))?;
-            std::io::copy(&mut entry, &mut outfile)
-                .map_err(|e| format!("failed to extract file {}: {}", outpath.display(), e))?;
+            use std::io::{Read as _, Write as _};
+            let mut buf = [0u8; 16 * 1024];
+            loop {
+                let n = entry
+                    .read(&mut buf)
+                    .map_err(|e| format!("failed to extract file {}: {}", outpath.display(), e))?;
+                if n == 0 {
+                    break;
+                }
+                total_uncompressed += n as u64;
+                if total_uncompressed > total_cap {
+                    drop(outfile);
+                    let _ = std::fs::remove_file(&outpath);
+                    return Err(format!(
+                        "解压总量超上限（>{total_cap} 字节）：疑似解压炸弹，已中止并清理部分文件"
+                    ));
+                }
+                outfile
+                    .write_all(&buf[..n])
+                    .map_err(|e| format!("failed to extract file {}: {}", outpath.display(), e))?;
+            }
         }
     }
 

@@ -841,3 +841,26 @@ fn bug195_prepare_extract_dir_fails_loud_when_dir_locked() {
     // 句柄释放后目录可正常清理（重试耗尽后的收尾）
     std::fs::remove_dir_all(dir.path()).ok();
 }
+
+// ---------------------------------------------------------------------------
+// 下载体量闸（BUG-20261123-026 同族横扫）：判定缝 + 常量余量
+// ---------------------------------------------------------------------------
+
+#[test]
+fn over_download_cap_rejects_at_and_over_cap() {
+    // 临界：累计+本块刚超 → true（写入前拦，.part 不落超限字节）。
+    assert!(over_download_cap(DOWNLOAD_ARCHIVE_MAX_BYTES, 1));
+    assert!(over_download_cap(DOWNLOAD_ARCHIVE_MAX_BYTES - 1, 2));
+    // 未到 → false（合法下载必须放行）。
+    assert!(!over_download_cap(DOWNLOAD_ARCHIVE_MAX_BYTES - 1, 0));
+    assert!(!over_download_cap(0, 1024));
+    // saturating：巨大累计不回绕误判放行。
+    assert!(over_download_cap(u64::MAX, 1));
+}
+
+#[test]
+fn download_cap_has_sane_headroom() {
+    // 生产余量：≥100MB（sherpa/AEC 压缩包实际 ~5-100MB），≤2GiB
+    // （防「余量放大到事实上无界」的退化）。
+    assert!((100 * 1024 * 1024..=2 * 1024 * 1024 * 1024).contains(&DOWNLOAD_ARCHIVE_MAX_BYTES));
+}

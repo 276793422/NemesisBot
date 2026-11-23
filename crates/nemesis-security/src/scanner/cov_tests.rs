@@ -595,3 +595,64 @@ async fn download_cancellation_aborts_mid_stream() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// 体量闸（BUG-20261123-026）：下载硬上限 + 解压总量上限
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn download_rejects_oversized_stream_and_cleans_temp() {
+    // 1MB body（非 zip 载荷——cap 在下载段就拦，无需到解压）。
+    // 测试态 DOWNLOAD_MAX_BYTES = 64KB（scanner.rs cfg(test) 覆写，
+    // 与 DOWNLOAD_READ_TIMEOUT 同款模式），1MB 必超限。
+    let big = vec![0x41u8; 1024 * 1024];
+    let port = spawn_http_server(vec![Resp::Bytes(http_200(&big))]).await;
+
+    let engine = ClamAVEngine::new(ClamAVEngineConfig {
+        url: format!("http://127.0.0.1:{port}/clamav.zip"),
+        ..Default::default()
+    });
+    let dir = temp_dir("dl-cap");
+    let err = engine
+        .download(
+            dir.to_str().unwrap(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("size limit"), "{err}");
+    assert!(
+        !dir.join("clamav-download.zip").exists(),
+        "超限后临时文件必须清理（残留 = 磁盘仍被占）"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn extract_zip_archive_capped_rejects_bomb_and_cleans_partial() {
+    // 炸弹形态：1MB 零字节 → deflate 后极小（压缩体 << 解压体），
+    // cap 64KB 必在流式中段触发。
+    let bomb = zip_bytes(&[("data/big.bin", &vec![0u8; 1024 * 1024])]);
+    let dir = temp_dir("extract-cap");
+    let zip_path = dir.join("bomb.zip");
+    std::fs::write(&zip_path, &bomb).unwrap();
+
+    // 超限臂：Err + 部分文件清理（Windows 语义：先关句柄再删）。
+    let dest = dir.join("out");
+    let err = super::extract_zip_archive_capped(&zip_path, &dest, 64 * 1024).unwrap_err();
+    assert!(err.contains("超上限"), "{err}");
+    assert!(
+        !dest.join("data").join("big.bin").exists(),
+        "部分解压文件必须清理：{err}"
+    );
+
+    // 区分力（阳性对照）：同一 zip、cap > 实际解压量 → 正常解出全量。
+    let dest_ok = dir.join("out_ok");
+    super::extract_zip_archive_capped(&zip_path, &dest_ok, 2 * 1024 * 1024).unwrap();
+    let content = std::fs::read(dest_ok.join("data").join("big.bin")).unwrap();
+    assert_eq!(content.len(), 1024 * 1024, "合法体量必须完整解出");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

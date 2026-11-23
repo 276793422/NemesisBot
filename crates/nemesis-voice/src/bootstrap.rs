@@ -30,6 +30,23 @@ const SHERPA_VERSION: &str = "1.13.2";
 #[cfg(target_os = "windows")]
 const SHERPA_RELEASE_NAME: &str = "sherpa-onnx-v1.13.2-win-x64-shared-MD-Release";
 
+/// 下载体硬上限（BUG-20261123-026 同族横扫）：sherpa/AEC 运行库压缩包
+/// 实际 ~5-100MB，512MB 超足余量。下载源无哈希锚定（GitHub 官方 +
+/// hf-mirror 第三方镜像回落），镜像被劫持的「无限流」会在
+/// `.part` 文件上灌满整盘——超限即断流并清理（家族纪律：
+/// 网络来源必须有界，在撑爆磁盘之前拒绝；Content-Length 可缺席/撒谎，
+/// 不作为闸门依据）。外部 `tar -xjf` 解包段与 sandbox 7z 同为外部工具
+/// 面，不在此闸内（既有取舍）。
+#[cfg(target_os = "windows")]
+pub(crate) const DOWNLOAD_ARCHIVE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+
+/// 下载超限判定（测试缝：sherpa 与 AEC 两处下载循环共用同一判定，
+/// BUG-20261123-026 同族横扫）。
+#[cfg(target_os = "windows")]
+pub(crate) fn over_download_cap(downloaded: u64, chunk_len: usize) -> bool {
+    downloaded.saturating_add(chunk_len as u64) > DOWNLOAD_ARCHIVE_MAX_BYTES
+}
+
 #[cfg(target_os = "windows")]
 const REQUIRED_LIBS: &[&str] = &[
     "sherpa-onnx-c-api.dll",
@@ -410,6 +427,14 @@ async fn try_download_and_extract(
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("Failed to read download chunk")?;
+            if over_download_cap(downloaded, chunk.len()) {
+                drop(file);
+                let _ = fs::remove_file(&part_path);
+                bail!(
+                    "download exceeds size limit (>{} bytes): 拒绝无界下载（镜像载荷异常，已清理残留）",
+                    DOWNLOAD_ARCHIVE_MAX_BYTES
+                );
+            }
             file.write_all(&chunk)?;
             downloaded += chunk.len() as u64;
 
@@ -748,6 +773,14 @@ async fn download_to(url: &str, archive_path: &Path, proxy_url: &str, label: &st
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("Failed to read download chunk")?;
+        if over_download_cap(downloaded, chunk.len()) {
+            drop(file);
+            let _ = fs::remove_file(&part_path);
+            bail!(
+                "download exceeds size limit (>{} bytes): 拒绝无界下载（镜像载荷异常，已清理残留）",
+                DOWNLOAD_ARCHIVE_MAX_BYTES
+            );
+        }
         file.write_all(&chunk)?;
         downloaded += chunk.len() as u64;
 
