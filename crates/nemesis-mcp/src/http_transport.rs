@@ -44,27 +44,45 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     /// Create a new HTTP transport targeting the given URL.
-    pub fn new(url: impl Into<String>) -> Self {
+    pub fn new(url: impl Into<String>) -> Result<Self, TransportError> {
         Self::with_headers(url, Vec::new())
     }
 
     /// Create with configured header lines（"KEY: VALUE"，值可含秘密引用）。
     /// 解析在 `connect()` 现查——同一 transport 重连会拿到轮换后的新值。
-    pub fn with_headers(url: impl Into<String>, header_lines: Vec<String>) -> Self {
-        Self {
-            url: url.into(),
+    ///
+    /// 构建失败 fail-closed（BUG-20261123-028）：不再 `unwrap_or_default()`
+    /// 静默回落默认 client——那会把本构造要挂的跨源重定向防线原样重新
+    /// 打开（配置头可含鉴权/秘密，reqwest 默认策略对跨主机 30x 只剥标准
+    /// 鉴权头，`X-Api-Key` 等自定义头原样带去目标主机）。构建失败不是纯
+    /// 理论形态（rustls CryptoProvider 歧义等，见 BUG-20261114-037/040
+    /// 同族实录；oauth.rs 先例：fail-closed 诚实报错）。
+    pub fn with_headers(
+        url: impl Into<String>,
+        header_lines: Vec<String>,
+    ) -> Result<Self, TransportError> {
+        let client = reqwest::Client::builder()
             // 配置头可含鉴权/秘密（vault 引用现查）——默认跟随重定向会把它
             // 们带去跨主机目标（reqwest 只剥标准四头）。同源跟随/跨源终停
             // （nemesis-utils::http_redirect 单一真相源）。
-            client: reqwest::Client::builder()
-                .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-                .build()
-                .unwrap_or_default(),
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .map_err(|e| {
+                TransportError::send_failed(format!(
+                    "MCP HTTP client build failed (refusing default client without \
+                     cross-host redirect guard — configured auth headers would \
+                     follow 30x redirects to other hosts): {}",
+                    e
+                ))
+            })?;
+        Ok(Self {
+            url: url.into(),
+            client,
             session_id: None,
             connected: false,
             header_lines,
             resolved_headers: Vec::new(),
-        }
+        })
     }
 }
 
@@ -197,14 +215,19 @@ impl Transport for HttpTransport {
             ))
         })?;
 
-        // Store session ID from response headers.
-        if let Some(sid) = response.headers().get("mcp-session-id")
+        let status = response.status();
+        // Store session ID from response headers——只在成功态捕获
+        // （BUG-20261123-028 附带面）：此前在状态判定前无条件覆盖，错误
+        // 响应头里若混入 Mcp-Session-Id（反代噪声/重试风暴时 server 回退
+        // 头）会顶掉当前活会话 id，后续请求全部 404 触发无谓重握手；且
+        // 「带会话 id 的 404 = 过期」分支语义变成先存后清（顺序矛盾）。
+        // 会话指派按规范只发生在成功响应（initialize 200）。
+        if status.is_success()
+            && let Some(sid) = response.headers().get("mcp-session-id")
             && let Ok(s) = sid.to_str()
         {
             self.session_id = Some(s.to_string());
         }
-
-        let status = response.status();
         let content_type = response
             .headers()
             .get("content-type")

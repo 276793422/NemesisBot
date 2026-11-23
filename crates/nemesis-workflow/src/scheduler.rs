@@ -417,9 +417,22 @@ async fn schedule_inner(
                             break;
                         }
                         Ok(r) => {
-                            let err = r.error.clone();
+                            // BUG-20261123-030：executor 返回 Failed 但 error
+                            // 为 None 不得被当成功收账。三方
+                            // register_node_executor 对 NodeResult 无 schema
+                            // 约束，Failed+None 可达；旧实现 last_error =
+                            // None 使收集侧命中 (Some, None) 成功臂——Failed
+                            // 节点的 output 照常写入下游变量、工作流继续跑，
+                            // 失败被静默吞掉。error 缺省合成诚实占位文案
+                            // （与 Failed-with-error 同走重试/失败路径）。
+                            let err = r.error.clone().unwrap_or_else(|| {
+                                format!(
+                                    "node {:?} reported Failed state without an error detail",
+                                    node.id
+                                )
+                            });
                             last_result = Some(r);
-                            last_error = err;
+                            last_error = Some(err);
                         }
                         Err(e) => {
                             last_error = Some(e);

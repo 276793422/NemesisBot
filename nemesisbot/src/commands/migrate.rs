@@ -184,6 +184,13 @@ fn copy_dir_recursive(src: &Path, dst: &Path, refresh: bool) -> Result<u32> {
             if !refresh && dst_path.exists() {
                 continue;
             }
+            // BUG-20261123-027：refresh 覆盖前先备份——对齐本命令 config 臂 /
+            // persona 臂的「备份后覆盖」纪律（persona 臂注释明写「对齐 config
+            // 臂纪律」）。此前裸 std::fs::copy 直接覆盖：用户迁移后在 bot 侧
+            // 改过的 workspace/prompts/skills 文件被 --refresh 静默顶掉，无
+            // .bak 可捞。backup_file 内含 exists() 守卫，首次迁移（dst 不存
+            // 在）零行为变化。
+            backup_file(&dst_path)?;
             std::fs::copy(&src_path, &dst_path)?;
             count += 1;
         }

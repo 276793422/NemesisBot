@@ -35,41 +35,46 @@ pub struct Transcriber {
 
 impl Transcriber {
     /// Create a new transcriber with the Groq API.
-    pub fn new(api_key: &str) -> Self {
-        Self {
-            api_url: "https://api.groq.com/openai/v1".to_string(),
-            api_key: if api_key.is_empty() {
-                None
-            } else {
-                Some(api_key.to_string())
-            },
-            model: "whisper-large-v3".to_string(),
-            // 凭据随重定向泄漏防线（单一真相源 nemesis_utils::http_redirect
-            // ——同源跟随/跨源终停）：本请求带 `Authorization: Bearer` +
-            // multipart 音频正文，reqwest 默认策略对跨主机 307/308 保方法
-            // 转发 body——用户语音内容会流向重定向目标主机。provider 六
-            // lane / channels / MCP / search / oauth 均已挂同款策略，本
-            // builder 是该家族横向扫补上的最后一个漏网点（voice lane）。
-            http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-                .build()
-                .unwrap_or_default(),
-        }
+    ///
+    /// 构建失败 fail-closed（BUG-20261123-028 横向扫）：不再
+    /// `unwrap_or_default()` 静默回落默认 client——那会同时丢掉 60s
+    /// 超时与凭据随重定向防线（本请求带 `Authorization: Bearer` +
+    /// multipart 音频正文，reqwest 默认策略对跨主机 307/308 保方法转发
+    /// body——用户语音内容会流向重定向目标主机）。构建失败不是纯理论
+    /// 形态（rustls CryptoProvider 歧义，BUG-20261114-037/040 同族实录）。
+    pub fn new(api_key: &str) -> Result<Self, String> {
+        Self::with_url("https://api.groq.com/openai/v1", Self::opt_key(api_key))
     }
 
     /// Create with custom API URL.
-    pub fn with_url(api_url: &str, api_key: Option<&str>) -> Self {
-        Self {
+    ///
+    /// 凭据随重定向泄漏防线（单一真相源 nemesis_utils::http_redirect
+    /// ——同源跟随/跨源终停）。构建失败语义同 [`Self::new`]：fail-closed
+    /// 诚实报错（BUG-20261123-028 横向扫）。
+    pub fn with_url(api_url: &str, api_key: Option<&str>) -> Result<Self, String> {
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .map_err(|e| {
+                format!(
+                    "transcriber HTTP client build failed (refusing default client \
+                     without timeout + cross-host redirect guard): {e}"
+                )
+            })?;
+        Ok(Self {
             api_url: api_url.to_string(),
             api_key: api_key.map(|s| s.to_string()),
             model: "whisper-large-v3".to_string(),
-            // 同 [`Self::new`]：凭据 + 音频正文外呼统一重定向策略。
-            http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
-                .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-                .build()
-                .unwrap_or_default(),
+            http_client,
+        })
+    }
+
+    fn opt_key(api_key: &str) -> Option<&str> {
+        if api_key.is_empty() {
+            None
+        } else {
+            Some(api_key)
         }
     }
 

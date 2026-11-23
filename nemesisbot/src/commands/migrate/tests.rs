@@ -159,6 +159,58 @@ fn test_copy_dir_recursive_with_refresh() {
         std::fs::read_to_string(dst.join("file.txt")).unwrap(),
         "new"
     );
+    // BUG-20261123-027：覆盖前必须有 .bak 兜底
+    assert_eq!(
+        std::fs::read_to_string(dst.join("file.txt.bak")).unwrap(),
+        "old"
+    );
+}
+
+// BUG-20261123-027 回归锁：--refresh 覆盖既有文件前必须先落 .bak（对齐
+// config 臂 / persona 臂「备份后覆盖」纪律）。此前裸 std::fs::copy 直接
+// 覆盖，用户迁移后在 bot 侧改过的 workspace/prompts/skills 文件被静默
+// 顶掉，无 .bak 可捞。
+#[test]
+fn test_copy_dir_recursive_refresh_backs_up_overwritten_target() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("SKILL.md"), "upstream").unwrap();
+
+    std::fs::create_dir_all(&dst).unwrap();
+    std::fs::write(dst.join("SKILL.md"), "user-customized").unwrap();
+
+    let count = copy_dir_recursive(&src, &dst, true).unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        std::fs::read_to_string(dst.join("SKILL.md")).unwrap(),
+        "upstream",
+        "refresh 覆盖后内容 = 源"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dst.join("SKILL.md.bak")).unwrap(),
+        "user-customized",
+        ".bak 必须保存被覆盖前的旧内容"
+    );
+}
+
+#[test]
+fn test_copy_dir_recursive_fresh_copy_no_bak() {
+    // 首次迁移（dst 不存在）不得产生多余 .bak——backup_file 的 exists()
+    // 守卫保证零行为变化。
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.txt"), "first").unwrap();
+
+    let count = copy_dir_recursive(&src, &dst, true).unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "first");
+    assert!(!dst.join("a.txt.bak").exists(), "全新拷贝不得残留 .bak");
 }
 
 #[test]

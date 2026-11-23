@@ -752,7 +752,12 @@ impl Tool for WebFetchTool {
             WEB_FETCH_UA,
             std::time::Duration::from_secs(10),
             std::time::Duration::from_secs(60),
-        );
+        )
+        .map_err(|e| {
+            // fail-closed（BUG-20261123-028 横向扫）：构建失败诚实报错，
+            // 不静默降级为可跟随重定向的默认 client（302 绕 SSRF 闸）。
+            format!("web_fetch client build failed: {e}")
+        })?;
 
         let mut current = start_url;
         let mut hops: usize = 0;

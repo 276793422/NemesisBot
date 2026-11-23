@@ -18,6 +18,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 
 use crate::roaming::{ROAMING_LOG_INFO, ROAMING_LOG_WARN};
+use crate::ROAMING_LOG_ERROR;
 use crate::types::RendezvousMember;
 
 /// 默认同步间隔（宿主 config.cluster.json 同值语义）。
@@ -156,10 +157,30 @@ async fn run_loop(
         last_ok_ms: 0,
         last_fail_ms: 0,
     };
-    let client = reqwest::Client::builder()
+    // 构建失败 fail-closed（BUG-20261123-028 横向扫）：不再
+    // `unwrap_or_default()` 静默回落默认 client——那会丢掉 15s 超时，
+    // 挂死端点让整个名册循环无限卡住（BUG-20261114-040 同族语义：
+    // 零超时默认 client = 挂死面原样重开）。后台循环诚实退出：loud
+    // 日志 + status.last_error 留痕，循环不启动优于无超时裸奔。
+    let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("rendezvous HTTP client build failed: {e}");
+            crate::plugin_log(ROAMING_LOG_ERROR, "rendezvous", &msg);
+            *status.lock() = RegistryRunStatus {
+                registry_url: config.registry_url.clone(),
+                last_member_count: 0,
+                fail_streak: 0,
+                last_error: msg,
+                last_ok_ms: 0,
+                last_fail_ms: 0,
+            };
+            return;
+        }
+    };
     let interval =
         Duration::from_secs(config.interval_secs.unwrap_or(DEFAULT_INTERVAL_SECS).max(1));
     let mut ticker = tokio::time::interval(interval);

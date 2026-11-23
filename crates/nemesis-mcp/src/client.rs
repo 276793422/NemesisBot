@@ -242,10 +242,18 @@ impl McpClient {
                     config.name
                 )));
             }
-            Box::new(crate::http_transport::HttpTransport::with_headers(
-                config.url.clone(),
-                config.headers.clone(),
-            ))
+            Box::new(
+                crate::http_transport::HttpTransport::with_headers(
+                    config.url.clone(),
+                    config.headers.clone(),
+                )
+                .map_err(|e| {
+                    ClientError::InvalidConfig(format!(
+                        "MCP server '{}' http transport client build failed: {}",
+                        config.name, e
+                    ))
+                })?,
+            )
         } else {
             let mut cfg = config.clone();
             if cfg.command.is_empty() && !cfg.url.is_empty() {

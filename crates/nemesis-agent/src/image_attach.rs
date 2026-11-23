@@ -180,30 +180,48 @@ fn is_data_url(url: &str) -> bool {
 /// `302 → 内网地址` 会绕过闸直接打内网。所有拉取外部 URL 的 client 一律
 /// 用 Policy::none（重定向响应走 error_for_status 或由上层循环手动逐跳
 /// 复查），不静默放行内网。
+///
+/// 构建失败 fail-closed（BUG-20261123-028 横向扫）：不再
+/// `unwrap_or_default()` 静默回落默认 client——那会把本函数存在的理由
+/// （Policy::none = SSRF 首跳语义）连同双超时一起原样丢掉，302 绕闸
+/// 打内网的旧洞重新打开。构建失败不是纯理论形态（rustls CryptoProvider
+/// 歧义，BUG-20261114-037/040 同族实录；相邻
+/// `build_pinned_no_redirect_client` 同为失败返回 None 的 fail-closed 形态）。
 pub(crate) fn build_no_redirect_client(
     user_agent: &str,
     connect_timeout: std::time::Duration,
     total_timeout: std::time::Duration,
-) -> reqwest::Client {
+) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect_timeout)
         .timeout(total_timeout)
         .user_agent(user_agent)
         .build()
-        .unwrap_or_default()
+        .map_err(|e| {
+            format!(
+                "no-redirect HTTP client build failed (refusing default client \
+                 without redirect guard): {e}"
+            )
+        })
 }
 
 /// 不跟随重定向的下载 client（图片预取专用：静态缓存 + 专属 UA/超时）。
-fn no_redirect_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        build_no_redirect_client(
-            "nemesisbot-image-fetch",
-            std::time::Duration::from_secs(10),
-            std::time::Duration::from_secs(30),
-        )
-    })
+/// 构建失败诚实上抛（fail-closed，BUG-20261123-028 横向扫），调用方按
+/// 单图失败注记处理，不静默降级为可跟随重定向的默认 client。
+fn no_redirect_client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            build_no_redirect_client(
+                "nemesisbot-image-fetch",
+                std::time::Duration::from_secs(10),
+                std::time::Duration::from_secs(30),
+            )
+        })
+        .as_ref()
+        .map_err(std::clone::Clone::clone)
 }
 
 /// 按 SSRF 闸验证过的 IP 集**钉死 DNS** 的下载 client 构建器（2026-09-04
@@ -354,7 +372,18 @@ pub async fn fetch_url_media(
         let pinned_client: Option<reqwest::Client> = None;
         let client = match &pinned_client {
             Some(c) => c,
-            None => no_redirect_client(),
+            // fail-closed：client 构建失败 = 本图诚实注记跳过（不静默
+            // 降级为可跟随重定向的默认 client，BUG-20261123-028 横向扫）。
+            None => match no_redirect_client() {
+                Ok(c) => c,
+                Err(e) => {
+                    notes.push(format!(
+                        "[图片未附加: 下载 client 构建失败 {} ({})]",
+                        url, e
+                    ));
+                    continue;
+                }
+            },
         };
 
         // 2) 下载（不跟随重定向的专用 client：30s 超时兜底 + SSRF 首跳语义

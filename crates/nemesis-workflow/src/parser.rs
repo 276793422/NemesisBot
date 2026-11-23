@@ -94,6 +94,26 @@ pub fn validate(wf: &Workflow) -> Result<(), String> {
         }
     }
 
+    // BUG-20261123-031：retry_count 必须有上限。无界 retry_count（手写/
+    // 三方生成的 YAML `retry_count: 1000000000000`）让裸 CLI workflow run
+    //（无 gateway 墙钟预算护栏）每节点退避自旋：退避 (attempt+1)*500ms
+    // 对 N 次重试求和 ~ N²·0.25s，巨值在数学上近似永久挂起，且每次重试
+    // 都重放节点副作用。上限 100 与 loop 节点 safety_cap 同族：重试是
+    // 瞬态故障手段，连续 100 次失败 = 系统性故障，该转人工不是继续烧。
+    // 所有注册入口（register_workflow / persist_workflow / UI 实时校验）
+    // 都过本函数，单点闸成立。
+    const MAX_RETRY_COUNT: usize = 100;
+    for n in &wf.nodes {
+        if n.retry_count > MAX_RETRY_COUNT {
+            return Err(format!(
+                "node {:?} retry_count {} exceeds max {} (retries are for transient \
+                 failures; sustained failures need human attention, not unbounded \
+                 re-execution)",
+                n.id, n.retry_count, MAX_RETRY_COUNT
+            ));
+        }
+    }
+
     // Reject pausing nodes (human_review) inside composite blocks
     // (parallel/loop). Composite executors key success off
     // `state != Failed`, so a child stuck in Waiting would be swallowed as

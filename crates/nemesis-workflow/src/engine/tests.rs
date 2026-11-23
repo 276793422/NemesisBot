@@ -3991,6 +3991,63 @@ async fn w4a_register_node_executor_custom_type_runs() {
     );
 }
 
+/// BUG-20261123-030 回归锁：三方 executor 返回 Failed + error=None 不得
+/// 被当成功收账。旧实现 retry 臂 last_error=None 使 scheduler 收集侧命中
+/// (Some, None) 成功臂——Failed 节点的 output 照常写下游变量、工作流
+/// Completed，失败被静默吞掉。修复后合成诚实占位错误，工作流 Failed，
+/// 失败节点的 output 不进下游。
+#[tokio::test]
+async fn w4a_failed_state_with_none_error_is_failure_not_success() {
+    struct W4aSilentFailExecutor;
+    #[async_trait]
+    impl crate::nodes::NodeExecutor for W4aSilentFailExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::json!({"poison": true}),
+                error: None,
+                state: ExecutionState::Failed,
+                started_at: Local::now(),
+                ended_at: Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let engine = WorkflowEngine::new();
+    engine.register_node_executor(
+        "w4a_silent_fail",
+        std::sync::Arc::new(W4aSilentFailExecutor),
+    );
+    engine
+        .register_workflow(make_workflow(
+            "w4a_silent_fail_wf",
+            vec![make_node("n1", "w4a_silent_fail", vec![])],
+        ))
+        .unwrap();
+
+    let exec = engine
+        .run("w4a_silent_fail_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(exec.state, ExecutionState::Failed);
+    let err = exec.error.expect("scheduler 路径 Failed 必须带错误串");
+    assert!(
+        err.contains("reported Failed state without an error detail"),
+        "错误串应为合成占位文案，实际: {err}"
+    );
+    assert!(
+        !exec.node_results.contains_key("n1"),
+        "Failed 节点的结果不得按成功收账写 node_results，实际: {:?}",
+        exec.node_results.get("n1")
+    );
+}
+
 /// set_usage_store: wires the slot without panicking (engine.rs ~672-680).
 #[tokio::test]
 async fn w4a_set_usage_store_wires_slot() {

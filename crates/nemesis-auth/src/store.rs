@@ -83,16 +83,33 @@ impl AuthStore {
 
     /// Delete all credentials by removing the store file.
     /// Mirrors Go DeleteAllCredentials.
+    ///
+    /// BUG-20261123-029：删除必须在写锁临界区内完成。旧实现先删盘上文件、
+    /// 后拿写锁清内存，两步之间存在 TOCTOU 窗口：并发 save（token 刷新
+    /// 路径）会在窗口内 persist 把凭据重新写回盘上，delete_all 返回成功
+    /// 后盘上仍有凭据残留，重启 load 复活「已登出」的 token（登出僵尸的
+    /// 文件形态，与 save/remove 回滚纪律防的内存形态同族）。挪进写锁后
+    /// 与 save/remove/persist_guarded 完全串行化，窗口消失；删除失败回滚
+    /// 内存快照（对齐本文件 save/remove 的失败回滚纪律：内存与盘上真相
+    /// 不分叉）。
     pub fn delete_all(&self) -> Result<(), String> {
+        let mut creds = self.creds.write().unwrap();
+        let snapshot = creds.clone();
+        creds.clear();
         let path = Path::new(&self.path);
-        if path.exists() {
+        let result = if path.exists() {
             // BUG-20261123-018：凭据库文件删除走 fsutil 退避重试（AV/索引器
             // 瞬时句柄 Windows 常态；文件每次 save 都重写，单发失败概率高），
             // 耗尽才报错。
             nemesis_utils::fsutil::remove_file_retry(path)
-                .map_err(|e| format!("delete auth file: {e}"))?;
+                .map_err(|e| format!("delete auth file: {e}"))
+        } else {
+            Ok(())
+        };
+        if let Err(e) = result {
+            *creds = snapshot;
+            return Err(e);
         }
-        self.creds.write().unwrap().clear();
         Ok(())
     }
 

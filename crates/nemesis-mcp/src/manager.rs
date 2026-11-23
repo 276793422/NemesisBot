@@ -435,7 +435,13 @@ pub async fn discover_server_metadata_http_with_headers(
     header_lines: Vec<String>,
     timeout_secs: u64,
 ) -> Result<DiscoveryResult, String> {
-    let transport = HttpTransport::with_headers(url, header_lines);
+    let transport = HttpTransport::with_headers(url, header_lines).map_err(|e| {
+        format!(
+            "MCP HTTP server '{}' transport build failed: {}",
+            sanitize_url_for_log(url),
+            e
+        )
+    })?;
     let mut client: Box<dyn Client> = Box::new(
         McpClient::new(Box::new(transport))
             .with_request_timeout_ms(one_shot_request_timeout_ms(timeout_secs)),

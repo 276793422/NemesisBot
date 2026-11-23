@@ -109,6 +109,49 @@ fn test_delete_all_when_no_file() {
     assert!(store.list_providers().is_empty());
 }
 
+/// BUG-20261123-029 回归锁：delete_all 与并发 save 交错后，静止态内存
+/// 集合必须等于盘上集合。旧实现删文件在写锁外——「remove file → 并发
+/// save persist → 才拿锁 clear」窗口产出「内存空、盘上有」的登出僵尸
+/// （重启 load 复活已登出 token）。新实现删除整段在写锁临界区内，与
+/// save 完全串行，静止态恒一致。
+#[test]
+fn test_delete_all_vs_concurrent_save_no_disk_only_zombie() {
+    for _round in 0..40 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json").to_string_lossy().to_string();
+        let store = std::sync::Arc::new(AuthStore::new(&path));
+        store.save("a", test_cred()).unwrap();
+        store.save("b", test_cred()).unwrap();
+
+        let s_del = std::sync::Arc::clone(&store);
+        let t_del = std::thread::spawn(move || {
+            for _ in 0..15 {
+                let _ = s_del.delete_all();
+            }
+        });
+        let s_save = std::sync::Arc::clone(&store);
+        let t_save = std::thread::spawn(move || {
+            for i in 0..15 {
+                let _ = s_save.save(&format!("c{i}"), test_cred());
+            }
+        });
+        t_del.join().unwrap();
+        t_save.join().unwrap();
+
+        // 静止态不变量：内存集合 == 盘上集合（写穿同源，无僵尸）
+        let mem: std::collections::BTreeSet<String> = store.list_providers().into_iter().collect();
+        let disk: std::collections::BTreeSet<String> = match std::fs::read_to_string(&path) {
+            Ok(data) => serde_json::from_str::<HashMap<String, AuthCredential>>(&data)
+                .unwrap()
+                .into_keys()
+                .collect(),
+            // 文件不存在 = 盘上空集（delete_all 最后落败）
+            Err(_) => std::collections::BTreeSet::new(),
+        };
+        assert_eq!(mem, disk, "内存与盘上凭据集合不一致（登出僵尸形态）");
+    }
+}
+
 #[test]
 fn test_persistence_roundtrip() {
     let dir = tempfile::tempdir().unwrap();

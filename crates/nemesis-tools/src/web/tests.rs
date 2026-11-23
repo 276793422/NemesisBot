@@ -36,14 +36,14 @@ async fn test_web_fetch_invalid_url_scheme() {
 
 #[test]
 fn test_web_search_tool_metadata() {
-    let tool = WebSearchTool::with_duckduckgo();
+    let tool = WebSearchTool::with_duckduckgo().expect("client build");
     assert_eq!(tool.name(), "web_search");
     assert!(tool.description().contains("Search"));
 }
 
 #[tokio::test]
 async fn test_web_search_missing_query() {
-    let tool = WebSearchTool::with_duckduckgo();
+    let tool = WebSearchTool::with_duckduckgo().expect("client build");
     let result = tool.execute(&serde_json::json!({})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("missing"));
@@ -51,7 +51,7 @@ async fn test_web_search_missing_query() {
 
 #[tokio::test]
 async fn test_web_search_empty_query() {
-    let tool = WebSearchTool::with_duckduckgo();
+    let tool = WebSearchTool::with_duckduckgo().expect("client build");
     let result = tool.execute(&serde_json::json!({"query": ""})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("empty"));
@@ -163,7 +163,7 @@ fn test_url_decode_query_param_utf8() {
 // Test the DuckDuckGo extract_results method
 #[test]
 fn test_duckduckgo_extract_results_empty() {
-    let provider = DuckDuckGoSearchProvider::new();
+    let provider = DuckDuckGoSearchProvider::new().expect("client build");
     let result = provider
         .extract_results("<html><body>No results</body></html>", 5, "test")
         .unwrap();
@@ -172,7 +172,7 @@ fn test_duckduckgo_extract_results_empty() {
 
 #[test]
 fn test_duckduckgo_extract_results_with_data() {
-    let provider = DuckDuckGoSearchProvider::new();
+    let provider = DuckDuckGoSearchProvider::new().expect("client build");
     let html = r#"
     <div class="result">
         <a class="result__a" href="https://example.com/page1">Example Title 1</a>
@@ -193,7 +193,7 @@ fn test_duckduckgo_extract_results_with_data() {
 
 #[test]
 fn test_duckduckgo_extract_results_respects_count() {
-    let provider = DuckDuckGoSearchProvider::new();
+    let provider = DuckDuckGoSearchProvider::new().expect("client build");
     let html = r#"
     <a class="result__a" href="https://example.com/1">Title 1</a>
     <a class="result__a" href="https://example.com/2">Title 2</a>
@@ -394,7 +394,7 @@ async fn test_web_search_with_mock_provider_error() {
 
 #[tokio::test]
 async fn test_web_search_whitespace_query() {
-    let tool = WebSearchTool::with_duckduckgo();
+    let tool = WebSearchTool::with_duckduckgo().expect("client build");
     let result = tool.execute(&serde_json::json!({"query": "   "})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("empty"));
@@ -430,7 +430,7 @@ async fn test_web_search_count_clamping() {
 
 #[test]
 fn test_duckduckgo_extract_results_with_uddg_urls() {
-    let provider = DuckDuckGoSearchProvider::new();
+    let provider = DuckDuckGoSearchProvider::new().expect("client build");
     let html = r#"
     <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust-lang.org%2F&rpt=some">Rust Programming</a>
     <a class="result__snippet">The Rust programming language</a>
@@ -587,7 +587,7 @@ fn test_web_fetch_tool_with_options() {
 
 #[test]
 fn test_web_search_tool_parameters() {
-    let tool = WebSearchTool::with_duckduckgo();
+    let tool = WebSearchTool::with_duckduckgo().expect("client build");
     let params = tool.parameters();
     assert!(params["properties"]["query"].is_object());
     assert!(params["properties"]["count"].is_object());
@@ -688,9 +688,10 @@ fn test_web_search_options_perplexity_zero_max_results() {
 }
 
 #[test]
-fn test_duckduckgo_default() {
-    let _provider = DuckDuckGoSearchProvider::default();
-    // Just verify construction works
+fn test_duckduckgo_default_construction() {
+    // Default impl 已随 new() -> Result fail-closed（BUG-20261123-028 横向扫）
+    // 移除——改为钉 new() 成功路径。
+    let _provider = DuckDuckGoSearchProvider::new().expect("client build");
 }
 
 #[test]

@@ -239,22 +239,35 @@ pub struct DuckDuckGoSearchProvider {
 
 impl DuckDuckGoSearchProvider {
     /// Create a new DuckDuckGo search provider.
-    pub fn new() -> Self {
+    ///
+    /// 构建失败 fail-closed（BUG-20261123-028 横向扫）：不再
+    /// `unwrap_or_default()` 静默回落默认 client（丢 10s 超时 + 丢跨源
+    /// 重定向策略）。查询正文（用户搜索词）会随 307/308 保方法转发到
+    /// 重定向目标主机——与 Perplexity provider（BUG-20261115-045 同挂
+    /// `no_cross_host_redirect_policy`）对齐；DDG 无凭据头但用户查询
+    /// 内容同样是出站面。
+    pub fn new() -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
-            .unwrap_or_default();
-        Self {
+            .map_err(|e| {
+                format!(
+                    "DuckDuckGo search client build failed (refusing default client \
+                     without timeout + cross-host redirect guard): {e}"
+                )
+            })?;
+        Ok(Self {
             client,
             base_url: "https://html.duckduckgo.com/html/".to_string(),
-        }
+        })
     }
 
     /// 测试专用：注入本地 mock 端点（生产路径不可达硬编码官方端点，回归锁需要可控服务器）。
     #[cfg(test)]
     fn with_base_url(base_url: &str) -> Self {
-        let mut p = Self::new();
+        let mut p = Self::new().expect("test client build");
         p.base_url = base_url.to_string();
         p
     }
@@ -317,11 +330,9 @@ impl DuckDuckGoSearchProvider {
     }
 }
 
-impl Default for DuckDuckGoSearchProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// `Default` 已随 new() -> Result fail-closed（BUG-20261123-028 横向扫）
+// 一并移除——Default 无法表达失败，保留会诱导 unwrap_or_default 式静默
+// 降级回归。调用方显式处理 Err（from_opts 降级跳过 + warn）。
 
 #[async_trait]
 impl SearchProvider for DuckDuckGoSearchProvider {
@@ -369,7 +380,13 @@ pub struct BraveSearchProvider {
 
 impl BraveSearchProvider {
     /// Create a new Brave search provider with the given API key.
-    pub fn new(api_key: &str) -> Self {
+    ///
+    /// 构建失败 fail-closed（BUG-20261123-028 横向扫）：不再
+    /// `unwrap_or_default()` 静默回落默认 client——那会同时丢掉 10s 超时
+    /// 与凭据随重定向防线。本请求带 `X-Subscription-Token`（自定义凭据头，
+    /// reqwest 默认策略跨主机**不剥**，BUG-20261115-045 实录），fail-open
+    /// 即凭据出站面。
+    pub fn new(api_key: &str) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             // BUG-20261115-045：X-Subscription-Token 是自定义凭据头——reqwest
@@ -379,18 +396,23 @@ impl BraveSearchProvider {
             // nemesis_utils::http_redirect）。
             .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
-            .unwrap_or_default();
-        Self {
+            .map_err(|e| {
+                format!(
+                    "Brave search client build failed (refusing default client \
+                     without timeout + cross-host redirect guard): {e}"
+                )
+            })?;
+        Ok(Self {
             api_key: api_key.to_string(),
             client,
             base_url: "https://api.search.brave.com/res/v1/web/search".to_string(),
-        }
+        })
     }
 
     /// 测试专用：注入本地 mock 端点。
     #[cfg(test)]
     fn with_base_url(api_key: &str, base_url: &str) -> Self {
-        let mut p = Self::new(api_key);
+        let mut p = Self::new(api_key).expect("test client build");
         p.base_url = base_url.to_string();
         p
     }
@@ -476,7 +498,13 @@ pub struct PerplexitySearchProvider {
 
 impl PerplexitySearchProvider {
     /// Create a new Perplexity search provider with the given API key.
-    pub fn new(api_key: &str) -> Self {
+    ///
+    /// 构建失败 fail-closed（BUG-20261123-028 横向扫）：不再
+    /// `unwrap_or_default()` 静默回落默认 client——那会同时丢掉 30s 超时
+    /// 与凭据随重定向防线（BUG-20261115-045 挂上的
+    /// `no_cross_host_redirect_policy`）。本请求带
+    /// `Authorization: Bearer`，凭据外呼面 fail-open 不可接受。
+    pub fn new(api_key: &str) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             // BUG-20261115-045：凭据外呼统一走跨源终止策略（Authorization
@@ -484,11 +512,16 @@ impl PerplexitySearchProvider {
             // 会被剥」——日后换自定义凭据头时不再裸奔）。
             .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
-            .unwrap_or_default();
-        Self {
+            .map_err(|e| {
+                format!(
+                    "Perplexity search client build failed (refusing default client \
+                     without timeout + cross-host redirect guard): {e}"
+                )
+            })?;
+        Ok(Self {
             api_key: api_key.to_string(),
             client,
-        }
+        })
     }
 }
 
@@ -610,10 +643,20 @@ impl WebSearchTool {
             } else {
                 5
             };
-            return Some(Self {
-                provider: Box::new(PerplexitySearchProvider::new(key)),
-                max_results: max,
-            });
+            // fail-closed（BUG-20261123-028 横向扫）：构建失败 = Perplexity
+            // lane 诚实缺席（warn + 继续探测 Brave/DDG），不静默跑无超时
+            // 无重定向防线的默认 client。
+            match PerplexitySearchProvider::new(key) {
+                Ok(provider) => {
+                    return Some(Self {
+                        provider: Box::new(provider),
+                        max_results: max,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("[web_search] Perplexity provider 装配失败，跳过: {e}");
+                }
+            }
         }
 
         if opts.brave_enabled
@@ -625,10 +668,19 @@ impl WebSearchTool {
             } else {
                 5
             };
-            return Some(Self {
-                provider: Box::new(BraveSearchProvider::new(key)),
-                max_results: max,
-            });
+            // fail-closed（BUG-20261123-028 横向扫）：构建失败 = Brave lane
+            // 诚实缺席（warn + 继续探测 DDG）。
+            match BraveSearchProvider::new(key) {
+                Ok(provider) => {
+                    return Some(Self {
+                        provider: Box::new(provider),
+                        max_results: max,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("[web_search] Brave provider 装配失败，跳过: {e}");
+                }
+            }
         }
 
         if opts.duckduckgo_enabled {
@@ -637,21 +689,31 @@ impl WebSearchTool {
             } else {
                 5
             };
-            return Some(Self {
-                provider: Box::new(DuckDuckGoSearchProvider::new()),
-                max_results: max,
-            });
+            // fail-closed（BUG-20261123-028 横向扫）：client 构建失败 =
+            // DDG lane 诚实缺席（warn 留痕 + 继续探测其余 provider），
+            // 不静默跑无超时无重定向防线的默认 client。
+            match DuckDuckGoSearchProvider::new() {
+                Ok(provider) => {
+                    return Some(Self {
+                        provider: Box::new(provider),
+                        max_results: max,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("[web_search] DuckDuckGo provider 装配失败，跳过: {e}");
+                }
+            }
         }
 
         None
     }
 
     /// Create a search tool with DuckDuckGo (no API key needed).
-    pub fn with_duckduckgo() -> Self {
-        Self {
-            provider: Box::new(DuckDuckGoSearchProvider::new()),
+    pub fn with_duckduckgo() -> Result<Self, String> {
+        Ok(Self {
+            provider: Box::new(DuckDuckGoSearchProvider::new()?),
             max_results: 5,
-        }
+        })
     }
 
     /// Create a search tool with a custom provider.

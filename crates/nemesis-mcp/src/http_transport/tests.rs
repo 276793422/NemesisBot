@@ -2,13 +2,13 @@ use super::*;
 
 #[tokio::test]
 async fn test_http_transport_name() {
-    let transport = HttpTransport::new("http://localhost:8080/mcp");
+    let transport = HttpTransport::new("http://localhost:8080/mcp").expect("client build");
     assert_eq!(transport.name(), "http");
 }
 
 #[tokio::test]
 async fn test_http_transport_lifecycle() {
-    let mut transport = HttpTransport::new("http://localhost:8080/mcp");
+    let mut transport = HttpTransport::new("http://localhost:8080/mcp").expect("client build");
     assert!(!transport.is_connected());
 
     transport.connect().await.unwrap();
@@ -20,7 +20,7 @@ async fn test_http_transport_lifecycle() {
 
 #[tokio::test]
 async fn test_http_transport_send_not_connected() {
-    let mut transport = HttpTransport::new("http://localhost:8080/mcp");
+    let mut transport = HttpTransport::new("http://localhost:8080/mcp").expect("client build");
     let req = TransportRequest {
         jsonrpc: "2.0".to_string(),
         id: Some(serde_json::Value::Number(1.into())),
@@ -138,7 +138,7 @@ fn bug56_sse_server_to_client_request_is_skipped() {
 
 #[tokio::test]
 async fn test_session_id_cleared_on_close() {
-    let mut transport = HttpTransport::new("http://localhost:8080/mcp");
+    let mut transport = HttpTransport::new("http://localhost:8080/mcp").expect("client build");
     transport.connect().await.unwrap();
     transport.session_id = Some("test-session-123".to_string());
 
@@ -251,7 +251,7 @@ fn test_extract_sse_data_error_with_data_field() {
 
 #[tokio::test]
 async fn test_close_before_connect_is_ok() {
-    let mut transport = HttpTransport::new("http://localhost:8080/mcp");
+    let mut transport = HttpTransport::new("http://localhost:8080/mcp").expect("client build");
     // close() without connect() must succeed and leave disconnected.
     transport.close().await.unwrap();
     assert!(!transport.is_connected());
@@ -259,7 +259,7 @@ async fn test_close_before_connect_is_ok() {
 
 #[tokio::test]
 async fn test_send_after_close_fails() {
-    let mut transport = HttpTransport::new("http://localhost:8080/mcp");
+    let mut transport = HttpTransport::new("http://localhost:8080/mcp").expect("client build");
     transport.connect().await.unwrap();
     transport.close().await.unwrap();
 
@@ -276,7 +276,7 @@ async fn test_send_after_close_fails() {
 
 #[tokio::test]
 async fn test_connect_sets_connected_flag() {
-    let mut transport = HttpTransport::new("http://localhost:8080/mcp");
+    let mut transport = HttpTransport::new("http://localhost:8080/mcp").expect("client build");
     assert!(!transport.is_connected());
     transport.connect().await.unwrap();
     assert!(transport.is_connected());
@@ -310,7 +310,7 @@ async fn test_w4c_http_send_json_response_round_trip() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let resp = t.send(&w4c_request("tools/list", 7), 5000).await.unwrap();
     assert_eq!(resp.id, serde_json::Value::Number(7.into()));
@@ -328,7 +328,7 @@ async fn test_w4c_http_send_empty_body_returns_synthetic_result() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let resp = t.send(&w4c_request("anything", 3), 5000).await.unwrap();
     assert!(resp.result.is_some());
@@ -345,7 +345,7 @@ async fn test_w4c_http_send_invalid_json_maps_send_failed() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 1), 5000).await.unwrap_err();
     assert!(err.message.contains("Failed to parse JSON response"));
@@ -363,7 +363,7 @@ async fn test_w4c_http_send_sse_stream_parsed() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let resp = t.send(&w4c_request("initialize", 9), 5000).await.unwrap();
     assert_eq!(resp.id, serde_json::Value::Number(9.into()));
@@ -385,7 +385,7 @@ async fn bug56_http_sse_server_request_before_response_is_skipped() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let resp = t.send(&w4c_request("initialize", 9), 5000).await.unwrap();
     assert_eq!(resp.id, serde_json::Value::Number(9.into()));
@@ -403,7 +403,7 @@ async fn test_w4c_http_send_sse_stream_without_data_is_error() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 4), 5000).await.unwrap_err();
     // 流结束（EOF）→ buffer 里只剩注释行 → no data field
@@ -420,7 +420,7 @@ async fn test_w4c_http_send_202_returns_synthetic_result() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let resp = t
         .send(&w4c_request("notifications/initialized", 5), 5000)
@@ -440,7 +440,7 @@ async fn test_w4c_http_send_error_status_maps_send_failed() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 1), 5000).await.unwrap_err();
     assert!(err.message.contains("HTTP 500"));
@@ -467,7 +467,7 @@ async fn test_r845_error_body_bounded_ingestion() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 1), 10000).await.unwrap_err();
     assert!(err.message.contains("HTTP 500"), "{err}");
@@ -516,7 +516,7 @@ async fn bug_20261114_046_json_body_over_cap_is_honest_error() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t
         .send(&w4c_request("tools/list", 1), 15000)
@@ -554,7 +554,7 @@ async fn bug_20261114_046_sse_event_over_cap_is_honest_error() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t
         .send(&w4c_request("initialize", 7), 15000)
@@ -570,7 +570,7 @@ async fn bug_20261114_046_sse_event_over_cap_is_honest_error() {
 #[tokio::test]
 async fn test_w4c_http_send_connection_failure_maps_send_failed() {
     // 指向必然拒绝连接的端口
-    let mut t = HttpTransport::new("http://127.0.0.1:1/mcp");
+    let mut t = HttpTransport::new("http://127.0.0.1:1/mcp").expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 1), 2000).await.unwrap_err();
     assert!(err.message.contains("HTTP request failed"));
@@ -601,7 +601,7 @@ async fn test_w4c_http_session_id_echoed_on_subsequent_requests() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let r1 = t.send(&w4c_request("initialize", 1), 5000).await.unwrap();
     assert!(r1.result.is_some());
@@ -638,7 +638,7 @@ async fn test_http_404_with_session_clears_sid_and_reports_session_expired() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let r1 = t.send(&w4c_request("initialize", 1), 5000).await.unwrap();
     assert!(r1.result.is_some());
@@ -668,7 +668,7 @@ async fn test_http_404_without_session_keeps_plain_send_failed() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/gone", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/gone", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t
         .send(&w4c_request("tools/list", 1), 5000)
@@ -677,6 +677,48 @@ async fn test_http_404_without_session_keeps_plain_send_failed() {
     assert!(!err.is_session_expired());
     assert!(err.message.contains("HTTP 404"));
     assert!(err.message.contains("no such endpoint"));
+    t.close().await.unwrap();
+}
+
+/// BUG-20261123-028 附带面回归锁：错误响应头里的 Mcp-Session-Id 不得
+/// 捕获。此前捕获在状态判定前无条件执行——500 响应若混入会话头（反代
+/// 噪声 / server 回退头）会顶掉当前活会话 id，后续请求全部 404 触发
+/// 无谓重握手。会话指派按规范只发生在成功响应。
+#[tokio::test]
+async fn test_http_error_response_session_header_not_captured() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_string("boom")
+                .insert_header("mcp-session-id", "sid-evil"),
+        )
+        .mount(&server)
+        .await;
+
+    // 无既有会话：错误响应不得凭空建立会话。
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
+    t.connect().await.unwrap();
+    let err = t
+        .send(&w4c_request("tools/list", 1), 5000)
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("HTTP 500"));
+    assert!(
+        t.session_id.is_none(),
+        "错误响应头里的会话 id 不得捕获，实际: {:?}",
+        t.session_id
+    );
+
+    // 有既有活会话：错误响应头不得顶掉它。
+    t.session_id = Some("sid-live".to_string());
+    let _ = t.send(&w4c_request("tools/list", 2), 5000).await;
+    assert_eq!(
+        t.session_id.as_deref(),
+        Some("sid-live"),
+        "错误响应不得覆盖活会话 id"
+    );
     t.close().await.unwrap();
 }
 
@@ -693,7 +735,7 @@ async fn test_w4c_http_send_without_content_type_still_parses_json() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let resp = t.send(&w4c_request("x", 11), 5000).await.unwrap();
     assert_eq!(resp.result.unwrap()["plain"], 1);
@@ -716,7 +758,7 @@ async fn test_s1_http_send_sse_lf_only_delimiter() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let resp = t.send(&w4c_request("initialize", 31), 5000).await.unwrap();
     assert_eq!(resp.result.unwrap()["lf"], true);
@@ -734,7 +776,7 @@ async fn test_s1_http_send_sse_empty_stream_maps_ended_without_data() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 32), 5000).await.unwrap_err();
     assert!(
@@ -763,7 +805,7 @@ async fn test_s1_http_send_truncated_body_maps_read_failure() {
         }
     });
 
-    let mut t = HttpTransport::new(format!("http://{}/mcp", addr));
+    let mut t = HttpTransport::new(format!("http://{}/mcp", addr)).expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 33), 5000).await.unwrap_err();
     assert!(
@@ -928,7 +970,8 @@ async fn test_b_headers_env_reference_e2e_wiremock() {
     let mut t = HttpTransport::with_headers(
         format!("{}/mcp", server.uri()),
         vec![format!("X-Api-Key: env:{VAR}")],
-    );
+    )
+    .expect("client build");
     // connect 现查发生在 env 变量仍在场时——时序即语义。
     t.connect().await.unwrap();
     let result = t.send(&w4c_request("ping", 41), 5000).await;
@@ -977,7 +1020,8 @@ async fn test_b_headers_literal_e2e_and_session_id_not_forged() {
             "X-Tenant: acme".into(),
             "Mcp-Session-Id: forged-by-config".into(),
         ],
-    );
+    )
+    .expect("client build");
     t.connect().await.unwrap();
     let r1 = t.send(&w4c_request("initialize", 1), 5000).await.unwrap();
     assert!(r1.result.is_some());
@@ -1011,7 +1055,8 @@ async fn test_b_debug_masks_resolved_header_values() {
     let mut t = HttpTransport::with_headers(
         "http://127.0.0.1:9/mcp",
         vec!["Authorization: Bearer super-secret-value".into()],
-    );
+    )
+    .expect("client build");
     t.connect().await.unwrap();
     let dbg = format!("{:?}", t);
     assert!(
@@ -1036,7 +1081,8 @@ async fn test_b_close_clears_resolved_headers_and_reconnect_refreshes() {
     let mut t = HttpTransport::with_headers(
         "http://127.0.0.1:9/mcp",
         vec!["X-Token: vault:b-refresh-alias".into()],
-    );
+    )
+    .expect("client build");
     nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
         if alias == "b-refresh-alias" {
             Ok("v1".into())
@@ -1132,7 +1178,7 @@ async fn test_w4c_http_sse_keepalive_comment_then_data_lf() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     // 旧实现：find("\n\n") 命中注释事件 → extract_sse_data 硬报错整体失败；
     // 新实现：跳过无 data 事件继续读 → 取到 data 事件。
@@ -1152,7 +1198,7 @@ async fn test_w4c_http_sse_crlf_comment_then_data() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     // 回归锁：CRLF 行尾的事件边界照常切分 + 注释事件照常跳过。
     let resp = t.send(&w4c_request("x", 6), 5000).await.unwrap();
@@ -1208,7 +1254,7 @@ async fn r14_test_w4c_http_sse_notification_then_data() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     // 旧实现：首个 data 载荷直接 from_str:<TransportResponse>，通知无 id
     // → "missing field `id`" 整个请求硬失败；新实现：通知跳过 → 取到响应。
@@ -1230,7 +1276,7 @@ async fn r14_test_w4c_http_sse_notification_only_ended_without_data() {
         .mount(&server)
         .await;
 
-    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri())).expect("client build");
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 12), 5000).await.unwrap_err();
     assert!(

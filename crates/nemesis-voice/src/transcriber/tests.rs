@@ -2,47 +2,47 @@ use super::*;
 
 #[test]
 fn test_transcriber_creation() {
-    let t = Transcriber::new("test-key");
+    let t = Transcriber::new("test-key").expect("client build");
     assert_eq!(t.model(), "whisper-large-v3");
     assert!(t.is_available());
 }
 
 #[test]
 fn test_transcriber_no_key() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     assert!(!t.is_available());
 }
 
 #[test]
 fn test_transcriber_set_model() {
-    let mut t = Transcriber::new("key");
+    let mut t = Transcriber::new("key").expect("client build");
     t.set_model("whisper-large-v3-turbo");
     assert_eq!(t.model(), "whisper-large-v3-turbo");
 }
 
 #[test]
 fn test_transcriber_with_url() {
-    let t = Transcriber::with_url("http://localhost:8080/v1", Some("key"));
+    let t = Transcriber::with_url("http://localhost:8080/v1", Some("key")).expect("client build");
     assert_eq!(t.api_url, "http://localhost:8080/v1");
 }
 
 #[tokio::test]
 async fn test_transcribe_file_not_found() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t.transcribe_file(Path::new("/nonexistent/audio.wav")).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_transcribe_bytes_empty() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t.transcribe_bytes(&[], AudioFormat::Wav).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_transcribe_no_key() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Mp3).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no API key"));
@@ -50,13 +50,13 @@ async fn test_transcribe_no_key() {
 
 #[test]
 fn test_transcriber_default_url() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     assert_eq!(t.api_url, "https://api.groq.com/openai/v1");
 }
 
 #[test]
 fn test_transcriber_with_url_no_key() {
-    let t = Transcriber::with_url("http://custom.api.com", None);
+    let t = Transcriber::with_url("http://custom.api.com", None).expect("client build");
     assert!(!t.is_available());
     assert_eq!(t.api_url, "http://custom.api.com");
 }
@@ -98,7 +98,7 @@ fn test_transcription_response_empty_text() {
 
 #[tokio::test]
 async fn test_transcribe_file_no_key() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("test.wav");
     std::fs::write(&file_path, b"fake audio data").unwrap();
@@ -109,7 +109,7 @@ async fn test_transcribe_file_no_key() {
 
 #[test]
 fn test_transcriber_set_model_multiple() {
-    let mut t = Transcriber::new("key");
+    let mut t = Transcriber::new("key").expect("client build");
     t.set_model("model-a");
     assert_eq!(t.model(), "model-a");
     t.set_model("model-b");
@@ -125,7 +125,7 @@ fn test_transcriber_clone_format_debug() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_all_formats() {
-    let t = Transcriber::new(""); // No key, will fail at API key check
+    let t = Transcriber::new("").expect("client build"); // No key, will fail at API key check
     for (data, fmt) in [
         (&[1u8, 2, 3][..], AudioFormat::Wav),
         (&[1u8, 2, 3][..], AudioFormat::Mp3),
@@ -153,20 +153,20 @@ fn test_transcription_response_debug() {
 
 #[test]
 fn test_transcriber_new_with_empty_key() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     assert!(!t.is_available());
 }
 
 #[test]
 fn test_transcriber_new_with_key() {
-    let t = Transcriber::new("my-api-key");
+    let t = Transcriber::new("my-api-key").expect("client build");
     assert!(t.is_available());
     assert_eq!(t.model(), "whisper-large-v3");
 }
 
 #[test]
 fn test_transcriber_set_model_changes_model() {
-    let mut t = Transcriber::new("key");
+    let mut t = Transcriber::new("key").expect("client build");
     assert_eq!(t.model(), "whisper-large-v3");
     t.set_model("whisper-tiny");
     assert_eq!(t.model(), "whisper-tiny");
@@ -176,14 +176,14 @@ fn test_transcriber_set_model_changes_model() {
 
 #[test]
 fn test_transcriber_with_url_and_key() {
-    let t = Transcriber::with_url("http://custom:9090", Some("mykey"));
+    let t = Transcriber::with_url("http://custom:9090", Some("mykey")).expect("client build");
     assert_eq!(t.api_url, "http://custom:9090");
     assert!(t.is_available());
 }
 
 #[test]
 fn test_transcriber_with_url_no_key_v2() {
-    let t = Transcriber::with_url("http://custom:9090", None);
+    let t = Transcriber::with_url("http://custom:9090", None).expect("client build");
     assert_eq!(t.api_url, "http://custom:9090");
     assert!(!t.is_available());
 }
@@ -224,7 +224,7 @@ fn test_transcription_response_unicode() {
 
 #[tokio::test]
 async fn test_transcribe_file_nonexistent() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t
         .transcribe_file(Path::new("/definitely/does/not/exist.wav"))
         .await;
@@ -234,7 +234,7 @@ async fn test_transcribe_file_nonexistent() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_no_key() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     let result = t.transcribe_bytes(&[1, 2, 3, 4], AudioFormat::Wav).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no API key"));
@@ -242,7 +242,7 @@ async fn test_transcribe_bytes_no_key() {
 
 #[tokio::test]
 async fn test_transcribe_file_no_key_with_existing_file() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("audio.wav");
     std::fs::write(&file, b"fake").unwrap();
@@ -400,26 +400,26 @@ fn test_audio_format_clone_all() {
 #[test]
 fn test_transcriber_new_whitespace_key_is_available() {
     // Whitespace-only key is not empty, so is_available() should be true
-    let t = Transcriber::new(" ");
+    let t = Transcriber::new(" ").expect("client build");
     assert!(t.is_available());
 }
 
 #[test]
 fn test_transcriber_with_url_empty_string() {
-    let t = Transcriber::with_url("", Some("key"));
+    let t = Transcriber::with_url("", Some("key")).expect("client build");
     assert_eq!(t.api_url, "");
     assert!(t.is_available());
 }
 
 #[test]
 fn test_transcriber_new_default_model() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     assert_eq!(t.model(), "whisper-large-v3");
 }
 
 #[test]
 fn test_transcriber_with_url_default_model() {
-    let t = Transcriber::with_url("http://test:8080", Some("key"));
+    let t = Transcriber::with_url("http://test:8080", Some("key")).expect("client build");
     assert_eq!(t.model(), "whisper-large-v3");
 }
 
@@ -427,7 +427,7 @@ fn test_transcriber_with_url_default_model() {
 
 #[tokio::test]
 async fn test_transcribe_file_error_message_contains_path() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let weird_path = Path::new("/very/specific/nonexistent/path/audio.wav");
     let result = t.transcribe_file(weird_path).await;
     let err_msg = result.unwrap_err().to_string();
@@ -437,7 +437,7 @@ async fn test_transcribe_file_error_message_contains_path() {
 
 #[tokio::test]
 async fn test_transcribe_file_with_directory() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let dir = tempfile::tempdir().unwrap();
     // A directory path that exists but is not a file — reading will fail
     let result = t.transcribe_file(dir.path()).await;
@@ -447,7 +447,7 @@ async fn test_transcribe_file_with_directory() {
 
 #[tokio::test]
 async fn test_transcribe_file_no_extension() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     let dir = tempfile::tempdir().unwrap();
     // File with no extension — should fail at API key check, not at path handling
     let file_path = dir.path().join("audiofile");
@@ -461,7 +461,7 @@ async fn test_transcribe_file_no_extension() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_empty_error_message() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t.transcribe_bytes(&[], AudioFormat::Wav).await;
     let err_msg = result.unwrap_err().to_string();
     assert!(err_msg.contains("empty audio data"));
@@ -469,7 +469,7 @@ async fn test_transcribe_bytes_empty_error_message() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_single_byte() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     let result = t.transcribe_bytes(&[0xFF], AudioFormat::Mp3).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("no API key"));
@@ -477,7 +477,7 @@ async fn test_transcribe_bytes_single_byte() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_large_data_no_key() {
-    let t = Transcriber::new("");
+    let t = Transcriber::new("").expect("client build");
     let data = vec![0u8; 1024 * 1024]; // 1MB
     let result = t.transcribe_bytes(&data, AudioFormat::Flac).await;
     assert!(result.is_err());
@@ -502,7 +502,7 @@ async fn test_transcribe_file_success_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("test-key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("test-key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("test.wav");
     std::fs::write(&file_path, b"RIFF fake wav data").unwrap();
@@ -522,7 +522,7 @@ async fn test_transcribe_file_api_error_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("bad-key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("bad-key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("test.wav");
     std::fs::write(&file_path, b"fake").unwrap();
@@ -543,7 +543,7 @@ async fn test_transcribe_file_server_error_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("audio.mp3");
     std::fs::write(&file_path, b"fake mp3").unwrap();
@@ -564,7 +564,7 @@ async fn test_transcribe_file_malformed_response_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("audio.ogg");
     std::fs::write(&file_path, b"fake ogg").unwrap();
@@ -584,7 +584,7 @@ async fn test_transcribe_file_response_text_only_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("audio.webm");
     std::fs::write(&file_path, b"fake webm").unwrap();
@@ -608,7 +608,7 @@ async fn test_transcribe_bytes_wav_success_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t
         .transcribe_bytes(&[1, 2, 3, 4, 5], AudioFormat::Wav)
         .await
@@ -629,7 +629,7 @@ async fn test_transcribe_bytes_mp3_success_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t
         .transcribe_bytes(&[1, 2, 3], AudioFormat::Mp3)
         .await
@@ -648,7 +648,7 @@ async fn test_transcribe_bytes_ogg_success_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t
         .transcribe_bytes(&[1, 2, 3], AudioFormat::Ogg)
         .await
@@ -667,7 +667,7 @@ async fn test_transcribe_bytes_webm_success_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t
         .transcribe_bytes(&[1, 2, 3], AudioFormat::Webm)
         .await
@@ -686,7 +686,7 @@ async fn test_transcribe_bytes_flac_success_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t
         .transcribe_bytes(&[1, 2, 3], AudioFormat::Flac)
         .await
@@ -703,7 +703,7 @@ async fn test_transcribe_bytes_api_error_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Wav).await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -720,7 +720,7 @@ async fn test_transcribe_bytes_malformed_response_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Wav).await;
     assert!(result.is_err());
 }
@@ -734,7 +734,7 @@ async fn test_transcribe_bytes_rate_limit_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Wav).await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -754,7 +754,7 @@ async fn test_transcriber_custom_model_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let mut t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let mut t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     t.set_model("whisper-tiny");
     assert_eq!(t.model(), "whisper-tiny");
 
@@ -771,7 +771,7 @@ async fn test_transcriber_custom_model_with_mock() {
 #[tokio::test]
 async fn test_transcribe_file_connection_refused() {
     // Use a URL that nobody is listening on
-    let t = Transcriber::with_url("http://127.0.0.1:1", Some("key"));
+    let t = Transcriber::with_url("http://127.0.0.1:1", Some("key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("audio.wav");
     std::fs::write(&file_path, b"fake").unwrap();
@@ -786,7 +786,7 @@ async fn test_transcribe_file_connection_refused() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_connection_refused() {
-    let t = Transcriber::with_url("http://127.0.0.1:1", Some("key"));
+    let t = Transcriber::with_url("http://127.0.0.1:1", Some("key")).expect("client build");
     let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Wav).await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -798,7 +798,7 @@ async fn test_transcribe_bytes_connection_refused() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_empty_data_mp3() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t.transcribe_bytes(&[], AudioFormat::Mp3).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("empty audio data"));
@@ -806,21 +806,21 @@ async fn test_transcribe_bytes_empty_data_mp3() {
 
 #[tokio::test]
 async fn test_transcribe_bytes_empty_data_ogg() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t.transcribe_bytes(&[], AudioFormat::Ogg).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_transcribe_bytes_empty_data_webm() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t.transcribe_bytes(&[], AudioFormat::Webm).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_transcribe_bytes_empty_data_flac() {
-    let t = Transcriber::new("key");
+    let t = Transcriber::new("key").expect("client build");
     let result = t.transcribe_bytes(&[], AudioFormat::Flac).await;
     assert!(result.is_err());
 }
@@ -840,7 +840,7 @@ async fn test_transcribe_file_url_construction_with_mock() {
 
     // The api_url from mock_server is like "http://127.0.0.1:PORT"
     // transcribe_file appends "/audio/transcriptions"
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("test.wav");
     std::fs::write(&file_path, b"data").unwrap();
@@ -860,7 +860,7 @@ async fn test_transcribe_bytes_url_construction_with_mock() {
         .mount(&mock_server)
         .await;
 
-    let t = Transcriber::with_url(&mock_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&mock_server.uri(), Some("key")).expect("client build");
     let result = t.transcribe_bytes(&[1, 2, 3], AudioFormat::Wav).await;
     assert!(result.is_ok());
 }
@@ -894,7 +894,7 @@ async fn test_transcribe_cross_origin_redirect_stops_not_follows() {
         .mount(&redirect_server)
         .await;
 
-    let t = Transcriber::with_url(&redirect_server.uri(), Some("key"));
+    let t = Transcriber::with_url(&redirect_server.uri(), Some("key")).expect("client build");
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("audio.wav");
     std::fs::write(&file_path, b"fake voice audio").unwrap();

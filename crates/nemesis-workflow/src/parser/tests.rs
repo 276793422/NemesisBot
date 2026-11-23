@@ -77,6 +77,24 @@ fn test_validate_no_nodes() {
     assert!(result.unwrap_err().contains("at least one node"));
 }
 
+/// BUG-20261123-031 回归锁：retry_count 无上限 = 裸 CLI run 退避自旋近似
+/// 永久挂起 + 副作用无限重放。上限 100（loop 节点 safety_cap 同族），
+/// 100 恰好在界内放行。
+#[test]
+fn test_validate_retry_count_capped() {
+    let mut wf = make_workflow("test", vec![make_node("n1", "llm"), make_node("n2", "llm")]);
+    // 恰在界内：放行
+    wf.nodes[0].retry_count = 100;
+    assert!(validate(&wf).is_ok());
+    // 超界：拒绝，错误串点名节点与上限
+    wf.nodes[1].retry_count = 101;
+    let result = validate(&wf);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("n2"), "错误串应点名超界节点，实际: {err}");
+    assert!(err.contains("100"), "错误串应带上限值，实际: {err}");
+}
+
 #[test]
 fn test_validate_duplicate_node_id() {
     let wf = make_workflow(
