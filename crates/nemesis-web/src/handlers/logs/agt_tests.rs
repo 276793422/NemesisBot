@@ -384,6 +384,41 @@ fn agt_parse_cluster_dir_name_none_and_sorted_files_missing_dir() {
     assert!(empty.is_empty());
 }
 
+// BUG-20261123-033：parse 函数防穿越前置闸。ts 段被 chrono 全串严格匹配
+// 锁死，但 suffix 段此前放行——`"2026-01-01_00-00-00_../../x"` 会以更靠
+// 前的 `_` 分割让 ts 段 parse 成功、`../../x` 回传给调用方 join，相对组
+// 件逃出日志根目录。合法名（`ts_{:03x}` 十六进制 / UUID task_id）不含路
+// 径元字符，前置拒绝不影响合法形态。
+#[test]
+fn agt_parse_dir_name_rejects_traversal_metacharacters() {
+    // 精确复现 exploit 形态：ts 段合法 + suffix 段相对穿越
+    assert_eq!(parse_request_dir_name("2026-01-01_00-00-00_../../x"), None);
+    // 分隔符形态（正斜杠 / 反斜杠）与 `..` 子串
+    assert_eq!(parse_request_dir_name("2026-01-01_00-00-00_a/b"), None);
+    assert_eq!(parse_request_dir_name("2026-01-01_00-00-00_a\\b"), None);
+    assert_eq!(parse_request_dir_name("2026-01-01_00-00-00_a..b"), None);
+    // 头部带穿越（分隔符在 ts 段之前同样拒）
+    assert_eq!(parse_request_dir_name("../../2026-01-01_00-00-00_x"), None);
+    // 合法形态照常解析（十六进制后缀 = request_logger 实际产物）
+    let (ts, suffix) =
+        parse_request_dir_name("2026-01-01_00-00-00_abc").expect("legit request name parses");
+    assert_eq!(ts, "2026-01-01_00-00-00");
+    assert_eq!(suffix, "abc");
+
+    // cluster 侧同构收紧
+    assert_eq!(
+        parse_cluster_dir_name("2026-08-28_07-00-00_../../evil"),
+        None
+    );
+    assert_eq!(
+        parse_cluster_dir_name("2026-08-28_07-00-00-123_..\\x"),
+        None
+    );
+    let (_, id) = parse_cluster_dir_name("2026-08-28_07-00-00_e1f2a3b4-c5d6")
+        .expect("legit uuid task_id parses");
+    assert_eq!(id, "e1f2a3b4-c5d6");
+}
+
 // ============================================================
 // scan_session_logs：空文件跳过 + undelivered/title 回填
 // ============================================================

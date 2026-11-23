@@ -836,6 +836,17 @@ pub(crate) fn extract_md_first_message(content: &str) -> String {
 
 /// Parse a request_logs dir name `{YYYY-MM-DD_HH-MM-SS}_{rand}` into (timestamp, suffix).
 pub(crate) fn parse_request_dir_name(name: &str) -> Option<(String, String)> {
+    // 防穿越前置闸（BUG-20261123-033）：本函数的返回值会被调用方拿去
+    // `request_log_dir(workspace).join(name)`（logs.replay 的 request_id 是
+    // HTTP 参数直入）。时间戳段被 chrono 全串严格匹配锁死，但 `_` 之后的
+    // suffix 段此前完全放行——`"2026-01-01_00-00-00_../../x"` 会以 index
+    // 19 的 `_` 分割让 ts 段 parse 成功、`../../x` 原样回传，join 后相对
+    // 组件逃出 request_logs 目录。合法目录名由 request_logger 生成
+    // （`ts_{:03x}` 十六进制后缀 / sanitize 后的 `{prefix}_{微秒ts}`），永
+    // 不含路径分隔符与 `..`，这里拒绝不影响任何合法形态。
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return None;
+    }
     for split_pos in name.rmatch_indices('_').map(|(i, _)| i) {
         let candidate = &name[..split_pos];
         if NaiveDateTime::parse_from_str(candidate, "%Y-%m-%d_%H-%M-%S").is_ok() {
@@ -847,6 +858,11 @@ pub(crate) fn parse_request_dir_name(name: &str) -> Option<(String, String)> {
 
 /// Parse a cluster_logs dir name `{YYYY-MM-DD_HH-MM-SS[-MS]}_{task_id}`.
 pub(crate) fn parse_cluster_dir_name(name: &str) -> Option<(String, String)> {
+    // 防穿越前置闸：同 parse_request_dir_name（BUG-20261123-033）。
+    // task_id 是 UUID/任务编号形态，合法名不含路径元字符。
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return None;
+    }
     for split_pos in name.rmatch_indices('_').map(|(i, _)| i) {
         let candidate = &name[..split_pos];
         let ok_ms = NaiveDateTime::parse_from_str(candidate, "%Y-%m-%d_%H-%M-%S-%3f").is_ok();
