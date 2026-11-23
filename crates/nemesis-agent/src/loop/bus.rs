@@ -569,6 +569,51 @@ impl AgentLoop {
             return;
         }
 
+        // 2.5 快照复活封堵（2026-11-24）：快照保存发生在 turn 中段（user
+        //     行恒已在轮首落盘），此刻上下文不存在（jsonl 缺失/零行）=
+        //     保存后该会话已被删除/清空。进程内删除族有 under_history_gate
+        //     在途拒绝；能走到这里的来源 = CLI/跨进程盘上直删、gateway
+        //     重启恢复窗口（内存闸重启即失，G5 捞回快照重投递）。若照旧
+        //     执行：快照回填已删内容 → LLM 续写 → 轮末全量持久化把已删
+        //     会话整个坐实复活（上下文删除语义被击穿）。诚实终局：注记
+        //     （含结果文本——worker 已产出，用户必须可见，与排队满臂同
+        //     纪律）只出站**不落库**（persist 会重建已删会话 = 僵尸复活）；
+        //     快照照常回收。位置在 busy 仲裁之前：死会话不可能有活 turn
+        //     （活 turn ⇒ jsonl 非空），busy 裁决无意义。
+        if !crate::chat_log::session_context_alive(&cont.session_key) {
+            warn!(
+                task_id = %task_id,
+                session_key = %cont.session_key,
+                "[Continuation] 会话上下文已不存在（保存后删除/清空），续行诚实拒绝（防已删内容复活）"
+            );
+            if !mgr.claim_handling(task_id).await {
+                debug!("[Continuation] task {task_id} 删除臂认领失败（重复回调诚实跳过）");
+                return;
+            }
+            let _claim_guard = crate::loop_continuation::ContinuationClaimGuard::new(&mgr, task_id);
+            crate::subagent_registry::global().finish(
+                task_id,
+                reg_status,
+                None,
+                reg_summary.clone(),
+                reg_error.clone(),
+            );
+            let note = format!(
+                "⚠ 后台任务 {task_id} 的结果已返回，但该会话的上下文已被删除或清空。为避免已删除内容回流模型上下文，本次不再续写。任务结果：\n\n{tool_result_content}"
+            );
+            self.send_continuation_final(
+                &cont.channel,
+                &cont.chat_id,
+                &cont.session_key,
+                &note,
+                task_source_node.as_deref(),
+                task_id,
+            )
+            .await;
+            mgr.finish_handling(task_id).await;
+            return;
+        }
+
         // 3. 会话串行闸：try_acquire 失败 = 该会话回合在跑。★ 在主路闸
         //    状态变更（claim/confirm/打标）之前——入队臂无副作用返回，重投
         //    递由回合尾巴 drain 自然排空；排队满/Reject 终局注记臂带终局副

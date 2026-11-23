@@ -1636,6 +1636,33 @@ pub fn write_session_branch_summary(session_key: &str, summary: &str) {
     });
 }
 
+/// 快照复活封堵（2026-11-24）：会话上下文存活性判据（续行投递闸的盘上
+/// 真相）。快照保存发生在 turn 中段（user 行恒已在轮首落盘），故续行
+/// 回调到达时 jsonl「缺失或零行」= 保存之后上下文已被删除（session
+/// delete）或清空（chat.clear——truncate 后文件存在但为空）。进程内删除
+/// 族有 under_history_gate 在途拒绝，能走到续行执行的剩余来源：CLI/
+/// 跨进程盘上直删、gateway 重启恢复窗口（内存闸重启即失，G5 捞回快照
+/// 重投递）。false = 续行不得执行（执行 = 已删内容经快照回填整体复活
+/// + 轮末全量持久化坐实）。
+pub fn session_context_alive(session_key: &str) -> bool {
+    let Ok(f) = File::open(log_path(session_key)) else {
+        return false;
+    };
+    let mut reader = std::io::BufReader::new(f);
+    let mut first = String::new();
+    matches!(reader.read_line(&mut first), Ok(n) if n > 0)
+}
+
+/// 清除会话分支摘要（rewind 删除语义，2026-11-24）：rewind 不再把被删
+/// 轮的六节前情提要写回本会话（Branch Context 注入点每轮重读 meta，
+/// 摘要回注 = 已删内容以摘要形态回流模型上下文，且与 403 内容风控同族
+/// 互斥——rewind 正是清除风控毒内容的手段，回注会再次触发上游拒绝），
+/// 已有的一并清除。fork 保持生成（fork 非删除：遗弃内容仍活在父会话，
+/// Branch Context 是新分支的合法背景供给，写入新会话 meta）。
+pub fn clear_session_branch_summary(session_key: &str) {
+    upsert_meta(session_key, |m| m.branch_summary = None);
+}
+
 /// meta 文件原子落盘单一出口（2026-10-24 R1）：序列化 → 同目录 temp 唯一
 /// 后缀 → rename 替换（Windows `MoveFileEx(REPLACE_EXISTING)` 语义）。此前
 /// 六处 meta 写全部直写 `fs::write`：进程中途死 = 半截 JSON（读取侧按
@@ -2684,6 +2711,9 @@ fn is_false(b: &bool) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod continuation_gate_tests;
 
 // ---------------------------------------------------------------------------
 // I3 (U9): boundary events (round-5 fix: sidecar file)

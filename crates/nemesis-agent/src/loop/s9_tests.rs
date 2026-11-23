@@ -990,6 +990,9 @@ async fn bus_flow_continuation_inline() {
         0,
     );
     let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    // 生产不变量（快照复活封堵 2026-11-24）：快照保存时 user 行恒已在
+    // 轮首落盘——显式落 jsonl 行，测试不依赖其他用例的执行顺序残留。
+    crate::chat_log::append_chat_log("s9sess", "user", "go");
     mgr.save_continuation(
         "s9taskI",
         vec![LlmMessage {
@@ -1045,6 +1048,8 @@ async fn bus_flow_continuation_spawned() {
         1,
     );
     let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    // 生产不变量（快照复活封堵 2026-11-24）：user 行恒已在轮首落盘。
+    crate::chat_log::append_chat_log("s9sess", "user", "go");
     mgr.save_continuation(
         "s9taskS",
         vec![LlmMessage {
@@ -1534,6 +1539,8 @@ async fn handle_cluster_continuation_wrapper_both_arms() {
             0,
         );
         let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+        // 生产不变量（快照复活封堵 2026-11-24）：user 行恒已在轮首落盘。
+        crate::chat_log::append_chat_log("s9sess", "user", "go");
         mgr.save_continuation(
             "s9w2",
             vec![LlmMessage {
@@ -1935,6 +1942,8 @@ async fn bus_flow_queue_mode_continuation_arm() {
         0,
     );
     let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    // 生产不变量（快照复活封堵 2026-11-24）：user 行恒已在轮首落盘。
+    crate::chat_log::append_chat_log("s9sess", "user", "go queue");
     mgr.save_continuation(
         "s9taskQ",
         vec![LlmMessage {
@@ -2956,6 +2965,8 @@ async fn cluster_continuation_wrapper_carries_source_node() {
         0,
     );
     let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    // 生产不变量（快照复活封堵 2026-11-24）：user 行恒已在轮首落盘。
+    crate::chat_log::append_chat_log("s9sess", "user", "go");
     mgr.save_continuation(
         "s9node",
         vec![LlmMessage {

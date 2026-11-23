@@ -2,9 +2,11 @@
 //!
 //! -`rewind_to_message` 截断后写 `last_rewind` 谱系进本会话 sidecar
 //!   meta（no-op 回退 = 无谱系事实，不写）；
-//! -遗弃后缀 ≥3 个完整 user 轮且 `agents.small_model` 已配置 →
-//!   mock 小模型生成结构化摘要落盘（`branch_summary`）；
-//! - 降级：小模型未配置 = 诚实跳过（谱系照写、摘要缺席、不阻塞回退）；
+//! - 分支摘要撤除（2026-11-24 快照复活封堵批）：rewind 是删除语义——
+//!   **不再生成** branch_summary（小模型零调用），且把已有摘要一并
+//!   purge（Branch Context 注入点每轮重读 meta，摘要回注 = 已删内容
+//!   以摘要形态回流模型上下文）；fork 保持生成（遗弃内容仍活在父
+//!   会话，摘要是新分支的合法背景供给）；
 //! - 注入：`branch_summary` 在 `build_messages` 里成为 `# Branch
 //!   Context` 临时 system 节（仅显式传 session_key 的路径——主循环
 //!   `build_round_messages` 的接线形态）。
@@ -45,9 +47,10 @@ impl LlmProvider for Ws9NoopProvider {
     }
 }
 
-/// 假小模型：固定回复（TitleProvider 同款形态）。
+/// 假小模型：固定回复（TitleProvider 同款形态）+ 调用计数（撤除断言用）。
 struct Ws9SmallProvider {
     response: String,
+    calls: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait]
@@ -59,6 +62,7 @@ impl LlmProvider for Ws9SmallProvider {
         _options: Option<crate::types::ChatOptions>,
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(LlmResponse {
             finish_reason: None,
             escalated_to: None,
@@ -110,18 +114,6 @@ fn ws9_seed_turns(key: &str, turns: usize) {
     }
 }
 
-/// 轮询谓词成立（100ms 步进——等 spawn_write 后台落盘）。
-async fn ws9_wait_for(mut pred: impl FnMut() -> bool, max: Duration) -> bool {
-    let deadline = std::time::Instant::now() + max;
-    while std::time::Instant::now() < deadline {
-        if pred() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    pred()
-}
-
 /// rewind 截断把 `last_rewind`（at_index/dropped_rows/dropped_turns）
 /// 写进本会话 meta；no-op 回退（末尾消息）无谱系事实，不写。
 #[tokio::test]
@@ -162,13 +154,15 @@ async fn ws9_rewind_writes_last_rewind_meta() {
     delete_chat_log(&key);
 }
 
-/// rewind 遗弃 ≥3 轮 + small_model 已配置 → mock 小模型生成结构化
-/// 摘要，后台落盘到本会话 meta 的 branch_summary。
+/// 分支摘要撤除（2026-11-24）：rewind 是删除语义——即便 small_model
+/// 已配置也不生成摘要（零调用），且把已有摘要 purge（Branch Context
+/// 注入点每轮重读 meta，摘要回注 = 已删内容以摘要形态回流模型上下文）。
 #[tokio::test]
-async fn ws9_rewind_generates_branch_summary_via_small_model() {
+async fn ws9_rewind_purges_branch_summary_and_never_calls_small_model() {
     let al = AgentLoop::new(Box::new(Ws9NoopProvider), ws9_config());
     let provider = Arc::new(Ws9SmallProvider {
         response: "## Goal\n被遗弃部分的独有标记XYZ\n## Constraints\n（无）\n## Progress\n（无）\n## Decisions\n（无）\n## Files\n（无）\n## Next Steps\n（无）".to_string(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
     });
     al.set_small_model(Some((
         provider.clone() as Arc<dyn LlmProvider>,
@@ -178,30 +172,29 @@ async fn ws9_rewind_generates_branch_summary_via_small_model() {
     let key = ws9_uniq_key("rewsum");
     delete_chat_log(&key);
     ws9_seed_turns(&key, 4);
+    // 预置已有摘要（模拟此前 fork 生成）——rewind 的 purge 必须清掉它。
+    crate::chat_log::write_session_branch_summary(&key, "旧摘要标记OLD");
 
     let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 6, "{out}");
 
-    // spawn_write 后台落盘——轮询等 meta 出现。
-    let landed = ws9_wait_for(
-        || {
-            read_session_meta_full(&key)
-                .and_then(|m| m.branch_summary)
-                .is_some()
-        },
-        Duration::from_secs(5),
-    )
-    .await;
-    assert!(landed, "分支摘要应在超时前落盘");
-
-    let meta = read_session_meta_full(&key).unwrap();
-    let summary = meta.branch_summary.unwrap();
-    assert!(
-        summary.contains("独有标记XYZ"),
-        "六节解析（或原样回退）后摘要应含 mock 内容: {summary}"
+    // 分支摘要撤除（2026-11-24）：rewind 是删除语义——小模型零调用
+    // （不生成），已有摘要被 purge（Branch Context 注入点每轮重读
+    // meta，摘要回注 = 已删内容回流模型上下文）。
+    assert_eq!(
+        provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "rewind 不得调用小模型生成摘要"
     );
-    // 谱系与摘要共存（同一次 rewind 的两份产物）。
+    // 给假想的后台 spawn 留窗口，确认无迟到写入。
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let meta = read_session_meta_full(&key).expect("谱系照写");
     assert!(meta.last_rewind.is_some(), "谱系照写");
+    assert!(
+        meta.branch_summary.is_none(),
+        "已有摘要必须被 purge 且无新摘要落盘: {:?}",
+        meta.branch_summary
+    );
 
     delete_chat_log(&key);
 }

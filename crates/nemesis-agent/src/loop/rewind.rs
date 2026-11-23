@@ -828,10 +828,15 @@ impl AgentLoop {
 
         // /：回退谱系落盘（last_rewind）——截断成功后记录本会话丢
         // 掉了哪些行/轮（meta sidecar upsert；no-op 回退无谱系事实，不写）。
-        // /：遗弃后缀 ≥3 轮且 small_model 已配置 → 后台生成分支
-        // 摘要写回**本会话** sidecar meta（回退后继续用的就是本会话；未
-        // 达阈值/small_model 缺席 = 诚实跳过，不阻塞回退本体）。两步都在
-        // 压 undo 栈前做——`removed` 下方要被 move 进栈条目。
+        // /：分支摘要撤除（2026-11-24 快照复活封堵批）：rewind 是删除
+        // 语义——此前把被删轮的六节前情提要写回**本会话** sidecar meta
+        // （branch_summary），经 Branch Context 注入（messages.rs
+        // build_messages 每轮重读）把已删内容以摘要形态回进模型上下文，
+        // 且与 403 内容风控同族互斥（rewind 正是清除风控毒内容的手段，
+        // 摘要回注会再次触发上游拒绝）。改为不生成 + 清除已有：本会话
+        // 上下文不携带任何被删内容衍生物。fork 保持生成（fork 非删除：
+        // 遗弃内容仍活在父会话，摘要写入**新会话** meta）。两步都在压
+        // undo 栈前做——`removed` 下方要被 move 进栈条目。
         if !removed.is_empty() {
             let dropped_turns = crate::session_fork::row_user_turn_count(&removed);
             crate::chat_log::write_session_rewind(
@@ -840,11 +845,7 @@ impl AgentLoop {
                 rows.len() - cut,
                 dropped_turns,
             );
-            if let Some(prepared) =
-                super::prepare_branch_summary(self, session_key, &removed, dropped_turns)
-            {
-                prepared.spawn_write();
-            }
+            crate::chat_log::clear_session_branch_summary(session_key);
         }
 
         // 4) 压 undo 栈（截断成功后才压——失败路径不留脏条目）。

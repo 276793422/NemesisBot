@@ -1865,3 +1865,10 @@ mod l19_parallel_batch_tests;
 // 未暂停准入）+ inject_inbound 重注入入口接线契约。
 #[cfg(test)]
 mod l22_snooze_gate_tests;
+
+// 快照复活封堵（2026-11-24）死会话臂 bus 面测试：
+// 非空键快照 + jsonl 缺失/空（保存后删除/清空——CLI 直删、重启恢复窗口）
+// → 续行诚实拒绝（provider 零调用 + 注记出站含结果文本 + 快照回收）；
+// 存活回归（jsonl 有行 = 生产不变量）→ 正常续行。
+#[cfg(test)]
+mod continuation_drop_gate_tests;

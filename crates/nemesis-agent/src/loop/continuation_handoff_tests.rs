@@ -193,8 +193,11 @@ fn hs_msg(
 }
 
 /// 种一个最小续行快照（user 消息 + 待应答 tool_call；session=hsess 非
-/// 空——busy 闸/活体装配/落库全部有主体）。
+/// 空——busy 闸/活体装配/落库全部有主体）。生产不变量：快照保存发生在
+/// turn 中段，user 行恒已在轮首落盘——快照复活封堵（2026-11-24）后
+/// 非空键快照 + 无 jsonl = 死会话臂诚实拒绝，故 seed 显式落 jsonl 行。
 async fn seed_continuation(mgr: &crate::loop_continuation::ContinuationManager, task_id: &str) {
+    crate::chat_log::append_chat_log("hsess", "user", "run the remote task");
     mgr.save_continuation(
         task_id,
         vec![

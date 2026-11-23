@@ -1,8 +1,13 @@
-//! ：分支摘要（branch summary）——fork/rewind 把会话后缀遗弃时，
+//! ：分支摘要（branch summary）——fork 把会话后缀遗弃时，
 //! 用小模型通道（`agents.small_model`，杂务槽位）对**被遗弃部分**生成一份
 //! 结构化前情提要，落盘到新会话 sidecar meta（`branch_summary` 字段），
 //! 新会话首轮 build_messages 注入为临时 system 节（`# Branch Context`），
 //! 让新分支「知道被分出去之前发生了什么、为什么」。
+//!
+//! 快照复活封堵批（2026-11-24）起 **rewind 不再生成摘要**：rewind 是
+//! 删除语义，摘要回注 = 已删内容以摘要形态回流模型上下文（且与内容
+//! 风控同族互斥——rewind 正是清除风控毒内容的手段）；rewind 改为
+//! purge 已有摘要（`chat_log::clear_session_branch_summary`）。
 //!
 //! 设计要点（与 compaction 摘要同构但语义不同）：
 //! - **复用六节 schema**（Goal / Constraints / Progress / Decisions / Files
@@ -180,9 +185,9 @@ impl PreparedBranchSummary {
         )
     }
 
-    /// 后台落盘：spawn 异步执行 + 写 sidecar meta（fork/rewind 调用方的
-    /// 单一入口——两处共享同一段 spawn/写/日志逻辑）。失败/跳过只 INFO/
-    /// WARN，绝不传染主流程。
+    /// 后台落盘：spawn 异步执行 + 写 sidecar meta（fork 调用方的
+    /// 单一入口——api_handlers fork 面共享这段 spawn/写/日志逻辑）。
+    /// 失败/跳过只 INFO/WARN，绝不传染主流程。
     pub fn spawn_write(self) {
         let key = self.session_key.clone();
         tokio::spawn(async move {

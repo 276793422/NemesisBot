@@ -774,13 +774,15 @@ impl AgentLoop {
             if let Some(target) = wf_edit_target {
                 sections.push(self.render_workflow_edit_section(&target));
             }
-            // /：分支前情提要（Branch Context）。fork/rewind 遗弃
-            // 后缀 ≥3 轮时由 small_model 生成的六节结构化摘要，落盘在会话
-            // sidecar meta 的 branch_summary 字段；这里每次构建重读注入
+            // /：分支前情提要（Branch Context）。fork 遗弃
+            // 后缀 ≥3 轮时由 small_model 生成的六节结构化摘要，落盘在新
+            // 会话 sidecar meta 的 branch_summary 字段；这里每次构建重读注入
             // （内容写定后不变 ⇒ 字节稳定；meta 无摘要/摘要为空 = 无
             // section，与既有节的字节稳定纪律同形）。session_key=None
             // （旧签名兼容路径）不注入。内容随既有 InjectionRecord 台账
-            // 落账 → replay 一致（同 /workflow_edit 机制）。
+            // 落账 → replay 一致（同 /workflow_edit 机制）。rewind 已于
+            // 2026-11-24 撤除生成并 purge 已有（删除语义：已删内容衍生物
+            // 不回流模型上下文）。
             if let Some(sk) = session_key
                 && let Some(meta) = crate::chat_log::read_session_meta_full(sk)
                 && let Some(summary) = meta.branch_summary

@@ -122,6 +122,9 @@ fn l5_security_plugin() -> std::sync::Arc<nemesis_security::pipeline::SecurityPl
 
 /// 种一个最小续行快照（user 消息 + 待应答 tool_call）。
 async fn seed_continuation(mgr: &crate::loop_continuation::ContinuationManager, task_id: &str) {
+    // 生产不变量：快照保存时 user 行恒已在轮首落盘——快照复活封堵
+    // （2026-11-24）后非空键快照 + 无 jsonl = 死会话臂诚实拒绝。
+    crate::chat_log::append_chat_log("l5sess", "user", "run the remote task");
     mgr.save_continuation(
         task_id,
         vec![
