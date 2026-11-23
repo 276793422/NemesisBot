@@ -168,8 +168,45 @@ fn test_from_status_401() {
 
 #[test]
 fn test_from_status_403() {
-    let err = FailoverError::from_status("anthropic", "claude-3", 403, "forbidden", None);
-    assert!(matches!(err, FailoverError::Auth { status: 403, .. }));
+    // BUG-20261123-012：403 与 401 分家——Forbidden（已认证但被拒）。
+    let body = "this content was flagged per our content policy";
+    let err = FailoverError::from_status("anthropic", "claude-3", 403, body, None);
+    match &err {
+        FailoverError::Forbidden {
+            provider,
+            model,
+            status,
+            message,
+        } => {
+            assert_eq!(provider, "anthropic");
+            assert_eq!(model, "claude-3");
+            assert_eq!(*status, 403);
+            assert_eq!(
+                message, body,
+                "body 摘要随 message 携带（用户终局文案唯一真实拒绝原因）"
+            );
+        }
+        other => panic!("403 应归 Forbidden，实际 {other:?}"),
+    }
+    assert!(!err.is_retriable(), "403 重放必然再拒，不可重试/不轮转");
+    assert_eq!(err.reason(), FailoverReason::Forbidden);
+}
+
+#[test]
+fn test_from_status_403_body_capped_at_600() {
+    // Forbidden body 摘要 600 字符（其余臂维持 200——403 body 是用户终局
+    // 文案里唯一的真实拒绝原因，Daybreak flag 原文实测超 200）。
+    let long_body = "x".repeat(1500);
+    let err = FailoverError::from_status("openai", "m", 403, &long_body, None);
+    match err {
+        FailoverError::Forbidden { message, .. } => {
+            assert_eq!(message.chars().count(), 600);
+        }
+        other => panic!("403 应归 Forbidden，实际 {other:?}"),
+    }
+    // 401 Auth 臂无 body 槽位（既有形态零变化）。
+    let err = FailoverError::from_status("openai", "m", 401, &long_body, None);
+    assert!(matches!(err, FailoverError::Auth { status: 401, .. }));
 }
 
 #[test]
@@ -562,6 +599,50 @@ fn test_classify_message_error_transient_maps_retriable() {
 }
 
 #[test]
+fn test_classify_message_error_forbidden_maps_non_retriable() {
+    // BUG-20261123-012：403 文案形态（无状态码）→ Forbidden 富化，
+    // status 0（Auth 同约定）、message 携带原文案。
+    let msg = "This content was flagged per our content policy";
+    let e = super::classify_message_error("openai-compat", "m", msg);
+    match &e {
+        FailoverError::Forbidden {
+            provider,
+            model,
+            status,
+            message,
+        } => {
+            assert_eq!(provider, "openai-compat");
+            assert_eq!(model, "m");
+            assert_eq!(*status, 0, "纯文案无状态码 → 0（Auth 同约定）");
+            assert_eq!(message, msg, "原文案随 message 保留");
+        }
+        other => panic!("403 文案应归 Forbidden，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable(), "Forbidden 不可重试");
+}
+
+#[test]
+fn forbidden_display_reflattens_to_forbidden_via_both_anchors() {
+    // 分类诚实性契约（StreamInterrupted 头行前缀锚同门）：Forbidden 的
+    // Display 展平文本回灌 classify_llm_error 必须仍判 Forbidden——词锚
+    // （"forbidden"）与码锚（"status 403"）双保险，任一单锚缺失该断言红。
+    let e = FailoverError::Forbidden {
+        provider: "openai".to_string(),
+        model: "m".to_string(),
+        status: 403,
+        message: "policy strike".to_string(),
+    };
+    let flat = e.to_string();
+    assert!(flat.contains("forbidden"), "词锚在场：{flat}");
+    assert!(flat.contains("status 403"), "码锚在场：{flat}");
+    assert_eq!(
+        nemesis_utils::llm_error_class::classify_llm_error(&flat),
+        Some(nemesis_utils::llm_error_class::LlmErrorClass::Forbidden),
+        "Display 展平回灌必须仍判 Forbidden: {flat}"
+    );
+}
+
+#[test]
 fn test_classify_message_error_unclassifiable_falls_back_unknown() {
     // 分类不出维持 Unknown（不可重试兜底语义不变；原文案随 message 保留）。
     let msg = "totally novel failure mode";
@@ -712,15 +793,32 @@ fn stream_error_payload_anthropic_type_enumeration() {
         matches!(err, FailoverError::RateLimit { .. }),
         "rate_limit_error: {err:?}"
     );
-    for t in ["authentication_error", "permission_error"] {
-        let err = classify_stream_error_payload(&envelope(t), "anthropic", "m", "fb".into());
-        match err {
-            FailoverError::Auth { status, .. } => {
-                assert_eq!(status, 0, "SSE error 事件无状态码 → 0（{t}）");
-            }
-            other => panic!("{t} 应归 Auth{{status:0}}，实际 {other:?}"),
+    // authentication 与 permission 分家（BUG-20261123-012）：Auth 与
+    // Forbidden 各归各桶，均 status 0（SSE error 事件无 HTTP 状态码）。
+    let err = classify_stream_error_payload(
+        &envelope("authentication_error"),
+        "anthropic",
+        "m",
+        "fb".into(),
+    );
+    match err {
+        FailoverError::Auth { status, .. } => {
+            assert_eq!(status, 0, "SSE error 事件无状态码 → 0");
         }
+        other => panic!("authentication_error 应归 Auth{{status:0}}，实际 {other:?}"),
     }
+    let err =
+        classify_stream_error_payload(&envelope("permission_error"), "anthropic", "m", "fb".into());
+    match &err {
+        FailoverError::Forbidden {
+            status, message, ..
+        } => {
+            assert_eq!(*status, 0, "SSE error 事件无状态码 → 0");
+            assert_eq!(message, "boom", "err_obj message 随 Forbidden 携带");
+        }
+        other => panic!("permission_error 应归 Forbidden{{status:0}}，实际 {other:?}"),
+    }
+    assert!(!err.is_retriable());
     let err =
         classify_stream_error_payload(&envelope("billing_error"), "anthropic", "m", "fb".into());
     assert!(

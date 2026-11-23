@@ -278,61 +278,16 @@ impl AgentLoop {
         }
     }
 
-    /// B2 锚定定位（2026-11-11 slash 回声漂移机制解）：前端 message_index
-    /// 由「历史批次推导 + live 递增」混合而来——被后端拦截不落盘的 slash
-    /// 命令，其入环回声帧会把前端 live 计行抬高（虚高随 slash 条数累积），
-    /// 直接按 index 截断会错行。`anchor_content` = 前端在 index 处看到的
-    /// 消息正文，后端按**内容**（trim 后相等——前端 planRegenerate 交出
-    /// 的是 trim 后文本）重定位真实行：
-    ///
-    /// - index 处内容已相等 = 无漂移最快路径；
-    /// - 否则全量扫描内容相等行：唯一命中即用；多个命中取距 index 最近
-    ///   （重复提问同一文本时，点击意图由最近性近似）；
-    /// - 零命中 = fail-closed 拒绝（锚不在会话里：会话已切换/已被截断——
-    ///   绝不按可能漂移的 index 盲截）。
-    ///
-    /// `None`/空锚 = 旧前端兼容路径，行为与漂移修复前完全一致。
+    /// B2 锚定定位（2026-11-11）。实现已抽为
+    /// [`crate::chat_log::resolve_anchor_index`] 单一真相源（2026-11-23
+    /// BUG-2 修复：fork HTTP 端点复用同款漂移防护），本方法保留薄委托
+    /// （两个调用点与 e3_tests 的锚定面不变）。
     pub(crate) fn resolve_anchor_index(
         rows: &[serde_json::Value],
         message_index: usize,
         anchor_content: Option<&str>,
     ) -> Result<usize, String> {
-        let Some(anchor) = anchor_content.map(str::trim).filter(|s| !s.is_empty()) else {
-            return Ok(message_index);
-        };
-        fn row_content(r: &serde_json::Value) -> Option<&str> {
-            r.get("content").and_then(|v| v.as_str()).map(str::trim)
-        }
-        if rows.get(message_index).and_then(|r| row_content(r)) == Some(anchor) {
-            return Ok(message_index);
-        }
-        let hits: Vec<usize> = rows
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| row_content(r) == Some(anchor))
-            .map(|(i, _)| i)
-            .collect();
-        match hits.len() {
-            0 => Err(format!(
-                "锚内容定位失败：message_index {message_index} 处的锚文本与会话中任何行都不匹配\
-                 （会话已切换或已被截断？）——未做任何截断"
-            )),
-            1 => Ok(hits[0]),
-            _ => {
-                let picked = hits
-                    .iter()
-                    .copied()
-                    .min_by_key(|i| i.abs_diff(message_index))
-                    .unwrap_or(message_index);
-                tracing::warn!(
-                    anchor_hits = hits.len(),
-                    requested = message_index,
-                    anchored_at = picked,
-                    "[rewind] anchor_content 多行命中，取距 message_index 最近行"
-                );
-                Ok(picked)
-            }
-        }
+        crate::chat_log::resolve_anchor_index(rows, message_index, anchor_content)
     }
 
     /// 消息级回退：会话截断到 `message_index` 所在 turn 结束（该消息

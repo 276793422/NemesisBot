@@ -307,12 +307,9 @@ pub fn build_cluster_agent_loop(
     );
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(config_path.clone());
-    // （凭据 vault）：集群 worker 同款凭据卡装配——B 端跑
-    // 长任务撞 Auth 同样能发卡续行（broker 未 install = None 零回归）。
-    agent_loop.set_provider_reloader(Arc::new(ModelProviderReloader {
-        home: shared.home.clone(),
-        workspace: shared.workspace_dir(),
-    }));
+    // （凭据 vault）：broker 全局槽注入（security feature 门控；
+    // 未 install = None 零回归）。provider_reloader 注入已随凭据卡撤除
+    // （BUG-20261123-012）。
     #[cfg(feature = "security")]
     if let Some(broker) = crate::credential_broker::current() {
         agent_loop.set_credential_broker(broker);

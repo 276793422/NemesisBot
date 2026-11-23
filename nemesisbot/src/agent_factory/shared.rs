@@ -134,36 +134,6 @@ impl ModelProviderReloader {
 }
 
 impl nemesis_agent::r#loop::ProviderReloader for ModelProviderReloader {
-    fn credential_request_fields(&self, model: &str) -> (String, String) {
-        let proposed = format!("model/{model}");
-        // raw 读条目 api_key（model_name/model 双形态精确匹配，无前缀门控——
-        // resolve_model_config 根修同口径）。已是 `vault:<alias>`
-        // = 轮换语义：沿用既有别名（卡片覆盖写，created_at 保留）。
-        let existing = self.read_raw().ok().and_then(|raw| {
-            raw.get("model_list")?
-                .as_array()?
-                .iter()
-                .find_map(|e| {
-                    let m = e.get("model").and_then(|v| v.as_str());
-                    let mn = e.get("model_name").and_then(|v| v.as_str());
-                    (m == Some(model) || mn == Some(model))
-                        .then(|| e.get("api_key").and_then(|k| k.as_str()).map(String::from))
-                })
-                .flatten()
-        });
-        match existing {
-            Some(k) if k.starts_with(nemesis_config::VAULT_PREFIX) => {
-                let alias = k[nemesis_config::VAULT_PREFIX.len()..].trim().to_string();
-                if alias.is_empty() {
-                    (proposed.clone(), proposed)
-                } else {
-                    (proposed, alias)
-                }
-            }
-            _ => (proposed.clone(), proposed),
-        }
-    }
-
     fn reload_provider(
         &self,
         model: &str,

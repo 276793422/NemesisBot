@@ -3,6 +3,8 @@
 //!
 //! - Auth/Billing → 零重试零压缩环（单次调用终局，文案带可行动提示 +
 //!   原始错误保真入 history/observer/capture）；
+//! - Forbidden（403/内容风控）→ 零重试零压缩环单次终局 + 风控原文不进
+//!   history（中性占位）——BUG-20261123-012（凭据卡循环重放根因分类）；
 //! - "invalid api key" 不再误入 context 压缩环（旧词表 "invalid" 关键字
 //!   误吞——回归锁，必须单次调用终局）；
 //! - 词表盲区配额文案（Gemini "resource has been exhausted"）→ 限流环
@@ -173,6 +175,120 @@ async fn billing_error_terminates_without_retry() {
         calls.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "402 必须单次调用终局"
+    );
+}
+
+// -- ②.5 Forbidden（403/内容风控）：单次调用终局 + 风控原文不进 history -----
+// BUG-20261123-012：403 内容风控此前误归 Auth → 凭据卡循环重放被拒请求
+// （key 无关，重放必然再拒）。Forbidden 臂 = 不进任何重试环直接终局；
+// history 落中性占位（flag 文本反复进入模型上下文会让后续轮次被上游
+// 风控连带拒绝——风控原文成了触发物）；出站用户文案保留原始错误全文
+// （诊断保真只封模型上下文面）。
+
+#[tokio::test(start_paused = true)]
+async fn forbidden_error_terminates_without_retry() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = AlwaysFailing {
+        calls: calls.clone(),
+        err_text: "status 403: This content was flagged per our content policy \
+                   and cannot be processed"
+            .to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let err_text = single_error_text(&events);
+    assert!(
+        err_text.contains("上游拒绝访问"),
+        "用户文案必须带 Forbidden 可行动提示（非 key 指引）: {err_text}"
+    );
+    assert!(
+        err_text.contains("content was flagged"),
+        "原始错误必须保留在用户文案（诊断保真）: {err_text}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::Done(_))),
+        "不可重试类不得有成功 Done"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "403 必须单次调用终局（零重试零压缩环——重放必然再拒）"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn forbidden_daybreak_wording_without_status_never_enters_history() {
+    // Daybreak 实报形态（纯词表命中、无状态码）：词表必须独立把该文案
+    // 归 Forbidden；且风控原文**不进对话历史**（history 落中性占位），
+    // 出站文案仍保留原文全文——分层断言两面都要钉。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    const FLAG_TEXT: &str =
+        "This content was flagged per our content policy and cannot be processed";
+    let provider = AlwaysFailing {
+        calls: calls.clone(),
+        err_text: FLAG_TEXT.to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let err_text = single_error_text(&events);
+    assert!(
+        err_text.contains("上游拒绝访问"),
+        "纯词表形态（无状态码）必须归 Forbidden 终局: {err_text}"
+    );
+    assert!(
+        err_text.contains(FLAG_TEXT),
+        "出站文案保留风控原文全文（诊断保真）: {err_text}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "词表命中必须单次调用终局"
+    );
+
+    let history = instance.get_history();
+    let last_assistant = history
+        .iter()
+        .rev()
+        .find(|t| t.role == "assistant")
+        .expect("终局必须落一条 assistant 错误行");
+    assert!(
+        last_assistant.content.contains("不写入对话历史"),
+        "history 落中性占位: {:?}",
+        last_assistant.content
+    );
+    assert!(
+        !last_assistant.content.contains("flagged"),
+        "风控原文不得进 history（flag 文本是后续轮次的连带触发物）: {:?}",
+        last_assistant.content
+    );
+    assert!(
+        !last_assistant.content.contains("content policy"),
+        "风控策略原句不得进 history: {:?}",
+        last_assistant.content
     );
 }
 

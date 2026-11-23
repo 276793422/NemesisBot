@@ -1,14 +1,15 @@
 //! （2026-10-18 凭据 vault）ModelProviderReloader 测试。
 //!
-//! 覆盖：credential_request_fields 三分支（vault 别名轮换 / 明文提议 /
-//! 条目缺失提议）+ reload_provider patch 写盘语义（api_key → `vault:<alias>`
+//! 覆盖：reload_provider patch 写盘语义（api_key → `vault:<alias>`
 //! raw patch 原子写、None 不动文件、条目缺失 Err 且原文不动）。provider
 //! 重建用 mini 档离线构造安全条目（create_provider 只建 client 结构）。
+//! credential_request_fields 三分支测试已随凭据卡撤除删去
+//! （BUG-20261123-012——该方法从 trait 移除）。
 
 use std::path::{Path, PathBuf};
 
 use super::ModelProviderReloader;
-// trait 方法（credential_request_fields/reload_provider）经 trait 调用——须在 scope。
+// trait 方法（reload_provider）经 trait 调用——须在 scope。
 use nemesis_agent::r#loop::ProviderReloader as _;
 
 /// 唯一临时目录（Windows SystemTime tick 粒度粗——键加 AtomicU64 序号 +
@@ -67,40 +68,6 @@ fn reloader_for(home: &Path) -> ModelProviderReloader {
 /// 全局解析器槽位是进程单例——触及它的测试统一互斥在 crate 根的
 /// `crate::VAULT_SLOT_LOCK`（BUG-20261110-049 同族：文件级 static 对
 /// 其他持锁测试互不互斥 = 假互斥）。
-
-#[test]
-fn fields_vault_alias_is_rotation() {
-    let home = unique_home("rot");
-    write_config(&home, "vault:cust/alias");
-    let (service, key_name) = reloader_for(&home).credential_request_fields("testai/mini-model");
-    assert_eq!(service, "model/testai/mini-model");
-    // 已是 vault 引用 = 轮换语义：沿用既有别名（卡片覆盖写）。
-    assert_eq!(key_name, "cust/alias");
-}
-
-#[test]
-fn fields_plaintext_proposes_model_alias() {
-    let home = unique_home("plain");
-    write_config(&home, "sk-plain");
-    let (service, key_name) = reloader_for(&home).credential_request_fields("testai/mini-model");
-    assert_eq!(service, "model/testai/mini-model");
-    assert_eq!(key_name, "model/testai/mini-model");
-}
-
-#[test]
-fn fields_missing_entry_or_config_still_proposes() {
-    // config 文件存在但无匹配条目。
-    let home = unique_home("noentry");
-    write_config(&home, "sk-plain");
-    let (service, key_name) = reloader_for(&home).credential_request_fields("other-model");
-    assert_eq!(service, "model/other-model");
-    assert_eq!(key_name, "model/other-model");
-    // config 文件不存在（onboard 前异常态）也诚实提议，不发卡失败。
-    let empty = unique_home("nofile");
-    let (service, key_name) = reloader_for(&empty).credential_request_fields("m2");
-    assert_eq!(service, "model/m2");
-    assert_eq!(key_name, "model/m2");
-}
 
 #[test]
 fn reload_patch_writes_vault_ref_and_rebuilds() {

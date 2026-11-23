@@ -311,6 +311,15 @@ async fn err_arm_auth_and_billing_pass_through_unwrapped() {
             model: "m".into(),
             status: 0,
         },
+        // Forbidden（BUG-20261123-012）同门透传：403 重放必然再拒，包
+        // StreamInterrupted = Display 前缀短路判 Timeout 可重试 → 被拒
+        // 请求循环重放（凭据卡风暴同族形态）。
+        FailoverError::Forbidden {
+            provider: "p".into(),
+            model: "m".into(),
+            status: 403,
+            message: "content was flagged".into(),
+        },
         FailoverError::Billing {
             provider: "p".into(),
         },

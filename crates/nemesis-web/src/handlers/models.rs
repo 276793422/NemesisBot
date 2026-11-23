@@ -1668,6 +1668,9 @@ fn error_kind(msg: &str) -> &'static str {
     use nemesis_utils::llm_error_class::{LlmErrorClass, classify_llm_error, is_connect_error};
     match classify_llm_error(msg) {
         Some(LlmErrorClass::Auth) => "auth",
+        // 403/内容风控单列 kind（BUG-20261123-012）：前端可辨识，不冒充
+        // auth——models.test 报 forbidden 时用户该看的是内容/权限面不是 key。
+        Some(LlmErrorClass::Forbidden) => "forbidden",
         Some(LlmErrorClass::Billing) => "billing",
         Some(LlmErrorClass::RateLimit) => "rate_limit",
         Some(LlmErrorClass::Timeout) => {

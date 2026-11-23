@@ -429,7 +429,9 @@ async fn test_chat_error_401_auth() {
 }
 
 #[tokio::test]
-async fn test_chat_error_403_auth() {
+async fn test_chat_error_403_forbidden() {
+    // BUG-20261123-012：HTTP 403 → Forbidden（与 401 Auth 分家——已认证
+    // 但被拒，重放必然再拒）。
     let server = MockServer::start().await;
     let provider = HttpProvider::new(basic_config(server.uri()));
 
@@ -444,7 +446,7 @@ async fn test_chat_error_403_auth() {
         .await;
     assert!(matches!(
         result,
-        Err(FailoverError::Auth { status: 403, .. })
+        Err(FailoverError::Forbidden { status: 403, .. })
     ));
 }
 

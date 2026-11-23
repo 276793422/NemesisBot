@@ -298,20 +298,32 @@ export function useChatApi() {
     turns: (session_id: string): Promise<SessionTurns> =>
       apiFetch<SessionTurns>(`/api/chat/sessions/${encodeURIComponent(session_id)}/turns`),
 
-    /** P3-1: fork at a turn boundary (omit at_turn = whole history).
-     * Backend delegates to the Z1 fork_session — SessionStore + chat_log
-     * copy + boundary events. `independent`（2026-10-20）：勾选后新会话
-     * 不写血缘 meta（生来无父分支，无分叉缘由/分支摘要）。 */
+    /** P3-1: fork at a turn boundary (omit both = whole history). Backend
+     * delegates to the Z1 fork_session — SessionStore + chat_log copy +
+     * boundary events. BUG-2 修复（2026-11-23）签名改 opts 对象：
+     * - `at_turn`：服务端轮次表的绝对轮号（ForkSessionModal 形态）；
+     * - `message_index`：chat_log jsonl **绝对行号**（ChatPanel「从此分叉」
+     *   形态，present 时后端优先于 at_turn）+ `anchor_content`（B2 内容锚，
+     *   漂移防护与 rewind 族对称）——换算在后端 message_index_to_turn，
+     *   前端不再自数轮次（窗口相对值曾把 70 轮会话切到第 6 轮）；
+     * - `independent`（2026-10-20）：勾选后新会话不写血缘 meta（生来无父
+     *   分支，无分叉缘由/分支摘要）。 */
     fork: (
       session_id: string,
-      at_turn?: number,
-      independent?: boolean,
+      opts?: {
+        at_turn?: number
+        message_index?: number
+        anchor_content?: string
+        independent?: boolean
+      },
     ): Promise<SessionForkResult> =>
       apiFetch<SessionForkResult>(`/api/chat/sessions/${encodeURIComponent(session_id)}/fork`, {
         method: 'POST',
         body: JSON.stringify({
-          ...(at_turn != null ? { at_turn } : {}),
-          ...(independent ? { independent: true } : {}),
+          ...(opts?.at_turn != null ? { at_turn: opts.at_turn } : {}),
+          ...(opts?.message_index != null ? { message_index: opts.message_index } : {}),
+          ...(opts?.anchor_content ? { anchor_content: opts.anchor_content } : {}),
+          ...(opts?.independent ? { independent: true } : {}),
         }),
       }),
 

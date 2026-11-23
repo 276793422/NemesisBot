@@ -191,13 +191,10 @@ pub fn build_agent_loop(
     agent_loop.set_config_path(shared.home.join("config.json"));
     // #2 安全分级：默认对话模式按档位（strict → plan 起步，见 fn 文档）。
     super::apply_default_chat_mode(&agent_loop, &cfg);
-    // （凭据 vault）：Auth 凭据卡装配——provider 重建器恒挂
-    // （纯数据件）；broker 走全局槽（security feature 门控；headless/acp
-    // 未 install → None → Auth 臂走原终局零回归）。
-    agent_loop.set_provider_reloader(Arc::new(ModelProviderReloader {
-        home: shared.home.clone(),
-        workspace: shared.workspace_dir(),
-    }));
+    // （凭据 vault）：broker 走全局槽（security feature 门控；
+    // headless/acp 未 install → None → Auth 臂走原终局零回归）。
+    // provider_reloader 注入已随凭据卡撤除（BUG-20261123-012）——
+    // reload_provider 的消费方只剩专家/项目 spawn 预热闭包（shared.rs）。
     #[cfg(feature = "security")]
     if let Some(broker) = crate::credential_broker::current() {
         agent_loop.set_credential_broker(broker);

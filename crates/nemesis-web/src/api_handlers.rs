@@ -1501,6 +1501,15 @@ pub async fn handle_api_chat_session_turns(
 /// `fork_session` (SessionStore + chat_log copy + boundary events) — the UI
 /// must NOT reimplement the copy semantics.
 ///
+/// BUG-2 修复（2026-11-23）行号直传形态：body 可选 `message_index`
+/// （chat_log jsonl **绝对行号**，与 rewind 族同一坐标系；present 时**优先
+/// 于** `at_turn`）+ 可选 `anchor_content`（B2 内容锚，漂移防护与 rewind
+/// 对称）。present 时在下方 spawn_blocking 内先读全量行做 锚定位 →
+/// [`nemesis_agent::session_fork::message_index_to_turn`] 换算 → 走
+/// `fork_session_opts` 现有 at_turn 路径不动。此前前端「从此分叉」自己
+/// 在已加载窗口内数 user 轮传窗口相对值，后端按绝对轮号切——70 轮会话
+/// 被切到第 6 轮的实录根因。
+///
 /// Requires `X-Auth-Token` matching `web.auth_token`.
 pub async fn handle_api_chat_session_fork(
     headers: axum::http::HeaderMap,
@@ -1523,6 +1532,15 @@ pub async fn handle_api_chat_session_fork(
         .get("at_turn")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
+    // BUG-2 修复（2026-11-23）：行号直传形态（优先于 at_turn）+ B2 内容锚。
+    let message_index = body
+        .get("message_index")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+    let anchor_content = body
+        .get("anchor_content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let title = body
         .get("title")
         .and_then(|v| v.as_str())
@@ -1581,6 +1599,26 @@ pub async fn handle_api_chat_session_fork(
     // fork 主流程优先；生产装配 workspace 恒在）。
     let ws_opt = state.workspace.clone();
     let info = tokio::task::spawn_blocking(move || {
+        // 行号直传形态（BUG-2 修复，2026-11-23）：锚定位（B2，零命中
+        // fail-closed）→ 行号→轮次换算。全量读行在此处做；fork 本体
+        // fork_session_opts 内部还会再读一次（一次性管理操作非热路径，
+        // 二次读行可接受）。换算不出轮首 / 锚零命中 = Err 透传 500 诚实
+        // 报错（与 fork_session 自身的用户面错误同一映射）。
+        let at_turn = match message_index {
+            Some(mi) => {
+                let (rows, _, _, _) =
+                    nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None);
+                let anchored = nemesis_agent::chat_log::resolve_anchor_index(
+                    &rows,
+                    mi,
+                    anchor_content.as_deref(),
+                )?;
+                Some(nemesis_agent::session_fork::message_index_to_turn(&rows, anchored).ok_or(
+                    format!("message_index {mi} 不在任何 user 轮内（其前没有轮首边界行），无法换算分叉轮次"),
+                )?)
+            }
+            None => at_turn,
+        };
         let info = nemesis_agent::session_fork::fork_session_opts(
             &store,
             &key,

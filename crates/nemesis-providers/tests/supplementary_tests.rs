@@ -545,11 +545,11 @@ mod failover_extra {
 
     #[test]
     fn test_from_status_all_codes() {
-        // Auth codes
+        // Auth codes（401；403 已分家归 Forbidden，BUG-20261123-012）
         let auth401 = FailoverError::from_status("p", "m", 401, "", None);
         assert!(matches!(auth401, FailoverError::Auth { .. }));
-        let auth403 = FailoverError::from_status("p", "m", 403, "", None);
-        assert!(matches!(auth403, FailoverError::Auth { .. }));
+        let fb403 = FailoverError::from_status("p", "m", 403, "", None);
+        assert!(matches!(fb403, FailoverError::Forbidden { .. }));
 
         // Rate limit
         let rl = FailoverError::from_status("p", "m", 429, "", None);
@@ -932,9 +932,10 @@ mod error_classifier_extra {
     }
 
     #[test]
-    fn test_classify_auth_forbidden() {
+    fn test_classify_forbidden_wording() {
+        // BUG-20261123-012："forbidden" 词族归 Forbidden（与 Auth 分家）。
         let err = classify_error("forbidden", "p", "m");
-        assert!(matches!(err, Some(FailoverError::Auth { .. })));
+        assert!(matches!(err, Some(FailoverError::Forbidden { .. })));
     }
 
     #[test]
@@ -1028,8 +1029,9 @@ mod error_classifier_extra {
 
     #[test]
     fn test_classify_http_status_403() {
+        // BUG-20261123-012：403 → Forbidden。
         let err = classify_error("status: 403 forbidden", "p", "m");
-        assert!(matches!(err, Some(FailoverError::Auth { .. })));
+        assert!(matches!(err, Some(FailoverError::Forbidden { .. })));
     }
 
     #[test]

@@ -14,8 +14,13 @@
 /// 错误类别（不含 provider/model 等载荷——载荷由消费方自行富化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmErrorClass {
-    /// 认证失败（401/403/凭据文案）——重试无意义。
+    /// 认证失败（401/凭据文案）——重试无意义。
     Auth,
+    /// 拒绝访问（403/内容风控文案，BUG-20261123-012 批）——**已认证但被
+    /// 拒**：内容风控（"content was flagged"）、权限/区域限制、策略拦截。
+    /// 与 Auth 分家：处置同门（重试无意义）但归因不同——403 撞认证词表
+    /// 曾驱动凭据卡循环重放同一被拒请求（key 无关，重放必然再拒）。
+    Forbidden,
     /// 计费失败（402/余额文案）——重试无意义。
     Billing,
     /// 限流（429/配额文案；含"overloaded 文案"既有约定）——可重试。
@@ -80,7 +85,10 @@ pub fn classify_llm_error(error_msg: &str) -> Option<LlmErrorClass> {
 /// 三面口径分裂，fallback 轮转在主级间歇 500 类故障时失效）。
 pub fn class_by_status(status: u16) -> Option<LlmErrorClass> {
     match status {
-        401 | 403 => Some(LlmErrorClass::Auth),
+        // 403 与 401 分家（BUG-20261123-012）：403 = 已认证但被拒（内容
+        // 风控/权限/区域）——归 Auth 曾驱动凭据卡循环重放被拒请求。
+        401 => Some(LlmErrorClass::Auth),
+        403 => Some(LlmErrorClass::Forbidden),
         402 => Some(LlmErrorClass::Billing),
         // 504（Gateway Timeout）与 408 同族；loop transient 词表亦收录 "504"。
         408 | 504 => Some(LlmErrorClass::Timeout),
@@ -115,6 +123,9 @@ fn class_by_message(msg: &str) -> Option<LlmErrorClass> {
     }
     if matches_timeout(msg) {
         return Some(LlmErrorClass::Timeout);
+    }
+    if matches_forbidden(msg) {
+        return Some(LlmErrorClass::Forbidden);
     }
     if matches_auth(msg) {
         return Some(LlmErrorClass::Auth);
@@ -186,14 +197,39 @@ fn matches_auth(msg: &str) -> bool {
         "re-authenticate",
         "oauth token refresh failed",
         "unauthorized",
-        "forbidden",
-        "access denied",
         "expired",
         "token has expired",
         "no credentials found",
         "no api key found",
     ];
-    const REGEX_PATTERNS: &[&str] = &[r"invalid[_ ]?api[_ ]?key", r"\b401\b", r"\b403\b"];
+    const REGEX_PATTERNS: &[&str] = &[r"invalid[_ ]?api[_ ]?key", r"\b401\b"];
+    contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)
+}
+
+/// 拒绝访问（403 族）文案判定（BUG-20261123-012 批）。
+///
+/// 三个来源，均在 [`class_by_message`] 中先于 [`matches_auth`] 消费：
+/// - 403 族词（"forbidden"/"access denied"/`\b403\b`——从 matches_auth
+///   **语义重定位**而来：403 = 已认证但被拒，不是凭据问题）；
+/// - 内容风控/策略短语族（各厂商流内 flag 文案形态——Daybreak 实测
+///   "This content was flagged per our content policy" 无状态码形态，
+///   只能靠文案兜底；`moderation` 单词即高特异性）；
+/// - "access has been denied" 长形态（与短形态 "access denied" 互不包含）。
+fn matches_forbidden(msg: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "forbidden",
+        "access denied",
+        "access has been denied",
+        // 内容风控/策略短语族（流内 error 事件无状态码形态的兜底；
+        // loop 层不再需要双写——Forbidden 归终局不进任何重试环）。
+        "content policy",
+        "content was flagged",
+        "content filtering",
+        "content management policy",
+        "moderation",
+        "usage policy",
+    ];
+    const REGEX_PATTERNS: &[&str] = &[r"\b403\b"];
     contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)
 }
 

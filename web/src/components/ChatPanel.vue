@@ -2350,39 +2350,27 @@ function runMsgMenuAction(a: { run: () => void }) {
   a.run()
 }
 
-/** assistant 消息所在轮的 1-based 序号（fork at_turn = 保留前 N 轮）：
- *  planRegenerate 定位轮首 → 其前非插话 user 行计数 +1。与后端 turn 表
- *  同构（user role 且非 [steer] 前缀；[System:] 触发轮也占轮号）。渲染行
- *  （error/system，无 rowIndex）天然跳过；零请求本地计数。 */
-function forkTurnIndexOf(msg: ChatMessage): number | null {
-  if (msg.rowIndex === undefined) return null
-  const plan = planRegenerate(chatStore.messages, msg.rowIndex, msg.role)
-  if (!plan) return null
-  let n = 0
-  for (const m of chatStore.messages) {
-    if (m.rowIndex === undefined) continue
-    if (m.rowIndex >= plan.turnStart) break
-    if (m.role === 'user' && !m.content.startsWith('[steer] ')) n++
-  }
-  return n + 1
-}
-
-/** 直达 fork：fork(sid, N) → toast + 会话列表刷新 + 切入新会话。走 HTTP
- *  /api/chat/sessions/{id}/fork（WSAPI sessions 模块无 fork 命令，
- *  ForkSessionModal 同款通道）。后端按会话资产区语义整体复制 home。 */
+/** 直达 fork：传 jsonl 绝对行号 + B2 内容锚（BUG-2 修复，2026-11-23——
+ *  换算在后端 message_index_to_turn；旧形态前端在「已加载窗口」内自数
+ *  user 轮得窗口相对值传 at_turn，70 轮会话被切到第 6 轮的实录根因，
+ *  forkTurnIndexOf 已随之删除）。走 HTTP /api/chat/sessions/{id}/fork
+ *  （WSAPI sessions 模块无 fork 命令，ForkSessionModal 同款通道）。后端
+ *  按会话资产区语义整体复制 home。 */
 async function doForkFrom(msg: ChatMessage) {
   if (forkingFrom.value) return
   const sid = effectiveSid.value
   if (!sid) return
-  const n = forkTurnIndexOf(msg)
-  if (!n) {
+  if (msg.rowIndex === undefined) {
     toast.warn('找不到本轮提问行，无法分叉')
     return
   }
   closeMsgMenu()
   forkingFrom.value = true
   try {
-    const resp = await chatApi.fork(sid, n)
+    const resp = await chatApi.fork(sid, {
+      message_index: msg.rowIndex,
+      anchor_content: msg.content,
+    })
     toast.success(`已分叉出新会话（保留 ${resp.kept_messages ?? 0} 条消息）`)
     await sessionStore.fetchList(true)
     sessionStore.switchTo(resp.session_id)

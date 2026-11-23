@@ -5,8 +5,10 @@ import { mount, flushPromises } from '@vue/test-utils'
 // 2026-11-12 会话分叉入口（PLAN 234 批次 5）：message-time 回退按钮组收编为
 // 「⋯」三点菜单 + assistant 行「⑂ 从此分叉」直达 fork。本 spec 钉：
 // - 菜单项构成：rewind 两项原样保留 + 分叉项只在 assistant 行；
-// - 分叉轮次换算：forkTurnIndexOf（非 [steer] user 行计数 +1，与后端 turn
-//   表同构）→ fork(sid, N) 参数正确；
+// - 分叉参数（BUG-2 修复 2026-11-23）：直传 jsonl 绝对行号 message_index
+//   （= 消息 rowIndex）+ anchor_content 内容锚——换算在后端
+//   message_index_to_turn，前端不再自数轮次（窗口相对值曾把 70 轮会话切到
+//   第 6 轮；steer 行是否占轮号从此与前端无关）；
 // - 分叉后链：fetchList(true) + switchTo(新会话) + toast；
 // - 与全局右键菜单互斥单开（双向：右键压掉「⋯」；开「⋯」关右键）；
 // - 点外/Esc 关闭；非 chat 模块无触发钮。
@@ -125,7 +127,7 @@ describe('ChatPanel「⋯」消息菜单与会话分叉入口', () => {
     w.unmount()
   })
 
-  it('分叉直达：assistant 行点击 → fork(sid, 轮号) + fetchList + switchTo + toast', async () => {
+  it('分叉直达：assistant 行点击 → fork(sid, {message_index, anchor_content}) + fetchList + switchTo + toast', async () => {
     const w = await mountWithHistory([
       { role: 'user', content: 'q1' },
       { role: 'assistant', content: 'a1' },
@@ -138,9 +140,10 @@ describe('ChatPanel「⋯」消息菜单与会话分叉入口', () => {
     ;(forkItem as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
 
-    // 单轮历史 → a1 所在轮 = 第 1 轮 → fork('s1', 1)（保留前 1 轮）。
+    // BUG-2 修复：直传 jsonl 绝对行号（oldest_index=0 → a1 的 rowIndex=1）
+    // + 内容锚——不再传窗口相对轮数。
     expect(forkMock).toHaveBeenCalledTimes(1)
-    expect(forkMock).toHaveBeenCalledWith('s1', 1)
+    expect(forkMock).toHaveBeenCalledWith('s1', { message_index: 1, anchor_content: 'a1' })
     expect(useSessionStore().currentId, '分叉后应切入新会话').toBe('s-fork')
     const toasts = useToast().toasts
     expect(toasts.some((t) => t.message.includes('已分叉出新会话'))).toBe(true)
@@ -150,7 +153,7 @@ describe('ChatPanel「⋯」消息菜单与会话分叉入口', () => {
     w.unmount()
   })
 
-  it('分叉轮次换算：steer 插话不占轮号（q1,a1,[steer],a2 → a2 在第 2 轮）', async () => {
+  it('分叉参数：行号原样直传（q1,a1,[steer],a2 → a2 的 message_index=3），steer 不参与前端换算', async () => {
     const w = await mountWithHistory([
       { role: 'user', content: 'q1' },
       { role: 'assistant', content: 'a1' },
@@ -165,7 +168,9 @@ describe('ChatPanel「⋯」消息菜单与会话分叉入口', () => {
     ;(forkItem as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
 
-    expect(forkMock).toHaveBeenCalledWith('s1', 2)
+    // 行号坐标系由后端统一换算（message_index_to_turn → a2 归轮 2）——
+    // steer 是否占轮号是后端边界谓词的事，前端只传绝对行号 + 锚。
+    expect(forkMock).toHaveBeenCalledWith('s1', { message_index: 3, anchor_content: 'a2' })
     w.unmount()
   })
 

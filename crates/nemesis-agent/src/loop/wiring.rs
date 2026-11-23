@@ -123,17 +123,6 @@ impl AgentLoop {
         self.security.credential_broker.read().clone()
     }
 
-    /// 装配 provider 重建器（gateway 注入 `ModelProviderReloader`；
-    /// agent 重启重建 loop 后工厂重新调用 setter 自动跟进）。
-    pub fn set_provider_reloader(&self, reloader: Arc<dyn super::ProviderReloader>) {
-        *self.provider_reloader.write() = Some(reloader);
-    }
-
-    /// 取 provider 重建器（未装配 = `None`）。
-    pub(crate) fn provider_reloader(&self) -> Option<Arc<dyn super::ProviderReloader>> {
-        self.provider_reloader.read().clone()
-    }
-
     /// 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
     /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
     /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。

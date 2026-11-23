@@ -179,9 +179,11 @@ fn test_classify_auth_unauthorized() {
 }
 
 #[test]
-fn test_classify_auth_forbidden() {
+fn test_classify_forbidden_wording() {
+    // BUG-20261123-012：403 族（"forbidden"/"access denied"）与 Auth 分家
+    // ——Forbidden（已认证但被拒），不再驱动凭据卡循环重放。
     let err = classify_error("forbidden: access denied", "openai", "gpt-4");
-    assert!(matches!(err, Some(FailoverError::Auth { .. })));
+    assert!(matches!(err, Some(FailoverError::Forbidden { .. })));
 }
 
 #[test]
@@ -191,9 +193,13 @@ fn test_classify_auth_401() {
 }
 
 #[test]
-fn test_classify_auth_403() {
+fn test_classify_forbidden_403() {
+    // BUG-20261123-012：403 → Forbidden（status 码真值随变体携带）。
     let err = classify_error("status: 403", "openai", "gpt-4");
-    assert!(matches!(err, Some(FailoverError::Auth { .. })));
+    match err {
+        Some(FailoverError::Forbidden { status, .. }) => assert_eq!(status, 403),
+        other => panic!("403 应归 Forbidden，实际 {other:?}"),
+    }
 }
 
 #[test]
@@ -354,9 +360,11 @@ fn test_classify_auth_oauth_refresh_failed() {
 }
 
 #[test]
-fn test_classify_auth_access_denied() {
+fn test_classify_forbidden_access_denied() {
+    // BUG-20261123-012："access denied" 从 matches_auth 语义重定位到
+    // matches_forbidden（403 族 = 已认证但被拒，不是凭据问题）。
     let err = classify_error("access denied for this resource", "openai", "gpt-4");
-    assert!(matches!(err, Some(FailoverError::Auth { .. })));
+    assert!(matches!(err, Some(FailoverError::Forbidden { .. })));
 }
 
 #[test]

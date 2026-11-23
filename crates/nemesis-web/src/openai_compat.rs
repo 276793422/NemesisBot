@@ -602,6 +602,14 @@ fn bare_error_status(
         FE::Auth { .. } | FE::Billing { .. } => {
             (axum::http::StatusCode::BAD_GATEWAY, "upstream_auth_error")
         }
+        // 403/内容风控（BUG-20261123-012）：Forbidden 同 Auth/Billing 门——
+        // master 侧上游凭据/账号面问题，映射 502 不映射 403（403 会让
+        // worker 误以为是自己到 master 的权限断了）；type 独立命名保归因
+        // 不混入认证语义。
+        FE::Forbidden { .. } => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            "upstream_forbidden_error",
+        ),
         FE::Overloaded { .. } => (axum::http::StatusCode::SERVICE_UNAVAILABLE, "server_error"),
         FE::Format { .. } | FE::Unknown { .. } => {
             (axum::http::StatusCode::BAD_GATEWAY, "server_error")

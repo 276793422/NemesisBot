@@ -23,6 +23,14 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
             // 状态码形态带真值；纯文案形态（原实现约定）= 0。
             status: extract_http_status(&msg).unwrap_or(0),
         },
+        // 403/内容风控（BUG-20261123-012）：Forbidden 富化——已认证但被拒，
+        // 重放无意义。message 携带原文（错误文本即真实拒绝原因）。
+        LlmErrorClass::Forbidden => FailoverError::Forbidden {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            status: extract_http_status(&msg).unwrap_or(0),
+            message: error_msg.to_string(),
+        },
         LlmErrorClass::RateLimit => FailoverError::RateLimit {
             provider: provider.to_string(),
             model: model.to_string(),
@@ -66,6 +74,9 @@ pub fn classify_reason(error_msg: &str) -> Option<FailoverReason> {
         LlmErrorClass::Billing => FailoverReason::Billing,
         LlmErrorClass::Timeout => FailoverReason::Timeout,
         LlmErrorClass::Auth => FailoverReason::Auth,
+        // 403 与 Auth 分家（BUG-20261123-012）：轮转语义同门（不可重试
+        // 不轮转），归因桶独立。
+        LlmErrorClass::Forbidden => FailoverReason::Forbidden,
         // 溢出与 Format 同门（重试无意义、不轮转）——轮转语义按 Format。
         LlmErrorClass::Format | LlmErrorClass::ContextOverflow => FailoverReason::Format,
     })

@@ -81,7 +81,8 @@ describe('ForkSessionModal 分叉', () => {
     await w.findAll('button').find(b => b.text() === '分叉')!.trigger('click')
     await flushPromises()
 
-    expect(forkMock).toHaveBeenCalledWith('sid-1', undefined, false)
+    // BUG-2 修复（2026-11-23）签名改 opts 对象。
+    expect(forkMock).toHaveBeenCalledWith('sid-1', { at_turn: undefined, independent: false })
     expect(w.emitted('forked')).toBeTruthy()
     expect(w.emitted('forked')![0]).toEqual(['sid-new'])
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('8 条消息'))).toBe(true)
@@ -94,18 +95,18 @@ describe('ForkSessionModal 分叉', () => {
     await w.findAll('input[type="radio"]')[1].setValue()
     await w.findAll('button').find(b => b.text() === '分叉')!.trigger('click')
     await flushPromises()
-    expect(forkMock).toHaveBeenCalledWith('sid-1', 1, false)
+    expect(forkMock).toHaveBeenCalledWith('sid-1', { at_turn: 1, independent: false })
     expect(w.emitted('forked')![0]).toEqual(['sid-new2'])
   })
 
-  it('完全独立分叉：勾选后 fork 第三参 true，成功 toast 带「无父分支关联」注记', async () => {
+  it('完全独立分叉：勾选后 opts.independent=true，成功 toast 带「无父分支关联」注记', async () => {
     forkMock.mockResolvedValue({ session_id: 'sid-indep', kept_messages: 8, independent: true })
     const w = mountModal()
     await flushPromises()
     await w.find('.independent-option input[type="checkbox"]').setValue(true)
     await w.findAll('button').find(b => b.text() === '分叉')!.trigger('click')
     await flushPromises()
-    expect(forkMock).toHaveBeenCalledWith('sid-1', undefined, true)
+    expect(forkMock).toHaveBeenCalledWith('sid-1', { at_turn: undefined, independent: true })
     expect(w.emitted('forked')![0]).toEqual(['sid-indep'])
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('无父分支关联'))).toBe(true)
   })

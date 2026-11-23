@@ -104,10 +104,14 @@ pub async fn collect_stream_response(
                 // 进限流退避环（或 Auth/Billing 诚实终局），重试成功后终答
                 // 干净。Timeout/Overloaded/Format/Unknown 等维持既有
                 // StreamInterrupted 携带契约（传输中断的 partial 是真成果）。
+                // Forbidden（BUG-20261123-012）同门透传：403 重放必然再拒，
+                // 包 StreamInterrupted = Display 前缀短路判 Timeout 可重试，
+                // 被拒请求循环重放（凭据卡风暴同族形态）。
                 if matches!(
                     e,
                     FailoverError::RateLimit { .. }
                         | FailoverError::Auth { .. }
+                        | FailoverError::Forbidden { .. }
                         | FailoverError::Billing { .. }
                 ) {
                     return Err(e);

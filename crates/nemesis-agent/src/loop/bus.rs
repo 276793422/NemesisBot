@@ -314,7 +314,6 @@ impl AgentLoop {
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
-            provider_reloader: parking_lot::RwLock::new(None),
         }
     }
 

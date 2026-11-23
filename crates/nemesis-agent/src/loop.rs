@@ -960,28 +960,16 @@ pub struct AgentLoop {
     /// `set_turn_wal` 注入（仿 estop late-binding 模式），dispatch 三态
     /// 写入 + 启动恢复扫描消费。
     turn_wal: parking_lot::RwLock<Option<Arc<crate::turn_wal::TurnWal>>>,
-    /// （凭据 vault）：provider 重建器——Auth 卡 Stored 后用
-    /// 新凭据重建 provider 并热切。gateway 注入 `ModelProviderReloader`
-    /// （读 config.json → resolve → factory 同源装配）。crate 只定义合同，
-    /// 装配细节（raw patch / resolve / create）全在 bot 侧——生产代码不依赖
-    /// providers（dev-dependency 纪律）。未装配 = `None` = Auth 卡通路缺失。
-    provider_reloader: parking_lot::RwLock<Option<Arc<dyn ProviderReloader>>>,
 }
 
-/// （凭据 vault）：Auth 失败 → 凭据卡 → provider 重建的
-/// 装配合同。实现方（bot 侧 `ModelProviderReloader`）持有 config.json 路径
-/// 与 workspace，负责 raw patch 与 factory 同源重建。
+/// （凭据 vault）：provider 重建装配合同。Auth 凭据索要卡撤除后
+/// （BUG-20261123-012），唯一消费方 = 专家/项目 spawn 闭包的 provider
+/// 预热（`reload_provider`）；`credential_request_fields` 随卡撤除删去。
 pub trait ProviderReloader: Send + Sync {
-    /// Auth 卡字段决策：`(service, key_name)`。key_name 即 vault 别名
-    /// （卡片提交值落 `vault:<key_name>`）：
-    /// - 条目 api_key 已是 `vault:<alias>` → key_name = 该别名（轮换语义，
-    ///   覆盖写保留 created_at）；
-    /// - 否则提议 `model/<模型别名>`（reloader 后续 patch 落盘）。
-    fn credential_request_fields(&self, model: &str) -> (String, String);
     /// 重建 provider。`patch_alias` Some = 先把该条目 api_key 原子改写为
     /// `vault:<alias>`（raw JSON patch，不经 typed round-trip——typed save
     /// 抹 untyped per-model 键的先例）再重读装配；None = 直接重读装配。
-    /// 失败 = Err（诚实报错，调用侧回落原终局）。
+    /// 失败 = Err（诚实报错）。
     fn reload_provider(
         &self,
         model: &str,
@@ -1149,7 +1137,6 @@ impl AgentLoop {
             token_budget: crate::token_budget::SessionTokenBudgetLedger::default(),
             escalated_floors: parking_lot::Mutex::new(HashMap::new()),
             turn_wal: parking_lot::RwLock::new(None),
-            provider_reloader: parking_lot::RwLock::new(None),
         }
     }
     /// 语音对话提示词开关 late-binding（gateway 装配；仿 estop 模式）。

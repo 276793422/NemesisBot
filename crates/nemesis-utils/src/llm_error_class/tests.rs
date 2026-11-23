@@ -445,3 +445,85 @@ fn concurrency_limit_wording_maps_rate_limit() {
         Some(LlmErrorClass::RateLimit)
     );
 }
+
+// ---- 403 与 Auth 分家（BUG-20261123-012）Forbidden ----
+
+#[test]
+fn forbidden_403_and_policy_phrases_map_forbidden() {
+    // 状态码形态（Daybreak 实测链路：HTTP 403 + flag body）。
+    assert_eq!(
+        classify_llm_error("status 403: request rejected"),
+        Some(LlmErrorClass::Forbidden)
+    );
+    // 裸 "forbidden" 词形态（无状态码）。
+    assert_eq!(
+        classify_llm_error("forbidden"),
+        Some(LlmErrorClass::Forbidden)
+    );
+    // Daybreak 无状态码纯文案形态（只能靠词表兜底的形态——修复前落
+    // matches_auth 的 "forbidden" 词归 Auth 驱动凭据卡循环重放）。
+    assert_eq!(
+        classify_llm_error(
+            "This content was flagged per our content policy and cannot be processed"
+        ),
+        Some(LlmErrorClass::Forbidden)
+    );
+    // 内容风控/策略短语族各形态。
+    let positives = [
+        "content policy violation",
+        "your request was blocked by content filtering",
+        "flagged by our content management policy",
+        "output rejected by moderation system",
+        "violates the usage policy",
+        "your access has been denied",
+        "access denied by administrator",
+    ];
+    for msg in positives {
+        assert_eq!(
+            classify_llm_error(msg),
+            Some(LlmErrorClass::Forbidden),
+            "拒绝访问文案应归 Forbidden：{msg}"
+        );
+    }
+}
+
+#[test]
+fn forbidden_split_does_not_regress_auth_and_neighbors() {
+    // 401 必须仍归 Auth（分家回归锁）——状态码与文案双形态。
+    assert_eq!(
+        classify_llm_error("status 401: unauthorized"),
+        Some(LlmErrorClass::Auth)
+    );
+    assert_eq!(
+        classify_llm_error("invalid api key provided"),
+        Some(LlmErrorClass::Auth)
+    );
+    assert_eq!(
+        classify_llm_error("token has expired"),
+        Some(LlmErrorClass::Auth)
+    );
+    // 相邻类别不被劫持。
+    assert_eq!(
+        classify_llm_error("status 402: payment required"),
+        Some(LlmErrorClass::Billing)
+    );
+    assert_eq!(
+        classify_llm_error("too many requests"),
+        Some(LlmErrorClass::RateLimit)
+    );
+}
+
+#[test]
+fn forbidden_403_matching_requires_word_boundary() {
+    // 与 \b401\b/\b429\b 同款词界纪律：长数字里嵌的 403（端口号 :8403/、
+    // 计数 4030）不得命中 Forbidden。
+    assert_eq!(
+        classify_llm_error("error sending request for url (http://127.0.0.1:8403/v1)"),
+        None
+    );
+    // 真 403（独立成词）照常命中。
+    assert_eq!(
+        classify_llm_error("error: 403 from upstream"),
+        Some(LlmErrorClass::Forbidden)
+    );
+}

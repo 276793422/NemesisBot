@@ -56,7 +56,12 @@ async function doFork() {
   if (forking.value) return
   forking.value = true
   try {
-    const resp = await api.fork(props.sessionId, atTurn.value ?? undefined, independent.value)
+    // BUG-2 修复（2026-11-23）签名改 opts 对象；at_turn 来自服务端轮次表
+    // （绝对轮号，换算无需前端参与）。
+    const resp = await api.fork(props.sessionId, {
+      at_turn: atTurn.value ?? undefined,
+      independent: independent.value,
+    })
     toast.success(
       independent.value
         ? `已分叉出独立会话（保留 ${resp.kept_messages} 条消息，无父分支关联）`

@@ -59,28 +59,44 @@ describe('useChatApi.turns', () => {
 })
 
 describe('useChatApi.fork', () => {
-  it('带 at_turn → POST {at_turn: N}', async () => {
+  // BUG-2 修复（2026-11-23）：签名改 opts 对象（at_turn / message_index +
+  // anchor_content / independent）。
+  it('opts.at_turn → POST {at_turn: N}', async () => {
     fetchMock.mockReturnValue(okJson({ session_id: 'n', kept_messages: 4 }))
-    await useChatApi().fork('sid', 2)
+    await useChatApi().fork('sid', { at_turn: 2 })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/chat/sessions/sid/fork')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body)).toEqual({ at_turn: 2 })
   })
 
-  it('省略 at_turn（含 0 与 null 之外的显式 0）→ 空 body', async () => {
+  it('省略 opts → 空 body；at_turn = 0 显式携带（透传给后端裁决，不前端丢弃）', async () => {
     fetchMock.mockReturnValue(okJson({ session_id: 'n', kept_messages: 8 }))
     await useChatApi().fork('sid')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({})
-    // at_turn = 0 是合法轮号（分叉到第 0 轮 = 空会话），必须显式携带
-    await useChatApi().fork('sid', 0)
+    await useChatApi().fork('sid', { at_turn: 0 })
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ at_turn: 0 })
   })
 
   it('independent=true → body 追加 {independent: true}（完全独立会话，2026-10-20）', async () => {
     fetchMock.mockReturnValue(okJson({ session_id: 'n', kept_messages: 4, independent: true }))
-    await useChatApi().fork('sid', 2, true)
+    await useChatApi().fork('sid', { at_turn: 2, independent: true })
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ at_turn: 2, independent: true })
+  })
+
+  it('message_index + anchor_content → body 直传行号形态（BUG-2，2026-11-23）', async () => {
+    fetchMock.mockReturnValue(okJson({ session_id: 'n', kept_messages: 4 }))
+    await useChatApi().fork('sid', { message_index: 5, anchor_content: '回答内容' })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      message_index: 5,
+      anchor_content: '回答内容',
+    })
+    // 双形态同发：message_index 与 at_turn 都进 body（后端 message_index 优先）。
+    await useChatApi().fork('sid', { message_index: 5, at_turn: 1 })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      at_turn: 1,
+      message_index: 5,
+    })
   })
 })
 

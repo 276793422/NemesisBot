@@ -104,6 +104,35 @@ fn row_turn_cut(rows: &[Value], n: usize) -> usize {
     rows.len()
 }
 
+/// 前端行号 → at_turn 换算（BUG-2 修复，2026-11-23）：ChatPanel 三点菜单
+/// fork 此前在前端「已加载窗口」内数 user 轮得出窗口相对值，后端却按全
+/// 日志绝对轮号切（70 轮会话切到第 6 轮的实录根因）。修复 = 前端只传
+/// jsonl 绝对行号（与 rewind 族同一坐标系），换算搬后端本函数。
+///
+/// 语义：从 `message_index` 定位其所在轮的轮首边界行
+/// （[`crate::chat_log::is_user_turn_boundary`] 单一真相源——steer 注入行
+/// 不是轮首），`at_turn` = 该边界行（含）之前的边界总数（1-based）。与
+/// `at_turn` 现有语义对齐：保留第 1..at_turn 轮**完整**（含点击轮的完整
+/// 回复）。实例验证（11-23 生产会话）：点击 row 150（轮 67 的回复，轮首
+/// boundary row 149）→ boundaries[0..=150] = 67 → at_turn=67，
+/// `row_turn_cut(rows, 67)` 切在第 68 边界前 = 轮 67 完整保留 ✓。
+///
+/// 越界 index 钳到末行（与 rewind 的显式越界报错不同——fork 点击总是从
+/// 渲染历史来，钳制是对 live 追加窗口的宽容）；回溯不到任何轮首（索引落
+/// 在首个 user 边界之前，如纯 system/tool 前缀）返回 `None` = 调用方按
+/// at_turn 无效语义诚实报错，绝不静默改义。纯函数——换算在 fork HTTP
+/// handler 的 spawn_blocking 内对全量行做（一次性管理操作非热路径）。
+pub fn message_index_to_turn(rows: &[Value], message_index: usize) -> Option<usize> {
+    let idx = message_index.min(rows.len().saturating_sub(1));
+    let mut boundaries_seen = 0usize;
+    for v in rows.iter().take(idx + 1) {
+        if crate::chat_log::is_user_turn_boundary(v) {
+            boundaries_seen += 1;
+        }
+    }
+    (boundaries_seen > 0).then_some(boundaries_seen)
+}
+
 /// Count COMPLETE user turns in a STORED history.
 ///
 /// ⚠ SUPERSEDED (2026-08-25 fork 第三轮): the store is a lossy cache — turn

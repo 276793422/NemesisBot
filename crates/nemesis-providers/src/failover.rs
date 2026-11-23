@@ -18,6 +18,9 @@ pub const STREAM_TOOL_CALLS_TRUNCATED_MARK: &str = "，工具调用已截断（�
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FailoverReason {
     Auth,
+    /// 拒绝访问（403/内容风控，BUG-20261123-012 批）——与 Auth 分家的
+    /// 归因桶；轮转语义同门（不可重试不轮转），cooldown 记账独立。
+    Forbidden,
     RateLimit,
     Billing,
     Timeout,
@@ -36,6 +39,21 @@ pub enum FailoverError {
         provider: String,
         model: String,
         status: u16,
+    },
+    /// 拒绝访问（403/内容风控，BUG-20261123-012 批）：已认证但被拒——
+    /// 重放同一请求必然再拒，`is_retriable=false`（fallback 不轮转）。
+    /// Display 同时携带 `forbidden` 词锚与 `status {status}` 码锚——展平
+    /// 文本回灌 `classify_llm_error` 时两条路同判 Forbidden（词表/状态表
+    /// 双保险，与 StreamInterrupted 头行前缀锚同门的分类诚实性纪律）。
+    /// `message` 携带上游 body 摘要（600 字符）——用户终局文案靠它看到
+    /// 真实拒绝原因（此前 403 body 截 200 进 Unknown，Daybreak flag 原文
+    /// 被截断且被误归 Auth）。
+    #[error("forbidden by provider {provider}/{model}: status {status}: {message}")]
+    Forbidden {
+        provider: String,
+        model: String,
+        status: u16,
+        message: String,
     },
     #[error("rate limited by provider {provider}/{model}")]
     RateLimit {
@@ -111,6 +129,7 @@ impl FailoverError {
     pub fn reason(&self) -> FailoverReason {
         match self {
             FailoverError::Auth { .. } => FailoverReason::Auth,
+            FailoverError::Forbidden { .. } => FailoverReason::Forbidden,
             FailoverError::RateLimit { .. } => FailoverReason::RateLimit,
             FailoverError::Billing { .. } => FailoverReason::Billing,
             FailoverError::Timeout { .. }
@@ -186,6 +205,16 @@ impl FailoverError {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 status,
+            },
+            // 403（BUG-20261123-012）：Forbidden 富化，body 摘要 600 字符
+            // （其他臂维持 200——400 Format body 只服务词表匹配，403 body
+            // 是用户终局文案里唯一的真实拒绝原因，Daybreak flag 原文实测
+            // 超 200 字符）。
+            Some(LlmErrorClass::Forbidden) => FailoverError::Forbidden {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                status,
+                message: body.chars().take(600).collect::<String>(),
             },
             Some(LlmErrorClass::RateLimit) => FailoverError::RateLimit {
                 provider: provider.to_string(),
@@ -324,6 +353,14 @@ pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> Failove
             model: model.to_string(),
             status: 0,
         },
+        // 403 文案形态（BUG-20261123-012）：status 0（纯文案无状态码，
+        // Auth 同约定）；message 携带原文案。
+        Some(LlmErrorClass::Forbidden) => FailoverError::Forbidden {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            status: 0,
+            message: msg.to_string(),
+        },
         Some(LlmErrorClass::Billing) => FailoverError::Billing {
             provider: provider.to_string(),
         },
@@ -410,10 +447,24 @@ pub fn classify_stream_error_payload(
                 model: model.to_string(),
                 retry_after: None,
             }),
-            "authentication_error" | "permission_error" => Some(FailoverError::Auth {
+            // authentication 与 permission 分家（BUG-20261123-012）：流内
+            // SSE error 事件无 HTTP 状态码 → status 0（纯文案形态，Auth
+            // 同约定）；message 携带 err_obj 原文案（④ 兜底收不到——
+            // ② 命中即 return）。
+            "authentication_error" => Some(FailoverError::Auth {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 status: 0,
+            }),
+            "permission_error" => Some(FailoverError::Forbidden {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                status: 0,
+                message: err_obj
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
             }),
             "billing_error" => Some(FailoverError::Billing {
                 provider: provider.to_string(),

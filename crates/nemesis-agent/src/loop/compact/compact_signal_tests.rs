@@ -1255,3 +1255,326 @@ async fn hostile_provider_signal_no_panic() {
         .await;
     let _ = std::fs::remove_file(&cfg_path);
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-23 三 BUG 批 1：误记账根修 + force 清闩 + 死人开关
+// ---------------------------------------------------------------------------
+
+/// ① 误记账根修回归锁（16:05 事故形态）：连续三轮**全部成功采用**的压缩
+/// 不得置 stuck 闩。旧代码：每轮 tick 在压缩运行前按上一轮基线记账——
+/// 成功臂不清 failures/last_summary_tokens → 旧基线被带到下一轮 tick →
+/// 「摘要成功」被误记账成 ineffective → 第三轮 tick failures=2 置闩 →
+/// provider 只被调 2 次。修复后：成功臂清零失败轴 → 下一轮 ineffective?(0,·)
+/// 恒 false → 三轮全跑（calls==3）。
+#[tokio::test]
+async fn success_adoption_clears_failure_axis_no_latch_on_successive_successes() {
+    let (provider, calls) = QueueProvider::boxed(vec![
+        Ok("SUMMARY".to_string()),
+        Ok("SUMMARY".to_string()),
+        Ok("SUMMARY".to_string()),
+    ]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = keep_tokens_config("misaccount", 10);
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = low_estimate_history(); // 8 turns；window 100 → threshold 75
+
+    // 轮 1：note(90, 8) → 触发 → tick（last=0 → ineffective false）→
+    // last=90 → 摘要成功采用 covers=7 → 成功臂清 failures/last。
+    agent_loop.note_compaction_provider_signal("s", 90, 8);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(instance.get_summary_cache().unwrap().covers_up_to, 7);
+
+    // 轮 2：历史增长 2 轮（边界可前进）→ 重新锚定 → 触发 → tick 不再把
+    // 上轮成功误记账（修复点）→ 摘要再成功。
+    let mut hist = instance.get_history();
+    hist.push(turn("user", &"x".repeat(40)));
+    hist.push(turn("assistant", &"x".repeat(40)));
+    instance.set_history(hist);
+    agent_loop.note_compaction_provider_signal("s", 90, 10);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(instance.get_summary_cache().unwrap().covers_up_to, 9);
+
+    // 轮 3：同构再一轮——旧代码此处 tick failures=2 置闩、provider 不被调。
+    let mut hist = instance.get_history();
+    hist.push(turn("user", &"x".repeat(40)));
+    hist.push(turn("assistant", &"x".repeat(40)));
+    instance.set_history(hist);
+    agent_loop.note_compaction_provider_signal("s", 90, 12);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "连续三轮成功压缩全部真实执行（旧代码第三轮被误记账闩死，calls==2）"
+    );
+    let (failures, stuck, last) = {
+        let states = agent_loop.compact_state.lock();
+        let st = states.get("s").unwrap();
+        (st.consecutive_failures, st.stuck, st.last_summary_tokens)
+    };
+    assert_eq!(failures, 0);
+    assert!(!stuck, "全成功序列不得置闩");
+    assert_eq!(last, 0, "成功臂清零 last_summary_tokens（轴无关干净起点）");
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// ③ force 清闩：两轮无进展置闩后，手动 /compact（force_compression）成功
+/// → stuck/failures/no_progress/last_summary_tokens 全清 → 自动压缩恢复
+/// （下一条 auto 触发真实跑，不再被闩拦截）。两条暂停注记承诺的
+/// 「可手动 /compact 强制压缩」由此闭环。
+#[tokio::test]
+async fn force_success_clears_latch_and_auto_resumes() {
+    let (provider, calls) = QueueProvider::boxed(vec![
+        Ok("x".repeat(300)),       // 无进展摘要（弃用）
+        Ok("x".repeat(300)),       // 无进展摘要（弃用）→ no_progress=2 → stuck
+        Ok("SUMMARY".to_string()), // force 摘要（采用）
+    ]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = keep_tokens_config("forceclear", 10);
+    agent_loop.set_config_path(cfg_path.clone());
+    // 9 turns（system + 8），tail 估算 80 ≥ 75 触发；无实报纯估算。
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100);
+    instance.set_history(vec![
+        turn("system", "system prompt!"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+    ]);
+
+    // 置闩（同 b2_no_progress_discard_then_pause 形态）。
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert!(
+        agent_loop.compact_state.lock().get("s").unwrap().stuck,
+        "前置：两轮无进展已置闩"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    // force 成功 → 清闩四件套。
+    agent_loop.force_compression(&instance, "s").await;
+    assert_eq!(instance.get_summary_cache().unwrap().text, "SUMMARY");
+    let (stuck, failures, np, last) = {
+        let states = agent_loop.compact_state.lock();
+        let st = states.get("s").unwrap();
+        (
+            st.stuck,
+            st.consecutive_failures,
+            st.no_progress,
+            st.last_summary_tokens,
+        )
+    };
+    assert!(!stuck, "force 成功清 stuck 闩");
+    assert_eq!(
+        (failures, np, last),
+        (0, 0, 0),
+        "force 成功清失败轴两件 + no_progress"
+    );
+
+    // 自动压缩恢复：重新锚定触发 → tick 正常记账（不被闩拦）→ 摘要真实发起
+    // （队列耗尽返回 Err 也算「发起了」——断言对象是闸放行，不是摘要结果）。
+    agent_loop.note_compaction_provider_signal("s", 90, 9);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        5,
+        "闩清后 auto 路径恢复发起摘要调用（2 弃用 + 1 force + 2 auto——队列耗尽 Err 走 with_one_retry 同窗重试一次）"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// ④ 死人开关放行：stuck 闩置位 + 信号 ≥ 窗口 95% → 放行一次救援摘要
+/// （provider 被调、last_rescue 记账、摘要被采用）；随后同水位立刻再触发
+/// → 冷却期内（<600s）不放行（provider 不被调）——闩的省 token 语义在
+/// 冷却窗口内完整保留。
+#[tokio::test]
+async fn deadman_rescue_runs_at_high_water_then_cooldown_blocks() {
+    let (provider, calls) = QueueProvider::boxed(vec![
+        Ok("x".repeat(300)),       // 弃用
+        Ok("x".repeat(300)),       // 弃用 → stuck
+        Ok("SUMMARY".to_string()), // 救援摘要（采用）
+    ]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = keep_tokens_config("deadman", 10);
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100);
+    instance.set_history(vec![
+        turn("system", "system prompt!"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+    ]);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert!(agent_loop.compact_state.lock().get("s").unwrap().stuck);
+
+    // 高危水位（96 ≥ 95%×100）→ 救援放行：provider 被调、last_rescue 记账。
+    agent_loop.note_compaction_provider_signal("s", 96, 9);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "救援摘要真实发起");
+    assert_eq!(instance.get_summary_cache().unwrap().text, "SUMMARY");
+    assert!(
+        agent_loop
+            .compact_state
+            .lock()
+            .get("s")
+            .unwrap()
+            .last_rescue
+            .is_some(),
+        "救援记账落盘"
+    );
+
+    // 冷却期内同水位再触发 → 闩照旧暂停（provider 不再被调）。
+    agent_loop.note_compaction_provider_signal("s", 96, 9);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "冷却期内（<600s）救援不放行——闩的省 token 语义保留"
+    );
+    assert!(
+        agent_loop.compact_state.lock().get("s").unwrap().stuck,
+        "救援成功但信号未回落到阈值下（仍锚定 96），闩保持待呼吸臂清"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// ④ 死人开关双闸：低水位（<95% 窗口）不放行不记账；直接模拟冷却到期
+/// （last_rescue 拨回 601s 前）→ 同水位放行再试（救援失败=队列耗尽也无妨，
+/// 断言对象是闸放行本身——闩不死会话）。
+#[tokio::test]
+async fn deadman_rescue_low_water_gated_and_cooldown_expiry_retries() {
+    let (provider, calls) = QueueProvider::boxed(vec![
+        Ok("x".repeat(300)), // 弃用
+        Ok("x".repeat(300)), // 弃用 → stuck
+                             // 后续救援尝试走队列耗尽（Err）——救援失败形态。
+    ]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = keep_tokens_config("deadman2", 10);
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100);
+    instance.set_history(vec![
+        turn("system", "system prompt!"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+    ]);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert!(agent_loop.compact_state.lock().get("s").unwrap().stuck);
+
+    // 低水位（90 < 95%×100）→ 不放行、不记账。
+    agent_loop.note_compaction_provider_signal("s", 90, 9);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "低水位闩照旧暂停");
+    assert!(
+        agent_loop
+            .compact_state
+            .lock()
+            .get("s")
+            .unwrap()
+            .last_rescue
+            .is_none(),
+        "低水位不记救援账"
+    );
+
+    // 模拟冷却到期 → 同低水位照旧不放行（双闸独立）。
+    {
+        let mut states = agent_loop.compact_state.lock();
+        states.get_mut("s").unwrap().last_rescue =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(601));
+    }
+    agent_loop.note_compaction_provider_signal("s", 90, 9);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "冷却到期但低水位仍不放行");
+
+    // 高水位 + 冷却到期 → 放行（队列耗尽=救援失败，Err 带 with_one_retry
+    // 重试一次，闩保持，真实会话不死）。
+    agent_loop.note_compaction_provider_signal("s", 96, 9);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "高水位+冷却到期 → 救援真实发起（1 尝试 + 1 Err 重试）"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}

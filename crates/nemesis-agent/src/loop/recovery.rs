@@ -211,26 +211,13 @@ impl AgentLoop {
                 // providers——后者只是 dev-dependency）。
                 let classified = nemesis_utils::llm_error_class::classify_llm_error(&err);
                 match &classified {
-                    Some(nemesis_utils::llm_error_class::LlmErrorClass::Auth) => {
-                        // （凭据 vault）：先试凭据索要卡——
-                        // broker/reloader 任一未装配返回 None，走原终局零
-                        // 回归；卡 Stored 则热切新 provider 并一次受守卫重试。
-                        if let Some(retried) = self
-                            .try_credential_card_retry(
-                                instance,
-                                context,
-                                trace_id,
-                                &err,
-                                active_model,
-                                cancel_token,
-                                request_had_images,
-                                round_start,
-                                st,
-                            )
-                            .await
-                        {
-                            return retried;
-                        }
+                    // 403/内容风控终局（BUG-20261123-012）：Forbidden =
+                    // 已认证但被拒（内容风控/权限/区域），重放同一请求必然
+                    // 再拒——不进任何重试环；用户文案指到内容/权限面，
+                    // 不是 key。风控原文不进对话历史（见
+                    // error_history_content），防 flag 文本成为后续轮次的
+                    // 连带触发物。
+                    Some(nemesis_utils::llm_error_class::LlmErrorClass::Forbidden) => {
                         return Err(self
                             .finish_llm_error_no_retry(
                                 instance,
@@ -239,7 +226,26 @@ impl AgentLoop {
                                 turns_used,
                                 round_start,
                                 err,
-                                "认证失败（401/403）：请检查该模型的 API key 或凭据配置，已停止重试",
+                                "上游拒绝访问（403）：多为内容风控/权限/区域限制，重试无意义，已停止重试",
+                                request_had_images,
+                            )
+                            .await);
+                    }
+                    Some(nemesis_utils::llm_error_class::LlmErrorClass::Auth) => {
+                        // 凭据索要卡撤除（BUG-20261123-012）：Auth 类错误
+                        // 不再让用户在对话里补 key——agent 侧无法验证输入
+                        // 的安全性与作用域，且 403 撞认证词表曾驱动凭据卡
+                        // 循环重放被拒请求（key 无关，重放必然再拒）。可
+                        // 行动指引改指 Dashboard 模型管理页。
+                        return Err(self
+                            .finish_llm_error_no_retry(
+                                instance,
+                                context,
+                                trace_id,
+                                turns_used,
+                                round_start,
+                                err,
+                                "认证失败（401）：请到 Dashboard → 模型管理检查/更新该模型的 API key，已停止重试",
                                 request_had_images,
                             )
                             .await);
@@ -578,7 +584,7 @@ impl AgentLoop {
                             last_err.clone()
                         };
                         instance.add_assistant_message(
-                            &format!("Error: {}", history_err),
+                            &Self::error_history_content(&history_err),
                             Vec::new(),
                             None,
                         );
@@ -807,7 +813,11 @@ impl AgentLoop {
                     raw_response_body: None,
                 })
                 .await;
-                instance.add_assistant_message(&format!("Error: {}", retry_err), Vec::new(), None);
+                instance.add_assistant_message(
+                    &Self::error_history_content(&retry_err),
+                    Vec::new(),
+                    None,
+                );
                 // [capture] LLM retries exhausted (context-error
                 // retry path). Flush the full retry_err — the raw
                 // provider error, likely source of the user-visible
@@ -833,138 +843,28 @@ impl AgentLoop {
         }
     }
 
-    /// 卡超时（connector_tools 触发臂同值 300s；跨 crate 各持一份常量，
-    /// 理由同彼处注记）。
-    const B4_CREDENTIAL_CARD_TIMEOUT_SECS: u64 = 300;
-
-    /// （凭据 vault）：Auth 失败 → 凭据索要卡 → Stored 则
-    /// 重建 provider 热切并**一次受守卫重试**（cancel/estop 臂与首呼同构；
-    /// 再败 = 新终局文案）。broker/reloader 任一未装配、卡被拒/超时、重建
-    /// 失败 → `None`（调用侧落原「停止重试」终局，字节不变）。
-    ///
-    /// 值纪律：卡 reason 只带错误摘要（截 200 字符），凭据值只在
-    /// respond→vault 链路里存在、全程不进 agent 事件/日志。
-    #[allow(clippy::too_many_arguments)]
-    async fn try_credential_card_retry(
-        &self,
-        instance: &AgentInstance,
-        context: &RequestContext,
-        trace_id: &str,
-        err: &str,
-        active_model: &str,
-        cancel_token: &tokio_util::sync::CancellationToken,
-        request_had_images: bool,
-        round_start: std::time::Instant,
-        st: &TurnState,
-    ) -> Option<Result<LlmResponse, AgentEvent>> {
-        let broker = self.credential_broker()?;
-        let reloader = self.provider_reloader()?;
-        let (service, key_name) = reloader.credential_request_fields(active_model);
-        let mut reason: String = err.chars().take(200).collect();
-        if reason.chars().count() < err.chars().count() {
-            reason.push('…');
-        }
-        let request = nemesis_types::agent::CredentialRequest {
-            request_id: format!("auth-{trace_id}"),
-            service,
-            key_name: key_name.clone(),
-            reason,
-            timeout_secs: Self::B4_CREDENTIAL_CARD_TIMEOUT_SECS,
-        };
-        info!(
-            "[AgentLoop] Auth 失败，发凭据索要卡 request_id={} model={} key_name={}（值不落日志）",
-            request.request_id, active_model, request.key_name
-        );
-        // 卡阻塞等待放 spawn_blocking（broker 内部 recv_timeout 直等），不占
-        // async worker；JoinError / broker Err = 卡通路异常 → 回落原终局。
-        let b = broker.clone();
-        let outcome = tokio::task::spawn_blocking(move || b.request_credential(&request))
-            .await
-            .ok()?
-            .ok()?;
-        if outcome != nemesis_types::agent::CredentialOutcome::Stored {
-            info!("[AgentLoop] 凭据卡未存储（拒绝/超时），Auth 按原终局处理");
-            return None;
-        }
-        // 重建 provider（patch 已由 reloader 落盘）并热切；重建失败 = 诚实
-        // 回落原终局。
-        let model = active_model.to_string();
-        let alias = key_name.clone();
-        let r = reloader.clone();
-        let new_provider =
-            tokio::task::spawn_blocking(move || r.reload_provider(&model, Some(&alias)))
-                .await
-                .ok()?
-                .ok()?;
-        self.set_provider_and_model(new_provider.clone(), active_model.to_string());
-        info!(
-            "[AgentLoop] 凭据卡 Stored：provider 已重建并热切（model={}），一次受守卫重试",
-            active_model
-        );
-
-        // 一次受守卫重试：messages/tool_defs 重建（重试环同款）+ cancel/
-        // estop 臂与首呼同构（臂序先 cancel 再 estop；两处 select 均未加
-        // biased，随机轮询语义一致）。
-        let r_msgs = self.build_messages(instance);
-        let r_tools = self.effective_tool_defs(instance);
-        let mut estop_rx = self.security.subscribe();
-        let stream_sink = self.provider_stream_sink(context, active_model);
-        let active_provider: Arc<dyn LlmProvider> = match &stream_sink {
-            Some(sink) => Arc::new(StreamingLlmProvider::new(new_provider, sink.clone())),
-            None => new_provider,
-        };
-        let chat_result = tokio::select! {
-            result = self.chat_call_escalating(
-                self.current_provider_call_timeout_secs(),
-                &active_provider,
-                active_model,
-                r_msgs,
-                Some(st.chat_opts.clone()),
-                r_tools,
-                &context.session_key,
-            ) => result,
-            _ = cancel_token.cancelled() => {
-                info!("[AgentLoop] LLM retry (credential card) cancelled, turns_used={}", st.turns_used);
-                if let Some(sink) = &stream_sink {
-                    sink.error(CANCEL_SINK_MSG);
-                }
-                return Some(Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string())));
-            }
-            _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
-                info!(
-                    "[AgentLoop] E-stop engaged during LLM retry (credential card), turns_used={}",
-                    st.turns_used
-                );
-                if let Some(sink) = &stream_sink {
-                    sink.error(ESTOP_SINK_MSG);
-                }
-                return Some(Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string())));
-            }
-        };
-        match chat_result {
-            Ok(resp) => Some(Ok(resp)),
-            Err(e2) => {
-                warn!("[AgentLoop] 凭据更新后重试仍失败: {}", e2);
-                Some(Err(self
-                    .finish_llm_error_no_retry(
-                        instance,
-                        context,
-                        trace_id,
-                        st.turns_used,
-                        round_start,
-                        e2,
-                        "认证失败：凭据已更新但重试仍失败，请检查凭据值是否正确，已停止重试",
-                        request_had_images,
-                    )
-                    .await))
-            }
+    /// 进对话历史的错误行整形（BUG-20261123-012 批3③ 单点）。Forbidden
+    /// 类错误原文**不进 history**——风控文案（"content was flagged"/策略
+    /// 原句）反复进入模型上下文会让后续轮次被上游风控连带拒绝（flag 文本
+    /// 本身成了触发物），终局改中性占位。其余错误维持 `Error: <原文>`
+    /// 形态。出站用户文案 / observer / capture 三个面**不经过本函数**，
+    /// 维持原文（诊断保真只封模型上下文面，分层与 StreamInterrupted
+    /// history 瘦身同门）。
+    fn error_history_content(err: &str) -> String {
+        if nemesis_utils::llm_error_class::classify_llm_error(err)
+            == Some(nemesis_utils::llm_error_class::LlmErrorClass::Forbidden)
+        {
+            "Error: 上游拒绝访问（403）：通常为内容风控/权限/区域限制——上游原文不写入对话历史，避免风控文案反复进入模型上下文".to_string()
+        } else {
+            format!("Error: {err}")
         }
     }
 
     /// 不可重试类（认证/计费）终局收尾——observer 错误事件 + history
-    /// 落账 + capture flush 保留原始错误全文（诊断保真），用户可见文案换
-    /// 可行动提示。终局仪式与 [`Self::call_llm_with_recovery`] 词表终局
-    /// 块同构（capture 事件名同为 "llm_call_failed"）。
+    /// 落账 + capture flush 保留原始错误全文（诊断保真；history 面经
+    /// [`Self::error_history_content`] 整形——Forbidden 换中性占位），
+    /// 用户可见文案换可行动提示。终局仪式与 [`Self::call_llm_with_recovery`]
+    /// 词表终局块同构（capture 事件名同为 "llm_call_failed"）。
     // allow 理由（clippy too_many_arguments）：9 参签名与既有词表终局块
     // 同构（observer 事件/history/capture 各需独立实参），聚合 struct 反而
     // 偏离同源形态、增加阅读跳转。
@@ -997,7 +897,7 @@ impl AgentLoop {
             raw_response_body: None,
         })
         .await;
-        instance.add_assistant_message(&format!("Error: {}", err), Vec::new(), None);
+        instance.add_assistant_message(&Self::error_history_content(&err), Vec::new(), None);
         if let Some(sink) = crate::capture_sink::CaptureSink::global() {
             sink.flush(
                 &context.session_key,

@@ -510,3 +510,168 @@ async fn test_fork_routes_registered_in_full_router() {
     // 200 HTML).
     assert_eq!(resp.status(), 404);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-2 修复（2026-11-23）：fork 行号直传形态（message_index + anchor_content）。
+// ChatPanel 三点菜单「从此分叉」此前前端自数窗口相对轮次（70 轮会话切到
+// 第 6 轮的实录根因）；修复 = 前端传 jsonl 绝对行号 + B2 内容锚，后端
+// spawn_blocking 内 锚定位 → message_index_to_turn 换算 → 既有 at_turn 路径。
+// ---------------------------------------------------------------------------
+
+/// message_index 直传：点击轮 1 回复（jsonl row 1）→ at_turn 1 → 保留
+/// rows[..2]（q1+a1），点击轮完整保留、其后截掉。at_turn 兼容路径同测
+/// （双入参时 message_index 优先）。
+#[tokio::test]
+async fn test_fork_message_index_converts_to_turn() {
+    let _home = crate::test_home::lock_home();
+    let dir = tempfile::tempdir().unwrap();
+    let sid = unique_sid();
+    let key = chat_session_key(&sid);
+    seed_session(dir.path(), &key);
+
+    let post = |body: String| {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/api/chat/sessions/{sid}/fork"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    };
+    let state = make_state(&dir, "");
+
+    // 点击 row 1（轮 1 回复）。
+    let resp = oneshot(
+        make_router(state.clone()),
+        post(r#"{"message_index": 1}"#.to_string()),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let v = body_json(resp).await;
+    assert_eq!(
+        v["at_turn"], 1,
+        "row 1 (turn-1 reply) must convert to turn 1"
+    );
+    assert_eq!(v["kept_messages"], 2, "turn 1 complete = q1+a1");
+    let new_key = v["new_key"].as_str().unwrap().to_string();
+    let (forked, n, _, _) = nemesis_agent::chat_log::read_chat_log(&new_key, 50, None);
+    assert_eq!(n, 2);
+    assert_eq!(
+        forked.last().unwrap()["content"],
+        "回答一",
+        "点击轮回复必须收尾"
+    );
+    nemesis_agent::chat_log::delete_chat_log(&new_key);
+
+    // 点击 row 5（轮 3 回复）→ at_turn 3 = 全量。
+    let resp = oneshot(
+        make_router(state.clone()),
+        post(r#"{"message_index": 5}"#.to_string()),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let v = body_json(resp).await;
+    assert_eq!(v["at_turn"], 3);
+    assert_eq!(v["kept_messages"], 6);
+    let new_key = v["new_key"].as_str().unwrap().to_string();
+    nemesis_agent::chat_log::delete_chat_log(&new_key);
+
+    // 双入参：message_index 优先于 at_turn（5 → 轮 3，而非 at_turn=1）。
+    let resp = oneshot(
+        make_router(state),
+        post(r#"{"message_index": 5, "at_turn": 1}"#.to_string()),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let v = body_json(resp).await;
+    assert_eq!(v["at_turn"], 3, "message_index must win over at_turn");
+    let new_key = v["new_key"].as_str().unwrap().to_string();
+    nemesis_agent::chat_log::delete_chat_log(&new_key);
+    nemesis_agent::chat_log::delete_chat_log(&key);
+}
+
+/// B2 锚漂移防护：前端 message_index 漂移（点「回答二」却报 row 4 之外
+/// 的错位值）时按 anchor_content 重定位真实行再换算；锚零命中 = 500
+/// fail-closed（绝不按漂移 index 盲切）。
+#[tokio::test]
+async fn test_fork_message_index_anchor_relocates_and_rejects_zero_hit() {
+    let _home = crate::test_home::lock_home();
+    let dir = tempfile::tempdir().unwrap();
+    let sid = unique_sid();
+    let key = chat_session_key(&sid);
+    seed_session(dir.path(), &key);
+    let state = make_state(&dir, "");
+
+    // 锚重定位：漂移 index 4 处是「回答二」→ 锚「第二问：查天气」真实行
+    // 在 row 2 → 换算轮 2 → 保留 rows[..4]。
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/api/chat/sessions/{sid}/fork"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"message_index": 4, "anchor_content": "第二问：查天气"}"#,
+        ))
+        .unwrap();
+    // 注：index 4 处内容（「回答二」）与锚不等 → 走全量扫描唯一命中 row 2。
+    let resp = oneshot(make_router(state.clone()), req).await;
+    assert_eq!(resp.status(), 200);
+    let v = body_json(resp).await;
+    assert_eq!(
+        v["at_turn"], 2,
+        "anchor must relocate drifted index to row 2 = turn 2"
+    );
+    assert_eq!(v["kept_messages"], 4);
+    let new_key = v["new_key"].as_str().unwrap().to_string();
+    let (forked, n, _, _) = nemesis_agent::chat_log::read_chat_log(&new_key, 50, None);
+    assert_eq!(n, 4);
+    assert_eq!(forked.last().unwrap()["content"], "回答二");
+    nemesis_agent::chat_log::delete_chat_log(&new_key);
+
+    // 零命中 = fail-closed 500（错误信息带「锚内容定位失败」，未做任何截断）。
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/api/chat/sessions/{sid}/fork"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"message_index": 1, "anchor_content": "ghost-anchor"}"#,
+        ))
+        .unwrap();
+    let resp = oneshot(make_router(state), req).await;
+    assert_eq!(resp.status(), 500);
+    let v = body_json(resp).await;
+    assert!(
+        v["error"].as_str().unwrap().contains("锚内容定位失败"),
+        "zero-hit anchor must fail closed loudly: {v}"
+    );
+    nemesis_agent::chat_log::delete_chat_log(&key);
+    // 源日志在零命中臂之后回收（前两臂 fork 全程只读源）。
+}
+
+/// 换算不出轮首（message_index 落在首个 user 边界之前）= 500 诚实报错，
+/// 绝不静默改义。seed_session 的 jsonl row 0 就是轮 1 提问行——构造纯
+/// tool 前缀场景需专本：手写只有 assistant 行的日志。
+#[tokio::test]
+async fn test_fork_message_index_before_first_boundary_is_honest_error() {
+    let _home = crate::test_home::lock_home();
+    let dir = tempfile::tempdir().unwrap();
+    let sid = unique_sid();
+    let key = chat_session_key(&sid);
+    // 纯 assistant 前缀 + 一个后续轮：row 0/1 无边界可回溯。
+    nemesis_agent::chat_log::append_chat_log(&key, "assistant", "孤儿回复");
+    nemesis_agent::chat_log::append_chat_log(&key, "user", "q1");
+    nemesis_agent::chat_log::append_chat_log(&key, "assistant", "a1");
+
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/api/chat/sessions/{sid}/fork"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(r#"{"message_index": 0}"#))
+        .unwrap();
+    let resp = oneshot(make_router(make_state(&dir, "")), req).await;
+    assert_eq!(resp.status(), 500);
+    let v = body_json(resp).await;
+    assert!(
+        v["error"].as_str().unwrap().contains("不在任何 user 轮内"),
+        "conversion miss must be honest: {v}"
+    );
+    nemesis_agent::chat_log::delete_chat_log(&key);
+}

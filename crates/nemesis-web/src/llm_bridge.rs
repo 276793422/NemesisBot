@@ -455,10 +455,14 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                     // 进 reason 文本（Display 前缀短路恒判 Timeout → 限流信号
                     // 被当传输抖动零退避立即重试，429 风暴）且触发拼接续写
                     // 把半截文本缝进重试后的完整回复（缝合怪终答，基线实测）。
+                    // Forbidden（BUG-20261123-012）同门透传：403 重放必然再拒，
+                    // 包装 = 前缀短路判 Timeout 可重试 → 被拒请求循环重放
+                    // （凭据卡风暴同族形态）。
                     if matches!(
                         e,
                         nemesis_providers::failover::FailoverError::RateLimit { .. }
                             | nemesis_providers::failover::FailoverError::Auth { .. }
+                            | nemesis_providers::failover::FailoverError::Forbidden { .. }
                             | nemesis_providers::failover::FailoverError::Billing { .. }
                     ) {
                         warn!(

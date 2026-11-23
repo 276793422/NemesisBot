@@ -736,3 +736,164 @@ fn test_fork_store_save_failure_fails_loudly_and_atomic() {
     delete_chat_log(&src);
     delete_chat_log(&target_key);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-2 修复（2026-11-23）：前端行号 → at_turn 换算后端化。
+// ChatPanel 三点菜单「从此分叉」此前在前端「已加载窗口」内数 user 轮得出
+// 窗口相对值传给 at_turn（70 轮会话被切到第 6 轮的实录根因）。修复 =
+// 前端只传 jsonl 绝对行号，换算走 message_index_to_turn（本文件上方）。
+// ---------------------------------------------------------------------------
+
+/// steer 注入行（轮中间的 user 形态行——不是轮首，BUG-20261025-19）。
+fn steer_row(content: &str) -> Value {
+    serde_json::json!({
+        "role": "user",
+        "content": content,
+        "steer": true,
+        "timestamp": "2026-08-24T00:00:00+08:00"
+    })
+}
+
+#[test]
+fn test_message_index_to_turn_semantics() {
+    // 3-turn log with tool + steer rows interleaved:
+    // 0:u1(boundary) 1:a1 2:u2(boundary) 3:a2 4:steer 5:a2' 6:tool 7:u3(boundary) 8:a3
+    let rows = vec![
+        row("user", "q1"),
+        row("assistant", "a1"),
+        row("user", "q2"),
+        row("assistant", "a2"),
+        steer_row("[steer] 插话"),
+        row("assistant", "a2-b"),
+        row("tool", "tool output"),
+        row("user", "q3"),
+        row("assistant", "a3"),
+    ];
+    // 首轮回复 → 轮 1。
+    assert_eq!(message_index_to_turn(&rows, 1), Some(1));
+    // 点击轮 2 的两条回复 → 轮 2（steer/tool 夹杂不换轮）。
+    assert_eq!(message_index_to_turn(&rows, 3), Some(2));
+    assert_eq!(
+        message_index_to_turn(&rows, 4),
+        Some(2),
+        "steer 行归属所在轮"
+    );
+    assert_eq!(message_index_to_turn(&rows, 5), Some(2));
+    assert_eq!(
+        message_index_to_turn(&rows, 6),
+        Some(2),
+        "tool 行归属所在轮"
+    );
+    // 点击 user 提问行本身 = 其所在轮（保留该轮完整含回复）。
+    assert_eq!(message_index_to_turn(&rows, 2), Some(2));
+    // 末轮回复 → 轮 3。
+    assert_eq!(message_index_to_turn(&rows, 8), Some(3));
+    // 越界 clamp 到末行 → 末轮。
+    assert_eq!(message_index_to_turn(&rows, 999), Some(3));
+    // 空日志 / 首个边界之前的行（无轮首可回溯）= None（调用方诚实报错）。
+    assert_eq!(message_index_to_turn(&[], 0), None);
+    assert_eq!(
+        message_index_to_turn(&[row("tool", "t"), row("assistant", "a")], 0),
+        None
+    );
+    assert_eq!(
+        message_index_to_turn(&[row("tool", "t"), row("assistant", "a")], 1),
+        None
+    );
+}
+
+/// 换算↔切点互逆性质（BUG-2 的核心回归锁）：对**任意** assistant 行，
+/// 以其换算出的 at_turn 走 row_turn_cut 切点必须**保留点击行本身**（切点
+/// 严格在点击行之后）——「从此分叉」点击哪条回复，新会话就必须以那条
+/// 回复收尾。生产实录（70 轮会话切到第 6 轮）正是破坏了这条性质。
+#[test]
+fn test_message_index_to_turn_is_inverse_of_row_turn_cut_for_replies() {
+    // 6 turns，每轮 (u, a)；第 2/4 轮多一条 steer + tool 中间行。
+    let mut rows = Vec::new();
+    for i in 1..=6 {
+        rows.push(row("user", &format!("q{i}")));
+        if i == 2 || i == 4 {
+            rows.push(row("tool", &format!("intermediate {i}")));
+            rows.push(steer_row(&format!("[steer] 插话 {i}")));
+        }
+        rows.push(row("assistant", &format!("a{i}")));
+    }
+    let last = rows.len() - 1;
+    for (i, r) in rows.iter().enumerate() {
+        if r.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+            let turn = message_index_to_turn(&rows, i)
+                .unwrap_or_else(|| panic!("reply row {i} must map to a turn"));
+            let cut = row_turn_cut(&rows, turn);
+            assert!(
+                cut > i,
+                "cut at turn {turn} (row {cut}) must retain the clicked reply (row {i})"
+            );
+        }
+    }
+    // 末轮回复 → 全量保留（cut == rows.len()）。
+    assert_eq!(message_index_to_turn(&rows, last), Some(6));
+    assert_eq!(row_turn_cut(&rows, 6), rows.len());
+}
+
+/// 生产实例形态（11-23 部署会话）：67 轮、轮 67 回复在 row 150、轮首
+/// boundary 在 row 149 —— 前端旧窗口计数得 6，修复后必须得 67。
+/// 构造：前 66 轮各 (u, tool, a) × 3 行 = 198 行，轮 67 = (u, a)。
+#[test]
+fn test_message_index_to_turn_production_incident_shape() {
+    let mut rows = Vec::new();
+    for i in 1..=66 {
+        rows.push(row("user", &format!("q{i}")));
+        rows.push(row("tool", &format!("tool {i}")));
+        rows.push(row("assistant", &format!("a{i}")));
+    }
+    // 0-based: 轮 67 的 u = row 198, a = row 199。同时构造一个
+    // 「中间轮」锚点：轮 67 的 u 在 198 —— 轮 67 回复换算 = 67。
+    let q67_idx = rows.len(); // 198 = q67 的 index；回复 index = 199
+    rows.push(row("user", "q67"));
+    rows.push(row("assistant", "a67"));
+    assert_eq!(message_index_to_turn(&rows, q67_idx + 1), Some(67));
+    // 切点：at_turn 67 → 下一边界之前 = 全量保留（67 是最后一轮）。
+    assert_eq!(row_turn_cut(&rows, 67), rows.len());
+    // 前端旧窗口相对值 6 若再被送进来 → 只保留前 6 轮（旧行为的破坏面
+    // 对照：正确值 67 与错误值 6 的 kept 差 = 61 轮）。
+    assert_eq!(row_turn_cut(&rows, 6), 18);
+    assert!(row_turn_cut(&rows, 6) < q67_idx, "旧行为会截掉点击轮");
+}
+
+/// fork 链的 B2 内容锚消费（单一真相源 crate::chat_log::resolve_anchor_index
+/// ——rewind 族同款）：命中重定位 / 零命中 fail-closed。
+#[test]
+fn test_fork_anchor_relocation_consumes_chat_log_truth_source() {
+    let rows = vec![
+        row("user", "q1"),
+        row("assistant", "a1"),
+        row("user", "重复问题"),
+        row("assistant", "same reply"),
+        row("user", "重复问题"),
+        row("assistant", "same reply"),
+    ];
+    // 快路径：index 处内容已相等 → 直通。
+    assert_eq!(
+        crate::chat_log::resolve_anchor_index(&rows, 1, Some("a1")).unwrap(),
+        1
+    );
+    // 漂移路径：index 3 处不是 "重复问题"，重定位到 row 2。
+    assert_eq!(
+        crate::chat_log::resolve_anchor_index(&rows, 3, Some("重复问题")).unwrap(),
+        2
+    );
+    // 多行命中取距 index 最近（row 4 vs row 2，index 3 → row 2）。
+    // 零命中 = fail-closed Err（绝不按漂移 index 盲切）。
+    let err = crate::chat_log::resolve_anchor_index(&rows, 1, Some("ghost"))
+        .expect_err("zero-hit anchor must fail closed");
+    assert!(err.contains("锚内容定位失败"), "{err}");
+    // None/空锚 = 旧行为直通（ForkSessionModal 的 at_turn 形态不受影响）。
+    assert_eq!(
+        crate::chat_log::resolve_anchor_index(&rows, 1, None).unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::chat_log::resolve_anchor_index(&rows, 1, Some("   ")).unwrap(),
+        1
+    );
+}

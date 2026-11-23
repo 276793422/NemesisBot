@@ -56,6 +56,12 @@ pub(crate) struct CompactState {
     /// system/超限轮（无可摘要内容）时跳过摘要并发一次性注记——不发注记
     /// 用户就面对「pct 长期 100% 却零解释」的无声态（本次事故的起点）。
     noop_noticed: bool,
+    /// ④ 死人开关救援记账：最近一次「stuck 闩置位下的放行摘要尝试」时刻。
+    /// 高危水位（信号 ≥ 窗口 [`COMPACT_RESCUE_DEADMAN_PERCENT`]%）且冷却
+    /// （[`COMPACT_RESCUE_COOLDOWN_SECS`]）已过时放行一次——闩防的是
+    /// 「无实效摘要反复烧 token」，不是判会话死刑；真实长会话涨破窗口 =
+    /// 死亡，比冷却限速的偶尔一次摘要尝试代价高。None = 尚无救援。
+    last_rescue: Option<std::time::Instant>,
 }
 
 /// 压缩进行中登记条目（2026-11-09 刷新恢复方案 A）：compaction_start
@@ -448,6 +454,16 @@ pub(crate) const COMPACT_NOOP_PREFIX_NOTE: &str = "[自动摘要无事可做] �
 /// pause auto-summarization and warn.
 const COMPACT_STUCK_LIMIT: u32 = 2;
 
+/// ④ 死人开关高危水位线（窗口百分比）：stuck 闩置位但信号 ≥ 窗口的此比例
+/// 时，放行一次救援摘要尝试——上下文涨破窗口 = 会话死亡，比一次有冷却限速
+/// 的摘要尝试代价高。取 95%：触发点默认 75%、溢出在 100%，95% 是
+/// 「压缩没跑但马上要溢出」的明确危险带。
+const COMPACT_RESCUE_DEADMAN_PERCENT: usize = 95;
+
+/// ④ 死人开关救援冷却（秒）：两次救援尝试的最小间隔——成本上界
+/// （每会话每 10 分钟至多一次摘要尝试），防「无实效摘要每轮重试」把闩的
+/// 省 token 语义架空。救援失败（摘要仍无实效）闩保持，冷却到期再试。
+const COMPACT_RESCUE_COOLDOWN_SECS: u64 = 600;
 /// token 预算尾巴边界。从尾部按 MODEL-FACING 投影逐条回退累积，
 /// 返回最小的 `start` 使 `history[start..]` 的估算 token ≤ budget——
 /// 即逐字尾巴最多吃掉 `budget_tokens`。整段最后一条单独超预算时仍保留
@@ -855,7 +871,7 @@ impl AgentLoop {
                         );
                         st.stuck = true;
                         stuck_note = Some(format!(
-                            "[自动压缩已暂停] 连续 {} 次摘要未有效缩减上下文（摘要产出为空或无实效），自动压缩已暂停——上下文将继续增长。可手动 /compact 强制压缩；思考型（thinking）模型的摘要输出常被思考 token 烧穿，请检查模型配置。",
+                            "[自动压缩已暂停] 连续 {} 次摘要未有效缩减上下文（摘要产出为空或无实效），自动压缩已暂停——上下文将继续增长。可手动 /compact 强制压缩；思考型（thinking）模型的摘要输出常被思考 token 烧穿，请检查模型配置。上下文接近窗口上限时系统会每 10 分钟自动尝试一次救援压缩。",
                             st.consecutive_failures
                         ));
                     }
@@ -872,8 +888,29 @@ impl AgentLoop {
             }
             // ⑩+：stuck 闩统一生效——无论由 failures 轴（本块上方）还是
             // no_progress 轴（守卫，摘要弃用时置位）触发，都暂停本轮。
+            // ④ 死人开关：闩不再绝对——信号达高危水位（≥ 窗口 95%）且救援
+            // 冷却（10 分钟）已过时放行一次摘要尝试（loud WARN 留痕 + 记
+            // last_rescue）。放行仍受下方 will_summarize 常规触发闸约束
+            // （边界不可前进时不空烧）；救援摘要成功 → 成功臂清失败轴、信号
+            // 真回落 → 呼吸臂清闩（自动恢复）；失败 → 闩保持，冷却到期再试。
             if st.stuck {
-                paused_stuck = true;
+                let window_pct = signal.saturating_mul(100) / trig.window.max(1);
+                let cooldown_elapsed = st
+                    .last_rescue
+                    .map(|t| t.elapsed().as_secs() >= COMPACT_RESCUE_COOLDOWN_SECS)
+                    .unwrap_or(true);
+                if will_summarize
+                    && window_pct >= COMPACT_RESCUE_DEADMAN_PERCENT
+                    && cooldown_elapsed
+                {
+                    st.last_rescue = Some(std::time::Instant::now());
+                    warn!(
+                        "[AgentLoop] deadman rescue: context at {}% of window despite stuck latch; allowing one summarize attempt (cooldown {}s)",
+                        window_pct, COMPACT_RESCUE_COOLDOWN_SECS
+                    );
+                } else {
+                    paused_stuck = true;
+                }
             }
         }
         if soft_note_fired {
@@ -1048,7 +1085,7 @@ impl AgentLoop {
                             // BUG 可见性修复：同失效轴——停用态发
                             // 一次性聊天注记，不留「98% 永不压缩」无解释态。
                             note = Some(format!(
-                                "[自动压缩已暂停] 连续 {} 次摘要无进展（省幅不足阈值被弃用），自动压缩已暂停。可手动 /compact 强制压缩，或检查摘要模型/上下文窗口配置。",
+                                "[自动压缩已暂停] 连续 {} 次摘要无进展（省幅不足阈值被弃用），自动压缩已暂停。可手动 /compact 强制压缩，或检查摘要模型/上下文窗口配置。上下文接近窗口上限时系统会每 10 分钟自动尝试一次救援压缩。",
                                 st.no_progress
                             ));
                         }
@@ -1088,6 +1125,19 @@ impl AgentLoop {
                 // 消息的真实请求实报会重新注入。
                 if let Some(st) = self.compact_state.lock().get_mut(session_key) {
                     st.no_progress = 0;
+                    // ①（2026-11-23 三 BUG 批 1）：成功 = 压缩在干活 → 失败轴
+                    // 归零重计。⑩ tick 记账发生在压缩**运行前**（按上一次
+                    // summarize 后的基线比较），成功臂不清轴时旧基线被带到
+                    // 下一次 tick——「摘要成功」被误记账成 ineffective，
+                    // 连续两次即置 stuck 闩、自动压缩静默死亡（16:05 事故
+                    // 形态：成功后 78 分钟长轮收尾 tick 撞旧基线 → failures
+                    // 2 → 闩 → 310K/204K 不再压缩）。置 0（而非 projected）=
+                    // 轴无关干净起点：下一 cross ineffective?(0, ·) 恒 false，
+                    // 计数从 0 重新记；真摘要无实效场景不受影响——「压缩跑了
+                    // 两轮都没实效」仍由成功后的下一对连续 ineffective 记满
+                    // 置闩，stuck 闩设计语义完整保留。
+                    st.consecutive_failures = 0;
+                    st.last_summary_tokens = 0;
                 }
                 self.invalidate_provider_anchor(session_key);
                 // auto 压缩成功采用计入会话统计。
@@ -1422,6 +1472,22 @@ impl AgentLoop {
             // 修复⑤：作废 provider 实报信号——与 auto 路径同款（实报描述
             // 压缩前整请求，压缩后对新状态失真；置 None 回落纯估算）。
             self.invalidate_provider_anchor(session_key);
+            // ③（2026-11-23 三 BUG 批 1）：force 成功后清自动压缩的暂停闩。
+            // 两条暂停注记（failures 轴 / no_progress 轴）都在承诺「可手动
+            // /compact 强制压缩」——force 成功即兑现：stuck/failures/
+            // no_progress/last_summary_tokens 一并归零，自动压缩恢复。溢出
+            // 应急链（context_length_exceeded → force_compression）同样受益：
+            // 应急成功后 auto 不再被陈旧闩压住。无条目 = 无闩可清（get_mut
+            // 自然跳过）。
+            {
+                let mut states = self.compact_state.lock();
+                if let Some(st) = states.get_mut(session_key) {
+                    st.stuck = false;
+                    st.consecutive_failures = 0;
+                    st.no_progress = 0;
+                    st.last_summary_tokens = 0;
+                }
+            }
             info!(
                 "[AgentLoop] Force-compressed: covers_up_to {} -> {} (verbatim tail {} -> {} messages)",
                 current_c,
