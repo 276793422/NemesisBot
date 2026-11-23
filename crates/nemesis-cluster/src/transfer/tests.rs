@@ -436,6 +436,90 @@ fn bug198_planned_chunk_len_arithmetic() {
     assert_eq!(planned_chunk_len(&files, 1000, usize::MAX), None);
 }
 
+/// BUG-20261123-042 回归锁：list_received_chunks 不得按**远端声明的**
+/// chunk_count 逐 seq stat（声明值只过一致性对账、绝对量不受体积护栏
+/// 钳制——total=2GiB + chunk_size=1 → 声明 2^31 块 = 21 亿次不存在的
+/// stat = begin 处理线程挂死数小时/次，重发 begin 可重复触发）。契约：
+/// have 只从**实际落盘**的 chunk 文件枚举，声明量无关；升序；非块文件
+/// 与畸形名忽略；长度不匹配 planned_chunk_len 的块不算已收。
+#[test]
+fn bug20261123_042_list_received_chunks_derives_from_actual_files_only() {
+    let mk = |path: &str, size: u64| TransferFileEntry {
+        path: path.into(),
+        size,
+        sha256: String::new(),
+    };
+    // 3 块计划（cs=1000, size=2500）：末块 500。staging 只落了 seq 0/2
+    // （乱序写盘），另有 manifest.json 与畸形名干扰项；seq 1 缺失、
+    // seq 2 长度对得上。
+    let dir = temp_root("bug042-received-chunks");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("chunk_000002.bin"), vec![0u8; 500]).unwrap();
+    std::fs::write(dir.join("chunk_000000.bin"), vec![0u8; 1000]).unwrap();
+    std::fs::write(dir.join("manifest.json"), b"{}").unwrap();
+    std::fs::write(dir.join("chunk_garbage.bin"), b"x").unwrap();
+    // 声明量与实际无关地巨大（旧实现此处 = 按声明量 stat 循环，测试挂死）。
+    let begin = TransferBegin {
+        transfer_id: "t".into(),
+        task_id: "task".into(),
+        kind: String::new(),
+        source_node: String::new(),
+        total_bytes: 2500,
+        chunk_size: 1000,
+        chunk_count: 2_000_000_000,
+        files: vec![mk("a", 2500)],
+        content_hash: String::new(),
+    };
+    let have = list_received_chunks(&dir, &begin);
+    assert_eq!(have, vec![0, 2], "只枚举实际落盘且长度匹配的块，升序");
+    // 空目录/不存在的 staging = 空 have（旧语义保持）。
+    let empty = temp_root("bug042-received-chunks-empty");
+    let have_empty = list_received_chunks(&empty, &begin);
+    assert!(have_empty.is_empty());
+}
+
+/// BUG-20261123-042 组装面回归锁：end 必须在 plan_chunks 物化**之前**
+/// 按算术块数拒绝无界声明（声明值与 sizes/chunk_size 自洽即可过
+/// validate——绝对量不受体积护栏钳制：max_bytes=0 不限 + chunk_size=4096
+/// + total=20GB → 4.88M 块计划 = 无界物化）。
+///
+/// 诚实对端不受影响：默认 2GiB 护栏 ÷ 4KiB 最小块 = 524,288 块恒在 4M 闸内。
+#[test]
+fn bug20261123_042_end_refuses_unbounded_chunk_plan() {
+    let root = temp_root("bug042-end-cap");
+    let sink = TransferSink::new(&root.join("ws"), 0); // 0=不限体积护栏
+    let mk = |path: &str, size: u64| TransferFileEntry {
+        path: path.into(),
+        size,
+        sha256: "x".into(),
+    };
+    let files = vec![mk("big.bin", 20_000_000_000)];
+    let begin = TransferBegin {
+        transfer_id: "xf-042cap".into(),
+        task_id: "task-042cap".into(),
+        kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
+        source_node: "node-w".into(),
+        total_bytes: 20_000_000_000,
+        chunk_size: 4096,
+        chunk_count: chunk_count(&files, 4096), // 4,882,812 > 4M，一致性成立
+        content_hash: content_hash(&files),
+        files,
+    };
+    // begin 过（一致性对账只查自洽）；end 必须在物化前拒绝。
+    let reply = sink.begin(&begin);
+    assert_eq!(
+        reply.status, "ok",
+        "begin 一致性校验应通过: {:?}",
+        reply.error
+    );
+    let err = sink.end(&begin.transfer_id).unwrap_err();
+    assert!(err.contains("超上限"), "end 应按块数上限拒绝: {err}");
+    assert!(
+        err.contains("chunk_size"),
+        "错误应给增大 chunk_size 的指引: {err}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 去重幂等（D3）
 // ---------------------------------------------------------------------------
