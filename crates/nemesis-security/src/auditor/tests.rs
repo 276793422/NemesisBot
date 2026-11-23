@@ -3792,3 +3792,76 @@ fn b386_concurrent_audit_jsonl_appends_never_tear() {
         );
     }
 }
+
+// ============================================================
+// BUG-20261123-016 回归锁：AuditFilter 时间窗过滤必须跨偏移按时刻序。
+// 事件写入端恒为 Local::now().to_rfc3339()（本地偏移形态），守约调用方
+// 按 doc 契约（RFC 3339）传 Z 形态边界（浏览器 toISOString 惯例）——
+// 旧字典序实现把 09:30+08:00（=01:30Z，窗口内）按字符排到 04:00Z 之后
+// 静默滤掉（证据存在但查不出）。修复后走 nemesis_utils::ts_order 时刻序。
+// ============================================================
+
+#[test]
+fn test_audit_filter_time_window_is_offset_aware() {
+    let filter = AuditFilter {
+        start_time: Some("2026-11-23T00:00:00Z".to_string()),
+        end_time: Some("2026-11-23T04:00:00Z".to_string()),
+        ..Default::default()
+    };
+
+    // 窗口内：01:30Z 事件（+08:00 形态书写）必须命中
+    // （旧字典序：\"09..\" > \"04..\" → 被错滤，本断言在旧实现下红）。
+    let mut inside = sample_event("ev-offset-inside");
+    inside.timestamp = "2026-11-23T09:30:00+08:00".to_string();
+    assert!(
+        filter.matches(&inside),
+        "01:30Z（书写为 +08:00）必须落在 [00:00Z, 04:00Z] 窗口内"
+    );
+
+    // 窗口外·早侧：+08:00 书写的 07:00 = 前一日 23:00Z，必须滤掉
+    // （旧字典序：\"07..\" > \"00..\" 通过 start 检查 → 错放行）。
+    let mut early = sample_event("ev-offset-early");
+    early.timestamp = "2026-11-23T07:00:00+08:00".to_string();
+    assert!(
+        !filter.matches(&early),
+        "前一日 23:00Z（书写为 +08:00）必须被 start_time 滤掉"
+    );
+
+    // 窗口外·晚侧：13:30+08:00 = 05:30Z > 04:00Z，必须滤掉。
+    let mut late = sample_event("ev-offset-late");
+    late.timestamp = "2026-11-23T13:30:00+08:00".to_string();
+    assert!(
+        !filter.matches(&late),
+        "05:30Z（书写为 +08:00）必须被 end_time 滤掉"
+    );
+}
+
+#[test]
+fn test_audit_filter_time_window_same_offset_form_still_works() {
+    // 同形态（本地写者 vs 本地边界，今天生产面的既有组合）行为保持：
+    // 时刻序在该组合下与字典序同判，既有调用方零回归。
+    let local_filter = AuditFilter {
+        start_time: Some("2026-06-15T08:00:00+08:00".to_string()),
+        end_time: Some("2026-06-15T12:00:00+08:00".to_string()),
+        ..Default::default()
+    };
+    let mut ev = sample_event("ev-same-form");
+    ev.timestamp = "2026-06-15T10:00:00+08:00".to_string();
+    assert!(local_filter.matches(&ev));
+    ev.timestamp = "2026-06-15T07:30:00+08:00".to_string();
+    assert!(!local_filter.matches(&ev));
+    ev.timestamp = "2026-06-15T12:30:00+08:00".to_string();
+    assert!(!local_filter.matches(&ev));
+
+    // 不可解析时间戳：回落字符串序（同偏移同格式写者既有行为），
+    // 不 panic、不凭空放行/滤除语义翻转——形态与 forge monitor 回落一致。
+    let mut odd = sample_event("ev-unparseable");
+    odd.timestamp = "not-a-timestamp".to_string();
+    let zfilter = AuditFilter {
+        start_time: Some("2026-11-23T00:00:00Z".to_string()),
+        end_time: None,
+        ..Default::default()
+    };
+    // "not-a-timestamp" > "2026-.." 字典序 → 旧新一致：放行
+    assert!(zfilter.matches(&odd));
+}

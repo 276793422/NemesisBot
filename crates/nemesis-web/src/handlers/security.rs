@@ -1048,7 +1048,11 @@ impl SecurityHandler {
                         if is_deny {
                             slot.1 += 1;
                         }
-                        if slot.2.as_str() < ts {
+                        // BUG-20261123-016（同族位点）：last_ts 选取走时刻序
+                        // （nemesis_utils::ts_order）。本读路径时间戳同写者
+                        // 同格式今天字典序恰巧正确，但跨 DST/系统时区变更后
+                        // 旧条目保留旧偏移形态，字典序 max 错选——统一时刻序。
+                        if nemesis_utils::ts_order::ts_before(&slot.2, ts) {
                             slot.2 = ts.to_string();
                         }
                     }

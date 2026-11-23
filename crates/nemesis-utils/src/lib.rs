@@ -86,6 +86,11 @@ pub mod workpool;
 #[cfg(feature = "sqlite-preflight")]
 pub mod sqlite_preflight;
 pub mod string_utils;
+// RFC 3339 时间戳跨偏移安全比较（BUG-20261123-016）：字典序只在同写者
+// 同偏移同精度下成立——本地 `+08:00` 形态写入 × 外部 `Z` 形态输入混用时
+// 时间窗过滤/最新值选取静默错序。forge monitor D1/D3 先例语义晋升共享：
+// monitor 委托、security AuditFilter、web audit 聚合同源消费。
+pub mod ts_order;
 // 年龄/保留天数输入上界钳制单一真相源（R735 数字恐慌面：
 // chrono Duration::days 恐慌带 + as-cast 回绕负 cutoff 全删带，统一收敛）。
 pub mod time_bounds;
