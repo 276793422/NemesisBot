@@ -482,20 +482,39 @@ async fn git_check_ignore(
     cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     let mut child = cmd.spawn().ok()?;
     use tokio::io::AsyncWriteExt;
+    // stdout 独立任务并发排水（R2588 死锁修复）：git check-ignore --stdin
+    // 是流式裁决（读一段 stdin → 写一段命中到 stdout）。此前 stdout 要等
+    // write_all 完成后的 wait_with_output 才开始 drain——payload 超过管道
+    // 缓冲（Windows 匿名管道 ~4KB）时 write_all 必须等 git 读；git 命中
+    // 输出同样超过缓冲时写 stdout 阻塞、停读 stdin → 双向互等，write_all
+    // 又无超时包裹（timeout 只罩后面走不到的 wait_with_output）→ 整段
+    // 永挂，vm_sync commit 流程卡死。家族纪律对齐（shell.rs / cc_hooks
+    // stdin 独立任务同款）：管道读取独立任务并发 drain；write_all 错误
+    // 臂 / 超时臂早退时 child drop → kill_on_drop 收杀 → 管道 EOF，排水
+    // 任务自然收尾，无泄漏。
+    let stdout_pipe = child.stdout.take();
+    let out_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut p) = stdout_pipe {
+            let _ = tokio::io::AsyncReadExt::read_to_end(&mut p, &mut buf).await;
+        }
+        buf
+    });
     if child.stdin.as_mut()?.write_all(&payload).await.is_err() {
         return None;
     }
     drop(child.stdin.take()); // EOF：git 开始裁决
-    let out = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait_with_output())
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
         .await
         .ok()?
         .ok()?;
+    let out_bytes = out_task.await.unwrap_or_default();
     // 退出码 0=有命中 1=无命中（都是成功语义）；128=用法错（降级）。
-    if out.status.code() == Some(128) {
+    if status.code() == Some(128) {
         return None;
     }
     let mut ignored = std::collections::HashSet::new();
-    for seg in out.stdout.split(|b| *b == 0) {
+    for seg in out_bytes.split(|b| *b == 0) {
         if seg.is_empty() {
             continue;
         }

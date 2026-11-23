@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use super::{
     BaselineManifest, DivergedEntry, FileSync, SyncExclusion, baseline_dir, case_gate_pairs,
-    diverged_verdict, git_available, host_fs_case_insensitive, load_baseline, pack_tar_blocking,
-    parse_index_modes, safe_rel, select_files,
+    diverged_verdict, git_available, git_check_ignore, host_fs_case_insensitive, load_baseline,
+    pack_tar_blocking, parse_index_modes, safe_rel, select_files,
 };
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -910,5 +910,50 @@ async fn pack_tar_failure_leaves_no_orphan_tar() {
         tar_count(),
         before,
         "打包失败后系统 temp 不应残留 nemesis-vm-sync-* tar"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R2588：git_check_ignore stdin/stdout 双流死锁回归
+// ---------------------------------------------------------------------------
+
+/// 旧实现 stdout 要等 write_all 完成后的 wait_with_output 才开始 drain：
+/// payload 超 Windows 匿名管道 ~4KB 缓冲时 write_all 等 git 读，git 命中
+/// 输出同超缓冲时写 stdout 阻塞停读 stdin → 双向互等，write_all 无超时
+/// 包裹 → 永挂。构造：.gitignore 全忽略 `ignored/`，500 条命中 rel
+/// （payload ≈15KB、命中输出 ≈15KB 均超缓冲）；外层 30s timeout 让旧
+/// 形态判测试失败而非挂死整个测试进程。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2588_git_check_ignore_no_stdin_stdout_deadlock() {
+    if !git_available().await {
+        return; // 无 git 环境诚实跳过
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join(".gitignore"), b"ignored/\n").unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .output()
+        .expect("git init 可跑（git_available 已探）");
+    assert!(init.status.success(), "git init 失败: {:?}", init);
+
+    let rels: Vec<String> = (0..500)
+        .map(|i| format!("ignored/file{i:04}.txt"))
+        .collect();
+    let started = std::time::Instant::now();
+    let got = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        git_check_ignore(&root, &rels),
+    )
+    .await
+    .expect("git_check_ignore 必须在超时内返回（旧实现此形态挂死）");
+    let got = got.expect("git 可用时必须成功（None=降级臂被误触发）");
+    assert_eq!(got.len(), 500, "全部命中必须被收集");
+    assert!(got.contains("ignored/file0000.txt"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "不应贴近超时上限（正常亚秒级）"
     );
 }
