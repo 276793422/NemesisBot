@@ -459,6 +459,38 @@ async fn webhook_payload_oversize_truncated() {
     assert!(p.contains("…["));
 }
 
+// --- BUG-20261124-010：webhook token 匹配换常量时间形态的行为等价锁 --------
+//
+// 规则匹配从裸 `==` 换 verify_token（公开端点 token 即凭据，时序 oracle
+// 纵深防御补齐；webhook_inbound api_key / share resolve_share 同域先例）。
+// 本测试锁行为等价：命中/不命中判定与 `==` 逐字节一致（含同长度不同内容
+// 形态），且空串 token 规则在 verify_token「空 expected = 不设闸」语义下
+// 不退化成万能通行（`!t.is_empty()` 前置闸）。
+
+#[tokio::test]
+async fn webhook_token_match_is_byte_exact_under_constant_time() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![wh_rule("wh1", "s3cret"), wh_rule("wh2", "t4cret")];
+    // 精确命中
+    let hit = st.ingest_webhook("s3cret", "p", 0);
+    assert_eq!(hit, vec!["wh1".to_string()]);
+    // 同长度不同内容（== 与 verify_token 必须同样判不命中——常量时间形态
+    // 不因长度相等放宽；"a3cret" 与 wh1 同长、与 wh2 不同内容）
+    let miss = st.ingest_webhook("a3cret", "p", 10);
+    assert!(miss.is_empty());
+    assert_eq!(st.stats.webhook_unmatched, 1);
+    // 不同长度 + 前缀形态
+    let miss2 = st.ingest_webhook("s3cre", "p", 20);
+    assert!(miss2.is_empty());
+    // 空串规则不认领任意 token（verify_token 空 expected = true 语义被
+    // 前置闸拦住）
+    let mut st2 = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st2.rules = vec![wh_rule("wh_empty", "")];
+    let none = st2.ingest_webhook("anything", "p", 0);
+    assert!(none.is_empty(), "empty-token rule must not claim any token");
+    assert_eq!(st2.stats.webhook_unmatched, 1);
+}
+
 #[test]
 fn truncate_annotated_reports_actual_retained_bytes() {
     // BUG-20261121-034：注记报实际保留字节数 cut，不报上限 max——多字节

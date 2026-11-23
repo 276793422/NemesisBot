@@ -610,10 +610,22 @@ impl ManagerState {
     /// run_cycle 诚实丢弃（与 fs 事件同语义）。
     pub fn ingest_webhook(&mut self, token: &str, payload: &str, now_ms: u64) -> Vec<String> {
         self.stats.webhook_received += 1;
+        // BUG-20261124-010：规则匹配换 verify_token 常量时间形态——本端点
+        // 是公开面（token 即凭据、auth_exempt_path 放行），裸 `==` 是时序
+        // oracle（webhook_inbound api_key / share resolve_share 同域先例
+        // 均已走 verify_token；本模块 2026-11-16 新增晚于横扫，漏网）。
+        // 空串前置闸按 verify.rs 文档钦定形态（规则校验层虽剔除空白
+        // token，未过滤路径的 Some("") 在 verify_token 空 expected 语义
+        // 下会变万能通行）。
         let matched: Vec<String> = self
             .rules
             .iter()
-            .filter(|r| r.watch.kind == "webhook" && r.watch.token.as_deref() == Some(token))
+            .filter(|r| {
+                r.watch.kind == "webhook"
+                    && r.watch.token.as_deref().is_some_and(|t| {
+                        !t.is_empty() && nemesis_utils::verify::verify_token(token, t)
+                    })
+            })
             .map(|r| r.id.clone())
             .collect();
         if matched.is_empty() {
