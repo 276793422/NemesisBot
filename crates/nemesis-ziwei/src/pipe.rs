@@ -30,7 +30,8 @@ pub const MAX_FRAME: u32 = 4 << 20;
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 握手信息（payload 首帧回带）。
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261124-008）：含握手 token，不得 derive(Debug)。
+#[derive(Clone)]
 pub struct Handshake {
     pub proto: u32,
     pub token: String,

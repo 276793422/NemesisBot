@@ -46,7 +46,8 @@ pub const WORKSPACE_MOUNT_TAG: &str = "workspace";
 
 /// 一次 VM 启动的完整装配输入（caller 从 `ExecutorVmConfig` + 运行期
 /// 端口/路径解析产出；本结构只承载数据不含逻辑）。
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261124-008）：含首帧鉴权 token，不得 derive(Debug)。
+#[derive(Clone)]
 pub struct VmLaunchSpec {
     /// qemu-system 二进制路径（宿主探测产出）。
     pub qemu_bin: PathBuf,

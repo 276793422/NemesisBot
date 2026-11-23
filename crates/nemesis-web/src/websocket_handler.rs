@@ -343,7 +343,9 @@ async fn run_send_writer<S>(
 // WebSocket upgrade handler
 
 /// Query parameters for WebSocket connections.
-#[derive(Debug, Deserialize)]
+/// SEC-002（BUG-20261124-008）：token/pwd 双凭据字段，不得 derive(Debug)
+/// ——对齐 BUG-20261111-068 口径（Debug/panic 展开不落明文凭据）。
+#[derive(Deserialize)]
 pub struct WsQuery {
     /// Authentication token (dashboard path).
     pub token: Option<String>,

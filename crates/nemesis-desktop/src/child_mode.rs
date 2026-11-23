@@ -313,7 +313,8 @@ pub struct ApprovalWindowData {
 }
 
 /// Window data for dashboard windows.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261124-008）：含认证 token，不得 derive(Debug)。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DashboardWindowData {
     pub token: String,
     pub web_port: u16,

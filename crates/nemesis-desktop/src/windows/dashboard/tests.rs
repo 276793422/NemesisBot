@@ -125,9 +125,18 @@ fn test_dashboard_window_get_data() {
 
 #[test]
 fn test_dashboard_data_debug() {
+    // BUG-20261124-008 回归锁：Debug 输出脱敏——token 明文不得出现
+    // （此测试在 SEC-002 加固前断言明文可见，加固后语义反转）。
     let data = make_dashboard_data();
     let debug = format!("{:?}", data);
-    assert!(debug.contains("test-token-12345"));
+    assert!(
+        debug.contains("<redacted>"),
+        "redacted marker expected: {debug}"
+    );
+    assert!(
+        !debug.contains("test-token-12345"),
+        "token leaked in Debug: {debug}"
+    );
 }
 
 #[test]

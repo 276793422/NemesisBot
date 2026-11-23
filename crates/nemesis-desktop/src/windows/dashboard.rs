@@ -11,7 +11,9 @@ use super::window_base::{WindowBase, WindowData};
 use crate::websocket::client::WebSocketClient;
 
 /// Data for a dashboard window.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261124-008）：含认证 token，Debug 手写脱敏（对齐
+/// BUG-20261111-068 通道侧纪律——Debug/panic 展开不落明文凭据）。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DashboardWindowData {
     /// Authentication token.
     pub token: String,
@@ -19,6 +21,23 @@ pub struct DashboardWindowData {
     pub web_port: u16,
     /// Web server host.
     pub web_host: String,
+}
+
+impl std::fmt::Debug for DashboardWindowData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DashboardWindowData")
+            .field(
+                "token",
+                &if self.token.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("web_port", &self.web_port)
+            .field("web_host", &self.web_host)
+            .finish()
+    }
 }
 
 impl WindowData for DashboardWindowData {

@@ -98,7 +98,10 @@ impl std::error::Error for VmSupervisorError {}
 /// 唤醒产物的权威存放处：`snapshot_tag`（快照线）/ `state_path`（迁移线）
 /// 都在 = 快照线优先（[`wake_kind_of`] 路由，单测钉死）；都不在 +
 /// `asleep_at` 有值 = 冷停形态（重启 = 冷启同 overlay，磁盘状态保留）。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// SEC-002（BUG-20261124-008）：含 guest agent 鉴权 token，Debug 手写脱敏
+/// （derive(Debug) 会把 token 带进 assert_eq!/panic 展开输出；测试
+/// assert_eq! 消费需要 Debug trait 在位，不能整体拔掉）。
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VmInstanceRecord {
     pub agent_id: String,
     /// overlay 绝对路径（持久盘——睡眠/停机/重启全保留）。
@@ -123,6 +126,26 @@ pub struct VmInstanceRecord {
     /// 旧记录缺键 = serde default None 兼容）。
     #[serde(default)]
     pub display_port: Option<u16>,
+}
+
+impl std::fmt::Debug for VmInstanceRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VmInstanceRecord")
+            .field("agent_id", &self.agent_id)
+            .field("overlay", &self.overlay)
+            .field("token", &"<redacted>")
+            .field("sleep_mode", &self.sleep_mode)
+            .field("snapshot_tag", &self.snapshot_tag)
+            .field("state_path", &self.state_path)
+            .field("asleep_at", &self.asleep_at)
+            .field("arch", &self.arch)
+            .field("accel", &self.accel)
+            .field("vcpu", &self.vcpu)
+            .field("ram_mb", &self.ram_mb)
+            .field("disk_gb", &self.disk_gb)
+            .field("display_port", &self.display_port)
+            .finish()
+    }
 }
 
 /// 唤醒产物路由（纯函数，单测钉死）：快照线优先（tag 恒随 overlay 在），

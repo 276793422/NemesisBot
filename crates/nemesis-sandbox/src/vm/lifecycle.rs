@@ -246,7 +246,8 @@ pub fn alloc_loopback_port() -> std::io::Result<u16> {
 
 /// 一次 VM 启动的完整输入（caller 从 `ExecutorVmConfig` + 镜像管线产出；
 /// accel 已经裁决）。
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261124-008）：含 per-instance 鉴权 token，不得 derive(Debug)。
+#[derive(Clone)]
 pub struct VmStartParams {
     /// 实例 id（run_dir 命名与日志关联）。
     pub id: String,
@@ -276,7 +277,8 @@ pub struct VmStartParams {
 }
 
 /// 运行中的 VM 实例（QEMU 子进程句柄 + 控制面/数据面地址）。
-#[derive(Debug)]
+/// SEC-002（BUG-20261124-008）：含 per-instance 鉴权 token，Debug 手写
+/// 脱敏（测试 unwrap_err 的 T: Debug bound 需要 Debug trait 在位）。
 pub struct VmInstance {
     /// 实例 id（与 `VmStartParams.id` 同源）。
     pub id: String,
@@ -293,6 +295,20 @@ pub struct VmInstance {
     /// per-instance 鉴权 token。
     pub token: String,
     run_dir: PathBuf,
+}
+
+impl std::fmt::Debug for VmInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VmInstance")
+            .field("id", &self.id)
+            .field("qmp_addr", &self.qmp_addr)
+            .field("agent_addr", &self.agent_addr)
+            .field("display_port", &self.display_port)
+            .field("pidfile", &self.pidfile)
+            .field("token", &"<redacted>")
+            .field("run_dir", &self.run_dir)
+            .finish()
+    }
 }
 
 impl VmInstance {
