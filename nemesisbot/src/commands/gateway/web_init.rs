@@ -547,6 +547,10 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     chat_id: cfg.channels.external.chat_id.clone(),
                     sync_to: cfg.channels.external.sync_to.clone(),
                     allow_from: cfg.channels.external.allow_from.clone(),
+                    // cwd 锚 workspace 根（BUG-20261123-037）：gateway
+                    // 部署形态 cwd 不可预测（终端/托盘自启/任务计划），
+                    // 相对路径 EXE 与脚本侧相对路径读写随部署形态漂移。
+                    working_dir: Some(home.join("workspace")),
                 })
             } else {
                 None

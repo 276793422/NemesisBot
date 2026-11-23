@@ -1300,3 +1300,131 @@ sys.stdout.flush()
     );
     t.close().await.unwrap();
 }
+
+// -------------------------------------------------------------------------
+// cwd 锚点（BUG-20261123-037）：`with_cwd(Some(dir))` → connect() spawn 的
+// 子进程 cwd = dir；`with_cwd(None)` → 继承父进程 cwd（旧行为不变）。
+// 探针用 PATH 解析的解释器（cmd/sh）写 marker 文件到子进程 cwd——绕开
+// 裸文件名可执行搜索的平台歧义（Windows CreateProcess 对无路径成分的
+// 搜索用父进程 cwd；锚点语义要证明的是「子进程 cwd 正确」而非搜索规则）。
+// -------------------------------------------------------------------------
+
+/// 轮询等子进程落 marker 并回读内容（cmd/sh 重定向落盘有调度延迟；
+/// close() 会杀子进程，必须先等文件出现再收尾）。超时带现场（目录清单）。
+async fn wait_cwd_marker(dir: &std::path::Path, marker: &str) -> String {
+    let path = dir.join(marker);
+    for _ in 0..50 {
+        if let Ok(s) = tokio::fs::read_to_string(&path).await
+            && !s.trim().is_empty()
+        {
+            return s;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let listing = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|e| format!("read_dir failed: {e}"));
+    panic!(
+        "cwd marker '{marker}' 未在 5s 内落盘且非空；现场：dir={:?} 条目=[{listing}]",
+        dir.display()
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn cwd_anchor_child_cwd_is_anchored_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = "cwd_anchor_probe.txt";
+    let mut t = StdioTransport::new(
+        "cmd",
+        vec!["/C".to_string(), format!("cd>{marker}")],
+        vec![],
+    )
+    .with_cwd(Some(dir.path().to_path_buf()));
+    t.connect().await.expect("cwd 锚定目录在场，spawn 必须成功");
+    // marker 落在锚定目录 = 重定向相对子进程 cwd 解析 = cwd 锚定生效
+    // （wait_cwd_marker 超时即 panic 带现场）。cd 回显只断言尾部目录
+    // 组件一致——完整路径形态（短名/大小写/前缀）跨进程有合法漂移，
+    // 逐字节比较会假红。
+    let printed = wait_cwd_marker(dir.path(), marker).await;
+    let tail = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        printed.trim().ends_with(&tail),
+        "子进程 cd 回显必须落在锚定目录（尾部组件 {tail}），got: {:?}",
+        printed.trim()
+    );
+    t.close().await.unwrap();
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn cwd_anchor_child_cwd_is_anchored_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = "cwd_anchor_probe.txt";
+    let mut t = StdioTransport::new(
+        "sh",
+        vec!["-c".to_string(), format!("pwd > {marker}")],
+        vec![],
+    )
+    .with_cwd(Some(dir.path().to_path_buf()));
+    t.connect().await.expect("cwd 锚定目录在场，spawn 必须成功");
+    let printed = wait_cwd_marker(dir.path(), marker).await;
+    assert_eq!(printed.trim(), dir.path().to_str().unwrap());
+    t.close().await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn cwd_none_child_cwd_inherits_parent_process_cwd() {
+    // None = 旧行为：子进程 cwd = 父进程 cwd。marker 落在进程 cwd
+    // （测试二进制目录），断言在位后即删（不留垃圾）。
+    let marker = format!("cwd_none_probe_{}.txt", std::process::id());
+    let mut t = StdioTransport::new(
+        "cmd",
+        vec!["/C".to_string(), format!("cd>{marker}")],
+        vec![],
+    );
+    t.connect().await.expect("PATH 解析 cmd，spawn 必须成功");
+    let parent_cwd = std::env::current_dir().unwrap();
+    // marker 落在父进程 cwd（而非别处）= None 保持旧行为。
+    let printed = wait_cwd_marker(&parent_cwd, &marker).await;
+    let tail = parent_cwd
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        printed.trim().ends_with(&tail),
+        "cwd=None 必须保持旧行为：子进程 cd 回显尾部 = 父进程 cwd 尾部组件（{tail}），got: {:?}",
+        printed.trim()
+    );
+    t.close().await.unwrap();
+    let _ = std::fs::remove_file(parent_cwd.join(&marker));
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn cwd_none_child_cwd_inherits_parent_process_cwd() {
+    let marker = format!("cwd_none_probe_{}.txt", std::process::id());
+    let mut t = StdioTransport::new(
+        "sh",
+        vec!["-c".to_string(), format!("pwd > {marker}")],
+        vec![],
+    );
+    t.connect().await.expect("PATH 解析 sh，spawn 必须成功");
+    let parent_cwd = std::env::current_dir().unwrap();
+    let printed = wait_cwd_marker(&parent_cwd, &marker).await;
+    assert_eq!(printed.trim(), parent_cwd.to_str().unwrap());
+    t.close().await.unwrap();
+    let _ = std::fs::remove_file(parent_cwd.join(&marker));
+}

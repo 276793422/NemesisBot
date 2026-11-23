@@ -222,6 +222,17 @@ impl McpClient {
         config: &ServerConfig,
         browser_profile: Option<&str>,
     ) -> ClientResult<Self> {
+        Self::from_server_config_with_profile_cwd(config, browser_profile, None)
+    }
+
+    /// 再带子进程 cwd 锚点（BUG-20261123-037：McpManager 装配注入
+    /// workspace 根；None = 继承进程 cwd 旧行为）。HTTP 臂忽略 cwd
+    /// （无子进程），仅 stdio 臂经 `StdioTransport::with_cwd` 生效。
+    pub fn from_server_config_with_profile_cwd(
+        config: &ServerConfig,
+        browser_profile: Option<&str>,
+        cwd: Option<std::path::PathBuf>,
+    ) -> ClientResult<Self> {
         let is_http = matches!(
             config.transport_type.as_str(),
             "http" | "streamable_http" | "streamable-http"
@@ -263,7 +274,8 @@ impl McpClient {
                 crate::stdio_transport::StdioTransport::from_config_with_profile(
                     &cfg,
                     browser_profile.map(str::to_string),
-                ),
+                )
+                .with_cwd(cwd),
             )
         };
         let mut client = Self::new(transport);
