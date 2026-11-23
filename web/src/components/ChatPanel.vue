@@ -1287,6 +1287,9 @@ function handleWSMessage(data: any) {
   // 失败注记）落盘后 pump 定向父会话房间广播 `subagent_reply`——当前面板
   // 正在看该会话就以日志为真相源 resync（回复行自动出现）；非当前会话不
   // 动（切回时 loadHistory 从磁盘加载，弹窗侧 toast 已全局通知完成）。
+  // 缺陷 D 修复（2026-11-23）：本 push 可落在父会话新 busy 轮中途（子代理
+  // 后台跑期间用户继续对话）——busy 中 resync 走 keepLiveState 保留活
+  // 时间线、不杀 busy，见 handleHistoryResponse pendingResync 分支。
   if (data.type === 'push' && data.cmd === 'subagent_reply') {
     const p = data.data ?? {}
     if (typeof p.session_id === 'string' && p.session_id.length > 0) {
@@ -1353,6 +1356,14 @@ function handleWSMessage(data: any) {
         // 回执（note_kind=compaction）或 assistant 回复到场即移除（回执可能
         // 被后端限频闸抑制，assistant 到场兜底扫除，不留悬挂动画）。注记帧
         // role="system"，完成语义分支（下方 assistant 判定）天然不触发。
+        // ⚠ 隐式不变量（2026-11-23 插队时间线消失家族审计定案）：server.rs
+        // role 投影单点——note_kind 非空恒 role="system"，一切回执/注记帧
+        // 永不进下方 assistant 分支（flush 挂载 + busy-kill 对任何 assistant
+        // 帧无差别生效）。未来任何 mid-turn assistant 帧泄漏（新回执类型忘
+        // 盖 note_kind / 投影回归）都会瞬间杀 busy + 抢挂活时间线——动回执
+        // 形态前先读此注。历史注（2026-11-09）：当年回执曾恒 role=assistant，
+        // 靠 ⏳ 前缀例外防压缩窗口误扫；note_kind 投影上线后该例外只剩防御
+        // 价值，保留不删。
         // ⏳ 前缀的 assistant 收据例外（2026-11-09 BUG：手动压缩进行中发消息
         // → 排队回执「⏳ 当前正在处理上一条消息…」role=assistant——压缩正是
         // 「上一条消息」，排队收据到场 ≠ 压缩结束，扫掉会让分钟级压缩窗口
@@ -1437,8 +1448,17 @@ function handleWSMessage(data: any) {
           // R263（BUG-20261030-208）横向同类：watchdog 已从磁盘恢复同尾消息
           // （时间线/交付物已随行渲染），迟到 live 帧跳过挂载——但缓冲必须
           // 同步排空（内容与磁盘行重复，丢弃即可），否则残留混进下一 turn。
-          chatStore.flushPendingWork()
-          chatStore.flushPendingDeliverables()
+          // 缺陷 B 修复（2026-11-23 插队时间线消失家族审计）：排空仅限本
+          // turn 已收尾态（streaming=false——watchdog 恢复后的迟到帧正是此
+          // 形态）。busy 中本臂命中的最高频路径是插队/排队发送的回声帧
+          // （后端入站咽喉点无条件先于 busy 裁决回推 user 回声，与乐观回显
+          // 行同文同 role）——此刻活时间线缓冲是进行中真相，排空即「瞬间
+          // 消失」（消失窗口=剩余任务时长，注记要等轮边界 claim 才到）。
+          // busy 中保留缓冲，轮边界注记摄取/终局回复挂载统一收尾。
+          if (!streaming.value) {
+            chatStore.flushPendingWork()
+            chatStore.flushPendingDeliverables()
+          }
           // ①（2026-11-16 用户消息重复渲染修复）：重复帧 = 环里已有此行
           // ——把环 seq 盖回已渲染的行（user 回声帧盖乐观回显、assistant
           // 重复帧盖 legacy 无 seq 行）。盖章后该行获得确认标记：sync 回放
@@ -1715,7 +1735,11 @@ async function primeSeqBaseline() {
   if (!isDefaultChat.value || lastChatSeq > 0) return
   try {
     await replayToolsFromRing()
-  } catch { /* 基线拿不到就保持 0 */ }
+  } catch (e) {
+    // 基线拿不到就保持 0；缺陷 ⑤（2026-11-23）：不再纯静默——回放失败
+    // = 最后轮工具卡缺失且用户无从知晓，warn 留观测痕。
+    console.warn('[seq] primeSeqBaseline 环回放失败——最后轮工具卡可能缺失', e)
+  }
 }
 
 async function syncMissedChat() {
@@ -1731,9 +1755,15 @@ async function syncMissedChat() {
     if (res?.gap) {
       // 旧在飞登记随 reset 作废——否则其迟到 timeout 误判新请求。
       inFlightHistory.clear()
+      // 缺陷 D 同族修复（2026-11-23）：busy 中 gap 全量重拉，reset 清活
+      // 时间线缓冲（busy 表 D-3 纪律不清，streaming 仍真）——补
+      // work_current 接管恢复活 turn 过程视图（活累加器无环滑窗限制；
+      // refreshWorkCurrent 内部 turn 悬置闸放行 busy 态）。
+      const wasStreaming = streaming.value
       chatStore.reset()
       lastChatSeq = 0
       loadHistory()
+      if (wasStreaming) void refreshWorkCurrent(effectiveSid.value)
       return
     }
     let added = false
@@ -2542,6 +2572,15 @@ function handleHistoryResponse(data: any) {
     // 视口锚保位（2026-11-09 滚动批）：重灌不再无条件贴底——用户正读着
     // 上文被拽到底已多次被点名；锚滑出（列表变短等）回落条件贴底。
     const viewportAnchor = captureViewportAnchor()
+    // 缺陷 D 修复（2026-11-23 插队时间线消失家族审计）：busy 中 resync
+    // （fire-and-forget 委派的 subagent_reply 落在下一轮中途 / busy 中发
+    // 委派的 600ms 重同步）以前无守卫地整表 replace + setBusy(false)——
+    // 活 turn 时间线被清空（瞬间消失）且 busy 指示被杀，本路径又零恢复
+    // （无环回放无 work_current）。busy 态改走 keepLiveState：行照常换
+    // （subagent 回复行要进视图），活时间线/live 思考/交付物原样保留
+    // （同步原子替换，无闪烁无丢失），busy 与 watchdog 语义不动（turn
+    // 还在跑）。空闲态（rewind 典型）行为不变。
+    const wasStreaming = streaming.value
     const rawMsgs: any[] = data.messages || []
     const oldest = typeof data.oldest_index === 'number' ? data.oldest_index : null
     chatStore.replaceMessages(
@@ -2563,6 +2602,7 @@ function handleHistoryResponse(data: any) {
         cronJobId: m.cron_job_id,
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
+      { keepLiveState: wasStreaming },
     )
     // BUG-20261120-006 同根第二面：resync 同为 replace 语义——分页游标
     // （oldestIndex/hasMoreHistory）按本响应重同步，否则回退/redo/委派后
@@ -2573,8 +2613,12 @@ function handleHistoryResponse(data: any) {
       chatStore.oldestIndex = oldest
       chatStore.hasMoreHistory = data.has_more || false
     }
-    chatStore.setBusy(effectiveSid.value, false)
-    clearWatchdog()
+    // busy 中（wasStreaming=true）不杀 busy 不清 watchdog——turn 还在跑，
+    // busy 语义/恢复检查原样保留；迟到回复照常经 assistant 帧收尾。
+    if (!wasStreaming) {
+      chatStore.setBusy(effectiveSid.value, false)
+      clearWatchdog()
+    }
     nextTick(() => {
       if (!restoreViewportAnchor(viewportAnchor)) scrollToBottomIfNear()
     })
@@ -2598,14 +2642,21 @@ function handleHistoryResponse(data: any) {
     // 2026-09-21:审批挂起 45s 触发,n=22→50,工具卡/占位全冲)。
     // 同文重发:只看最后一条同文 user 之后——更早的同文行不影响。
     let landed = false
+    let anchorSeen = false
     for (let i = rawMsgs.length - 1; i >= 0; i--) {
       const m = rawMsgs[i]
-      if (m.role === 'assistant') { landed = true; break }
+      if (m.role === 'assistant') { landed = true; continue }
       if (m.role === 'user') {
-        if ((m.content || '') === watchdogSentContent) break // 追到本轮 user,其后无 assistant → 未落
+        if ((m.content || '') === watchdogSentContent) { anchorSeen = true; break }
         continue // 更早 user 行(同文重发等),继续向前
       }
     }
+    // 缺陷 A 修复（2026-11-23 插队时间线消失家族审计）第三道：锚行必须在
+    // 场才判「已落」。锚缺失（插队/排队注入原文永不落盘——claim 只物化
+    // `[steer]` 行；或 50 条窗口截断）时扫到的 assistant 只能属于旧轮
+    // ——不可判定按未落续查，绝不拿旧 assistant 冒充本轮回复误重灌
+    // （真机 2026-09-21 审批挂起 45s 误重灌同族根因）。
+    if (landed && !anchorSeen) landed = false
     if (streaming.value && landed) {
       // 视口锚保位（2026-11-09 滚动批）：重灌不再无条件贴底。
       const viewportAnchor = captureViewportAnchor()
@@ -2648,7 +2699,16 @@ function handleHistoryResponse(data: any) {
       clearWatchdog()
       // 重灌只有文本行——从环回放挂回最后一轮工具卡(与 F5/切回的
       // primeSeqBaseline 同语义;重灌丢卡 = P1 修复的同族问题)。
-      void replayToolsFromRing().catch(() => {})
+      // 缺陷 ⑤（2026-11-23）：回放失败不再静默吞——丢卡不可见，用户无从
+      // 知道少了什么；warn 留观测痕。
+      void replayToolsFromRing().catch((e: unknown) => {
+        console.warn('[watchdog] 环回放失败——最后一轮工具卡可能缺失', e)
+      })
+      // 缺陷 A 修复（2026-11-23）第四道（修复方向④）：补 work_current
+      // 拉取——若本轮实际还在跑（landed 误判残差，锚扫描/重锚双保险后
+      // 应极罕见），后端活累加器快照接管回填过程视图；turn 真收尾时后端
+      // 槽已清，null 盲区反向闸让本次拉取自然 no-op。
+      void refreshWorkCurrent(effectiveSid.value)
       nextTick(() => {
         if (!restoreViewportAnchor(viewportAnchor)) scrollToBottomIfNear()
       })
@@ -2656,17 +2716,22 @@ function handleHistoryResponse(data: any) {
       // Response not landed yet (maybe still running) — re-check later.
       armWatchdog()
     } else {
-      // 放弃臂（W5，2026-09-23）：重试耗尽仍未在磁盘看到回复——视图停在
-      // 旧数据是诚实降级（真相源没有新内容可灌），但 streaming 旗标与
-      // B2 在飞登记必须复位，否则输入框永久锁死、B2 占位恢复逻辑永挂。
-      // 后到的真实回复帧仍可经 receive 正常入列（streaming=false 不拦）。
-      // W3（2026-10-14 审计）：复位升级为整条清账——setBusy(false) 会把
-      // 条目以 false 形态永久留在 busyBySid 表里（慢泄漏），dropSessionState
-      // 连条目带 inflight 登记一起删。
-      if (streaming.value) {
-        chatStore.dropSessionState(effectiveSid.value)
-      }
+      // 放弃臂——缺陷 C 修复（2026-11-23 插队时间线消失家族审计）改写
+      // W5 原语义：attempts 烧穿 = 「磁盘迟迟未见回复」，**不能证明 turn
+      // 已死**——纯 LLM 长调用窗 pendingWork=null → 续期臂失明 → attempts
+      // 烧穿是常态路径（>3 分钟静默即触发）。旧 dropSessionState 杀 busy
+      // 把活 turn 打成假空闲（停止按钮消失，用户继续发消息/改文件而
+      // agent 还在跑）——假空闲比假忙碌危险：假忙碌有停止按钮可逃。
+      // 改法：只停 watchdog（不再自动恢复检查），busy 与 B2 在飞登记
+      // 原样保留（真 turn 迟到的回复帧照常经 receive 收尾；真死 turn
+      // 用户手动停止/estop——停止按钮仍在；B2 占位轮询有硬上限自清），
+      // 补一次 work_current（活 turn 过程视图回填；死 turn 后端槽空，
+      // null 盲区反向闸自然 no-op）+ 诚实 toast 告知降级。busyBySid 残留
+      // true 条目由下一轮发送/回复生命周期覆盖（有界），不采纳 W3 的
+      // 「false 形态慢泄漏」清账理由——那是杀 busy 旧方案的配套。
       clearWatchdog()
+      void refreshWorkCurrent(effectiveSid.value)
+      toast.warn('长时间未见回复，已停止自动恢复检查；若已卡死请手动停止')
     }
     return
   }
@@ -3239,7 +3304,7 @@ function sendMessage() {
   // 每次普通发送误报成「已排队」（2026-11-07 e2e 全量实录：幽灵排队 toast
   // 撞上 processes-visual 的 toast 断言 + 污染视觉截图）。
   const wasStreaming = streaming.value
-  sendValidated(routed, media)
+  sendValidated(routed, media, wasStreaming)
   if (busySteerUpgrade) {
     toast.info('忙碌中：【立即】已插队注入当前轮（不想打断请选 ⏭排队）')
   } else if (wasStreaming && sendMode.value === 'steer') {
@@ -3252,8 +3317,14 @@ function sendMessage() {
 }
 
 /** 输入校验通过后的实际发送（sendMessage 的 async 续体；2026-09-26 起
- *  无会话锚时先建会话——见 sendValidated 内注释）。 */
-async function sendValidated(content: string, media: { id: string }[]) {
+ *  无会话锚时先建会话——见 sendValidated 内注释）。busyAtSend = 发送前
+ *  busy 快照（sendMessage 的 wasStreaming）——缺陷 A 修复（2026-11-23）
+ *  起 busy 注入不重置 watchdog（见下方 startWatchdog 处注释）。 */
+async function sendValidated(
+  content: string,
+  media: { id: string }[],
+  busyAtSend = false,
+) {
   // 侧栏「新建对话」→ 秒发竞速修复（2026-11-07 FF chat e2e 全量实录）：
   // sessionStore.create 的 sessions.create 是网络往返，往返期间 effectiveSid
   // 仍指旧会话——此刻读锚发送会把消息+回复绑到旧会话（快速真实用户同样可
@@ -3305,7 +3376,17 @@ async function sendValidated(content: string, media: { id: string }[]) {
   stopPendingTurnPolling()
   // 传入本轮文本:watchdog 恢复判定「回复已落」的语义锚(见响应处理
   // 分支 pendingWatchdogReload 的 landed 判定)。
-  startWatchdog(content)
+  // 缺陷 A 修复（2026-11-23 插队时间线消失家族审计）②：busy 中发送
+  // （插队/排队注入）**不重置** watchdog——插队是「注入当前轮」不是新
+  // turn，重置会把语义锚换成永不落盘的插队原文（claim 只物化 `[steer]`
+  // 行）→ landed 扫描必失配 → 撞旧 assistant 误判已落 → 误重灌杀 busy
+  // （真机 2026-09-21 审批挂起 45s 同族根因），同时烧掉原 turn 的恢复
+  // 预算。原 turn 的 watchdog 仍在（assistant 未到 clearWatchdog 不发生）
+  // 照常守护本轮回复。排队注入同理（暂存非新 turn；其未来轮回复丢失由
+  // 人工停止/切页 detectPendingTurn 兜底——排队转正时本 watchdog 早已
+  // GIVEUP，无锚错挂面）。hook 注入轮本就 clearWatchdog（P8），busy 注入
+  // 跳过重锚后维持该态，无新暴露面。
+  if (!busyAtSend) startWatchdog(content)
 
   // Reset textarea height
   if (chatInput.value) chatInput.value.style.height = 'auto'

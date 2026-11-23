@@ -960,3 +960,52 @@ describe('chat store session draft map (2026-11-07)', () => {
     expect(store.input).toBe('')
   })
 })
+
+// 缺陷 D 修复（2026-11-23 插队时间线消失家族审计）：replaceMessages
+// keepLiveState 选项——busy 中 resync（subagent_reply 落在下一轮中途）以
+// 磁盘 replace 重建视图时保留活 turn 时间线（默认形态维持 watchdog WIPE
+// 的清空语义不回归）。
+describe('chat store replaceMessages keepLiveState (缺陷 D)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  function seedLiveState(store: ReturnType<typeof useChatStore>) {
+    store.setBusy('s1', true)
+    store.ingestWorkRoundText('正在分析…')
+    store.ingestWorkToolStart('c1', 'sleep', '30')
+    store.appendPendingDeliverables([{ path: 'out.txt', kind: 'file' } as any])
+  }
+
+  it('默认形态清空活状态（watchdog WIPE 语义不回归）', () => {
+    const store = useChatStore()
+    seedLiveState(store)
+    expect(store.pendingWork).not.toBeNull()
+    store.replaceMessages([
+      { role: 'user', content: 'q', timestamp: '' },
+      { role: 'assistant', content: 'a', timestamp: '' },
+    ])
+    expect(store.pendingWork).toBeNull()
+    expect(store.pendingDeliverables).toHaveLength(0)
+  })
+
+  it('keepLiveState 保留活时间线与待挂交付物（busy 中 resync 语义）', () => {
+    const store = useChatStore()
+    seedLiveState(store)
+    store.replaceMessages(
+      [
+        { role: 'user', content: 'q', timestamp: '' },
+        { role: 'assistant', content: 'a', timestamp: '' },
+        { role: 'assistant', content: '子代理回复', timestamp: '' },
+      ],
+      { keepLiveState: true },
+    )
+    // 活时间线原样保留（同一对象，轮内工具卡不丢）。
+    expect(store.pendingWork).not.toBeNull()
+    expect(store.pendingWork!.rounds.some(r => r.tools.some(t => t.call_id === 'c1'))).toBe(true)
+    expect(store.pendingDeliverables).toHaveLength(1)
+    // 行照常替换（subagent 回复行进视图）。
+    expect(store.messages).toHaveLength(3)
+    expect(store.messages[2].content).toBe('子代理回复')
+  })
+})

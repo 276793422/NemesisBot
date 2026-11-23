@@ -426,8 +426,8 @@ describe('BUG-20261120-006：重灌恢复行号锚 + 分页游标同步', () => 
   })
 })
 
-describe('W5（2026-09-23）：重试耗尽放弃臂必须复位 streaming + 在飞登记', () => {
-  it('3 次重载均「未落」→ 放弃：streaming=false、inflight 清、视图不重灌、输入解锁', async () => {
+describe('W5 放弃臂 → 缺陷 C 修复改写（2026-11-23）：不杀 busy 诚实降级', () => {
+  it('3 次重载均「未落」→ 放弃：busy 保留、inflight 保留、watchdog 停、视图不重灌、补拉 work_current', async () => {
     prepareSession()
     vi.useFakeTimers()
     const w = await mountWithHistory()
@@ -452,12 +452,23 @@ describe('W5（2026-09-23）：重试耗尽放弃臂必须复位 streaming + 在
       }
     }
 
-    // 放弃臂（修复前：streaming 永真 + inflight 残留 → 输入框永久锁死）：
-    // 修复后状态收尾，视图保持本地态（磁盘确实没有新回复，不假重灌）。
-    expect(chat.streaming).toBe(false)
-    expect(chat.inflightTurns['s1']).toBeUndefined()
+    // 放弃臂新契约（缺陷 C 修复：attempts 烧穿 ≠ turn 已死——纯 LLM 长窗
+    // pendingWork=null 续期臂失明是常态触发路径，旧 dropSessionState 把活
+    // turn 打成假空闲）：busy 与 B2 在飞登记原样保留（迟到回复照常经
+    // assistant 帧收尾；真死 turn 用户手动停止——停止按钮仍在），视图
+    // 保持本地态（磁盘确实没有新回复，不假重灌）。
+    expect(chat.streaming).toBe(true)
+    expect(chat.inflightTurns['s1']).toBeDefined()
     expect(chat.messages[chat.messages.length - 1].content).toBe('run echo W5')
     expect(chat.messages).toHaveLength(3)
+    // GIVEUP 补拉 work_current（活 turn 过程视图回填；本测试无快照，
+    // res?.work == null 反向闸自然 no-op——请求发出即可）。
+    expect(requestMock).toHaveBeenCalledWith('chat', 'work_current', { session_id: 's1' })
+    // watchdog 已停：再走两个周期不产生新 watchdog_ 请求（id 不变）。
+    const idAfterGiveup = lastRequestId()
+    await vi.advanceTimersByTimeAsync(90_000)
+    await flushPromises()
+    expect(lastRequestId()).toBe(idAfterGiveup)
     w.unmount()
   })
 
@@ -530,3 +541,199 @@ describe('W5（2026-09-23）：重试耗尽放弃臂必须复位 streaming + 在
 function toolEvent(seq: number, kind: string, data: any) {
   return { seq, kind: 'tool', role: '', content: '', tool: { kind, data } }
 }
+
+// ---------------------------------------------------------------------------
+// 缺陷家族修复回归钉（2026-11-23 插队时间线消失家族审计，A②③/B/D）
+// ---------------------------------------------------------------------------
+
+describe('缺陷 B：busy 中回声 dedupe 不排空活时间线缓冲（2026-11-23）', () => {
+  it('busy 中插队回声帧命中乐观行 → dedupe 臂保留 pendingWork（修复前此处排空=瞬间消失）', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo B1')
+    expect(chat.streaming).toBe(true)
+    // 种活时间线缓冲（等价真实链路里 LLM 已产出中间轮 + 工具卡在跑）。
+    chat.ingestWorkRoundText('正在分析任务…')
+    chat.ingestWorkToolStart('c-b1', 'sleep', '30')
+    expect(chat.pendingWork).not.toBeNull()
+
+    // busy 中插队：后端入站咽喉点无条件回推 user 回声帧（先于 busy 裁决）
+    // → 与乐观回显行同文同 role → dedupe 臂。修复后 busy 态不排空。
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'receive',
+      data: { session_id: 's1', role: 'user', content: 'run echo B1', seq: 99, timestamp: new Date().toISOString() },
+    })
+    await flushPromises()
+
+    expect(chat.pendingWork).not.toBeNull()
+    expect(chat.pendingWork!.rounds.some(r => r.tools.some(t => t.call_id === 'c-b1'))).toBe(true)
+    expect(chat.streaming).toBe(true)
+    w.unmount()
+  })
+
+  it('收尾态重复帧仍排空（watchdog 恢复后迟到帧的既有语义不回归）+ 终局回复挂载照常', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo B2')
+    chat.ingestWorkToolStart('c-b2', 'sleep', '30')
+
+    // 终局回复 → assistant 分支 flush 挂载（缓冲收走，正对照）。
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'receive',
+      data: { session_id: 's1', role: 'assistant', content: '完成', timestamp: new Date().toISOString() },
+    })
+    await flushPromises()
+    expect(chat.streaming).toBe(false)
+    expect(chat.pendingWork).toBeNull()
+    const replyRow = chat.messages[chat.messages.length - 1]
+    expect(replyRow.content).toBe('完成')
+    expect(replyRow.work?.rounds.some(t => t.tools.some(x => x.call_id === 'c-b2'))).toBe(true)
+
+    // 收尾态（streaming=false）再种缓冲 + 迟到重复 assistant 帧 → dedupe
+    // 臂照常排空（R263 语义保留）。
+    chat.ingestWorkToolStart('c-b2-late', 'sleep', '5')
+    expect(chat.pendingWork).not.toBeNull()
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'receive',
+      data: { session_id: 's1', role: 'assistant', content: '完成', seq: 555, timestamp: new Date().toISOString() },
+    })
+    await flushPromises()
+    expect(chat.pendingWork).toBeNull()
+    w.unmount()
+  })
+})
+
+describe('缺陷 A：busy 注入不重置 watchdog 锚 + landed 扫描锚必须在场（2026-11-23）', () => {
+  it('busy 中插队发送不换锚：锚保持首轮原文（在盘）→ 磁盘无回复判未落 → 不重灌续查（修复前换锚=锚缺→撞旧 assistant 误重灌）', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo A1')
+    // busy 中插队（走真实 sendMessage 路由：busy 注入合法）。
+    const ta = w.find('textarea')
+    await ta.setValue('!紧急插队')
+    await ta.trigger('keydown', { key: 'Enter', ctrlKey: true })
+    await flushPromises()
+
+    // 45s watchdog 触发（纯静默无活跃迹象——pendingWork=null）。
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushPromises()
+    expect(lastRequestId().startsWith('watchdog_')).toBe(true)
+
+    // 磁盘：首轮锚行在、无本轮回复（插队原文也永不落盘）。修复后锚保持
+    // 'run echo A1' → 扫描命中锚行 → 未落 → 不重灌、狗重试。
+    feedHistory(lastRequestId(), [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'run echo A1' },
+    ])
+    await flushPromises()
+    expect(chat.messages).toHaveLength(3)
+    expect(chat.messages[chat.messages.length - 1].content).toBe('run echo A1')
+    expect(chat.streaming).toBe(true)
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushPromises()
+    expect(countHistoryRequests()).toBeGreaterThanOrEqual(2)
+    w.unmount()
+  })
+
+  it('锚行整个缺席磁盘窗口（截断/压缩角）→ 保守判未落，绝不拿旧 assistant 冒充本轮回复', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo A2')
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushPromises()
+    expect(lastRequestId().startsWith('watchdog_')).toBe(true)
+    // 磁盘窗口里锚行缺失（老轮 assistant 在尾部上方）——修复前 landed
+    // 无锚守卫 → 误判已落 → WIPE。修复后保守未落。
+    feedHistory(lastRequestId(), [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: '与锚无关的行' },
+    ])
+    await flushPromises()
+    expect(chat.messages).toHaveLength(3)
+    expect(chat.streaming).toBe(true)
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushPromises()
+    expect(countHistoryRequests()).toBeGreaterThanOrEqual(2)
+    w.unmount()
+  })
+})
+
+describe('缺陷 D：busy 中 resync（subagent_reply mid-turn）保留活时间线不杀 busy（2026-11-23）', () => {
+  it('busy 中 subagent_reply push → resync replace 走 keepLiveState：回复行进视图、pendingWork/busy 原样', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo D1')
+    expect(chat.streaming).toBe(true)
+    chat.ingestWorkToolStart('c-d1', 'sleep', '30')
+    expect(chat.pendingWork).not.toBeNull()
+
+    // fire-and-forget 委派的子代理回复落盘 → 定向 push → resyncFromLog。
+    mountedHandler()({
+      type: 'push',
+      cmd: 'subagent_reply',
+      data: { session_id: 's1' },
+    })
+    await flushPromises()
+    expect(lastRequestId().startsWith('resync_')).toBe(true)
+
+    // 磁盘快照：含子代理回复行（无本轮终局回复）。
+    feedHistory(lastRequestId(), [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'run echo D1' },
+      { role: 'assistant', content: '子代理回复' },
+    ])
+    await flushPromises()
+
+    // 行照常替换（子代理回复行进视图）；活时间线与 busy 原样保留
+    // （修复前：整表 replace 清缓冲 = 瞬间消失 + setBusy(false) 杀 busy）。
+    expect(chat.messages).toHaveLength(4)
+    expect(chat.messages[3].content).toBe('子代理回复')
+    expect(chat.pendingWork).not.toBeNull()
+    expect(chat.pendingWork!.rounds.some(r => r.tools.some(t => t.call_id === 'c-d1'))).toBe(true)
+    expect(chat.streaming).toBe(true)
+    w.unmount()
+  })
+
+  it('空闲态 resync（rewind 典型）行为不变：replace + busy 收尾语义保留', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    // 空闲态 push（无在跑轮）。
+    mountedHandler()({
+      type: 'push',
+      cmd: 'subagent_reply',
+      data: { session_id: 's1' },
+    })
+    await flushPromises()
+    feedHistory(lastRequestId(), [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'assistant', content: '子代理回复' },
+    ])
+    await flushPromises()
+    expect(chat.messages).toHaveLength(3)
+    expect(chat.streaming).toBe(false)
+    w.unmount()
+  })
+})

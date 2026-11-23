@@ -404,17 +404,27 @@ export const useChatStore = defineStore('chat', () => {
    *
    *  M6：watchdog 路径的调用方映射 fresh 对象（不带 rowIndex）→ 行号天然
    *  缺失诚实降级；M6 resync 路径（rewind/redo 后刷新）的调用方带
-   *  oldest_index 推导的 rowIndex，原样保留。 */
-  function replaceMessages(msgs: ChatMessage[]) {
+   *  oldest_index 推导的 rowIndex，原样保留。
+   *
+   *  缺陷 D 修复（2026-11-23 插队时间线消失家族审计）：`keepLiveState` ——
+   *  busy 中 resync（fire-and-forget 委派的 subagent_reply 落在下一轮中途
+   *  等）以磁盘 replace 重建视图时，活 turn 时间线/live 思考/待挂交付物
+   *  不是「不可信的残留」而是进行中真相：默认清空 = 瞬间消失且零恢复通道
+   *  （该路径无环回放无 work_current 补拉）。busy 调用方传 keepLiveState
+   *  保留三者；同步原子替换（JS 单任务内 capture→replace→无中间帧），
+   *  无闪烁窗口、无 adopt 竞态。行号锚重推两种形态都要跑。 */
+  function replaceMessages(msgs: ChatMessage[], opts?: { keepLiveState?: boolean }) {
     messages.value = [...msgs]
-    // 2026-10-30：重同步后进行中时间线不可信，清空防止误挂到下一轮
-    //（进行中内容由 work_current 活查询 + 环回放重建）。
-    pendingWork.value = null
-    roundTextSeqs.clear()
-    // B3：重同步后 live 思考不可信（同 pendingWork——进行中内容由
-    // work_current 活查询 + 环回放重建）。
-    clearLiveThinking()
-    pendingDeliverables.value = []
+    if (!opts?.keepLiveState) {
+      // 2026-10-30：重同步后进行中时间线不可信，清空防止误挂到下一轮
+      //（进行中内容由 work_current 活查询 + 环回放重建）。
+      pendingWork.value = null
+      roundTextSeqs.clear()
+      // B3：重同步后 live 思考不可信（同 pendingWork——进行中内容由
+      // work_current 活查询 + 环回放重建）。
+      clearLiveThinking()
+      pendingDeliverables.value = []
+    }
     // M6：行号锚随消息列表重推——watchdog 路径（fresh 对象无行号）归 null
     // 诚实降级；resync 路径（带 oldest_index 行号）重推出正确锚。
     recomputeNextRowIndex()
