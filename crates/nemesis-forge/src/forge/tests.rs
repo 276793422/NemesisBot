@@ -2191,6 +2191,60 @@ fn test_valid_skill_dir_name_fence() {
     assert!(valid_skill_dir_name("a.b").is_ok());
 }
 
+// BUG-20261123-035 回归锁：Windows 保留设备名族一律拒绝——裸名与带扩展名
+// 形态（判定取 base，旧 Windows 全设备解析 / 新 Win11 裸名仍解析）；非保留
+// 近邻（子串/超集/带前缀）是合法 slug 不误伤。
+#[test]
+fn test_valid_skill_dir_name_rejects_reserved_device_names() {
+    use super::valid_skill_dir_name;
+    // 22 名单抽样：裸名、大小写、带扩展名 base 形态
+    for n in [
+        "nul",
+        "con",
+        "aux",
+        "prn",
+        "com1",
+        "com5",
+        "lpt1",
+        "lpt9",
+        "NUL",
+        "Con",
+        "nul.md",
+        "con.txt",
+        "com1.skill",
+    ] {
+        assert!(
+            valid_skill_dir_name(n).is_err(),
+            "reserved device name must be rejected: {n}"
+        );
+    }
+    // 近邻不误伤
+    assert!(valid_skill_dir_name("null").is_ok());
+    assert!(valid_skill_dir_name("nulx").is_ok());
+    assert!(valid_skill_dir_name("console").is_ok());
+    assert!(valid_skill_dir_name("auxiliary").is_ok());
+    assert!(valid_skill_dir_name("nul-forge").is_ok());
+    assert!(valid_skill_dir_name("1.0").is_ok()); // 版本段消费方基底恒不命中
+}
+
+// BUG-20261123-035 回归锁：create_skill 入口保留名诚实拒绝（此前 slugify
+// 恒等放行 → Windows cryptic OS error / Linux 落盘跨节点死档）。
+#[test]
+fn test_create_skill_rejects_reserved_device_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    for n in ["nul", "con", "com1"] {
+        let res = forge.create_skill(n, "content", "desc", vec![]);
+        assert!(res.is_err(), "reserved device name must be rejected: {n}");
+        // 围栏拒绝（明确信息），不是 create_dir 的 cryptic OS error
+        assert!(
+            res.unwrap_err().contains("invalid skill name"),
+            "rejection must come from the name fence"
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_distill_and_store_draft_success_and_dedup() {
     let dir = tempfile::tempdir().unwrap();
