@@ -173,26 +173,29 @@ impl Exporter {
         tokio::fs::write(&main_path, &artifact.content).await?;
         files.push(main_filename);
 
-        // Copy project structure files from artifact directory
+        // Copy project structure files from artifact directory. Side-file
+        // read/write 失败诚实上抛（与主内容、manifest 写的 `?` 同形态）：
+        // 吞掉写错仍 push 清单 = forge-manifest.json 声称一个盘上不存在的
+        // 文件（BUG-20261123-021：清单谎报缺陷）。
         let artifact_dir = self.artifact_dir(artifact.kind, &artifact.name);
         let project_files = ["requirements.txt", "go.mod", "README.md"];
         for pf in &project_files {
             let src = artifact_dir.join(pf);
             if src.exists() {
                 let dst = export_dir.join(pf);
-                if let Ok(data) = tokio::fs::read(&src).await {
-                    tokio::fs::write(&dst, &data).await.ok();
-                    files.push(pf.to_string());
-                }
+                let data = tokio::fs::read(&src).await?;
+                tokio::fs::write(&dst, &data).await?;
+                files.push(pf.to_string());
             }
         }
 
-        // Copy tests/ subdirectory if it exists
+        // Copy tests/ subdirectory if it exists. 同一诚实约定：bundle 任一
+        // 成员落盘失败 = 整次导出失败（Err），不产残缺包。
         let tests_dir = artifact_dir.join("tests");
         if tests_dir.is_dir() {
             let test_target = export_dir.join("tests");
-            tokio::fs::create_dir_all(&test_target).await.ok();
-            let copied = copy_dir_recursive(&tests_dir, &test_target).await;
+            tokio::fs::create_dir_all(&test_target).await?;
+            let copied = copy_dir_recursive(&tests_dir, &test_target).await?;
             for f in copied {
                 files.push(format!("tests/{}", f));
             }
@@ -283,52 +286,51 @@ impl Exporter {
 }
 
 /// Recursively copy all files from `src_dir` to `dst_dir`, returning relative paths.
+/// 任一环节失败诚实上抛（BUG-20261123-021）：吞错时文件臂的静默省略 +
+/// create_dir_all 失败会让 bundle 残缺且无任何信号（299-302 行注释记录的
+/// 「写进不存在的 dst 静默 ENOENT 跳过」正是 `.ok()` 吞掉建目录失败时的
+/// 复活形态——权限拒绝场景仍可达）。
 fn copy_dir_recursive<'a>(
     src_dir: &'a Path,
     dst_dir: &'a Path,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<Vec<String>>> + 'a>> {
     Box::pin(async move {
         let mut files = Vec::new();
         if !src_dir.is_dir() {
-            return files;
+            return Ok(files);
         }
 
         // 顶层 dst 必须先建：此前只有子目录分支靠 create_dir_all(sub_dst)
         // 顺手把 dst 带出来，顶层文件能否落盘取决于 readdir 顺序（NTFS
         // 字母序 sub 在前侥幸全过；ext4/tmpfs 哈希序 top.txt 先到 → 写进
         // 不存在的 dst 静默 ENOENT 跳过）。 Linux 首跑暴露。
-        tokio::fs::create_dir_all(dst_dir).await.ok();
+        tokio::fs::create_dir_all(dst_dir).await?;
 
-        let mut entries = match tokio::fs::read_dir(src_dir).await {
-            Ok(e) => e,
-            Err(_) => return files,
-        };
+        let mut entries = tokio::fs::read_dir(src_dir).await?;
 
-        while let Ok(Some(entry)) = entries.next_entry().await {
+        while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name();
             let name_str = name.to_string_lossy().to_string();
 
-            if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+            if entry.file_type().await?.is_dir() {
                 // Recurse into subdirectory
                 let sub_src = src_dir.join(&name_str);
                 let sub_dst = dst_dir.join(&name_str);
-                tokio::fs::create_dir_all(&sub_dst).await.ok();
-                let sub_files = copy_dir_recursive(&sub_src, &sub_dst).await;
+                tokio::fs::create_dir_all(&sub_dst).await?;
+                let sub_files = copy_dir_recursive(&sub_src, &sub_dst).await?;
                 for f in sub_files {
                     files.push(format!("{}/{}", name_str, f));
                 }
             } else {
                 let src_path = entry.path();
                 let dst_path = dst_dir.join(&name_str);
-                if let Ok(data) = tokio::fs::read(&src_path).await
-                    && tokio::fs::write(&dst_path, &data).await.is_ok()
-                {
-                    files.push(name_str);
-                }
+                let data = tokio::fs::read(&src_path).await?;
+                tokio::fs::write(&dst_path, &data).await?;
+                files.push(name_str);
             }
         }
 
-        files
+        Ok(files)
     })
 }
 

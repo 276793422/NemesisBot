@@ -427,14 +427,16 @@ async fn test_copy_dir_recursive_non_dir_returns_empty() {
     let dst = dir.path().join("dst");
     tokio::fs::create_dir_all(&dst).await.unwrap();
 
-    // Nonexistent path is not a dir -> empty result, no panic.
-    let copied = copy_dir_recursive(Path::new("definitely/not/here"), &dst).await;
+    // Nonexistent path is not a dir -> Ok(empty), no panic.
+    let copied = copy_dir_recursive(Path::new("definitely/not/here"), &dst)
+        .await
+        .unwrap();
     assert!(copied.is_empty());
 
-    // A FILE src is also not a dir -> empty result.
+    // A FILE src is also not a dir -> Ok(empty).
     let file_src = dir.path().join("src_file.txt");
     tokio::fs::write(&file_src, "x").await.unwrap();
-    let copied = copy_dir_recursive(&file_src, &dst).await;
+    let copied = copy_dir_recursive(&file_src, &dst).await.unwrap();
     assert!(copied.is_empty());
 }
 
@@ -449,7 +451,7 @@ async fn test_copy_dir_recursive_nested_subdirs() {
         .await
         .unwrap();
 
-    let copied = copy_dir_recursive(&src, &dst).await;
+    let copied = copy_dir_recursive(&src, &dst).await.unwrap();
     assert_eq!(copied.len(), 2, "both files must be reported: {:?}", copied);
     assert!(copied.contains(&"top.txt".to_string()));
     assert!(
@@ -467,34 +469,29 @@ async fn test_copy_dir_recursive_nested_subdirs() {
 }
 
 #[tokio::test]
-async fn test_copy_dir_recursive_write_fail_skips_file() {
+async fn test_copy_dir_recursive_write_fail_propagates() {
+    // BUG-20261123-021 契约变更：写失败不再静默跳过（旧形态产出「清单
+    // 诚实但 bundle 静默残缺」的无信号交付）——任一成员落盘失败 =
+    // Err 上抛，export_artifact 整次失败。
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("src");
     let dst = dir.path().join("dst");
     tokio::fs::create_dir_all(&src).await.unwrap();
     tokio::fs::create_dir_all(&dst).await.unwrap();
-    tokio::fs::write(src.join("good.txt"), "good")
-        .await
-        .unwrap();
     tokio::fs::write(src.join("blocked.txt"), "blocked")
         .await
         .unwrap();
 
-    // Pre-create a DIRECTORY where blocked.txt would be written -> write fails,
-    // the file is skipped, but good.txt is still copied.
+    // Pre-create a DIRECTORY where blocked.txt would be written -> write fails.
     tokio::fs::create_dir_all(dst.join("blocked.txt"))
         .await
         .unwrap();
 
-    let copied = copy_dir_recursive(&src, &dst).await;
-    assert_eq!(
-        copied.len(),
-        1,
-        "only the writable file reported: {:?}",
-        copied
+    let result = copy_dir_recursive(&src, &dst).await;
+    assert!(
+        result.is_err(),
+        "write failure must propagate, not skip silently"
     );
-    assert!(copied.contains(&"good.txt".to_string()));
-    assert!(dst.join("good.txt").exists());
 }
 
 // --- coverage additions (quality-hardening goal 冲刺) ---
@@ -675,4 +672,92 @@ async fn test_export_artifact_poison_version_rejected() {
     let out = exporter.export_artifact(&ok, &target).await.unwrap();
     assert!(out.ends_with("ok-name-1.0.2"));
     assert!(out.exists());
+}
+
+#[tokio::test]
+async fn test_export_artifact_side_file_failure_propagates() {
+    // BUG-20261123-021 回归钉：旁文件写失败不得吞掉后照 push 清单——
+    // 旧形态 `write(..).ok(); files.push(..)` 会写出一份 forge-manifest.json
+    // 声称包含盘上不存在的 requirements.txt（清单谎报）。修复后 bundle
+    // 任一成员落盘失败 = 整次导出 Err，残缺包不产。
+    use std::io::ErrorKind;
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+
+    let artifact = make_artifact("side-fail", ArtifactKind::Skill, ArtifactStatus::Active);
+    let artifact_dir = dir.path().join("forge").join("skills").join("side-fail");
+    std::fs::create_dir_all(&artifact_dir).unwrap();
+    std::fs::write(artifact_dir.join("SKILL.md"), &artifact.content).unwrap();
+    std::fs::write(artifact_dir.join("requirements.txt"), b"tokio\n").unwrap();
+
+    // 注入写失败：导出目录里同名 requirements.txt 预置为目录
+    // （write 落到目录路径 = AccessDenied/Other，平台差异不影响 Err 判定）。
+    let export_dir = dir.path().join("exports").join("side-fail-1.0");
+    std::fs::create_dir_all(export_dir.join("requirements.txt")).unwrap();
+
+    let target = dir.path().join("exports");
+    let err = exporter
+        .export_artifact(&artifact, &target)
+        .await
+        .expect_err("side-file write failure must propagate");
+    let _ = err.kind();
+    assert!(matches!(
+        err.kind(),
+        ErrorKind::PermissionDenied | ErrorKind::Other | ErrorKind::InvalidInput
+    ));
+
+    // 清单不得产出（残缺包没有谎报的资格）
+    assert!(!export_dir.join("forge-manifest.json").exists());
+}
+
+#[tokio::test]
+async fn test_export_artifact_tests_dir_truthful_manifest() {
+    // BUG-20261123-021 回归钉：tests/ 子目录（含嵌套）全量落盘后清单才
+    // 记账；成功路径清单 = 盘上实况（files 列表逐项可对账）。
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+
+    let artifact = make_artifact("with-tests", ArtifactKind::Skill, ArtifactStatus::Active);
+    let artifact_dir = dir.path().join("forge").join("skills").join("with-tests");
+    std::fs::create_dir_all(artifact_dir.join("tests").join("sub")).unwrap();
+    std::fs::write(artifact_dir.join("SKILL.md"), &artifact.content).unwrap();
+    std::fs::write(artifact_dir.join("requirements.txt"), b"tokio\n").unwrap();
+    std::fs::write(artifact_dir.join("tests").join("foo.rs"), b"#[test]\n").unwrap();
+    std::fs::write(
+        artifact_dir.join("tests").join("sub").join("bar.rs"),
+        b"#[test]\n",
+    )
+    .unwrap();
+
+    let target = dir.path().join("exports");
+    let export_dir = exporter.export_artifact(&artifact, &target).await.unwrap();
+
+    // 盘上实况
+    assert!(export_dir.join("requirements.txt").is_file());
+    assert!(export_dir.join("tests").join("foo.rs").is_file());
+    assert!(
+        export_dir
+            .join("tests")
+            .join("sub")
+            .join("bar.rs")
+            .is_file()
+    );
+
+    // 清单逐项对账（无谎报、无遗漏）
+    let manifest: ExportManifest = serde_json::from_str(
+        &std::fs::read_to_string(export_dir.join("forge-manifest.json")).unwrap(),
+    )
+    .unwrap();
+    for expected in [
+        "SKILL.md",
+        "requirements.txt",
+        "tests/foo.rs",
+        "tests/sub/bar.rs",
+    ] {
+        assert!(
+            manifest.files.iter().any(|f| f == expected),
+            "manifest missing {expected}: {:?}",
+            manifest.files
+        );
+    }
 }
