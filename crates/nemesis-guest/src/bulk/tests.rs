@@ -19,6 +19,29 @@ fn read_chunk_plan_boundaries() {
     );
 }
 
+// BUG-20261123-018 消费点语义锁：deleted/missing 计数在韧性切换后保持
+// （快路径 Ok/NotFound 直计；重试臂只在非 NotFound 失败时进入，语义
+// 对本用例透明）。守卫层重试行为由 nemesis-utils fsutil 测试钉住。
+#[tokio::test]
+async fn bulk_delete_counts_deleted_and_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    std::fs::write(ws.join("a.txt"), b"x").unwrap();
+    std::fs::write(ws.join("b.txt"), b"y").unwrap();
+    let val = serde_json::json!({ "paths": ["b.txt", "a.txt", "ghost.txt", "a.txt"] });
+    let out = super::bulk_delete(&val, ws).await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    // a.txt 重复出现被 dedup（不重复计数）；ghost.txt 计 missing。
+    assert_eq!(v["deleted"], 2, "两个实存文件删除计数");
+    assert_eq!(v["missing"], 1, "缺席文件计 missing 不算错");
+    assert!(!ws.join("a.txt").exists() && !ws.join("b.txt").exists());
+    // 幂等复跑：全 missing。
+    let out2 = super::bulk_delete(&val, ws).await.unwrap();
+    let v2: serde_json::Value = serde_json::from_str(&out2).unwrap();
+    assert_eq!(v2["deleted"], 0);
+    assert_eq!(v2["missing"], 3, "dedup 后三个路径全部缺席");
+}
+
 #[test]
 fn pack_files_tar_len_exceeds_payload_sum() {
     // tar 头（512B/条目）+ 1024B 收尾块是真实开销——旧分块账（按 payload

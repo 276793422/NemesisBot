@@ -41,3 +41,28 @@ async fn estop_hook_survives_async_context() {
     // 空管理器零会话 → 空报告；不炸即为本回归锁本体。
     assert!(report.is_empty(), "空管理器应零报告: {report:?}");
 }
+
+// ============================================================
+// BUG-20261123-017 回归锁：pid u64→u32 域验域单一真相源。
+// 裸 as u32 把 2^32+ 回绕成小值可命中另一个真实 PID（附着/分析错进程）。
+// ============================================================
+
+#[test]
+fn test_pid_parse_accepts_u32_domain() {
+    assert_eq!(crate::pid::parse(0), Ok(0u32));
+    assert_eq!(crate::pid::parse(12345), Ok(12345u32));
+    assert_eq!(crate::pid::parse(u32::MAX as u64), Ok(u32::MAX));
+}
+
+#[test]
+fn test_pid_parse_rejects_out_of_domain_honestly() {
+    // 2^32 恰好出域：旧裸 cast 回绕成 0（系统保留 PID）——必须 Err 不回绕。
+    let err = crate::pid::parse(u32::MAX as u64 + 1).expect_err("2^32 必须 Err");
+    assert!(err.contains("超出有效范围"), "报错要指明出域: {err}");
+    // u64::MAX 极端值同样 Err。
+    let err = crate::pid::parse(u64::MAX).expect_err("u64::MAX 必须 Err");
+    assert!(
+        err.contains(&u64::MAX.to_string()),
+        "报错要带原值便于留痕: {err}"
+    );
+}

@@ -1892,7 +1892,13 @@ pub async fn commit_project(
                 match std::fs::remove_file(root.join(rel)) {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(format!("删除宿主文件 {rel} 失败: {e}")),
+                    // BUG-20261123-018：非 NotFound 单发失败（AV/索引器瞬时
+                    // 句柄，Windows 常态）不再直接让整个 commit 报错——进
+                    // fsutil 退避重试，耗尽才诚实上抛。
+                    Err(_) => {
+                        nemesis_utils::fsutil::remove_file_retry(root.join(rel))
+                            .map_err(|e| format!("删除宿主文件 {rel} 失败: {e}"))?;
+                    }
                 }
             }
             Ok(())

@@ -611,9 +611,6 @@ pub(super) fn inject_spawn_fn(
     // 专家模型覆盖解析器。
     reloader: std::sync::Arc<ModelProviderReloader>,
 ) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    // 后台任务 id 计数器（同毫秒并发 spawn 防撞）。
-    static BG_SPAWN_COUNTER: AtomicU64 = AtomicU64::new(0);
     // loop 侧镜像共享槽（client_spawn / WSAPI chat.spawn 消费同一闭包）。
     loop_arc.set_spawn_slot(spawn_slot.clone());
     let weak = Arc::downgrade(loop_arc);
@@ -857,20 +854,16 @@ pub(super) fn inject_spawn_fn(
                 }
 
                 // 后台路径：tokio::spawn 包住 run_detached，本调用立即
-                // 返回 marker。task_id 前缀 = loop_continuation:
-                // BG_SPAWN_TASK_PREFIX（与恢复端 list_bg_spawn_pending_sync
-                // 统一定义）。
+                // 返回 marker。task_id 取号走 loop_continuation 单一真相源
+                // next_bg_spawn_task_id（BUG-20261123-014：曾与本文件各自的
+                // per-file 计数器同毫秒等值碰撞 → bg_park 槽覆盖串台；
+                // 前缀与恢复端 list_bg_spawn_pending_sync 统一定义）。
                 // 件2：SubagentStart 在任务真正 spawn 前发（拒绝则不产生
                 // marker / 不 spawn 任务）。
                 if let Some(bridge) = &cc_bridge {
                     bridge.dispatch_subagent_start(&info).await?;
                 }
-                let task_id = format!(
-                    "{}{}_{}",
-                    nemesis_agent::loop_continuation::BG_SPAWN_TASK_PREFIX,
-                    chrono::Utc::now().timestamp_millis(),
-                    BG_SPAWN_COUNTER.fetch_add(1, Ordering::Relaxed),
-                );
+                let task_id = nemesis_agent::loop_continuation::next_bg_spawn_task_id();
                 let bg_agent_id = info.agent_id.clone();
                 let bg_task = info.task.clone();
                 let bg_profile = info.tools_profile.clone();

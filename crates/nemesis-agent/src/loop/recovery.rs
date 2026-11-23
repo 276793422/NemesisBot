@@ -297,8 +297,28 @@ impl AgentLoop {
                     &classified,
                     Some(nemesis_utils::llm_error_class::LlmErrorClass::ContextOverflow)
                 );
+                // 分类器可重试类命中 = 文案已被高特异性判据（状态码/精确
+                // 模式）定性，泛词臂不得截胡。限流/超时文案携带 token 字样
+                // 是现网常态（Anthropic RPM 限流原文 "Number of request
+                // tokens has exceeded your per-minute rate limit" 即含
+                // "tokens"），此前泛词 contains 会把这类错误抢在限流/瞬态
+                // 环之前送进压缩环：2 次必败重呼（上下文没超限，压缩后照样
+                // 429）+ summary cache 被强制推进（破坏性副作用），而真正
+                // 对症的限流退避梯子/瞬态退避反而不走。泛词三件只服务
+                // 「分类器 None」的未知 provider 文案兜底；RateLimit/
+                // Timeout/Overloaded 在下方 else 臂各有自己的恢复环（分类
+                // 器并集），此处禁入——BUG-20261123-011。
+                let classified_retry_class = matches!(
+                    &classified,
+                    Some(
+                        nemesis_utils::llm_error_class::LlmErrorClass::RateLimit
+                            | nemesis_utils::llm_error_class::LlmErrorClass::Timeout
+                            | nemesis_utils::llm_error_class::LlmErrorClass::Overloaded
+                    )
+                );
                 let is_context_error = !is_stream_interrupted
                     && !is_transport_connect_error
+                    && !classified_retry_class
                     && (classified_overflow
                         || ["token", "context", "length"]
                             .iter()
@@ -369,8 +389,11 @@ impl AgentLoop {
 
                     // ③a 429 限流重试环：
                     // 分类词表对齐 provider 侧。与 context-compression 环
-                    // 互斥（限流文案不含 token/context/length/invalid），
-                    // 与 transient 词表不重叠——三环不互吞。 起对
+                    // 的互斥由上方 `!classified_retry_class` 闸保证
+                    // （BUG-20261123-011：旧注释假设「限流文案不含
+                    // token/context/length」是错的——Anthropic RPM 限流
+                    // 原文即含 "tokens"，该假设下限流文案被泛词劫进压缩环），
+                    // 与 transient 词表不重叠。 起对
                     // StreamInterrupted 显式排除：其 Display 尾段携带的
                     // partial 全文可能含 "429"/"rate limit" 字样（模型
                     // 任意输出），误入限流环会把退避逻辑错用在流中断上。

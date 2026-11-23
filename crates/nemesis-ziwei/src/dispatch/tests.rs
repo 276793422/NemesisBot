@@ -276,3 +276,33 @@ fn json_u64_array_parse() {
     assert_eq!(json_u64_array(r#"{"regs":[]}"#, "regs"), Some([0, 0, 0, 0]));
     assert_eq!(json_u64_array(r#"{}"#, "regs"), None);
 }
+
+// ============================================================
+// BUG-20261123-017 回归锁：poll_events wire 值 u64→u32 域验域。
+// id 超 u32 域 = 畸形帧停解析；seq/tid 超域归 0 哨兵——不回绕污染记录。
+// ============================================================
+
+#[test]
+fn test_parse_poll_events_resp_out_of_domain_values() {
+    // id = 2^32（恰好出域）：旧裸 cast 回绕成 0——必须按畸形帧停解析。
+    let resp = r#"{"ok":true,"events":[{"id":4294967296,"seq":1,"tid":2,"regs":[1,2,3,4]},{"id":7,"seq":8,"tid":9,"regs":[0,0,0,0]}],"dropped":0}"#;
+    let (events, _) = parse_poll_events_resp(resp).expect("合法帧头必须 Ok");
+    assert!(
+        events.is_empty(),
+        "id 出域 = 畸形帧：不得产出回绕事件（旧实现 id 回绕成 0）"
+    );
+
+    // id 合法 + seq/tid 超域：事件保留，seq/tid 归 0 哨兵不回绕。
+    let resp = r#"{"ok":true,"events":[{"id":5,"seq":4294967296,"tid":18446744073709551615,"regs":[1,2,3,4]}],"dropped":0}"#;
+    let (events, _) = parse_poll_events_resp(resp).expect("合法帧头必须 Ok");
+    assert_eq!(events.len(), 1, "id 合法的事件必须保留");
+    assert_eq!(events[0].id, 5);
+    assert_eq!(events[0].seq, 0, "seq 出域归 0 哨兵");
+    assert_eq!(events[0].tid, 0, "tid 出域归 0 哨兵");
+
+    // 常规值行为保持。
+    let resp = r#"{"ok":true,"events":[{"id":1,"seq":2,"tid":3,"regs":[4,5,6,7]}],"dropped":0}"#;
+    let (events, _) = parse_poll_events_resp(resp).expect("合法帧头必须 Ok");
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].id, events[0].seq, events[0].tid), (1, 2, 3));
+}

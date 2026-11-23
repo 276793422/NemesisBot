@@ -38,8 +38,9 @@ pub mod http_retry;
 pub mod http_redirect;
 // 请求头防线（BUG-20261122-038）：凭据 trim+控制字符拒绝（纯字符串）+
 // 自定义头对 HeaderName/HeaderValue::from_str 精确拦截（http 门控）——
-// reqwest .header() 对非法名/值 panic（粘贴 key 带换行 = 首次请求炸任务
-// 且流式链路伪装成 Timeout），构造咽喉点 create_provider 同源消费。
+// reqwest .header() 对非法名/值报不点名的 builder error（粘贴 key 带换行
+// = 首请求全挂看不出原因；语义勘误 BUG-20261123-013：builder poison 非
+// panic，探针钉死），构造咽喉点 create_provider 同源消费。
 pub mod header_guard;
 // 带帽单行读（横扫角度 B 续——行帧形态）：外部流行读统一实现，
 // 裸 read_line 无界积累防 OOM；nemesis-mcp stdio 与 nemesis-channels
@@ -85,6 +86,11 @@ pub mod workpool;
 #[cfg(feature = "sqlite-preflight")]
 pub mod sqlite_preflight;
 pub mod string_utils;
+// RFC 3339 时间戳跨偏移安全比较（BUG-20261123-016）：字典序只在同写者
+// 同偏移同精度下成立——本地 `+08:00` 形态写入 × 外部 `Z` 形态输入混用时
+// 时间窗过滤/最新值选取静默错序。forge monitor D1/D3 先例语义晋升共享：
+// monitor 委托、security AuditFilter、web audit 聚合同源消费。
+pub mod ts_order;
 // 年龄/保留天数输入上界钳制单一真相源（R735 数字恐慌面：
 // chrono Duration::days 恐慌带 + as-cast 回绕负 cutoff 全删带，统一收敛）。
 pub mod time_bounds;

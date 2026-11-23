@@ -1,4 +1,4 @@
-use super::{escape_like, sanitize_csv, sanitize_path_segment};
+use super::{escape_closing_tag, escape_like, sanitize_csv, sanitize_path_segment};
 
 #[test]
 fn plain_ids_pass_through() {
@@ -180,6 +180,64 @@ fn escape_like_escapes_wildcards_and_backslash_first() {
     assert_eq!(escape_like(""), "");
     // 混合：一次覆盖三字符 + 无关字符。
     assert_eq!(escape_like("50_100\\200%"), "50\\_100\\\\200\\%");
+}
+
+// ----------：闭合标签逃逸（ASCII 大小写折叠，统一实现出口） ----------
+
+#[test]
+fn escape_closing_tag_case_fold_and_preserve() {
+    // 精确形态：`<` 后插 `\`，标签本体保留原样。
+    assert_eq!(
+        escape_closing_tag("a</system-reminder>b", "system-reminder"),
+        "a<\\/system-reminder>b"
+    );
+    // 大小写变体同样命中（模型解析 HTML 形标记时大小写不敏感）。
+    assert_eq!(
+        escape_closing_tag("</SYSTEM-REMINDER>", "system-reminder"),
+        "<\\/SYSTEM-REMINDER>"
+    );
+    assert_eq!(
+        escape_closing_tag("</System-Reminder>", "system-reminder"),
+        "<\\/System-Reminder>"
+    );
+    // 原始大小写形态保留（只插转义符，不改写内容）。
+    assert_eq!(
+        escape_closing_tag("</UnTrUsTeD_CoNtEnT>", "untrusted_content"),
+        "<\\/UnTrUsTeD_CoNtEnT>"
+    );
+    // 多次出现全部处理。
+    assert_eq!(escape_closing_tag("</t></t>", "t"), "<\\/t><\\/t>");
+    // 无命中直通（含开标签——开标签不转义，与 untrusted_content 防御同口径）。
+    assert_eq!(
+        escape_closing_tag("<system-reminder>x", "system-reminder"),
+        "<system-reminder>x"
+    );
+    assert_eq!(
+        escape_closing_tag("benign text", "system-reminder"),
+        "benign text"
+    );
+    // 近邻形态不误伤（缺 `>` / 多空格 / 前缀延长）。
+    assert_eq!(
+        escape_closing_tag("</system-reminder", "system-reminder"),
+        "</system-reminder"
+    );
+    assert_eq!(
+        escape_closing_tag("</ system-reminder>", "system-reminder"),
+        "</ system-reminder>"
+    );
+    assert_eq!(
+        escape_closing_tag("</system-reminderx>", "system-reminder"),
+        "</system-reminderx>"
+    );
+    // 非 ASCII 内容偏移安全（İ 展开两字节不破坏扫描）。
+    let unicode_mixed = "\u{0130}stanbul</system-reminder>";
+    assert_eq!(
+        escape_closing_tag(unicode_mixed, "system-reminder"),
+        "\u{0130}stanbul<\\/system-reminder>"
+    );
+    // 空内容 / 空 tag 退化安全。
+    assert_eq!(escape_closing_tag("", "system-reminder"), "");
+    assert_eq!(escape_closing_tag("x</>y", ""), "x<\\/>y");
 }
 
 // ----------：OWASP CSV Injection 公式前缀守卫 ----------

@@ -390,10 +390,20 @@ pub fn parse_poll_events_resp(resp: &str) -> Result<(Vec<HookEvent>, u64), PipeE
             let Some(id) = json_get_u64(obj, "id") else {
                 break;
             };
+            // BUG-20261123-017：wire 值 u64 域验域再 cast——id 超 u32 域
+            // 视同畸形帧停解析（与缺 id 同语义）；seq/tid 可选超域归 0
+            // 哨兵。不裸 cast 回绕污染事件记录。
+            let Some(id) = u32::try_from(id).ok() else {
+                break;
+            };
             events.push(HookEvent {
-                id: id as u32,
-                seq: json_get_u64(obj, "seq").unwrap_or(0) as u32,
-                tid: json_get_u64(obj, "tid").unwrap_or(0) as u32,
+                id,
+                seq: json_get_u64(obj, "seq")
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(0),
+                tid: json_get_u64(obj, "tid")
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(0),
                 regs: json_u64_array(obj, "regs").unwrap_or([0; 4]),
             });
         }

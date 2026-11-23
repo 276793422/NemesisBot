@@ -541,3 +541,37 @@ async fn send_internal_command_get_json_body_read_failure_is_error_not_empty_obj
         "错误要指明 body 读取失败（非字段缺失误导）: {err}"
     );
 }
+
+// ============================================================
+// BUG-20261123-017 回归锁：read_gateway_state pid u64 域验域。
+// 损坏/被改的状态文件带超域 pid → None（不回绕成小值误用）。
+// ============================================================
+
+#[test]
+fn test_read_gateway_state_out_of_domain_pid_is_none() {
+    let dir = std::env::temp_dir().join(format!("nb-dash-pid-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("gateway_state.json");
+
+    // 超域 pid（2^32）：旧裸 cast 回绕成 0——必须整体 None。
+    std::fs::write(
+        &path,
+        r#"{"pid":4294967296,"web_host":"127.0.0.1","web_port":49000}"#,
+    )
+    .expect("write");
+    assert!(
+        read_gateway_state(&path).is_none(),
+        "超域 pid 必须按状态文件无效处理（None）"
+    );
+
+    // 合法 pid 行为保持。
+    std::fs::write(
+        &path,
+        r#"{"pid":4242,"web_host":"127.0.0.1","web_port":49000}"#,
+    )
+    .expect("write");
+    let info = read_gateway_state(&path).expect("合法 pid 必须解析成功");
+    assert_eq!(info.pid, 4242);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

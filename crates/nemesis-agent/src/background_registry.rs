@@ -222,6 +222,8 @@ pub(crate) fn utf8_safe_len(chunk: &[u8]) -> usize {
 ///   只警告一次，后续静默（失败进程不该淹日志）；
 /// - **不删文件**：条目移除 / kill / 注册表 Drop 均不删——盘上日志是档案
 ///   （gateway 重启杀全部 job 时文件保留已产出内容，本机制的意义所在）。
+///   唯一保留面 = 7 天 TTL 清扫（BUG-20261123-005，[`sweep_expired_tee_logs`]：
+///   与 uploads / task_result / chat_log spill 同惯例；kill/Drop 语义不变）。
 pub(crate) struct TeeFile {
     file: std::sync::Mutex<std::fs::File>,
     path: PathBuf,
@@ -233,6 +235,17 @@ impl TeeFile {
     /// `cmd`/`cwd` 进头注记（档案自描述）。
     fn create(dir: &Path, job_id: u64, cmd: &str, cwd: &str) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
+        // pay-as-you-go TTL 清扫（BUG-20261123-005）：每个新任务创建镜像
+        // 时顺带清走 7 天前的旧档案——清扫挂创建点保证长驻 gateway 任意
+        // 运行时长下目录有界。best-effort，失败不影响本任务镜像创建。
+        let swept = sweep_expired_tee_logs(dir, TEE_LOG_RETENTION_DAYS);
+        if swept > 0 {
+            debug!(
+                dir = %dir.display(),
+                swept,
+                "[BackgroundRegistry] tee log TTL sweep"
+            );
+        }
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -282,6 +295,69 @@ impl TeeFile {
             );
         }
     }
+}
+
+/// Tee 镜像的保留天数（BUG-20261123-005）。7 = 全仓原始输出/暂存族的
+/// 既有惯例值（uploads / task_result_store / chat_log spill 同为 7 天
+/// TTL）；tee（2026-11-22 新增）此前是唯一零保留的镜像族——长跑任务的
+/// stdout 镜像（每任务可达数百 MB）永久累积无人清。0 = 禁用闸（惯例
+/// 形态），当前无常量调用方传 0，保留给未来 config 化。
+const TEE_LOG_RETENTION_DAYS: u64 = 7;
+
+/// Tee 镜像日志 7 天 TTL 清扫（BUG-20261123-005）。只认 `bg_*.log`
+/// 命名（专用目录 + 模式守卫双保险，外来文件不动）；mtime < cutoff
+/// 判过期——活跃任务的镜像每次 append 都 flush，mtime 恒新鲜，不会被
+/// 误删（7 天长跑任务才可能撞上，届时 Windows 上打开中的句柄也会让
+/// remove 失败跳过）。清扫是家务不是正确性路径：单文件失败 warn 后
+/// 继续，目录缺席/不可读 = 无可清扫返回 0。
+///
+/// **挂载点 = [`TeeFile::create`]（pay-as-you-go）**：每个新后台任务
+/// 创建镜像时顺带清扫超龄档案——启动期单点清扫（task_result_store
+/// 形态）在长驻 gateway（周级不重启）上不收敛，逐任务清扫保证任意
+/// 运行时长下目录都有界。与结构体文档「不删文件」的关系：kill / Drop
+/// / 条目移除不删档案的语义不变，TTL 只清**超龄**档案（档案语义 =
+/// 可回查，不是永久保留——全仓同惯例）。
+fn sweep_expired_tee_logs(dir: &Path, retention_days: u64) -> usize {
+    if retention_days == 0 {
+        return 0;
+    }
+    // 受检换算（spill::cleanup_expired 同款纪律）：saturating_mul 封顶
+    // 乘积 + checked_sub 防 SystemTime 溢出——巨值 retention 落「什么都不
+    // 删」而非 cutoff 回绕成「现在」误删新鲜档案。
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+        retention_days.saturating_mul(24 * 3600),
+    )) else {
+        return 0;
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return 0, // 目录缺席/不可读 = 无可清扫
+    };
+    let mut deleted = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_tee_log = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|n| n.starts_with("bg_") && n.ends_with(".log"));
+        if !is_tee_log || path.is_dir() {
+            continue;
+        }
+        let expired = path
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|mt| mt < cutoff)
+            .unwrap_or(false);
+        if expired {
+            // fsutil 韧性删除（Windows AV/索引器瞬时句柄是常态，裸
+            // remove_file 会把家务失败放大成 warn 噪声；重试耗尽仍失败
+            // 才返回 false——留给下个任务启动再试）。
+            if nemesis_utils::fsutil::remove_file_resilient(&path) {
+                deleted += 1;
+            }
+        }
+    }
+    deleted
 }
 
 /// 注册表中的单个任务条目。

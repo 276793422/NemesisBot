@@ -4172,3 +4172,59 @@ async fn test_cleanup_old_snapshots_also_sweeps_tmp_orphans() {
         "stale orphan must be swept in the same round"
     );
 }
+
+// --- BUG-20261123-014：bg_spawn task_id 单一真相源 -------------------------
+// 曾经 agent_factory 主 spawn / 项目 spawn 两路各持 per-file 计数器，同毫秒
+// 等值计数时产出同一 task_id（bg_park 注册槽覆盖语义 → 完成回灌跨会话串台）。
+// 修复 = 取号收敛到 next_bg_spawn_task_id 单例计数器；本组测试钉三件事：
+// 前缀形态、同毫秒密集取号互异（计数器 tiebreaker 生效）、id 全程可作
+// 文件名（经 sanitize_path_segment 恒等映射）。
+
+#[test]
+fn bg_spawn_task_id_shape_and_prefix() {
+    let id = crate::loop_continuation::next_bg_spawn_task_id();
+    assert!(
+        id.starts_with(crate::loop_continuation::BG_SPAWN_TASK_PREFIX),
+        "id 必须带 bg_ 前缀（恢复端按前缀筛 pending 快照）: {id}"
+    );
+    let tail = id
+        .strip_prefix(crate::loop_continuation::BG_SPAWN_TASK_PREFIX)
+        .unwrap();
+    let parts: Vec<&str> = tail.split('_').collect();
+    assert_eq!(parts.len(), 2, "形态必须是 bg_{{millis}}_{{counter}}: {id}");
+    assert!(
+        parts[0].chars().all(|c| c.is_ascii_digit()) && !parts[0].is_empty(),
+        "millis 段必须是纯数字: {id}"
+    );
+    assert!(
+        parts[1].chars().all(|c| c.is_ascii_digit()) && !parts[1].is_empty(),
+        "counter 段必须是纯数字: {id}"
+    );
+}
+
+#[test]
+fn bg_spawn_task_id_distinct_under_rapid_successive_calls() {
+    // 同毫秒窗口内密集取号（时间戳不变），唯一性必须由计数器承载——
+    // 这是双计数器旧形态的碰撞窗（同 millis 等值 counter → 同 id）。
+    let ids: Vec<String> = (0..256)
+        .map(|_| crate::loop_continuation::next_bg_spawn_task_id())
+        .collect();
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(
+        unique.len(),
+        ids.len(),
+        "密集取号出现重复 task_id（计数器 tiebreaker 失效）"
+    );
+}
+
+#[test]
+fn bg_spawn_task_id_survives_path_segment_sanitization_unchanged() {
+    // task_id 落盘走 sanitize_path_segment（rpc_cache 快照文件名）；纯
+    // [a-z0-9_] 形态必须是恒等映射（≤80 字符白名单内），不做额外变形。
+    let id = crate::loop_continuation::next_bg_spawn_task_id();
+    assert_eq!(
+        nemesis_utils::sanitize::sanitize_path_segment(&id),
+        id,
+        "id 含 sanitize 会变形的字符（恢复端/快照键一致性破坏）: {id}"
+    );
+}

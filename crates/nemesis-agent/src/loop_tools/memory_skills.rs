@@ -663,7 +663,14 @@ impl SkillManageTool {
         }
         std::fs::create_dir_all(skill_dir)
             .map_err(|e| format!("failed to create skill dir: {}", e))?;
-        if let Err(e) = std::fs::write(&skill_md, content) {
+        // 原子落盘（BUG-20261123-007）：裸 fs::write 截断原地写，崩溃撕裂
+        // 半截 SKILL.md 残留最终位置且被上方 overwrite 检查永久挡住重写；
+        // 走家族唯一真相源 write_file_atomic（tmp+rename），失败回滚语义不变。
+        if let Err(e) = nemesis_utils::file::write_file_atomic(
+            &skill_md.to_string_lossy(),
+            content.as_bytes(),
+            0o644,
+        ) {
             // 回滚清理走韧性包装（残留空目录无害，尽力而为）。
             nemesis_utils::fsutil::remove_dir_all_resilient(skill_dir);
             return Err(format!("failed to write SKILL.md: {}", e));
@@ -725,8 +732,14 @@ impl SkillManageTool {
                 check.block_reason
             ));
         }
-        std::fs::write(&skill_md, &content)
-            .map_err(|e| format!("failed to write SKILL.md: {}", e))?;
+        // 原子落盘（BUG-20261123-007）：edit 覆盖**既有**技能，裸写撕裂即毁
+        // 既有持久态（同 episodic 已修判词），走家族唯一真相源。
+        nemesis_utils::file::write_file_atomic(
+            &skill_md.to_string_lossy(),
+            content.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("failed to write SKILL.md: {}", e))?;
         Ok(format!(
             "Skill '{}' updated (lint {:.0}/100).",
             name,
@@ -777,7 +790,13 @@ impl SkillManageTool {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir: {}", e))?;
         }
-        std::fs::write(&target, content).map_err(|e| format!("failed to write file: {}", e))?;
+        // 原子落盘（BUG-20261123-007，家族唯一真相源）。
+        nemesis_utils::file::write_file_atomic(
+            &target.to_string_lossy(),
+            content.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("failed to write file: {}", e))?;
         Ok(format!(
             "Wrote {} ({} bytes) in skill '{}'.",
             target.display(),

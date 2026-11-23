@@ -419,7 +419,12 @@ impl Tool for ZiweiBridgeTool {
             "select_target" => {
                 mgr.select_target(
                     ws,
-                    params.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32),
+                    // BUG-20261123-017：pid u64 域验域再 cast——LLM 参数超域
+                    // pid 落 None = 缺参诚实报错，不回绕附着错进程。
+                    params
+                        .get("pid")
+                        .and_then(|p| p.as_u64())
+                        .and_then(|p| nemesis_ziwei::pid::parse(p).ok()),
                     params.get("exe").and_then(|e| e.as_str()),
                 )
                 .await?

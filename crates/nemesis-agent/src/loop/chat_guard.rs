@@ -30,33 +30,11 @@ pub(crate) fn is_wrappable_tool(tool_name: &str) -> bool {
 /// → 在 `<` 后插 `\` 变成 `<\/untrusted_content>`，防外部内容伪造闭合
 /// 标签提前逃出标记区（模型解析 HTML 形标记时大小写变体同样构成闭合）。
 ///
-/// 逐字节 ASCII 大小写折叠比对——不用 `to_lowercase()`：全 Unicode 小写
-/// 映射会改变字节长度（如 İ → i̇ 展开为两字节），破坏与原串的偏移对齐。
-/// 匹配起点/终点恒为 ASCII 字节（`<`/`>`），切片安全。
+/// 实现已提升为跨面统一定义 [`nemesis_utils::sanitize::escape_closing_tag`]
+/// （system-reminder 帧同源共用，防严谨度漂移——BUG-20261123-006 口径）；
+/// 本壳保留 untrusted_content 专参形态。
 pub(crate) fn escape_closing_tag(content: &str) -> String {
-    const NEEDLE: &[u8] = b"</untrusted_content>";
-    let bytes = content.as_bytes();
-    let mut out = String::with_capacity(content.len());
-    let mut i = 0;
-    let mut copied = 0;
-    while i + NEEDLE.len() <= bytes.len() {
-        if bytes[i..i + NEEDLE.len()]
-            .iter()
-            .zip(NEEDLE)
-            .all(|(a, b)| a.eq_ignore_ascii_case(b))
-        {
-            out.push_str(&content[copied..i]);
-            out.push_str("<\\");
-            // 保留原始大小写形态（只插转义符，不改写内容本身）。
-            out.push_str(&content[i + 1..i + NEEDLE.len()]);
-            i += NEEDLE.len();
-            copied = i;
-        } else {
-            i += 1;
-        }
-    }
-    out.push_str(&content[copied..]);
-    out
+    nemesis_utils::sanitize::escape_closing_tag(content, "untrusted_content")
 }
 
 /// #46：包裹入口——`<untrusted_content>` 标记 + 内容 + 闭合标签，内容侧

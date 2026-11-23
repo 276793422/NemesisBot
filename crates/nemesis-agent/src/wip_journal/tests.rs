@@ -405,3 +405,48 @@ fn test_render_injection_section_contract() {
     assert!(text.contains("一次性注入"), "一次性语义向模型声明");
     assert!(text.contains("不是行动指令"), "事实记录非指令防注入放大");
 }
+
+/// BUG-20261123-015：撕裂尾不毒化恢复现场——wip jsonl 尾行多字节截半
+/// （断电残留）时，旧读法 read_to_string 整文件 Err → consume_previous
+/// 返回 false → 上一轮恢复材料全部静默丢弃。修复后坏尾行 parse 失败
+/// 跳过，前缀事件照常进 pending 注入表。
+#[test]
+fn test_consume_previous_torn_tail_preserves_prefix() {
+    use std::io::Write;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let j = WipJournal::default();
+    j.register(root, "s-torn");
+    j.append(
+        "s-torn",
+        WipEvent::ToolStart {
+            ts: 1,
+            call_id: "c1".into(),
+            tool: "exec".into(),
+            args: "ls".into(),
+        },
+    );
+    j.append(
+        "s-torn",
+        WipEvent::Text {
+            ts: 2,
+            text: "正在查看".into(),
+        },
+    );
+    // 模拟断电撕裂：「看」(E7 9C 8B) 截半只留首字节，无换行。
+    let path = root.join("logs").join("wip").join("s-torn.jsonl");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    f.write_all(&[0xE7]).unwrap();
+    drop(f);
+
+    assert!(
+        j.consume_previous(root, "s-torn"),
+        "撕裂尾不得丢弃前缀现场（修复前整文件 Err → false）"
+    );
+    let rendered = j.pending_for("s-torn").expect("pending 已挂表");
+    assert!(rendered.contains("exec"), "前缀工具事件保全");
+    assert!(rendered.contains("正在查看"), "前缀文本事件保全");
+}

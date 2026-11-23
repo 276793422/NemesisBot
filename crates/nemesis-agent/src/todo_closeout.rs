@@ -74,7 +74,10 @@ fn first_block_feedback(unfinished: &[String]) -> String {
          的项才保留未完成；最终答复中列明每项的尝试记录与需要用户做什么。\n\
          不要虚报完成；清单状态必须与实际一致。\n</system-reminder>",
         unfinished.len(),
-        unfinished.join("\n")
+        // todo 内容是模型转写的工具产物文本（可含对话注入的标记），进自帧
+        // 前过闭合标签逃逸——大小写折叠 `</system-reminder>` 变体同样构成
+        // 闭合（BUG-20261123-006，统一实现同源）。两个模板同一防线。
+        nemesis_utils::sanitize::escape_closing_tag(&unfinished.join("\n"), "system-reminder")
     )
 }
 
@@ -87,7 +90,7 @@ fn escalation_feedback(unfinished: &[String]) -> String {
          试了什么手段、失败原因、为何落在用户专属域（凭据/授权/物理接入/外部系统权限）。\n\
          2. 否则立即继续调用工具执行剩余项，完成后再给最终答复。\n</system-reminder>",
         unfinished.len(),
-        unfinished.join("\n")
+        nemesis_utils::sanitize::escape_closing_tag(&unfinished.join("\n"), "system-reminder")
     )
 }
 

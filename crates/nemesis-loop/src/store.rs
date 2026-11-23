@@ -102,7 +102,10 @@ pub fn remove_loop(dir: &Path, id: &str) -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
     }
-    std::fs::remove_file(&path).map_err(|e| format!("remove {} failed: {e}", path.display()))?;
+    // BUG-20261123-018：状态文件刚被 save 重写的概率高（AV/索引器瞬时句柄
+    // Windows 常态），删除走 fsutil 退避重试，耗尽才报错。
+    nemesis_utils::fsutil::remove_file_retry(&path)
+        .map_err(|e| format!("remove {} failed: {e}", path.display()))?;
     Ok(true)
 }
 

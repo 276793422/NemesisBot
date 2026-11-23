@@ -58,7 +58,10 @@ pub(crate) fn read_gateway_state(path: &Path) -> Option<GatewayInfo> {
     let content = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
     Some(GatewayInfo {
-        pid: v["pid"].as_u64()? as u32,
+        // BUG-20261123-017：pid u64 域验域再 cast（port 防御闸同款习语；
+        // dashboard 命令不依赖 ziwei feature，故内联而非 nemesis_ziwei::pid）
+        // ——损坏的状态文件超域 pid 按无 pid 处理（None），不回绕成小值。
+        pid: v["pid"].as_u64().filter(|p| *p <= u32::MAX as u64)? as u32,
         web_host: v["web_host"].as_str()?.to_string(),
         web_port: v["web_port"].as_i64()?,
     })

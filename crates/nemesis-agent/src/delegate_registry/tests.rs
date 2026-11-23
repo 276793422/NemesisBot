@@ -1436,3 +1436,97 @@ async fn delegate_output_no_byte_hole_split_cjk_composes_bug_20261108_027() {
 
     mgr.stop(id).await.expect("stop ok");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261123-011 回归锁：delegate_start spawn 必须接窄版 env 闸
+// ---------------------------------------------------------------------------
+
+/// 环境探针 fake CLI：echo 两个探针变量后保持 stdin 回显（同
+/// make_fake_echo_cli 形态，多一行 echo——delegate_output 从 stdout
+/// 读到探针行）。
+fn make_env_probe_cli(dir: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        let p = dir.join("fake_delegate_envprobe.cmd");
+        std::fs::write(
+            &p,
+            "@echo off\r\necho OUT PLAIN=%NB_DELEG_PLAIN_R2477% SENS=%NEMESISBOT_DELEG_PROBE_R2477%\r\nmore\r\n",
+        )
+        .expect("write fake cli");
+        p.to_string_lossy().to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("fake_delegate_envprobe.sh");
+        std::fs::write(
+            &p,
+            "#!/bin/sh\necho \"OUT PLAIN=$NB_DELEG_PLAIN_R2477 SENS=$NEMESISBOT_DELEG_PROBE_R2477\"\ncat\n",
+        )
+        .expect("write fake cli");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        p.to_string_lossy().to_string()
+    }
+}
+
+/// 回归锁（BUG-20261123-011）：delegate_start 的三方 CLI spawn 必须
+/// 接窄版 env 闸（家族闸纪律——同族 loop_tools::run_cli_delegation
+/// 已接，此前漏接）。窄闸语义两轴自证：bot 内部命名空间探针
+/// （NEMESISBOT_ 前缀，含 NEMESISBOT_VAULT_PASSPHRASE 主口令通道）
+/// 必须剥；显式 env 参数注入的非敏感探针必须原样存活（闸不误杀
+/// 工具层凭据注入面）。
+#[tokio::test]
+async fn delegate_start_strips_nemesisbot_env_keeps_explicit_injection() {
+    let _serial = TEST_LOCK.lock().await;
+    nemesis_utils::env_sanitize::set_child_env_sanitize_enabled(true);
+    // 敏感探针走进程 env（窄闸枚举父进程环境剥除的真实路径）；独立
+    // R2477 后缀与并行测试进程环境条目互不干扰。
+    unsafe { std::env::set_var("NEMESISBOT_DELEG_PROBE_R2477", "sensitive-deleg-marker") };
+
+    let dir = unique_temp_dir("envprobe");
+    let cli = make_env_probe_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    // 非敏感探针走 start 的显式 env 参数（工具层凭据注入面）——
+    // 窄闸只剥 NEMESISBOT_ 命名空间，显式注入必须穿透闸存活。
+    let mut explicit_env = std::collections::HashMap::new();
+    explicit_env.insert(
+        "NB_DELEG_PLAIN_R2477".to_string(),
+        "plain-deleg-marker".to_string(),
+    );
+
+    let started = mgr
+        .start(
+            DelegateProtocolKind::ClaudeStreamJson,
+            &cli,
+            None,
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            explicit_env,
+            Duration::MAX,
+        )
+        .await
+        .expect("start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+
+    let out = wait_output_pred(&mgr, id, |o| {
+        o["raw"]["chunk"]
+            .as_str()
+            .is_some_and(|c| c.contains("OUT PLAIN="))
+    })
+    .await;
+    let chunk = out["raw"]["chunk"].as_str().unwrap().to_string();
+
+    unsafe { std::env::remove_var("NEMESISBOT_DELEG_PROBE_R2477") };
+    mgr.stop(id).await.expect("stop ok");
+
+    assert!(
+        chunk.contains("plain-deleg-marker"),
+        "显式 env 注入必须穿透窄闸存活（不误杀凭据注入面）: {chunk}"
+    );
+    assert!(
+        !chunk.contains("sensitive-deleg-marker"),
+        "NEMESISBOT_ 命名空间探针必须被窄闸剥除（此前漏接 = 主口令通道 \
+         NEMESISBOT_VAULT_PASSPHRASE 泄漏给三方 CLI 子代理）: {chunk}"
+    );
+}

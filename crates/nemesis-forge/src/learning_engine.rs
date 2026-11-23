@@ -1147,9 +1147,18 @@ impl LearningEngine {
                     // 同口径——写盘失败 = 不能部署 = 不注册，result 诚实
                     // failed（两条平行 create 路径必须同步演进，R17 纪律）。
                     let artifact_dir = self.forge_dir.join("skills").join(&draft_name);
-                    if let Err(e) = std::fs::create_dir_all(&artifact_dir).and_then(|_| {
-                        std::fs::write(artifact_dir.join("SKILL.md"), &current_content)
-                    }) {
+                    // 原子落盘（BUG-20261123-007，家族唯一真相源；失败=不部署
+                    // 不注册语义不变）。
+                    let draft_write = std::fs::create_dir_all(&artifact_dir)
+                        .map_err(|e| e.to_string())
+                        .and_then(|_| {
+                            nemesis_utils::file::write_file_atomic(
+                                &artifact_dir.join("SKILL.md").to_string_lossy(),
+                                current_content.as_bytes(),
+                                0o644,
+                            )
+                        });
+                    if let Err(e) = draft_write {
                         tracing::warn!(
                             name = %draft_name,
                             error = %e,
@@ -1190,9 +1199,18 @@ impl LearningEngine {
                         let ws_skill_dir = workspace
                             .join("skills")
                             .join(format!("{}-forge", draft_name));
-                        if let Err(e) = std::fs::create_dir_all(&ws_skill_dir).and_then(|_| {
-                            std::fs::write(ws_skill_dir.join("SKILL.md"), &current_content)
-                        }) {
+                        // 原子落盘（BUG-20261123-007，家族唯一真相源；失败
+                        // WARN 留痕不回滚语义不变）。
+                        let ws_copy_write = std::fs::create_dir_all(&ws_skill_dir)
+                            .map_err(|e| e.to_string())
+                            .and_then(|_| {
+                                nemesis_utils::file::write_file_atomic(
+                                    &ws_skill_dir.join("SKILL.md").to_string_lossy(),
+                                    current_content.as_bytes(),
+                                    0o644,
+                                )
+                            });
+                        if let Err(e) = ws_copy_write {
                             tracing::warn!(
                                 path = %ws_skill_dir.display(),
                                 error = %e,

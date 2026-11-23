@@ -2265,13 +2265,20 @@ impl AuditFilter {
         {
             return false;
         }
+        // BUG-20261123-016：时间窗过滤走时刻序（nemesis_utils::ts_order
+        // 单一真相源）。字典序只在同写者同偏移同精度下成立——事件写入端
+        // 恒为 Local::now().to_rfc3339()（本地偏移形态），而守约调用方按
+        // doc 契约（RFC 3339）传 Z 形态边界（浏览器 toISOString 惯例）时，
+        // 字典序把 `10:00+08:00`（02:00Z）排到 `09:00Z` 之后，时间窗
+        // 静默错滤（证据存在但查不出）。双侧可解析=时刻序；任一不可解析
+        // 回落字符串序（与 forge monitor D1/D3 先例同语义）。
         if let Some(ref start) = self.start_time
-            && event.timestamp.as_str() < start.as_str()
+            && nemesis_utils::ts_order::ts_before(event.timestamp.as_str(), start.as_str())
         {
             return false;
         }
         if let Some(ref end) = self.end_time
-            && event.timestamp.as_str() > end.as_str()
+            && nemesis_utils::ts_order::ts_after(event.timestamp.as_str(), end.as_str())
         {
             return false;
         }

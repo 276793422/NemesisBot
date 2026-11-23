@@ -515,6 +515,24 @@ impl DelegateManager {
         #[cfg(not(target_os = "windows"))]
         cmd.process_group(0);
 
+        // env 窄版闸（家族闸纪律：spawn 点必须显式接闸——BUG-20261123-012
+        // 回归修复，此前漏接）：三方 CLI 子代理不继承 bot 内部命名空间变量
+        // （NEMESISBOT_VAULT_PASSPHRASE 主口令通道；executor 场景的
+        // ROLE / EXECUTOR_PIPE 协议端点路径——管道名泄漏给三方进程 =
+        // 协议面暴露）。与 loop_tools::run_cli_delegation 同款窄剥：
+        // 关键词黑名单不适用（三方 CLI 自身 auth 依赖的 env key 必须保留，
+        // 全剥砍登录态）；显式 `env` 参数（工具层凭据注入面）经 `.envs`
+        // 在闸后仍生效，不受影响。窄版语义见 nemesis-utils::env_sanitize
+        // 模块文档；受同一进程级开关（security.sanitize_child_env）门控。
+        let stripped_env = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
+        if stripped_env > 0 {
+            tracing::debug!(
+                stripped_env,
+                cli = cli_path,
+                "narrow env sanitize before delegate spawn (NEMESISBOT_* only)"
+            );
+        }
+
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to start delegate CLI '{cli_path}': {e}"))?;

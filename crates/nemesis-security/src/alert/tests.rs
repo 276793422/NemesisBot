@@ -439,6 +439,13 @@ fn read_one_http_request(stream: &mut std::net::TcpStream) -> String {
 }
 
 #[tokio::test]
+// clippy::await_holding_lock 允许：TEST_LOCK 是 parking_lot 同步互斥，
+// 本测试持 guard 跨 await。可证安全——current-thread runtime 内唯一
+// spawn 的任务（dispatch_webhook，alert.rs）在 emit 时已捕获全部所需
+// （payload/client/urls clone），await 窗口期不读全局态、不取本锁；
+// 跨线程的同步阻塞恰是串行化本意。若未来在该 runtime 内 spawn 出
+// 取 TEST_LOCK 的任务，本论证失效，需改异步互斥。
+#[allow(clippy::await_holding_lock)]
 async fn webhook_delivery_reaches_http_server() {
     let _serial = TEST_LOCK.lock();
     reset_for_tests();

@@ -284,7 +284,10 @@ impl GitHubRegistry {
 
         std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
         let skill_path = std::path::Path::new(target_dir).join("SKILL.md");
-        std::fs::write(&skill_path, &body).map_err(NemesisError::Io)?;
+        // 原子落盘（BUG-20261123-007）：撕裂的 SKILL.md = 安装半截技能；
+        // 走家族唯一真相源。helper 返回 String，错误适配 Other。
+        nemesis_utils::file::write_file_atomic(&skill_path.to_string_lossy(), &body, 0o644)
+            .map_err(|e| NemesisError::Other(format!("write SKILL.md failed: {e}")))?;
 
         Ok(InstallResult {
             version: install_version,

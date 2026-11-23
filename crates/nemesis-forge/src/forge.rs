@@ -561,9 +561,18 @@ impl Forge {
             return None;
         }
         let artifact_dir = self.forge_dir.join("skills").join(&slug);
-        if let Err(e) = std::fs::create_dir_all(&artifact_dir)
-            .and_then(|_| std::fs::write(artifact_dir.join("SKILL.md"), &distilled.skill_md))
-        {
+        // 原子落盘（BUG-20261123-007）：SKILL.md 是 registry 引用的权威载荷，
+        // 裸写撕裂 = 注册指向半截文件；走家族唯一真相源 write_file_atomic。
+        let draft_write = std::fs::create_dir_all(&artifact_dir)
+            .map_err(|e| e.to_string())
+            .and_then(|_| {
+                nemesis_utils::file::write_file_atomic(
+                    &artifact_dir.join("SKILL.md").to_string_lossy(),
+                    distilled.skill_md.as_bytes(),
+                    0o644,
+                )
+            });
+        if let Err(e) = draft_write {
             tracing::warn!(error = %e, name = %slug, "[Forge] auto_skill: failed to write draft SKILL.md");
             return None;
         }
@@ -1068,9 +1077,18 @@ impl Forge {
             .workspace
             .join("skills")
             .join(format!("{}-forge", name));
-        if let Err(e) = std::fs::create_dir_all(&workspace_skill_dir)
-            .and_then(|_| std::fs::write(workspace_skill_dir.join("SKILL.md"), &skill_content))
-        {
+        // 原子落盘（BUG-20261123-007，家族唯一真相源；失败 WARN 留痕不回滚
+        // 语义不变）。
+        let ws_copy_write = std::fs::create_dir_all(&workspace_skill_dir)
+            .map_err(|e| e.to_string())
+            .and_then(|_| {
+                nemesis_utils::file::write_file_atomic(
+                    &workspace_skill_dir.join("SKILL.md").to_string_lossy(),
+                    skill_content.as_bytes(),
+                    0o644,
+                )
+            });
+        if let Err(e) = ws_copy_write {
             tracing::warn!(
                 path = %workspace_skill_dir.display(),
                 error = %e,

@@ -39,6 +39,23 @@ pub fn atomic_tmp_path(parent: &Path) -> std::path::PathBuf {
     ))
 }
 
+/// 撕裂尾安全读（追加式 jsonl/日志的读侧防线）：`fs::read` +
+/// `String::from_utf8_lossy`。
+///
+/// 为什么不用 [`std::fs::read_to_string`]：追加写（append + write_all，无
+/// fsync 的日志惯例）在断电/崩溃下可留下撕裂尾行——尾行劈中多字节 UTF-8
+/// 字符（中文内容常态）时整个文件非 UTF-8，`read_to_string` 直接
+/// `Err(InvalidData)`，**坏一行毒化整个文件**：读方拿到空/None，前缀完好
+/// 行全部陪葬。本 helper 把损坏降级为坏字节位置的 U+FFFD 替换符——下游
+/// 逐行 JSON parse 对坏尾行失败即跳过（既有坏行纪律），完好前缀全部保全。
+/// 单对象 JSON 文件（meta/trash.json 等）不适用此防线（撕裂尾=对象本身
+/// 已坏，逐行语义无意义）——那些文件保持 `read_to_string` + 解析失败
+/// 留痕的诚实处理。
+pub fn read_lossy_to_string(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// Atomically write data to a file: unique same-dir temp file → write →
 /// flush → `sync_all` → rename over target（unix 天然覆盖 / Windows
 /// `MOVEFILE_REPLACE_EXISTING`——rename 两平台都执行，见下方 bullet）

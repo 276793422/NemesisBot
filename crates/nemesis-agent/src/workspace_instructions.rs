@@ -111,8 +111,11 @@ pub fn load_dir_instruction_files(dir: &Path) -> Vec<(PathBuf, String)> {
 
 /// Escape a literal `</system-reminder>` inside instruction content so
 /// repository-controlled text cannot close the plugin-owned frame.
+/// ASCII 大小写折叠（`</SYSTEM-REMINDER>` 变体同样构成闭合——untrusted_content
+/// 防御同款结论），统一实现见 [`nemesis_utils::sanitize::escape_closing_tag`]
+///（BUG-20261123-006：原 `str::replace` 大小写敏感，严谨度低于同族防御）。
 fn escape_close_tag(s: &str) -> String {
-    s.replace("</system-reminder>", "<\\/system-reminder>")
+    nemesis_utils::sanitize::escape_closing_tag(s, "system-reminder")
 }
 
 /// Render the chain into the `# Workspace Instructions` section (no outer

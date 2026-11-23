@@ -92,6 +92,17 @@ pub(crate) fn resolved_header_pairs(lines: &[String]) -> Vec<(String, String)> {
         let field = format!("mcp.headers.{name}");
         match nemesis_config::resolve_secret_field(raw_value.trim(), &field) {
             Ok(value) => {
+                // BUG-20261123-013：解析后真值补校验——validate_mcp_header_line
+                // 只验行语法（头名/引用名形态），env:/vault:/yaml: 解析出的
+                // 真值（含字面量转义换行）可携带控制字符：原样注入会在每请求
+                // 报不点名的 builder error，server 表现为「整 server 挂但看
+                // 不出为什么」。与上方「失败行 WARN 跳过不毒化」同哲学：非法
+                // 对 WARN 跳过（头名落日志；reason 文案按 SEC-002 不含值）。
+                if let Err(reason) = nemesis_utils::header_guard::validate_header_pair(name, &value)
+                {
+                    tracing::warn!("[mcp.http] 头 {name}: 解析后值非法，跳过（{reason}）");
+                    continue;
+                }
                 if let Some(slot) = out.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
                     slot.1 = value;
                 } else {

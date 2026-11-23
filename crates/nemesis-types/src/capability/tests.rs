@@ -112,6 +112,71 @@ fn detect_qwen_cloud_api_tier_names_not_mini() {
     assert_eq!(tier_of("qwen2.5-72b-instruct"), ModelTier::Normal);
 }
 
+// BUG-20261123-010 回归锁：已知小杯 API 档位词族（qwen 旗舰词修复
+// BUG-20261113-131 的**反向**同族缺口）——zhipu glm-4-flash/-air/-lite、
+// doubao-lite、ernie-lite/-tiny/-speed、hunyuan-lite、spark-lite/-tiny 均
+// 不含尺寸标记、不命中任何关键词 → 修复前落到末尾默认 Big = 已知小模型
+// （~9-32B）拿全量工具面 + 重试预算 2，恰是 tier 分级要防的反面。前缀
+// 守卫限定厂商；旗舰词（glm-4-plus/doubao-pro/spark-max）不在词族、保持
+// 默认 Big 宁大勿小；gemini-2.0-flash 被先行 big marker "gemini-2" 救回
+// 不受小杯表影响。
+#[test]
+fn detect_known_small_api_tier_names_not_big() {
+    let tier_of = |full_model: &str| {
+        detect_tier(&TierHint {
+            full_model: Some(full_model.into()),
+            real_name: None,
+            size_b: None,
+        })
+    };
+    // 确定小杯：必须判 Mini。
+    for name in [
+        "glm-4-flash",
+        "glm-4-flashx",
+        "glm-4.5-flash",
+        "glm-4v-flash",
+        "glm-4-air",
+        "glm-4-airx",
+        "glm-4-lite",
+        "zhipu/glm-4-flash",
+        "doubao-lite-4k",
+        "doubao-lite-32k",
+        "ernie-lite-8k",
+        "ernie-tiny-8k",
+        "ernie-speed-128k",
+        "hunyuan-lite",
+        "spark-lite",
+        "spark-tiny",
+        "GLM-4-Flash", // 大小写漂移同族
+    ] {
+        assert_eq!(tier_of(name), ModelTier::Mini, "{name} 须判 Mini");
+    }
+    // 旗舰词不在小杯词族：保持默认 Big（宁大勿小）。
+    for name in [
+        "glm-4-plus",
+        "glm-4.6",
+        "doubao-pro-32k",
+        "ernie-4.0-8k",
+        "hunyuan-standard",
+        "spark-max",
+        // 第二点（qwen 裸前缀删除）：无尺寸 API 裸名全是旗舰/多模态——
+        // 修复前命中 small 裸前缀 "qwen3-"/"qwen-" 被砍 Mini（BUG-20261113-131
+        // 档位词修复的漏网另一半），删除后落默认 Big。
+        "qwen3-coder", // 480B A3B 旗舰裸名
+        "qwen3-omni",
+        "qwen3-next",
+        "qwen-vl",
+        "qwen2.5-omni",
+    ] {
+        assert_eq!(tier_of(name), ModelTier::Big, "{name} 须保持 Big");
+    }
+    // 中杯被先行 big marker 救回（小杯表不截胡）。
+    assert_eq!(tier_of("gemini-2.0-flash"), ModelTier::Big);
+    // 尺寸标记路径优先，行为不变（open 权重名带尺寸）。
+    assert_eq!(tier_of("glm-4-9b"), ModelTier::Mini);
+    assert_eq!(tier_of("spark-1.5-max-32b"), ModelTier::Mini);
+}
+
 #[test]
 fn resolve_passes_through_explicit() {
     let h = TierHint {

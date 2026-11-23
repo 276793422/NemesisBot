@@ -138,6 +138,12 @@ impl ExternalChannel {
                 .stderr(std::process::Stdio::piped());
             #[cfg(target_os = "windows")]
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            // env 窄版闸（家族闸纪律：三方进程 spawn 点显式接闸——
+            // BUG-20261123-012 横向修齐）：用户脚本不继承 bot 内部命名
+            // 空间变量（NEMESISBOT_VAULT_PASSPHRASE 主口令通道等）；
+            // 脚本走 stdin/stdout 文本协议，不依赖 bot 内部 env。
+            let _stripped_env =
+                nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {
@@ -333,6 +339,10 @@ impl Channel for ExternalChannel {
             cmd.stdin(std::process::Stdio::piped());
             #[cfg(target_os = "windows")]
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            // env 窄版闸（家族闸纪律——BUG-20261123-012 横向修齐，
+            // 同 input EXE：脚本不继承 bot 内部命名空间变量）。
+            let _stripped_env =
+                nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {

@@ -493,11 +493,22 @@ impl PluginInstaller {
         }
         std::fs::create_dir_all(&target)
             .map_err(|e| PluginError::Io(format!("create plugin dir: {e}")))?;
-        std::fs::write(target.join("plugin.toml"), raw.as_bytes())
-            .map_err(|e| PluginError::Io(format!("write manifest: {e}")))?;
+        // 原子落盘（BUG-20261123-007，家族唯一真相源）：落位步裸写撕裂 =
+        // 插件目录半截载荷（toml 在 wasm 缺位时 parse 失败诚实报错，但半截
+        // 状态不该靠运气避免）。
+        nemesis_utils::file::write_file_atomic(
+            &target.join("plugin.toml").to_string_lossy(),
+            raw.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| PluginError::Io(format!("write manifest: {e}")))?;
         if !declarative {
-            std::fs::write(target.join(&manifest.wasm), &wasm_bytes)
-                .map_err(|e| PluginError::Io(format!("write wasm: {e}")))?;
+            nemesis_utils::file::write_file_atomic(
+                &target.join(&manifest.wasm).to_string_lossy(),
+                &wasm_bytes,
+                0o644,
+            )
+            .map_err(|e| PluginError::Io(format!("write wasm: {e}")))?;
         }
 
         if let Some(note) = scan_note {

@@ -5,6 +5,7 @@ fn test_display() {
     assert_eq!(BotState::NotStarted.to_string(), "not_started");
     assert_eq!(BotState::Starting.to_string(), "starting");
     assert_eq!(BotState::Running.to_string(), "running");
+    assert_eq!(BotState::Stopping.to_string(), "stopping");
     assert_eq!(BotState::Error.to_string(), "error");
 }
 
@@ -14,6 +15,7 @@ fn test_serde_roundtrip() {
         BotState::NotStarted,
         BotState::Starting,
         BotState::Running,
+        BotState::Stopping,
         BotState::Error,
     ];
     for state in states {
@@ -40,6 +42,7 @@ fn test_is_running() {
     assert!(!BotState::NotStarted.is_running());
     assert!(!BotState::Starting.is_running());
     assert!(BotState::Running.is_running());
+    assert!(!BotState::Stopping.is_running());
     assert!(!BotState::Error.is_running());
 }
 
@@ -48,6 +51,7 @@ fn test_can_start() {
     assert!(BotState::NotStarted.can_start());
     assert!(!BotState::Starting.can_start());
     assert!(!BotState::Running.can_start());
+    assert!(!BotState::Stopping.can_start());
     assert!(BotState::Error.can_start());
 }
 
@@ -56,6 +60,9 @@ fn test_can_stop() {
     assert!(!BotState::NotStarted.can_stop());
     assert!(BotState::Starting.can_stop());
     assert!(BotState::Running.can_stop());
+    // Stopping = stop() 占坑态（BUG-20261123-008）：占坑后并发第二个
+    // stop 必须诚实拒绝——can_stop=false 是占坑原子化的守卫语义。
+    assert!(!BotState::Stopping.can_stop());
     assert!(!BotState::Error.can_stop());
 }
 
@@ -67,6 +74,7 @@ fn test_from_str_lossy() {
     );
     assert_eq!(BotState::from_str_lossy("starting"), BotState::Starting);
     assert_eq!(BotState::from_str_lossy("running"), BotState::Running);
+    assert_eq!(BotState::from_str_lossy("stopping"), BotState::Stopping);
     assert_eq!(BotState::from_str_lossy("error"), BotState::Error);
     assert_eq!(BotState::from_str_lossy("unknown"), BotState::NotStarted);
 }
@@ -124,6 +132,10 @@ fn test_all_states_serilize_to_snake_case() {
         serde_json::to_string(&BotState::Error).unwrap(),
         "\"error\""
     );
+    assert_eq!(
+        serde_json::to_string(&BotState::Stopping).unwrap(),
+        "\"stopping\""
+    );
 }
 
 #[test]
@@ -134,6 +146,7 @@ fn test_from_str_lossy_all_valid() {
     );
     assert_eq!(BotState::from_str_lossy("starting"), BotState::Starting);
     assert_eq!(BotState::from_str_lossy("running"), BotState::Running);
+    assert_eq!(BotState::from_str_lossy("stopping"), BotState::Stopping);
     assert_eq!(BotState::from_str_lossy("error"), BotState::Error);
 }
 

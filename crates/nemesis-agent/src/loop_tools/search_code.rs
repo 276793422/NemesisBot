@@ -234,9 +234,21 @@ impl GitTool {
     /// otherwise → stdout. (write actions reuse the same three states.)
     fn run_three_state(&self, args: &[&str], action: &str) -> Result<String, String> {
         let out = self.run_git(args)?;
-        if !out.success && out.stdout.trim().is_empty() {
-            Err(format!("git {} failed: {}", action, out.stderr.trim()))
-        } else if out.stdout.trim().is_empty() {
+        // success 旗标是真相源（BUG-20261123-004）：失败文本可以走 *stdout*——
+        // `git stash pop` 冲突把 "CONFLICT (content): ..." + 状态打到 stdout、
+        // stderr 为空、exit 1（阳性对照实证），与 commit 路径注释记录的
+        // "nothing to commit"/hook 拒绝同族。旧三态「stdout 非空即 Ok」把
+        // 冲突当成功上报；stderr-优先也接不住（本例 stderr 空）。
+        // 失败臂 stderr 优先、stdout 兜底 detail，语义对齐 commit 专用路径。
+        if !out.success {
+            let detail = if out.stderr.trim().is_empty() {
+                out.stdout.trim()
+            } else {
+                out.stderr.trim()
+            };
+            return Err(format!("git {} failed: {}", action, detail));
+        }
+        if out.stdout.trim().is_empty() {
             Ok(format!("(no changes / empty)\n{}", out.stderr.trim()))
         } else {
             Ok(out.stdout)

@@ -19,6 +19,12 @@ pub enum BotState {
     /// Bot is running normally.
     #[serde(rename = "running")]
     Running,
+    /// Bot is in the middle of stopping (BUG-20261123-008 stop() 占坑态：
+    /// can_stop 检查与占坑在同一 write 锁区间内原子完成，并发第二个 stop
+    /// 在此状态上诚实拒绝——此前 check-then-act 分离，Ctrl+C 臂与
+    /// /api/internal 双停机源赛跑可双双通过 can_stop、双调 stop_all）。
+    #[serde(rename = "stopping")]
+    Stopping,
     /// Bot is in an error state.
     #[serde(rename = "error")]
     Error,
@@ -46,6 +52,7 @@ impl BotState {
             "not_started" => BotState::NotStarted,
             "starting" => BotState::Starting,
             "running" => BotState::Running,
+            "stopping" => BotState::Stopping,
             "error" => BotState::Error,
             _ => BotState::NotStarted,
         }
@@ -58,6 +65,7 @@ impl fmt::Display for BotState {
             BotState::NotStarted => write!(f, "not_started"),
             BotState::Starting => write!(f, "starting"),
             BotState::Running => write!(f, "running"),
+            BotState::Stopping => write!(f, "stopping"),
             BotState::Error => write!(f, "error"),
         }
     }

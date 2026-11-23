@@ -758,7 +758,8 @@ fn test_create_provider_codex_bad_account_id_degrades_not_panics() {
 
 #[test]
 fn test_create_provider_http_compat_invalid_header_dropped_not_panics() {
-    // HttpCompat：非法自定义头对构造期丢弃——构造成功 + 首请求不再 panic 面。
+    // HttpCompat：非法自定义头对构造期丢弃——构造成功 + 首请求不再报
+    // 不点名的 builder error（BUG-20261123-013 勘误：builder poison 非 panic）。
     let mut headers = std::collections::HashMap::new();
     headers.insert("X-Ok".to_string(), "v".to_string());
     headers.insert("bad name".to_string(), "v".to_string());

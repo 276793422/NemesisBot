@@ -781,7 +781,15 @@ pub async fn bulk_delete(val: &serde_json::Value, workspace: &Path) -> Result<St
             match std::fs::remove_file(&p) {
                 Ok(()) => deleted += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing += 1,
-                Err(e) => return Err(format!("删除 {rel} 失败: {e}")),
+                // BUG-20261123-018：非 NotFound 单发失败（AV/索引器瞬时句柄
+                // 占用刚写完的文件，Windows 常态）不再直接报错——进 fsutil
+                // 退避重试（NotFound 归 deleted：重试期间被第三方清掉的极端
+                // 形态语义上等同本次删除完成），耗尽才诚实上抛。
+                Err(_) => {
+                    nemesis_utils::fsutil::remove_file_retry(&p)
+                        .map_err(|e| format!("删除 {rel} 失败: {e}"))?;
+                    deleted += 1;
+                }
             }
         }
         Ok(serde_json::json!({"deleted": deleted, "missing": missing}).to_string())

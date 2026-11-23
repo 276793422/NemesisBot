@@ -698,10 +698,11 @@ pub fn build_conversation_traces(events: &[crate::trace::TraceEvent]) -> Vec<Con
 ///
 /// Returns `None` when unparseable — callers decide the honest fallback
 /// （窗口过滤放行 / 分桶回落字符串序），不再各自手写 parse。
+///
+/// BUG-20261123-016 起委托 `nemesis_utils::ts_order`（全仓单一真相源，
+/// 字典序时间比较跨偏移错序修复族同源）——签名与回落语义不变。
 fn parse_ts(s: &str) -> Option<chrono::DateTime<chrono::Local>> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.with_timezone(&chrono::Local))
+    nemesis_utils::ts_order::parse_rfc3339_local(s)
 }
 
 /// 事件/步时间戳与分界点的比较（D1/D3 共用）。
@@ -709,10 +710,7 @@ fn parse_ts(s: &str) -> Option<chrono::DateTime<chrono::Local>> {
 /// 双侧可解析 = 时刻序（跨时区偏移正确）；任一侧解析失败 = 回落字符串序
 /// （同偏移写入的时间戳字符串序 == 时刻序，正确性不劣于旧实现）。
 fn ts_before(stamp: &str, boundary: &str) -> bool {
-    match (parse_ts(stamp), parse_ts(boundary)) {
-        (Some(a), Some(b)) => a < b,
-        _ => stamp < boundary,
-    }
+    nemesis_utils::ts_order::ts_before(stamp, boundary)
 }
 
 /// Check if a trace's tool steps contain the given signature as a subsequence.

@@ -9,7 +9,7 @@ use nemesis_path::default_path_manager;
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::r#loop::FileChange;
 use crate::work_timeline::WorkTimeline;
@@ -956,7 +956,9 @@ pub fn patch_last_user_row_images(session_key: &str, images: &[String]) {
         return;
     }
     let path = log_path(session_key);
-    let Ok(raw) = fs::read_to_string(&path) else {
+    // 撕裂尾安全读（BUG-20261123-015）：坏尾行不毒化整个文件，images
+    // 回补照常解析前缀行。
+    let Ok(raw) = nemesis_utils::file::read_lossy_to_string(&path) else {
         return;
     };
     let mut rows: Vec<Value> = Vec::new();
@@ -1485,7 +1487,9 @@ pub fn auto_title_eligible(session_key: &str) -> bool {
 /// E7: 本会话 chat log 中首条非空 user 消息（截到 `max_chars` 字符，
 /// char 边界安全；自动标题的输入）。
 pub fn first_user_message(session_key: &str, max_chars: usize) -> Option<String> {
-    let data = fs::read_to_string(log_path(session_key)).ok()?;
+    // 撕裂尾安全读（BUG-20261123-015）：首条 user 消息在文件前部，
+    // 坏尾行不应让标题输入整文件丢失。
+    let data = nemesis_utils::file::read_lossy_to_string(&log_path(session_key)).ok()?;
     for line in data.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -1906,7 +1910,9 @@ pub fn take_session_pending(session_key: &str) -> Vec<nemesis_types::channel::In
         tmp.clone()
     };
     let mut rows = Vec::new();
-    match fs::read_to_string(&src) {
+    // 撕裂尾安全读（BUG-20261123-015）：pending take 同防线，坏尾行
+    // 走下方「行损坏跳过」分支。
+    match nemesis_utils::file::read_lossy_to_string(&src) {
         Ok(data) => {
             for l in data.lines() {
                 match serde_json::from_str::<nemesis_types::channel::InboundMessage>(l) {
@@ -1928,10 +1934,16 @@ pub fn take_session_pending(session_key: &str) -> Vec<nemesis_types::channel::In
 /// 当前 pending 条数（列表投影/测试用）。读不到文件 = 0。
 pub fn session_pending_count(session_key: &str) -> usize {
     let path = pending_path(session_key);
-    let Ok(data) = fs::read_to_string(&path) else {
-        return 0;
-    };
-    data.lines().filter(|l| !l.trim().is_empty()).count()
+    // 撕裂尾安全读（BUG-20261123-015）：坏尾行不毒化计数；且计数口径 =
+    // 可投递消息数（与 take_session_pending 同 parse 闸）——撕裂残行
+    // parse 失败不计入，徽标显示与 CAP 闸不虚报。
+    match nemesis_utils::file::read_lossy_to_string(&path) {
+        Ok(data) => data
+            .lines()
+            .filter(|l| serde_json::from_str::<nemesis_types::channel::InboundMessage>(l).is_ok())
+            .count(),
+        Err(_) => 0,
+    }
 }
 
 /// 列出全部有 pending 残留的会话键（读**首行**行内 `session_key` 还原
@@ -1965,7 +1977,9 @@ pub fn pending_sessions() -> Vec<String> {
         {
             continue;
         }
-        let Ok(data) = fs::read_to_string(&path) else {
+        // 撕裂尾安全读（BUG-20261123-015）：只取首行也整读——坏尾行
+        // 不让首行 session_key 还原陪葬。
+        let Ok(data) = nemesis_utils::file::read_lossy_to_string(&path) else {
             continue;
         };
         let Some(first) = data.lines().next() else {
@@ -2069,8 +2083,10 @@ pub(crate) fn mirror_write(path: &PathBuf, lines: &[String]) {
 }
 
 /// 镜像读通用内核：读全部非空行逐条解析，坏行 warn 跳过（不炸整文件）。
-fn mirror_read<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Vec<T> {
-    let Ok(data) = fs::read_to_string(path) else {
+/// 撕裂尾安全读（BUG-20261123-015）：坏尾行降级为 U+FFFD → 该行 parse
+/// 失败走下方坏行分支，前缀行保全。
+fn mirror_read<T: serde::de::DeserializeOwned>(path: &Path) -> Vec<T> {
+    let Ok(data) = nemesis_utils::file::read_lossy_to_string(path) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -2103,7 +2119,9 @@ fn mirror_take_raw(path: &PathBuf) -> Option<String> {
         }
         tmp.clone()
     };
-    let data = fs::read_to_string(&src).ok();
+    // 撕裂尾安全读（BUG-20261123-015）：take 读侧同防线（收走的侧车
+    // 文件含坏尾行时前缀行仍可逐行解析）。
+    let data = nemesis_utils::file::read_lossy_to_string(&src).ok();
     if let Err(e) = fs::remove_file(&src) {
         tracing::warn!("[chat_log] 侧车 take 删除失败 {}: {}", src.display(), e);
     }
@@ -2230,7 +2248,8 @@ fn sidecar_sessions(exts: &[&str], own: &str) -> Vec<String> {
         if !matched {
             continue;
         }
-        let Ok(data) = fs::read_to_string(&path) else {
+        // 撕裂尾安全读（BUG-20261123-015）：A3 族扫描器首非空行同防线。
+        let Ok(data) = nemesis_utils::file::read_lossy_to_string(&path) else {
             continue;
         };
         let Some(first) = data.lines().find(|l| !l.trim().is_empty()) else {
@@ -2851,3 +2870,8 @@ mod l22_pending_tests;
 // 成功路径既有字段保留。
 #[cfg(test)]
 mod b385_tests;
+
+// BUG-20261123-015（R2480 jsonl/行帧面）：撕裂尾安全读回归锁——坏一行
+// 不得毒化整个文件。
+#[cfg(test)]
+mod torn_tail_tests;
