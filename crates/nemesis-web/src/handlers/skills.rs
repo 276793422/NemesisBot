@@ -233,17 +233,32 @@ fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, Stri
 }
 
 fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
-    if path.exists()
-        // read_config_string 剥 BOM——记事本保存的 config.skills.json 裸读会
-        // parse 失败 → 静默落 default → 用户添加的 registry 源全部丢失
-        // （BUG-20261116-044；CLI 侧 commands/skills.rs:183 同文件早已走
-        // fsutil，此处补齐同源纪律）。
-        && let Ok(data) = nemesis_utils::fsutil::read_config_string(path)
-        && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
-    {
-        return config;
+    if !path.exists() {
+        return nemesis_skills::types::RegistryConfig::default();
     }
-    nemesis_skills::types::RegistryConfig::default()
+    // read_config_string 剥 BOM——记事本保存的 config.skills.json 裸读会
+    // parse 失败 → 静默落 default → 用户添加的 registry 源全部丢失
+    // （BUG-20261116-044；CLI 侧 commands/skills.rs:183 同文件早已走
+    // fsutil，此处补齐同源纪律）。
+    // BUG-20261124-013：读失败/解析失败必须可观测——任一数值字段类型失配
+    // （如历史写入的负数 vs 运行时面 usize/u64）会让整档静默回落 default，
+    // 用户自定义源/并发/缓存全丢且无任何线索；warn 一行把根因留在现场。
+    let data = match nemesis_utils::fsutil::read_config_string(path) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("[Skills] config.skills.json 读取失败，registry 配置回落默认: {e}");
+            return nemesis_skills::types::RegistryConfig::default();
+        }
+    };
+    match serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(
+                "[Skills] config.skills.json 解析失败，registry 配置回落默认（自定义源/并发/缓存将丢失）: {e}"
+            );
+            nemesis_skills::types::RegistryConfig::default()
+        }
+    }
 }
 
 fn save_config(workspace: &str, cfg: &nemesis_config::SkillsFullConfig) -> Result<(), String> {
@@ -266,6 +281,46 @@ fn update_skills_config<T>(
     let out = f(&mut cfg)?;
     save_config(workspace, &cfg)?;
     Ok(out)
+}
+
+/// BUG-20261124-013：负数数值闸（单字段）。config.skills.json 是双解析面
+/// ——Dashboard 面（nemesis-config::SkillsFullConfig）数值字段全部 i64，
+/// 运行时面（nemesis-skills::types::RegistryConfig）同名字段 usize/u64。
+/// 负数经 `as_i64` 写入后 Dashboard 面读回一切正常（UI 显示原值），运行时
+/// 面 serde 反序列化失败 → `load_registry_config` 静默回落
+/// `RegistryConfig::default()` → 自定义源/并发数/缓存配置整体丢失
+/// （BUG-20261116-044 注释记载的同款「静默落 default」失败形态，BOM 只是
+/// 触发器之一，数值类型失配这扇门此前未关）。在写入边界 loud 拒绝，
+/// 不让毒值落盘。
+fn reject_negative_numeric(field: &str, v: i64) -> Result<(), String> {
+    if v < 0 {
+        return Err(format!(
+            "{field} 不能为负数（得到 {v}）：负值会导致运行时配置解析失败并静默回退默认"
+        ));
+    }
+    Ok(())
+}
+
+/// 校验 SkillsFullConfig 中与运行时面 usize/u64 同名的数值字段非负。
+/// config_save（整档替换）与 config_update（逐字段）共用同一道闸；
+/// 两入口新增数值字段时必须同步在此补闸（与运行时面类型对照见
+/// nemesis-skills::types::RegistryConfig）。
+/// 横扫同类（BUG-20261124-013）：失配面不止顶层四字段——github_sources[]
+/// 条目（timeout/max_size i64 ↔ 运行时 GitHubSourceConfig u64）与
+/// modelscope.timeout（i64 ↔ 运行时 ModelScopeConfig u64）经 config_save
+/// 整档替换同样可达。config_update 无 sources/modelscope 编辑入口，但
+/// 整档路径把它们一并纳入同一道闸。
+fn validate_skills_numeric_fields(cfg: &nemesis_config::SkillsFullConfig) -> Result<(), String> {
+    reject_negative_numeric("search_cache.max_size", cfg.search_cache.max_size)?;
+    reject_negative_numeric("search_cache.ttl_seconds", cfg.search_cache.ttl_seconds)?;
+    reject_negative_numeric("max_concurrent_searches", cfg.max_concurrent_searches)?;
+    reject_negative_numeric("clawhub.timeout", cfg.clawhub.timeout)?;
+    reject_negative_numeric("modelscope.timeout", cfg.modelscope.timeout)?;
+    for (i, s) in cfg.github_sources.iter().enumerate() {
+        reject_negative_numeric(&format!("github_sources[{i}].timeout"), s.timeout)?;
+        reject_negative_numeric(&format!("github_sources[{i}].max_size"), s.max_size)?;
+    }
+    Ok(())
 }
 
 /// 主配置 `{home}/config.json` 的 skills 段（/ 消费）。
@@ -956,7 +1011,7 @@ impl SkillsHandler {
         update_skills_config(workspace, |cfg| {
             *cfg = serde_json::from_value(data.clone())
                 .map_err(|e| format!("invalid skills config: {}", e))?;
-            Ok(())
+            validate_skills_numeric_fields(cfg)
         })?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }
@@ -966,7 +1021,9 @@ impl SkillsHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        // 锁在 update_skills_config 内。
+        // 锁在 update_skills_config 内。四个数值字段（search_cache.max_size /
+        // ttl_seconds / max_concurrent_searches / clawhub.timeout）赋值前过
+        // 负数闸（BUG-20261124-013）。
         update_skills_config(workspace, |cfg| {
             if let Some(v) = data.get("enabled").and_then(|v| v.as_bool()) {
                 cfg.enabled = v;
@@ -976,13 +1033,16 @@ impl SkillsHandler {
                     cfg.search_cache.enabled = v;
                 }
                 if let Some(v) = obj.get("max_size").and_then(|v| v.as_i64()) {
+                    reject_negative_numeric("search_cache.max_size", v)?;
                     cfg.search_cache.max_size = v;
                 }
                 if let Some(v) = obj.get("ttl_seconds").and_then(|v| v.as_i64()) {
+                    reject_negative_numeric("search_cache.ttl_seconds", v)?;
                     cfg.search_cache.ttl_seconds = v;
                 }
             }
             if let Some(v) = data.get("max_concurrent_searches").and_then(|v| v.as_i64()) {
+                reject_negative_numeric("max_concurrent_searches", v)?;
                 cfg.max_concurrent_searches = v;
             }
             if let Some(obj) = data.get("clawhub").and_then(|v| v.as_object()) {
@@ -996,6 +1056,7 @@ impl SkillsHandler {
                     cfg.clawhub.convex_url = v.to_string();
                 }
                 if let Some(v) = obj.get("timeout").and_then(|v| v.as_i64()) {
+                    reject_negative_numeric("clawhub.timeout", v)?;
                     cfg.clawhub.timeout = v;
                 }
             }

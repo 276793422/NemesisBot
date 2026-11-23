@@ -1008,3 +1008,25 @@ fn bug279_installed_skills_sorted_by_name() {
     let names: Vec<&str> = skills.iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, vec!["alpha", "zeta"]);
 }
+
+// BUG-20261124-013：钉住运行时面的失败形态（写入闸防的就是它）——任一数值
+// 字段负数 → serde 对 usize/u64 解析失败 → load_registry_config 回落
+// default（现在带 warn，不再是纯静默）。负数来源=Dashboard 面
+// SkillsFullConfig 全 i64 字段（写入闸 BUG-20261124-013 已挡，存量毒值
+// 兜底面在此定性）。
+#[test]
+fn load_registry_config_negative_numeric_falls_back_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("config.skills.json");
+    std::fs::write(
+        &p,
+        r#"{"clawhub":{"enabled":true,"base_url":"http://x"},"max_concurrent_searches":-1}"#,
+    )
+    .unwrap();
+    let cfg = load_registry_config(&p);
+    assert!(
+        !cfg.clawhub.enabled,
+        "poisoned file must fall back to default"
+    );
+    assert!(cfg.github_sources.is_empty());
+}

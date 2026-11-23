@@ -179,13 +179,29 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
 
 /// Load or create registry config from skills config file.
 fn load_registry_config(skills_cfg: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
-    if skills_cfg.exists()
-        && let Ok(data) = nemesis_utils::fsutil::read_config_string(skills_cfg)
-        && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
-    {
-        return config;
+    if !skills_cfg.exists() {
+        return nemesis_skills::types::RegistryConfig::default();
     }
-    nemesis_skills::types::RegistryConfig::default()
+    // BUG-20261124-013：读失败/解析失败必须可观测——任一数值字段类型失配
+    // （如 Dashboard 面历史写入的负数 vs 运行时面 usize/u64）会让整档静默
+    // 回落 default，用户自定义源/并发/缓存全丢且无任何线索；warn 一行把
+    // 根因留在现场（与 nemesis-web handlers/skills.rs 同源纪律）。
+    let data = match nemesis_utils::fsutil::read_config_string(skills_cfg) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("[Skills] config.skills.json 读取失败，registry 配置回落默认: {e}");
+            return nemesis_skills::types::RegistryConfig::default();
+        }
+    };
+    match serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(
+                "[Skills] config.skills.json 解析失败，registry 配置回落默认（自定义源/并发/缓存将丢失）: {e}"
+            );
+            nemesis_skills::types::RegistryConfig::default()
+        }
+    }
 }
 
 /// Save registry config to skills config file.

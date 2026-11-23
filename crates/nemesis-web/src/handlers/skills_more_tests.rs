@@ -897,3 +897,152 @@ fn test_skills_module_name() {
     let h = SkillsHandler::new();
     assert_eq!(h.module_name(), "skills");
 }
+
+// BUG-20261124-013：负数数值闸。config.skills.json 双解析面——Dashboard 面
+// i64 收负数，运行时面（nemesis-skills::types::RegistryConfig）同名字段
+// usize/u64 解析失败 → load_registry_config 静默落 default → 自定义源全丢。
+// 写入边界必须 loud 拒绝。
+
+#[tokio::test]
+async fn test_skills_config_update_rejects_negative_numeric_fields() {
+    let handler = SkillsHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_skills_config(dir.path(), &nemesis_config::SkillsFullConfig::default());
+    let ctx = make_ctx(&dir);
+
+    let cases = [
+        (
+            serde_json::json!({ "search_cache": { "max_size": -1 } }),
+            "search_cache.max_size",
+        ),
+        (
+            serde_json::json!({ "search_cache": { "ttl_seconds": -5 } }),
+            "search_cache.ttl_seconds",
+        ),
+        (
+            serde_json::json!({ "max_concurrent_searches": -2 }),
+            "max_concurrent_searches",
+        ),
+        (
+            serde_json::json!({ "clawhub": { "timeout": -3 } }),
+            "clawhub.timeout",
+        ),
+    ];
+    for (data, field) in &cases {
+        let err = handler
+            .handle_cmd("config.update", Some(data.clone()), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("不能为负数"), "field {field}: got: {}", err);
+        assert!(err.contains(field), "field name missing in: {}", err);
+    }
+
+    // 毒值未落盘：config.skills.json 仍是初始默认（50/300/2）。
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["search_cache"]["max_size"].as_i64().unwrap(), 50);
+    assert_eq!(r["search_cache"]["ttl_seconds"].as_i64().unwrap(), 300);
+    assert_eq!(r["max_concurrent_searches"].as_i64().unwrap(), 2);
+
+    // 正数更新不受闸影响（回归）。
+    let data = serde_json::json!({ "max_concurrent_searches": 4 });
+    let r = handler
+        .handle_cmd("config.update", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(r["updated"].as_bool().unwrap());
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["max_concurrent_searches"].as_i64().unwrap(), 4);
+}
+
+#[tokio::test]
+async fn test_skills_config_save_rejects_negative_numeric_fields() {
+    let handler = SkillsHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_skills_config(dir.path(), &nemesis_config::SkillsFullConfig::default());
+    let ctx = make_ctx(&dir);
+
+    // 整档替换路径同样拦毒值（serde 对 SkillsFullConfig 全 i64 字段照单全收，
+    // 无此闸负数直接落盘）。
+    let bad = serde_json::json!({
+        "enabled": true,
+        "max_concurrent_searches": -1,
+        "search_cache": { "enabled": true, "max_size": 100, "ttl_seconds": 60 },
+    });
+    let err = handler
+        .handle_cmd("config.save", Some(bad), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("max_concurrent_searches"), "got: {}", err);
+
+    let bad = serde_json::json!({
+        "enabled": true,
+        "search_cache": { "enabled": true, "max_size": -9, "ttl_seconds": 60 },
+    });
+    let err = handler
+        .handle_cmd("config.save", Some(bad), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("search_cache.max_size"), "got: {}", err);
+
+    // 毒值未落盘。
+    let r = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["search_cache"]["max_size"].as_i64().unwrap(), 50);
+}
+
+#[tokio::test]
+async fn test_skills_config_save_rejects_negative_source_and_modelscope_fields() {
+    // BUG-20261124-013 横扫面：github_sources[] 条目（timeout/max_size）与
+    // modelscope.timeout 同属双解析面（运行时 u64），config_save 整档替换
+    // 必须一并拦毒。
+    let handler = SkillsHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_skills_config(dir.path(), &nemesis_config::SkillsFullConfig::default());
+    let ctx = make_ctx(&dir);
+
+    let bad = serde_json::json!({
+        "enabled": true,
+        "github_sources": [{
+            "name": "s", "repo": "o/r", "enabled": true, "timeout": -1, "max_size": 0,
+        }],
+    });
+    let err = handler
+        .handle_cmd("config.save", Some(bad), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("github_sources[0].timeout"), "got: {}", err);
+
+    let bad = serde_json::json!({
+        "enabled": true,
+        "github_sources": [{
+            "name": "s", "repo": "o/r", "enabled": true, "timeout": 0, "max_size": -7,
+        }],
+    });
+    let err = handler
+        .handle_cmd("config.save", Some(bad), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("github_sources[0].max_size"), "got: {}", err);
+
+    let bad = serde_json::json!({
+        "enabled": true,
+        "modelscope": { "enabled": true, "timeout": -30 },
+    });
+    let err = handler
+        .handle_cmd("config.save", Some(bad), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("modelscope.timeout"), "got: {}", err);
+}
