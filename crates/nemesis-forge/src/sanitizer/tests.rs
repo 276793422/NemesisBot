@@ -181,6 +181,36 @@ fn test_sanitize_bearer_token() {
     assert!(result.contains("[REDACTED]"));
 }
 
+// BUG-20261123-019 回归锁：RFC 6750 标准形态 `Authorization: Bearer <jwt>`——
+// 旧正则要求 keyword 与值之间必有 [:=]，空格分隔的 Bearer 头整体不匹配
+// （既有 bearer 测试要么走 token: 键值对、要么 token 是纯 hex 被
+// RE_HEX_SECRET 误绿救场；JWT 非 hex 无人救）。Forge 经验跨集群共享前
+// 这是最常见的 HTTP 凭据形态，漏洗 = 泄漏面。
+#[test]
+fn test_sanitize_bearer_header_form() {
+    let sanitizer = Sanitizer::new();
+    // 标准 Authorization 头（JWT = base64url 含 - _ .，非纯 hex）
+    let input = r#"header "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.AbC-dEf_123""#;
+    let result = sanitizer.sanitize(input);
+    assert!(
+        result.contains("[REDACTED]"),
+        "Bearer 头形态必须被清洗: {result}"
+    );
+    assert!(
+        !result.contains("eyJhbGciOiJIUzI1NiJ9"),
+        "JWT 原文不得残留: {result}"
+    );
+    // 小写 bearer + 空格分隔（无 [:=]；含大写与 g-n 字母，hex 模式救不了）
+    let result2 = sanitizer.sanitize("response: bearer ZZZZ-aaaa-9999-8888-7777-6666-5555");
+    assert!(
+        result2.contains("[REDACTED]"),
+        "小写 bearer 空格形态必须被清洗: {result2}"
+    );
+    // 键值对旧形态不受影响（回归护栏）
+    let result3 = sanitizer.sanitize(r#"token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdefghij""#);
+    assert!(result3.contains("[REDACTED]"));
+}
+
 #[test]
 fn test_sanitize_localhost() {
     // Localhost is no longer a pattern (matching Go behavior).

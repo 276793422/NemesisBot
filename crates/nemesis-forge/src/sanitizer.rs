@@ -15,9 +15,17 @@ use regex::Regex;
 // clean_public_ips() 里各处现场 Regex::new——collector 每条经验构造一个
 // Sanitizer，反思循环里 sanitize 逐条调用，10 个正则每次全量重编译。
 // 正则全部是字面量常量，提为 LazyLock 单次编译全局复用。
+// RE_API_KEY 双分支（BUG-20261123-019）：①keyword+[:=] 键值对形态；
+// ②`bearer\s+` 空格分隔形态——RFC 6750 标准 `Authorization: Bearer <jwt>`
+// 里 keyword 与 token 之间是空格不是 [:=]，旧单分支正则对该形态整体
+// 不匹配（JWT 非 hex，RE_HEX_SECRET 救不了；既有 bearer 测试恰为键值对
+// 形态或纯 hex token 而双双误绿）。清洗器宁可过红不可漏（false positive
+// 过红无害、false negative 是跨集群泄漏面），bearer+超长串误红可接受。
 static RE_API_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(api[_-]?key|apikey|bearer|token|secret|authorization)\s*[:=]\s*['"]?[A-Za-z0-9_.\-]{20,}['"]?"#)
-        .expect("invalid api key regex")
+    Regex::new(
+        r#"(?i)((api[_-]?key|apikey|token|secret|authorization|bearer)\s*[:=]\s*|bearer\s+)['"]?[A-Za-z0-9_.\-]{20,}['"]?"#,
+    )
+    .expect("invalid api key regex")
 });
 static RE_AWS_KEY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").expect("invalid aws key regex"));
