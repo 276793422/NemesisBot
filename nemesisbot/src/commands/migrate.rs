@@ -120,7 +120,13 @@ fn write_migrated_config(cfg_path: &Path, incoming: &serde_json::Value) -> Resul
                 anyhow::anyhow!("reading existing config {}: {}", cfg_path.display(), e)
             })?;
         match serde_json::from_str::<serde_json::Value>(&existing_content) {
-            Ok(mut existing) => {
+            // BUG-20261123-038 同族：合法 JSON 但顶层非对象（手改坏
+            // `[...]`/`"..."`/标量）不进合并——预填 `existing["model_list"] =
+            // ...` 的 is_none() 守卫对非对象恒真会 IndexMut panic，且即便
+            // 不炸，merge 后的非对象形态也会把迁移模型整体静默丢掉（违反
+            // 「模型跟着迁移走」承诺）。与「不是合法 JSON」同命运：警告 +
+            // 迁移值覆盖（.bak 由调用方兜底）。
+            Ok(mut existing) if existing.is_object() => {
                 // merge_config 契约是「只并入既有结构，不补建
                 // 缺失键」（crate 覆盖测试钉死）。最小化既有配置（无 model_list
                 // 键/键为 null）会让全部迁移模型静默丢失——迁移承诺是「模型跟着
@@ -140,6 +146,11 @@ fn write_migrated_config(cfg_path: &Path, incoming: &serde_json::Value) -> Resul
                 nemesis_migrate::merge_config(&mut existing, &merged);
                 merged = existing;
                 merged_with_existing = true;
+            }
+            Ok(_) => {
+                println!(
+                    "  Warning: existing config is not a JSON object, overwritten (backup kept)"
+                );
             }
             Err(_) => {
                 println!("  Warning: existing config is not valid JSON, overwritten (backup kept)");

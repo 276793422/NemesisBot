@@ -2340,9 +2340,14 @@ impl ClusterHandler {
         // 锁在 update_raw_config 内：读→改 cluster.enabled→原子写回 = RMW
         //（收口；落盘后 store.reload 对账由写半边承担）。
         super::config::update_raw_config(home, |main_cfg| {
+            // BUG-20261123-038 同族：顶层非对象的手改坏 config.json 会让
+            // `get("cluster").is_none()` 守卫恒真 → `main_cfg["cluster"] = `
+            // IndexMut panic（"cannot access key in JSON scalar/array"）。
+            // 先验对象性 loud Err（connectors set_master 同款形态）。
+            let cfg_obj = main_cfg.as_object_mut().ok_or("config.json 顶层不是对象")?;
             // Ensure cluster object exists
-            if main_cfg.get("cluster").is_none() {
-                main_cfg["cluster"] = serde_json::json!({});
+            if cfg_obj.get("cluster").is_none() {
+                cfg_obj.insert("cluster".to_string(), serde_json::json!({}));
             }
             if let Some(cluster_obj) = main_cfg.get_mut("cluster")
                 && let Some(obj) = cluster_obj.as_object_mut()

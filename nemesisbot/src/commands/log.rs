@@ -133,10 +133,14 @@ fn read_logging_config(cfg_path: &std::path::Path) -> Result<serde_json::Value> 
     if cfg_path.exists() {
         let data = nemesis_utils::fsutil::read_config_string(cfg_path)?;
         let cfg: serde_json::Value = serde_json::from_str(&data)?;
-        Ok(cfg
-            .get("logging")
-            .cloned()
-            .unwrap_or_else(default_logging_config))
+        // BUG-20261123-038 同族：`"logging": "x"`/`[]` 等非对象段不回传——
+        // 回传会让 cmd_llm_* 的 `logging["llm"] = ...` 补建 IndexMut panic。
+        // 非对象段落默认段（读侧收敛）：写回 write_logging_config 时自愈
+        // 覆盖坏段（写侧 as_object_mut 臂对非对象主配置本就不写键）。
+        Ok(match cfg.get("logging") {
+            Some(v) if v.is_object() => v.clone(),
+            _ => default_logging_config(),
+        })
     } else {
         Ok(default_logging_config())
     }

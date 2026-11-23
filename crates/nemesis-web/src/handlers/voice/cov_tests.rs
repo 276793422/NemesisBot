@@ -240,6 +240,37 @@ fn voice_and_voiceprint_config_rmw_helpers() {
     assert_eq!(cfg2["speaker_id"], 77, "RMW 后读回新值");
 }
 
+// BUG-20261123-038 回归锁：顶层非对象的 config.voice.print.json（手改坏
+// `[...]`/标量）不回传原样 Value——原样回传会让 speaker 写臂
+// `vp_cfg["speakers"] = ...` IndexMut panic。读侧必须回落种子默认。
+#[test]
+fn voiceprint_config_non_object_top_level_falls_back_to_seed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_dir = tmp.path().join("config");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+
+    for broken in ["[]", r#""corrupted""#, "5", "null"] {
+        let vp_path = voiceprint_path(&cfg_dir);
+        std::fs::write(&vp_path, broken).unwrap();
+        let vp = read_voiceprint_config(&cfg_dir);
+        assert!(vp.is_object(), "顶层 {broken} 必须回落种子对象，got {vp}");
+        assert_eq!(
+            vp["threshold"], DEFAULT_SPEAKER_THRESHOLD as f64,
+            "顶层 {broken} 回落含 threshold 种子: {vp}"
+        );
+        assert!(
+            vp["speakers"].is_object(),
+            "顶层 {broken} 回落含 speakers 种子: {vp}"
+        );
+    }
+
+    // 合法对象文件不受影响（原样回传）
+    let vp_path = voiceprint_path(&cfg_dir);
+    std::fs::write(&vp_path, r#"{"threshold": 0.9, "speakers": {}}"#).unwrap();
+    let vp = read_voiceprint_config(&cfg_dir);
+    assert_eq!(vp["threshold"], 0.9, "合法对象必须原样回传: {vp}");
+}
+
 // ── voice_shutdown 注入收口 ──────────────────────────────────────────────
 
 #[tokio::test]

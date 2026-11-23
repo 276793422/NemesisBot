@@ -783,7 +783,12 @@ fn read_voiceprint_config(config_dir: &std::path::Path) -> serde_json::Value {
     let path = voiceprint_path(config_dir);
     nemesis_utils::fsutil::read_config_string(&path)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        // BUG-20261123-038 同族：顶层非对象（手改坏 `[...]`/标量）回落种子
+        // 默认——原样回传会让 speaker 写臂 `vp_cfg["speakers"] = ...` /
+        // `vp_cfg["threshold"] = ...` IndexMut panic。与解析失败臂同命运
+        // （宽容读 + 种子默认，写回时自愈覆盖坏文件）。
+        .filter(|v| v.is_object())
         .unwrap_or_else(|| {
             serde_json::json!({
                 "threshold": DEFAULT_SPEAKER_THRESHOLD,

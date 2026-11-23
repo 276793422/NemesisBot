@@ -606,6 +606,38 @@ fn test_write_migrated_config_invalid_existing_overwrites() {
     assert_eq!(written, incoming);
 }
 
+/// BUG-20261123-038 回归锁：既有文件是合法 JSON 但顶层非对象（手改坏
+/// `[...]`/标量）与「不是合法 JSON」同命运——警告后由迁移值覆盖。旧形态
+/// 进合并臂：预填 `existing["model_list"] = ...` 的 is_none() 守卫对非
+/// 对象恒真 → IndexMut panic（修复前本测试 panic 红）。
+#[test]
+fn test_write_migrated_config_non_object_existing_overwrites() {
+    for broken in ["[]", r#""corrupted""#, "5", "true"] {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(&cfg, broken).unwrap();
+
+        let incoming = serde_json::json!({
+            "model_list": [{"model_name": "m", "model": "p/m", "api_key": "k"}],
+            "gateway": {"port": 18790}
+        });
+        let merged = write_migrated_config(&cfg, &incoming).unwrap();
+        assert!(!merged, "顶层 {broken} 不得按合并路径记账");
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(
+            written.is_object(),
+            "顶层 {broken} 必须被迁移值（对象）覆盖，got {written}"
+        );
+        assert_eq!(
+            written["model_list"].as_array().unwrap().len(),
+            1,
+            "顶层 {broken} 覆盖后迁移模型必须完整落地（模型跟着迁移走）"
+        );
+    }
+}
+
 /// BUG-69 锁（旧形态必红：merge_config 契约是「只并入既有结构，不补建
 /// 缺失键」且被 crate 覆盖测试钉死——最小化既有 config（无 model_list
 /// 键/键为 null）时全部迁移模型静默丢失。CLI 层迁移策略 = 合并前预填
