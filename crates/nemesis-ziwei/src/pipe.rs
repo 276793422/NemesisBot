@@ -108,7 +108,11 @@ pub async fn finish_handshake(
     hs.proto = json_get_u64(&text, "proto").unwrap_or(0) as u32;
     hs.token = json_get_str(&text, "token").unwrap_or_default().to_string();
     hs.arch = json_get_str(&text, "arch").unwrap_or_default().to_string();
-    hs.pid = json_get_u64(&text, "pid").unwrap_or(0) as u32;
+    // BUG-20261123-017：握手 pid 超 u32 域归 0 哨兵（wire 元数据档——
+    // 异常握手由下方 token/proto 校验拒绝），不裸 cast 回绕成小值。
+    hs.pid = json_get_u64(&text, "pid")
+        .filter(|p| *p <= u32::MAX as u64)
+        .unwrap_or(0) as u32;
 
     if hs.token != expect_token {
         return Err(PipeError::TokenMismatch);

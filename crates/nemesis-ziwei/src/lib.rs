@@ -66,5 +66,20 @@ mod embed {
 #[cfg(windows)]
 pub mod pipe;
 
+/// pid 域验域单一真相源（BUG-20261123-017）：目标进程选择面的 u64 → u32
+/// 收窄必须显式验域——裸 `as u32` 把 2^32+ 回绕成小值，可命中**另一个
+/// 真实 PID**（Windows PID 本就 < 2^32）→ 紫微附着/分析错进程。
+/// WSAPI（api_handlers/ziwei handler）、LLM 工具（ziwei_tools）、
+/// dashboard 状态文件解析同源消费。语义分两档：
+/// - 目标 pid（附着对象）：超域 = 诚实 Err（含原值，上游报错留痕）；
+/// - wire 元数据（握手/事件帧的 pid/seq/tid）：调用方哨兵处理
+///   （超域归 0，异常握手由 token/proto 校验拒绝），不强行走 Err。
+pub mod pid {
+    /// 验域并收窄；超域 = Err（不做静默纠偏）。
+    pub fn parse(v: u64) -> Result<u32, String> {
+        u32::try_from(v).map_err(|_| format!("pid 超出有效范围 (0-{}): {}", u32::MAX, v))
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -280,11 +280,14 @@ impl ModuleHandler for ZiweiHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("缺 profile_id")?
                     .to_string();
-                let pid = data
+                let pid_u64 = data
                     .as_ref()
                     .and_then(|d| d.get("pid"))
                     .and_then(|v| v.as_u64())
-                    .ok_or("缺 pid")? as u32;
+                    .ok_or("缺 pid")?;
+                // BUG-20261123-017：pid u64 域验域再 cast（nemesis_ziwei::pid
+                // 单一真相源）——超域诚实报错不回绕附着错进程。
+                let pid = nemesis_ziwei::pid::parse(pid_u64)?;
                 let manager = nemesis_ziwei::session::global()
                     .ok_or(nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG)?;
                 let store = ProfileStore::new(&Self::workspace(ctx)?);

@@ -1101,7 +1101,23 @@ pub async fn handle_api_internal(
                     let mgr = nemesis_ziwei::setup::global();
                     let r = match step {
                         "select_target" => {
-                            let pid = data.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32);
+                            // BUG-20261123-017：pid u64 域验域再 cast
+                            // （nemesis_ziwei::pid 单一真相源）——裸 as u32
+                            // 把 2^32+ 回绕成小值附着错进程；超域诚实报错
+                            // （错误 JSON 形态与 manager 缺席守卫一致）。
+                            let pid = match data
+                                .get("pid")
+                                .and_then(|v| v.as_u64())
+                                .map(nemesis_ziwei::pid::parse)
+                            {
+                                Some(Ok(pid)) => Some(pid),
+                                Some(Err(e)) => {
+                                    return Ok(Json(
+                                        serde_json::json!({ "status": "error", "error": e }),
+                                    ));
+                                }
+                                None => None,
+                            };
                             let exe = data.get("exe").and_then(|v| v.as_str());
                             mgr.select_target(ws, pid, exe).await
                         }
@@ -1181,11 +1197,20 @@ pub async fn handle_api_internal(
                                 .collect()
                         })
                         .unwrap_or_default();
+                    // BUG-20261123-017：pid u64 域验域再 cast（nemesis_ziwei::pid
+                    // 单一真相源）——超域诚实报错不回绕（错误 JSON 形态与
+                    // 上方缺 pid 守卫一致）。
+                    let pid = match nemesis_ziwei::pid::parse(pid.unwrap()) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Ok(Json(serde_json::json!({ "status": "error", "error": e })));
+                        }
+                    };
                     Ok(Json(
                         match nemesis_ziwei::scheduler::attach_and_schedule(
                             &manager,
                             &profile,
-                            pid.unwrap() as u32,
+                            pid,
                             struct_addrs,
                         )
                         .await
