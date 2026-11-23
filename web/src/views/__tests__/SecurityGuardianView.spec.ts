@@ -143,3 +143,63 @@ describe('SecurityGuardianView 策略开关（D1/D2 guardian 半边）', () => {
     w.unmount()
   })
 })
+
+describe('SecurityGuardianView 误拦统计（guardian_stats）', () => {
+  function auditWithStats(stats: any) {
+    requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
+      if (cmd === 'config.get') return Promise.resolve(configResult())
+      if (cmd === 'audit') return Promise.resolve({ entries: [], total: 0, guardian_stats: stats })
+      return Promise.resolve({})
+    })
+  }
+
+  it('有判定数据 → 三行统计 + 误拦率百分比', async () => {
+    auditWithStats({
+      available: true,
+      reviewed_total: 10,
+      allowed_by_judge: 7,
+      escalated: 3,
+      approved_after_review: 1,
+      denied_after_review: 2,
+      misjudge_rate: 1 / 3,
+    })
+    const w = await mountView()
+    const block = w.find('[data-test="guardian-stats-block"]')
+    expect(block.exists()).toBe(true)
+    expect(w.find('[data-test="guardian-stats-reviewed"]').text()).toContain('10')
+    expect(w.find('[data-test="guardian-stats-reviewed"]').text()).toContain('7')
+    expect(w.find('[data-test="guardian-stats-human"]').text()).toContain('1')
+    const rate = w.find('[data-test="guardian-misjudge-rate"]')
+    expect(rate.text()).toContain('33.3%')
+    w.unmount()
+  })
+
+  it('无 guardian 判定（available=false）→ 诚实提示，无比率行', async () => {
+    auditWithStats({ available: false, reviewed_total: 0, allowed_by_judge: 0, escalated: 0, approved_after_review: 0, denied_after_review: 0, misjudge_rate: null })
+    const w = await mountView()
+    expect(w.find('[data-test="guardian-stats-block"]').text()).toContain('暂无数据')
+    expect(w.find('[data-test="guardian-misjudge-rate"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('escalated=0（有放行判定）→ 误拦率显示无分母占位，不造 0%', async () => {
+    auditWithStats({ available: true, reviewed_total: 4, allowed_by_judge: 4, escalated: 0, approved_after_review: 0, denied_after_review: 0, misjudge_rate: null })
+    const w = await mountView()
+    const rate = w.find('[data-test="guardian-misjudge-rate"]')
+    expect(rate.exists()).toBe(true)
+    expect(rate.text()).toContain('无分母')
+    expect(rate.text()).not.toContain('%')
+    w.unmount()
+  })
+
+  it('audit 响应缺 guardian_stats 字段（旧后端）→ 诚实提示不炸', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
+      if (cmd === 'config.get') return Promise.resolve(configResult())
+      if (cmd === 'audit') return Promise.resolve({ entries: [], total: 0 })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(w.find('[data-test="guardian-stats-block"]').text()).toContain('暂无数据')
+    w.unmount()
+  })
+})

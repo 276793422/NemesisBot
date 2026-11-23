@@ -428,6 +428,80 @@ pub(crate) fn flatten_audit_entry(val: &serde_json::Value) -> serde_json::Value 
     })
 }
 
+/// Guardian 二审误拦统计（纯行计数，从审计 jsonl 解析时累加）。
+///
+/// 数据源是两类既有审计行（零新增落盘面）：
+/// - judge 判定行：`log_guardian_verdict` 落 `request.source =
+///   "guardian_review"`，decision `allow`（LLM 直接放行）或 `escalate`
+///   （建议拦截、送人工审批）；
+/// - 审批结果行：`request_guardian_verdict_approval` 落 `request.source =
+///   "guardian_verdict_approval"`，decision `approved`（人批准 =
+///   judge 误拦候选）或 `denied`（人维持拦截；审批桥故障 fail-closed
+///   也落 denied）。
+///
+/// 审批桥三出口（approved / denied / Err→denied）全覆盖 ⇒ 审批行数与
+/// escalate 判定数恒等，故误拦率 = approved ÷ escalated。审计未接线或
+/// guardian 未开启时全零 + `available=false`，前端诚实显示无数据——统计
+/// 是尽力而为观测面不是账本，粘行 parse 失败跳过与条目解析同口径。
+#[derive(Default)]
+struct GuardianAuditStats {
+    /// LLM judge 总判定数（allow + escalate）
+    reviewed_total: usize,
+    /// judge 直接放行
+    allowed_by_judge: usize,
+    /// judge 建议拦截、送人工审批
+    escalated: usize,
+    /// 人批准（judge 误拦候选）
+    approved_after_review: usize,
+    /// 人维持拦截（含审批桥故障 fail-closed）
+    denied_after_review: usize,
+}
+
+impl GuardianAuditStats {
+    /// 单行观测：非 guardian 源或链形态行（顶层 source/decision，无嵌套
+    /// request）一律不计数。
+    fn observe(&mut self, val: &serde_json::Value) {
+        let source = val
+            .get("request")
+            .and_then(|r| r.get("source"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let decision = val.get("decision").and_then(|v| v.as_str()).unwrap_or("");
+        match (source, decision) {
+            ("guardian_review", "allow") => {
+                self.reviewed_total += 1;
+                self.allowed_by_judge += 1;
+            }
+            ("guardian_review", "escalate") => {
+                self.reviewed_total += 1;
+                self.escalated += 1;
+            }
+            ("guardian_verdict_approval", "approved") => self.approved_after_review += 1,
+            ("guardian_verdict_approval", "denied") => self.denied_after_review += 1,
+            _ => {}
+        }
+    }
+
+    /// `available` = 是否观测到 guardian 判定行（审计有 guardian 落盘）。
+    /// `misjudge_rate`：escalated=0 时 null（无分母，不造 0%）。
+    fn to_json(&self) -> serde_json::Value {
+        let misjudge_rate = if self.escalated > 0 {
+            serde_json::json!(self.approved_after_review as f64 / self.escalated as f64)
+        } else {
+            serde_json::Value::Null
+        };
+        serde_json::json!({
+            "available": self.reviewed_total > 0,
+            "reviewed_total": self.reviewed_total,
+            "allowed_by_judge": self.allowed_by_judge,
+            "escalated": self.escalated,
+            "approved_after_review": self.approved_after_review,
+            "denied_after_review": self.denied_after_review,
+            "misjudge_rate": misjudge_rate,
+        })
+    }
+}
+
 /// Extract risk_level from a raw JSONL audit entry (nested in request.danger_level).
 pub(crate) fn extract_risk_level(val: &serde_json::Value) -> &str {
     val.get("request")
@@ -589,10 +663,16 @@ impl SecurityHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let log_dir = security_log_dir(workspace);
         if !log_dir.exists() {
-            return Ok(Some(serde_json::json!({ "entries": [], "total": 0 })));
+            return Ok(Some(serde_json::json!({
+                "entries": [],
+                "total": 0,
+                "guardian_stats": GuardianAuditStats::default().to_json(),
+            })));
         }
 
         let mut entries = Vec::new();
+        // Guardian 误拦统计：同一次全量读盘顺手计数（不受分页影响）。
+        let mut guardian_stats = GuardianAuditStats::default();
         let read_dir = std::fs::read_dir(&log_dir)
             .map_err(|e| format!("failed to read security log dir: {}", e))?;
 
@@ -604,6 +684,7 @@ impl SecurityHandler {
             {
                 for line in content.lines().rev() {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        guardian_stats.observe(&val);
                         entries.push(flatten_audit_entry(&val));
                     }
                 }
@@ -624,6 +705,7 @@ impl SecurityHandler {
             "total": total,
             "limit": limit,
             "offset": offset,
+            "guardian_stats": guardian_stats.to_json(),
         })))
     }
 
@@ -1474,3 +1556,9 @@ mod overview_tests;
 // 清洗/校验/abort 语义 + 与 agent 生效表合成函数的盘上形态同源验证。
 #[cfg(test)]
 mod exec_deny_tests;
+
+// Guardian 二审误拦统计（2026-11-20）：GuardianAuditStats 四类行计数 /
+// 链形态行不混入 / 误拦率分母边界 + audit() 集成（粘行跳过 + 空/缺
+// 目录诚实降级）。
+#[cfg(test)]
+mod guardian_stats_tests;
