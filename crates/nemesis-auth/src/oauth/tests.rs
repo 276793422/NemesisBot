@@ -2724,3 +2724,53 @@ async fn refresh_client_stops_cross_host_redirect() {
         leaked.map(|r| r.ok())
     );
 }
+
+// BUG-20261123-043 回归锁：成功体超帽必须 Err（exceeds limit）——无帽
+// `.text()`/`.bytes()` 是 273/005 横扫的漏网残留，恶意/失控 issuer 可在
+// parse 前把任意大 body 灌进内存。走 refresh_access_token 全链路钉住
+// OAUTH_BODY_LIMIT（1MB）在生产路径的真实接线。
+#[tokio::test]
+async fn bug20261123_043_refresh_success_body_over_cap_is_err_not_unbounded_read() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = "a".repeat(1024 * 1024 + 64);
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    // 客户端读满帽即断开 → 服务端 write 可能 broken pipe：预期形态就是
+    // 中途断开，写错误必须忽略。
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("accept");
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let _ = sock.write_all(resp.as_bytes()).await;
+    });
+
+    let cfg = OAuthProviderConfig {
+        issuer: format!("http://{addr}"),
+        client_id: "test-client".to_string(),
+        scopes: "openid".to_string(),
+        originator: "nemesisbot".to_string(),
+        port: 0,
+        request_timeout_secs: 10,
+    };
+    let cred = AuthCredential {
+        access_token: "old".to_string(),
+        refresh_token: Some("r".to_string()),
+        expires_at: None,
+        provider: "openai".to_string(),
+        auth_method: "oauth".to_string(),
+        account_id: None,
+    };
+
+    let out = cfg.refresh_access_token(&cred).await;
+    let _ = server.await;
+
+    let err = out.expect_err("over-cap success body must be an error");
+    assert!(
+        err.contains("exceeds limit"),
+        "error must be the cap abort, not a parse/transport failure: {err}"
+    );
+}

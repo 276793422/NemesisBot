@@ -21,6 +21,29 @@ const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_millis(400);
 const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// 安装器成功体读取上限（BUG-20261123-043）：`http_cap::read_body_capped`
+/// 流式帽。2GiB 与 embedding/插件下载族口径一致（BUG-20261116-027 /
+/// BUG-20261119-183）——Sandboxie Classic 安装器 ~4.5MB，帽只拦失控/恶意
+/// 源的巨大 body（旧无帽 `.bytes()` 是 273/005 横扫的漏网残留）。
+const INSTALLER_BODY_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+
+/// checksums 文本成功体读取上限（BUG-20261123-043 同族）：sha256sums.txt
+/// KB 级，4MB 宽裕。
+const CHECKSUMS_BODY_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// 帽读错误 → anyhow 映射：传输错误必须保留 `reqwest::Error` 本体
+/// （source chain 完整——stall 回归测试 `downcast_ref::<reqwest::Error>()`
+/// 依赖可达，`{err:#}` 才能走到根因 `operation timed out`）；超限转诚实
+/// 消息（与 `read_body_capped` 文案同形）。
+fn cap_read_err(e: nemesis_utils::http_cap::BodyReadError) -> anyhow::Error {
+    match e {
+        nemesis_utils::http_cap::BodyReadError::Transport(err) => anyhow::Error::new(err),
+        nemesis_utils::http_cap::BodyReadError::ExceedsLimit { cap } => anyhow::Error::msg(
+            format!("response exceeds limit (>{cap} bytes); aborted mid-read"),
+        ),
+    }
+}
+
 fn download_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
@@ -32,7 +55,7 @@ fn download_client() -> reqwest::Client {
 /// Download `filename`'s expected SHA-256 from the checksums file.
 /// Format per line: `<sha256> <filename>` (two-space separated).
 pub async fn fetch_expected_sha256(checksums_url: &str, filename: &str) -> Result<String> {
-    let text = download_client()
+    let checksums_resp = download_client()
         .get(checksums_url)
         .send()
         .await
@@ -42,10 +65,15 @@ pub async fn fetch_expected_sha256(checksums_url: &str, filename: &str) -> Resul
         // 假根因，并把 download_release 的「无校验降级」误触发在 URL
         // 已死场景（降级拍板针对 checksums 服务不可得，不是安装器 404）。
         .error_for_status()
-        .with_context(|| format!("checksums {checksums_url}"))?
-        .text()
-        .await
-        .context("read checksums body")?;
+        .with_context(|| format!("checksums {checksums_url}"))?;
+    // BUG-20261123-043：成功体有帽读（`http_cap::read_body_capped_typed`
+    // 单一真相源）——无帽 `.text()` 是 273/005 横扫的漏网残留。
+    let checksums_bytes =
+        nemesis_utils::http_cap::read_body_capped_typed(checksums_resp, CHECKSUMS_BODY_LIMIT)
+            .await
+            .map_err(cap_read_err)
+            .context("read checksums body")?;
+    let text = String::from_utf8_lossy(&checksums_bytes).into_owned();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -69,12 +97,24 @@ pub async fn download_and_verify(
     expected_sha256: Option<&str>,
     dest: &Path,
 ) -> Result<()> {
+    download_and_verify_with_cap(url, expected_sha256, dest, INSTALLER_BODY_LIMIT).await
+}
+
+/// [`download_and_verify`] 的帽参数化形态（BUG-20261123-043 测试接缝：
+/// 2GiB 生产帽无法在测试里用真实超大 body 越过，行为级回归锁经小帽
+/// 注入跑同一条读路径）。
+async fn download_and_verify_with_cap(
+    url: &str,
+    expected_sha256: Option<&str>,
+    dest: &Path,
+    body_limit: u64,
+) -> Result<()> {
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("create dir {}", parent.display()))?;
     }
-    let bytes = download_client()
+    let installer_resp = download_client()
         .get(url)
         .send()
         .await
@@ -83,9 +123,13 @@ pub async fn download_and_verify(
         // 写盘（可覆盖 runtime_dir 里旧的好安装包），失败延迟到 7z 解压层
         // 才以「非档案」混淆报错——HTTP 层失败必须在 fetch 层诚实暴露。
         .error_for_status()
-        .with_context(|| format!("fetch {url}"))?
-        .bytes()
+        .with_context(|| format!("fetch {url}"))?;
+    // BUG-20261123-043：安装器成功体有帽读（`http_cap::read_body_capped_typed`
+    // 单一真相源）——超限在读入中途断开，写盘发生在读全+验签之后，
+    // 帽闸 abort 意味着 dest 不会被触碰。
+    let bytes = nemesis_utils::http_cap::read_body_capped_typed(installer_resp, body_limit)
         .await
+        .map_err(cap_read_err)
         .context("read installer body")?;
 
     if let Some(expected) = expected_sha256 {

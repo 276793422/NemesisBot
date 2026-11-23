@@ -1337,8 +1337,17 @@ impl SkillInstaller {
     ///
     /// Fetches the skills.json index file from the default GitHub repository.
     async fn list_available_skills_from_github(&self) -> Result<Vec<AvailableSkill>> {
-        let url = "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills.json";
+        const DEFAULT_SKILLS_INDEX_URL: &str =
+            "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills.json";
+        self.list_available_skills_from_url(DEFAULT_SKILLS_INDEX_URL)
+            .await
+    }
 
+    /// [`Self::list_available_skills_from_github`] 的 URL 参数化形态
+    /// （BUG-20261123-043 测试接缝：生产路径恒传内置默认索引，测试经
+    /// loopback 注入打真实 HTTP 往返——与 loop_tools::web 的
+    /// `search_brave_at` 端点注入模式同款）。
+    async fn list_available_skills_from_url(&self, url: &str) -> Result<Vec<AvailableSkill>> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .build()
@@ -1357,10 +1366,17 @@ impl SkillInstaller {
             )));
         }
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| NemesisError::Other(format!("failed to read response: {}", e)))?;
+        // BUG-20261123-043：成功体有帽读（`http_cap::read_body_capped`
+        // 单一真相源）。registry 源可由 `skills add-source` 添加任意 URL，
+        // 无帽 `.text()` 是 273/005 横扫的漏网残留——恶意/失控源可在
+        // parse 前把任意大 body 灌进内存。合法 skills.json 索引 KB 级，
+        // 8MB 宽裕。
+        const SKILLS_LIST_BODY_LIMIT: u64 = 8 * 1024 * 1024;
+        let body_bytes =
+            nemesis_utils::http_cap::read_body_capped(response, SKILLS_LIST_BODY_LIMIT)
+                .await
+                .map_err(|e| NemesisError::Other(format!("failed to read response: {e}")))?;
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
         let skills: Vec<AvailableSkill> = serde_json::from_str(&body)
             .map_err(|e| NemesisError::Other(format!("failed to parse skills list: {}", e)))?;

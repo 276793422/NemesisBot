@@ -119,6 +119,20 @@ impl WebSearchTool {
             .map_err(|e| format!("failed to create HTTP client: {}", e))
     }
 
+    /// 搜索后端成功体统一有帽读（BUG-20261123-043）。
+    ///
+    /// 三个搜索后端（Brave/DDG/Perplexity）为携带错误预览在状态闸之前读
+    /// body——旧形态无帽 `.text()`，恶意/失控端点可在任何判定发生前把任意
+    /// 大 body 灌进内存（273/005 修过下载与 provider 面，此处为横扫漏网
+    /// 残留）。统一走 `http_cap::read_body_capped`（workspace 单一真相源）：
+    /// 超限在读入中途断开，内存峰值 = 已到达前缀。8MB 远大于任何合法搜索
+    /// 结果页（KB 级）。
+    pub(super) async fn search_body_capped(resp: reqwest::Response) -> Result<String, String> {
+        const SEARCH_BODY_LIMIT: u64 = 8 * 1024 * 1024;
+        let bytes = nemesis_utils::http_cap::read_body_capped(resp, SEARCH_BODY_LIMIT).await?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     /// 生产入口（端点常量）。测试经 [`Self::search_brave_at`] 注入 loopback。
     pub(super) async fn search_brave(&self, query: &str) -> Result<String, String> {
         self.search_brave_at(BRAVE_SEARCH_ENDPOINT, query).await
@@ -155,10 +169,8 @@ impl WebSearchTool {
         // 处理」为消费端契约（见其注释），本闸即该契约的落实点：3xx 透传
         // 到此 = 非 2xx = 报错。
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("failed to read response: {}", e))?;
+        // BUG-20261123-043：成功体有帽读（无帽 `.text()` 是横扫漏网残留）。
+        let body = Self::search_body_capped(resp).await?;
         if !status.is_success() {
             let preview: String = body.chars().take(200).collect();
             return Err(format!("Brave HTTP {status}: {preview}"));
@@ -233,10 +245,8 @@ impl WebSearchTool {
         // 零命中时旧形态静默返回「No results found or extraction failed」，
         // 被封伪装成无结果（agent 无从降级/换源）。
         let status = resp.status();
-        let html = resp
-            .text()
-            .await
-            .map_err(|e| format!("failed to read response: {}", e))?;
+        // BUG-20261123-043：成功体有帽读（同 Brave——无帽 `.text()` 是横扫漏网残留）。
+        let html = Self::search_body_capped(resp).await?;
         if !status.is_success() {
             let preview: String = html.chars().take(200).collect();
             return Err(format!("DuckDuckGo HTTP {status}: {preview}"));
@@ -327,10 +337,8 @@ impl WebSearchTool {
             .map_err(|e| format!("request failed: {}", e))?;
 
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("failed to read response: {}", e))?;
+        // BUG-20261123-043：成功体有帽读（同 Brave——无帽 `.text()` 是横扫漏网残留）。
+        let body = Self::search_body_capped(resp).await?;
 
         if !status.is_success() {
             return Err(format!("Perplexity API error: {}", body));

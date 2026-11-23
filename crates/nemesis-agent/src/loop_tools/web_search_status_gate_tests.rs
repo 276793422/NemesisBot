@@ -134,3 +134,37 @@ async fn ddg_200_with_results_still_parses_links() {
     assert!(ok.contains("Doc Title"), "got: {ok}");
     assert!(ok.contains("via DuckDuckGo"), "got: {ok}");
 }
+
+/// BUG-20261123-043 回归锁：搜索后端成功体超帽必须 Err（exceeds limit），
+/// 不允许无帽读把恶意/失控端点的巨大 body 灌进内存。走 search_brave_at
+/// 全链路，钉住 helper（8MB 帽）在生产路径的真实接线。
+#[tokio::test]
+async fn bug20261123_043_brave_success_body_over_cap_is_err_not_unbounded_read() {
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    // 8MB+64 全 'a' 的 200 响应：status 合法，body 超帽——旧无帽形态会把
+    // 它整块读进内存再让 serde 失败；修后必须中途断开并报 exceeds limit。
+    let body = "a".repeat(8 * 1024 * 1024 + 64);
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    // 客户端读满帽即断开 → 服务端 write 可能 broken pipe：预期形态就是
+    // 中途断开，写错误必须忽略（不能像 serve_one 一样 expect）。
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = l.accept().await.expect("accept");
+        let mut buf = [0u8; 2048];
+        let _ = AsyncReadExt::read(&mut sock, &mut buf).await;
+        let _ = AsyncWriteExt::write_all(&mut sock, resp.as_bytes()).await;
+    });
+
+    let tool = WebSearchTool::new(brave_cfg());
+    let out = tool.search_brave_at(&base, "rust async").await;
+    let _ = server.await;
+
+    let err = out.expect_err("over-cap success body must be an error");
+    assert!(
+        err.contains("exceeds limit"),
+        "error must be the cap abort, not a parse/transport failure: {err}"
+    );
+}

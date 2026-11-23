@@ -1962,3 +1962,69 @@ fn test_sweep_stale_staging_removes_only_old_tx_dirs() {
     assert!(!stale.exists(), "25h 前的遗孤事务目录应被清扫");
     assert!(fresh.exists(), "当前事务目录不应被误删");
 }
+
+// BUG-20261123-043 回归锁：skills 索引成功体超帽必须 Err（exceeds limit）
+// ——registry 索引端点可被 add-source 指向任意 URL，无帽 `.text()` 是
+// 273/005 横扫的漏网残留。经 URL 注入接缝打真实 HTTP 往返，钉住 8MB 帽
+// 在生产路径的真实接线。
+#[tokio::test]
+async fn bug20261123_043_skills_index_body_over_cap_is_err_not_unbounded_read() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = "a".repeat(8 * 1024 * 1024 + 64);
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    // 客户端读满帽即断开 → 服务端 write 可能 broken pipe：预期形态就是
+    // 中途断开，写错误必须忽略。
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("accept");
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let _ = sock.write_all(resp.as_bytes()).await;
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    let url = format!("http://{addr}/skills.json");
+    let out = installer.list_available_skills_from_url(&url).await;
+    let _ = server.await;
+
+    let err = out.expect_err("over-cap success body must be an error");
+    assert!(
+        format!("{err}").contains("exceeds limit"),
+        "error must be the cap abort, not a parse/transport failure: {err}"
+    );
+}
+
+// BUG-20261123-043 同族正路径：合法小 body 仍正常解析（帽不改变合法语义）。
+#[tokio::test]
+async fn bug20261123_043_skills_index_small_body_still_parses() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body =
+        r#"[{"name":"demo","description":"demo skill","repository":"r","author":"a","tags":[]}]"#;
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("accept");
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let _ = sock.write_all(resp.as_bytes()).await;
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    let url = format!("http://{addr}/skills.json");
+    let out = installer.list_available_skills_from_url(&url).await;
+    let _ = server.await;
+
+    let skills = out.expect("small legal body must still parse");
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "demo");
+}

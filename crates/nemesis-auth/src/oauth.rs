@@ -21,6 +21,14 @@ const CALLBACK_CONN_TIMEOUT: Duration = Duration::from_secs(10);
 /// 防异常本地客户端灌流。请求行 + 常规头远低于此值。
 const CALLBACK_REQUEST_CAP: usize = 64 * 1024;
 
+/// OAuth 成功响应体读取上限（BUG-20261123-043）：device-code / refresh /
+/// exchange / poll 四个成功体统一有帽读（`http_cap::read_body_capped` 单一
+/// 真相源）。错误体已有 `read_error_body` 256KB 帽（read-cap 纪律同族）；
+/// 成功体旧形态无帽 `.text()`/`.bytes()` 是 273/005 横扫的漏网残留——
+/// 恶意/失控 issuer 可在 parse 前把任意大 body 灌进内存。合法 token 响应
+/// KB 级，1MB 宽裕。
+const OAUTH_BODY_LIMIT: u64 = 1024 * 1024;
+
 /// 带 bounded 超时的共享 HTTP client（a：reqwest 默认
 /// client 零超时，挂死端点会让 `auth login` 无限卡住）。
 ///
@@ -156,10 +164,11 @@ impl OAuthProviderConfig {
             return Err(format!("device code request failed: {}", body));
         }
 
-        let body = resp
-            .text()
+        // BUG-20261123-043：成功体有帽读（read-cap 纪律同族）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(resp, OAUTH_BODY_LIMIT)
             .await
-            .map_err(|e| format!("reading device code response: {}", e))?;
+            .map_err(|e| format!("reading device code response: {e}"))?;
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
         let device_resp = parse_device_code_response(&body)?;
 
@@ -259,10 +268,10 @@ impl OAuthProviderConfig {
             return Err(format!("token refresh failed: {}", body));
         }
 
-        let body = resp
-            .bytes()
+        // BUG-20261123-043：成功体有帽读（read-cap 纪律同族）。
+        let body = nemesis_utils::http_cap::read_body_capped(resp, OAUTH_BODY_LIMIT)
             .await
-            .map_err(|e| format!("reading refresh response: {}", e))?;
+            .map_err(|e| format!("reading refresh response: {e}"))?;
 
         let mut refreshed = parse_token_response_impl(&body, &cred.provider)?;
 
@@ -445,10 +454,10 @@ impl OAuthProviderConfig {
             return Err(format!("token exchange failed: {}", body));
         }
 
-        let body = resp
-            .bytes()
+        // BUG-20261123-043：成功体有帽读（read-cap 纪律同族）。
+        let body = nemesis_utils::http_cap::read_body_capped(resp, OAUTH_BODY_LIMIT)
             .await
-            .map_err(|e| format!("reading token response: {}", e))?;
+            .map_err(|e| format!("reading token response: {e}"))?;
 
         parse_token_response_impl(&body, "openai")
     }
@@ -474,10 +483,11 @@ impl OAuthProviderConfig {
             return Ok(None); // Still pending
         }
 
-        let body = resp
-            .text()
+        // BUG-20261123-043：成功体有帽读（read-cap 纪律同族）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(resp, OAUTH_BODY_LIMIT)
             .await
-            .map_err(|e| format!("reading poll response: {}", e))?;
+            .map_err(|e| format!("reading poll response: {e}"))?;
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
 
         let token_resp: DeviceTokenResponse = serde_json::from_str(&body)
             .map_err(|e| format!("parsing device token response: {}", e))?;

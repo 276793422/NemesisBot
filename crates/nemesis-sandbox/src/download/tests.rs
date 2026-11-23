@@ -295,3 +295,41 @@ async fn installer_download_errors_on_body_stall_instead_of_hanging() {
     );
     assert_timeout_err(err);
 }
+
+// BUG-20261123-043 回归锁：checksums 成功体超帽必须诚实报错（exceeds
+// limit）——无帽 `.text()` 是 273/005 横扫的漏网残留，恶意/失控源可在
+// 逐行解析前把任意大 body 灌进内存。CHECKSUMS_BODY_LIMIT=4MB，真实越帽
+// 可行（4MB+64 body）。
+#[tokio::test]
+async fn bug20261123_043_checksums_body_over_cap_is_err_not_unbounded_read() {
+    let body: &'static str = Box::leak("a".repeat(4 * 1024 * 1024 + 64).into_boxed_str());
+    let url = serve(body, "200 OK").await;
+    let err = fetch_expected_sha256(&url, "Sandboxie-Classic-1.0.exe")
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("exceeds limit"),
+        "error must be the cap abort, not a parse failure: {msg}"
+    );
+}
+
+// BUG-20261123-043 回归锁（安装器帽测试接缝）：2GiB 生产帽无法用真实
+// 超大 body 越过，经 download_and_verify_with_cap 注入小帽跑同一条读
+// 路径——超帽必须 Err 且 dest 绝不落盘（写盘发生在读全+验签之后）。
+#[tokio::test]
+async fn bug20261123_043_installer_body_over_cap_is_err_and_dest_untouched() {
+    let body: &'static str = Box::leak("sandboxie-installer-payload-a".repeat(4).into_boxed_str());
+    let url = serve(body, "200 OK").await;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("nested").join("inst.exe");
+    let err = download_and_verify_with_cap(&url, None, &dest, 64)
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("exceeds limit"),
+        "error must be the cap abort: {msg}"
+    );
+    assert!(!dest.exists(), "cap abort must not touch dest");
+}
