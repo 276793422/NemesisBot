@@ -136,14 +136,31 @@ fn parse_selection_defaults_and_filters_non_strings() {
 #[tokio::test]
 async fn select_box_files_needle_filter_is_case_insensitive_substring() {
     let dir = tempfile::tempdir().unwrap();
-    let (box_root, _) = fake_box(&dir);
-    // Two box files whose real paths map under drive/C/.
-    let a = box_root.join("drive/C/safe/alpha/REPORT.txt");
-    let b = box_root.join("drive/C/safe/beta/other.log");
-    std::fs::create_dir_all(a.parent().unwrap()).unwrap();
-    std::fs::create_dir_all(b.parent().unwrap()).unwrap();
+    let (box_root, Some(c_rel)) = fake_box(&dir) else {
+        eprintln!("skip: tempdir not on C:, drive/C mapping unavailable");
+        return;
+    };
+    // BUG-20261123-039 后 select_box_files 走 pending_workspace（工作区收容），
+    // 选中集 = 工作区子树镜像；工作区外条目（下方 evil）必须被排除。
+    let a = box_root
+        .join("drive/C")
+        .join(format!("{c_rel}/workspace/safe/alpha/REPORT.txt"));
+    let b = box_root
+        .join("drive/C")
+        .join(format!("{c_rel}/workspace/safe/beta/other.log"));
+    let evil = box_root
+        .join("drive/C")
+        .join(format!("{c_rel}/AppData/evil.txt"));
+    for p in [
+        a.parent().unwrap(),
+        b.parent().unwrap(),
+        evil.parent().unwrap(),
+    ] {
+        std::fs::create_dir_all(p).unwrap();
+    }
     std::fs::write(&a, b"a").unwrap();
     std::fs::write(&b, b"b").unwrap();
+    std::fs::write(&evil, b"e").unwrap();
 
     let paths = nemesis_sandbox::SandboxPaths::new(dir.path());
     // No match.
@@ -153,18 +170,35 @@ async fn select_box_files_needle_filter_is_case_insensitive_substring() {
     let sel = select_box_files(&paths, false, &["report.TXT".to_string()]).unwrap();
     assert_eq!(sel.len(), 1);
     assert!(sel[0].real_path.ends_with("REPORT.txt"));
-    // all=true returns everything.
+    // all=true = 工作区子树全部（盒外 evil 不入集——收容 backstop）。
     let sel = select_box_files(&paths, true, &[]).unwrap();
-    assert_eq!(sel.len(), 2);
+    assert_eq!(sel.len(), 2, "workspace-subtree entries only");
+    assert!(
+        sel.iter()
+            .all(|p| !p.real_path.to_string_lossy().contains("evil")),
+        "out-of-workspace box write must never be selectable"
+    );
 }
 
 #[tokio::test]
 async fn pending_command_lists_box_files() {
     let dir = tempfile::tempdir().unwrap();
-    let (box_root, _) = fake_box(&dir);
-    let f = box_root.join("drive/C/safe/one.txt");
+    let (box_root, Some(c_rel)) = fake_box(&dir) else {
+        eprintln!("skip: tempdir not on C:, drive/C mapping unavailable");
+        return;
+    };
+    // 工作区子树镜像（BUG-20261123-039 后清单只含工作区子树）。
+    let f = box_root
+        .join("drive/C")
+        .join(format!("{c_rel}/workspace/one.txt"));
     std::fs::create_dir_all(f.parent().unwrap()).unwrap();
     std::fs::write(&f, b"hello").unwrap();
+    // 盒外镜像（工作区外真实路径）不得入清单。
+    let evil = box_root
+        .join("drive/C")
+        .join(format!("{c_rel}/outside/x.txt"));
+    std::fs::create_dir_all(evil.parent().unwrap()).unwrap();
+    std::fs::write(&evil, b"x").unwrap();
     // Unmapped box file (not user/ or drive/) must be skipped.
     let meta = box_root.join("RegHive");
     std::fs::write(&meta, b"m").unwrap();
@@ -176,7 +210,11 @@ async fn pending_command_lists_box_files() {
         .unwrap()
         .unwrap();
     let files = out["files"].as_array().unwrap();
-    assert_eq!(files.len(), 1, "unmapped RegHive must not be listed");
+    assert_eq!(
+        files.len(),
+        1,
+        "unmapped RegHive and out-of-workspace mirror must not be listed: {files:?}"
+    );
     assert_eq!(files[0]["size"], serde_json::json!(5));
     assert!(files[0]["real_path"].as_str().unwrap().ends_with("one.txt"));
 }
@@ -188,8 +226,9 @@ async fn commit_copies_selected_files_into_real_paths() {
         eprintln!("skip: tempdir not on C:, drive/C mapping unavailable");
         return;
     };
-    // Box file mapping to a fresh path inside this tempdir.
-    let target_rel = format!("{}/committed/hello.txt", c_rel);
+    // Box file mapping to a fresh path inside this temp workspace
+    // （BUG-20261123-039 后提交作用域 = 工作区子树）。
+    let target_rel = format!("{c_rel}/workspace/committed/hello.txt");
     let box_file = box_root.join("drive/C").join(&target_rel);
     std::fs::create_dir_all(box_file.parent().unwrap()).unwrap();
     std::fs::write(&box_file, b"payload").unwrap();
@@ -223,7 +262,7 @@ async fn commit_reports_error_when_real_target_is_a_directory() {
         return;
     };
     // Real target already exists as a DIRECTORY → fs::copy fails.
-    let target_rel = format!("{}/target-dir", c_rel);
+    let target_rel = format!("{c_rel}/workspace/target-dir");
     std::fs::create_dir_all(PathBuf::from("C:\\").join(target_rel.replace('/', "\\"))).unwrap();
     let box_file = box_root.join("drive/C").join(&target_rel);
     std::fs::create_dir_all(box_file.parent().unwrap()).unwrap();
@@ -247,8 +286,9 @@ async fn delete_removes_in_box_file_only() {
         eprintln!("skip: tempdir not on C:, drive/C mapping unavailable");
         return;
     };
-    // Seed both sides: the box file AND the already-committed real file.
-    let target_rel = format!("{}/keepme.txt", c_rel);
+    // Seed both sides: the box file AND the already-committed real file
+    // （BUG-20261123-039 后删除作用域 = 工作区子树）。
+    let target_rel = format!("{c_rel}/workspace/keepme.txt");
     let real = PathBuf::from("C:\\").join(target_rel.replace('/', "\\"));
     std::fs::create_dir_all(real.parent().unwrap()).unwrap();
     std::fs::write(&real, b"real-content").unwrap();
@@ -266,6 +306,55 @@ async fn delete_removes_in_box_file_only() {
     assert!(!box_file.exists(), "box file removed");
     assert!(real.exists(), "real file untouched");
     assert_eq!(std::fs::read(&real).unwrap(), b"real-content");
+}
+
+/// BUG-20261123-039 回归锁：WSAPI `commit {all:true}` 的提交作用域必须
+/// 收容在工作区子树——修复前 select_box_files 走无过滤 enumerate_box，
+/// 盒内对工作区外的写入（exec 损害镜像）会被提交回真盘物化（CLI 侧
+/// pending_workspace 收容 backstop 在 WSAPI 面分叉失效）。修复后：盒外
+/// 条目不进选择集，真实路径永不被创建。
+#[tokio::test]
+async fn commit_all_never_materializes_out_of_workspace_box_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (box_root, Some(c_rel)) = fake_box(&dir) else {
+        eprintln!("skip: tempdir not on C:, drive/C mapping unavailable");
+        return;
+    };
+    let ws_file = box_root
+        .join("drive/C")
+        .join(format!("{c_rel}/workspace/out.txt"));
+    let evil_box = box_root
+        .join("drive/C")
+        .join(format!("{c_rel}/AppData/Roaming/evil.dll"));
+    for p in [ws_file.parent().unwrap(), evil_box.parent().unwrap()] {
+        std::fs::create_dir_all(p).unwrap();
+    }
+    std::fs::write(&ws_file, b"w").unwrap();
+    std::fs::write(&evil_box, b"payload").unwrap();
+    let evil_real = PathBuf::from("C:\\").join(format!("{c_rel}\\AppData\\Roaming\\evil.dll"));
+
+    let ctx = make_ctx(&dir);
+    let out = SandboxHandler::new()
+        .handle_cmd("commit", Some(serde_json::json!({ "all": true })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        out["committed"],
+        serde_json::json!(1),
+        "only the workspace write commits"
+    );
+    assert_eq!(out["total"], serde_json::json!(1));
+    assert!(
+        !evil_real.exists(),
+        "盒外损害镜像绝不能被提交物化到真盘: {}",
+        evil_real.display()
+    );
+    let ws_real = dir.path().join("workspace").join("out.txt");
+    assert_eq!(std::fs::read(&ws_real).unwrap(), b"w");
+    // 收尾：清掉本测试在真实盘 %TEMP% 下的物化物（工作区内文件在 tempdir，
+    // 随 tempdir 回收；evil 真实路径修复后不产生，防御性清理不删父目录）。
+    let _ = std::fs::remove_file(&evil_real);
 }
 
 #[tokio::test]

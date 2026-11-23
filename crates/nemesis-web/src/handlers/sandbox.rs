@@ -192,16 +192,22 @@ fn parse_selection(d: &serde_json::Value) -> (bool, Vec<String>) {
 }
 
 /// Enumerate the box and keep either ALL pending files (`all=true`) or those
-/// whose real path contains one of `files` (case-insensitive substring). The
-/// real paths come straight from [`enumerate_box`], so callers can only target
-/// files that actually exist in the box — no arbitrary path injection.
+/// whose real path contains one of `files` (case-insensitive substring).
+/// BUG-20261123-039：清单源从 [`enumerate_box`]（无过滤，盒内全部镜像文件）
+/// 收口到 [`nemesis_sandbox::pending::pending_workspace`]——工作区子树收容
+/// backstop 与 CLI（`sandbox pending`/`commit`，②作用域语义）同源。盒内对
+/// 工作区外的写入（exec 损害、系统路径）不进清单、不可提交/删除——这是
+/// sandboxie-integration 计划文档化的安全命门，WSAPI 面此前分叉违约
+/// （`commit {all:true}` 可把盒外损害提交回真盘）。needle 匹配只能选中
+/// 清单内条目，任意路径注入面不变。
 fn select_box_files(
     paths: &nemesis_sandbox::SandboxPaths,
     all: bool,
     files: &[String],
 ) -> Result<Vec<nemesis_sandbox::pending::PendingFile>, String> {
     let up = user_profile();
-    let pending = nemesis_sandbox::pending::enumerate_box(&paths.box_root, &up)
+    let workspace = paths.home.join("workspace");
+    let pending = nemesis_sandbox::pending::pending_workspace(&paths.box_root, &workspace, &up)
         .map_err(|e| format!("enumerate box: {e}"))?;
     if all {
         return Ok(pending);
@@ -481,9 +487,15 @@ impl ModuleHandler for SandboxHandler {
                 })))
             }
             "pending" => {
+                // BUG-20261123-039：同收容 backstop——只列工作区子树待提交
+                // 文件（与 CLI `sandbox pending` 同源），盒外镜像不入清单。
                 let up = user_profile();
-                let all = nemesis_sandbox::pending::enumerate_box(&paths.box_root, &up)
-                    .map_err(|e| format!("enumerate box: {e}"))?;
+                let all = nemesis_sandbox::pending::pending_workspace(
+                    &paths.box_root,
+                    &paths.home.join("workspace"),
+                    &up,
+                )
+                .map_err(|e| format!("enumerate box: {e}"))?;
                 let files: Vec<_> = all
                     .into_iter()
                     .map(|p| {
