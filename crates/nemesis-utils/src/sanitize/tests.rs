@@ -1,4 +1,6 @@
-use super::{escape_closing_tag, escape_like, sanitize_csv, sanitize_path_segment};
+use super::{
+    escape_closing_tag, escape_like, redact_url_secrets, sanitize_csv, sanitize_path_segment,
+};
 
 #[test]
 fn plain_ids_pass_through() {
@@ -363,4 +365,70 @@ fn windows_reserved_device_names_get_underscore_prefix() {
     let out = sanitize_path_segment(&long);
     assert_eq!(out.chars().count(), 78);
     assert_eq!(&out[60..62], "__");
+}
+
+// ---------------------------------------------------------------------------
+// redact_url_secrets（BUG-20261123-025 单一真相源提升：channels base 原版
+// 语义逐字移植 + 同款用例；channels 侧薄委托后其测试继续钉委托面）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn redact_url_secrets_masks_key_query_param() {
+    let msg = "webhook https://oapi.dingtalk.com/robot/send?access_token=SECRET123 delivery failed";
+    let out = redact_url_secrets(msg);
+    assert!(out.contains("access_token=<redacted>"), "{out}");
+    assert!(!out.contains("SECRET123"), "{out}");
+    assert!(out.contains("delivery failed"), "{out}");
+}
+
+#[test]
+fn redact_url_secrets_masks_access_token_and_bearer_shapes() {
+    let out = redact_url_secrets(
+        "u?access_token=AAA&token=BBB&secret=CCC&sign=DDD&ticket=EEE&key=FFF&webhook_key=GGG end",
+    );
+    assert!(out.contains("access_token=<redacted>"), "{out}");
+    assert!(out.contains("token=<redacted>"), "{out}");
+    assert!(out.contains("secret=<redacted>"), "{out}");
+    assert!(out.contains("sign=<redacted>"), "{out}");
+    assert!(out.contains("ticket=<redacted>"), "{out}");
+    assert!(out.contains("key=<redacted>"), "{out}");
+    assert!(out.contains("webhook_key=<redacted>"), "{out}");
+    assert!(!out.contains("AAA"), "{out}");
+    assert!(!out.contains("GGG"), "{out}");
+}
+
+#[test]
+fn redact_url_secrets_boundary_guards_prefix_collisions() {
+    // access_token= 中的 token= 子串前面是 `_`，不命中边界 → 不二次改写
+    let out = redact_url_secrets("u?access_token=AAA&token=BBB");
+    assert!(out.contains("access_token=<redacted>"), "{out}");
+    // web_token= / my_key= 这类非起头参数名（前面不是 ?/&）不改写
+    let out2 = redact_url_secrets("u?webhook_key=KKK");
+    assert!(out2.contains("webhook_key=<redacted>"), "{out2}");
+    let out3 = redact_url_secrets("u?my_key=VVV");
+    assert!(out3.contains("my_key=VVV"), "{out3}");
+}
+
+#[test]
+fn redact_url_secrets_value_terminators() {
+    // 值截至 & / 空白 / 引号 / 右括号
+    assert_eq!(
+        redact_url_secrets("u?token=AAA&x=1"),
+        "u?token=<redacted>&x=1"
+    );
+    assert_eq!(
+        redact_url_secrets("u?token=AAA x=1"),
+        "u?token=<redacted> x=1"
+    );
+    assert_eq!(redact_url_secrets("u?token=AAA\""), "u?token=<redacted>\"");
+    assert_eq!(redact_url_secrets("(u?token=AAA)"), "(u?token=<redacted>)");
+    // 串尾无终止符 = 值到结尾
+    assert_eq!(redact_url_secrets("u?token=AAATAIL"), "u?token=<redacted>");
+    // 非凭据参数原样保留诊断价值
+    assert_eq!(redact_url_secrets("u?a=1&b=2"), "u?a=1&b=2");
+    // 空串/无 query 原样
+    assert_eq!(
+        redact_url_secrets("https://example.com/hook"),
+        "https://example.com/hook"
+    );
 }

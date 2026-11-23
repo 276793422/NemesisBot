@@ -289,5 +289,59 @@ pub fn is_windows_reserved_device_base(seg: &str) -> bool {
     WINDOWS_RESERVED_DEVICE_NAMES.contains(&base.to_ascii_lowercase().as_str())
 }
 
+/// 掩掉 URL/错误消息里以 query 参数形态出现的凭据值（`key=<redacted>`），
+/// 非凭据参数原样保留诊断价值。
+///
+/// **单一真相源**（BUG-20261123-025）：原版住在 nemesis-channels
+/// `base::redact_url_secrets`（BUG-20261109-006 同族横向修复）；本函数把
+/// 该算法提升到 utils 供 channels 之外的面（security alert webhook 等）
+/// 同源复用——channels 侧现为薄委托。家族纪律：凭据随 URL 进日志即泄露
+/// （钉钉 `access_token=` / 飞书 ticket / Slack webhook 路径段形态另见
+/// 各通道处理），webhook/外呼错误串进日志前必须过本函数。
+///
+/// 只匹配以 `?` 或 `&` 起头的参数名；值截至 `&`/空白/引号/`)`/串尾。
+pub fn redact_url_secrets(msg: impl std::fmt::Display) -> String {
+    // 前缀长的参数名在前（access_token= 先于 token=）；同名前缀残撞由
+    // `?`/`&` 边界检查兜住（access_token= 中的 token= 前面是 `_`，不命中）。
+    // ticket=（BUG-20261119-182）：钉钉 stream endpoint / 飞书 WS endpoint
+    // 都是 `wss://…?ticket=<连接凭据>` 形态——凭据随 URL 进日志即泄露。
+    const SECRET_PARAMS: [&str; 7] = [
+        "access_token=",
+        "webhook_key=",
+        "ticket=",
+        "key=",
+        "token=",
+        "sign=",
+        "secret=",
+    ];
+    let mut out = msg.to_string();
+    for name in SECRET_PARAMS {
+        let mut result = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        loop {
+            let Some(pos) = rest.find(name) else {
+                result.push_str(rest);
+                break;
+            };
+            if pos != 0 && !matches!(rest.as_bytes()[pos - 1], b'?' | b'&') {
+                // 参数名边界不成立（子串残撞），原样带过继续找
+                result.push_str(&rest[..pos + name.len()]);
+                rest = &rest[pos + name.len()..];
+                continue;
+            }
+            result.push_str(&rest[..pos]);
+            result.push_str(name);
+            rest = &rest[pos + name.len()..];
+            let end = rest
+                .find(|c: char| c == '&' || c == ')' || c.is_whitespace() || c == '"' || c == '\'')
+                .unwrap_or(rest.len());
+            result.push_str("<redacted>");
+            rest = &rest[end..];
+        }
+        out = result;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests;

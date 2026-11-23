@@ -83,48 +83,12 @@ pub trait Channel: Send + Sync {
 // BUG-20261109-006 横向修复的先行 helper：单测已接（base/tests.rs），生产
 // 调用点（企业微信/钉钉 webhook 错误串格式化）随 006 系列后续提交接线；
 // lib 目标视角暂无调用方，allow 压 dead_code（接线后可摘）。
+// BUG-20261123-025：算法提升到 nemesis_utils::sanitize::redact_url_secrets
+// （单一真相源——security alert webhook 等非 channels 面同源复用），本函数
+// 退化为薄委托，crate 内调用点与既有单测（base/tests.rs）语义不变。
 #[allow(dead_code)]
 pub(crate) fn redact_url_secrets(msg: impl std::fmt::Display) -> String {
-    // 前缀长的参数名在前（access_token= 先于 token=）；同名前缀残撞由
-    // `?`/`&` 边界检查兜住（access_token= 中的 token= 前面是 `_`，不命中）。
-    // ticket=（BUG-20261119-182）：钉钉 stream endpoint / 飞书 WS endpoint
-    // 都是 `wss://…?ticket=<连接凭据>` 形态——凭据随 URL 进日志即泄露。
-    const SECRET_PARAMS: [&str; 7] = [
-        "access_token=",
-        "webhook_key=",
-        "ticket=",
-        "key=",
-        "token=",
-        "sign=",
-        "secret=",
-    ];
-    let mut out = msg.to_string();
-    for name in SECRET_PARAMS {
-        let mut result = String::with_capacity(out.len());
-        let mut rest = out.as_str();
-        loop {
-            let Some(pos) = rest.find(name) else {
-                result.push_str(rest);
-                break;
-            };
-            if pos != 0 && !matches!(rest.as_bytes()[pos - 1], b'?' | b'&') {
-                // 参数名边界不成立（子串残撞），原样带过继续找
-                result.push_str(&rest[..pos + name.len()]);
-                rest = &rest[pos + name.len()..];
-                continue;
-            }
-            result.push_str(&rest[..pos]);
-            result.push_str(name);
-            rest = &rest[pos + name.len()..];
-            let end = rest
-                .find(|c: char| c == '&' || c == ')' || c.is_whitespace() || c == '"' || c == '\'')
-                .unwrap_or(rest.len());
-            result.push_str("<redacted>");
-            rest = &rest[end..];
-        }
-        out = result;
-    }
-    out
+    nemesis_utils::sanitize::redact_url_secrets(msg)
 }
 
 // ---------------------------------------------------------------------------

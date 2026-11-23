@@ -600,3 +600,27 @@ async fn webhook_client_follows_same_origin_redirect() {
         "重定向后第二跳应为 GET（302 POST→GET 语义），实际: {second_req}"
     );
 }
+
+/// BUG-20261123-025 回归锁：webhook 投递失败日志行必须过
+/// redact_url_secrets——URL（webhook 惯嵌 query token）与 reqwest 错误串
+/// （Display 自带请求 URL）里的凭据值不得进日志。摘掉 webhook_failure_
+/// log_line 里的 redact 调用 → 本测试红。
+#[test]
+fn webhook_failure_log_line_redacts_query_token() {
+    struct FakeReqwestError(String);
+    impl std::fmt::Display for FakeReqwestError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "error sending request for url ({})", self.0)
+        }
+    }
+    let line = webhook_failure_log_line(
+        "https://oapi.dingtalk.com/robot/send?access_token=SECRET-TOKEN-9&foo=bar",
+        FakeReqwestError(
+            "https://oapi.dingtalk.com/robot/send?access_token=SECRET-TOKEN-9".to_string(),
+        ),
+    );
+    assert!(line.contains("delivery failed"), "{line}");
+    assert!(line.contains("access_token=<redacted>"), "{line}");
+    assert!(!line.contains("SECRET-TOKEN-9"), "凭据泄漏进日志行: {line}");
+    assert!(line.contains("foo=bar"), "非凭据参数保留诊断价值: {line}");
+}

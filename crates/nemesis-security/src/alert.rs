@@ -560,6 +560,17 @@ fn webhook_client() -> Option<reqwest::Client> {
         .ok()
 }
 
+/// webhook 投递失败日志行构造（BUG-20261123-025 测试缝：URL 与错误串都
+/// 过 redact_url_secrets 再拼接——凭据随 URL 进日志即泄露，channels
+/// BUG-20261109-006 同族纪律，单一真相源 nemesis_utils::sanitize）。
+fn webhook_failure_log_line(url: impl std::fmt::Display, e: impl std::fmt::Display) -> String {
+    format!(
+        "[security-alert] webhook {} delivery failed: {}",
+        nemesis_utils::sanitize::redact_url_secrets(url),
+        nemesis_utils::sanitize::redact_url_secrets(e)
+    )
+}
+
 /// webhook 直发：逐 URL POST JSON envelope，5s 超时失败即弃不重试
 /// （best-effort——告警链路故障不得反噬主管线）。无 tokio runtime 的
 /// 调用线程静默跳过（见模块文档已知边界）。
@@ -576,7 +587,7 @@ fn dispatch_webhook(client: &Option<reqwest::Client>, urls: &[String], event: &S
             let result = client.post(url).json(&payload).send().await;
             if let Err(e) = result {
                 // 不重试不升级——单条 WARN 留痕即可（风暴面由 cooldown 闸压）。
-                tracing::debug!("[security-alert] webhook {} delivery failed: {}", url, e);
+                tracing::debug!("{}", webhook_failure_log_line(url, &e));
             }
         }
     });
