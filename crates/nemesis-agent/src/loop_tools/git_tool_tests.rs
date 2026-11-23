@@ -383,6 +383,90 @@ async fn read_actions_allow_numeric_count_and_plain_paths() {
     );
 }
 
+// --- BUG-20261124-009：写动作专用参数值的选项走私封死 -------------------------
+//
+// enum 白名单 + 专用键只挡 free-form `args`；**值本身**仍可走私 git 选项：
+// `restore` paths = "--source=HEAD~1 --staged --worktree ." ≈ reset --hard
+// 等价回滚（恰是刻意不暴露的破坏面）、`checkout` ref = "--force" 丢弃
+// 工作区改动、`add` paths = "-f" 强加 ignored 文件、`branch_create`
+// name = "-D" 形态。规则：写动作专用参数值以 '-' 开头一律诚实拒绝，
+// 唯一豁免 = schema 文档化的 `-A`（stage-everything）。
+
+#[tokio::test]
+async fn write_actions_reject_option_values_in_dedicated_params() {
+    let tmp = TempDir::new().unwrap();
+    assert!(init_repo(tmp.path()), "git must be available");
+    write_file(tmp.path(), "f.txt", "base\n");
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+    run(&tool, r#"{"action":"add","paths":"f.txt"}"#)
+        .await
+        .unwrap();
+    run(&tool, r#"{"action":"commit","message":"base"}"#)
+        .await
+        .unwrap();
+
+    // 注入面实例：restore 组合 ≈ reset --hard / checkout --force 丢工作区 /
+    // add -f 强加 ignored / branch -D 形态 / 单个 --staged。
+    for (action, key, val, needle) in [
+        (
+            "restore",
+            "paths",
+            "--source=HEAD~1 --staged --worktree .",
+            "looks like an option",
+        ),
+        ("restore", "paths", "--staged f.txt", "looks like an option"),
+        ("checkout", "ref", "--force", "looks like an option"),
+        ("checkout", "ref", "-f", "looks like an option"),
+        ("add", "paths", "-f secret.ignored", "looks like an option"),
+        ("branch_create", "name", "-D", "looks like an option"),
+    ] {
+        let err = run(
+            &tool,
+            &format!(r#"{{"action":"{action}","{key}":"{val}"}}"#),
+        )
+        .await
+        .expect_err("option values in dedicated params must be rejected");
+        assert!(
+            err.contains(needle),
+            "{action} {key}={val} must hit the option-value rejection, got: {err}"
+        );
+    }
+
+    // 关键破坏面效果断言：被拒的 restore --source 组合不得真回滚文件。
+    write_file(tmp.path(), "f.txt", "uncommitted work\n");
+    let err = run(
+        &tool,
+        r#"{"action":"restore","paths":"--source=HEAD --staged --worktree f.txt"}"#,
+    )
+    .await
+    .expect_err("reset-hard-equivalent smuggling must be rejected");
+    assert!(err.contains("looks like an option"), "got: {err}");
+    let content = std::fs::read_to_string(tmp.path().join("f.txt")).unwrap();
+    assert_eq!(
+        content, "uncommitted work\n",
+        "rejected smuggling must not touch the worktree"
+    );
+}
+
+#[tokio::test]
+async fn write_actions_allow_minus_a_staging_form() {
+    let tmp = TempDir::new().unwrap();
+    assert!(init_repo(tmp.path()), "git must be available");
+    write_file(tmp.path(), "a.txt", "a\n");
+    write_file(tmp.path(), "b.txt", "b\n");
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+
+    // schema 文档化的 `-A`（stage-everything）放行且真实生效。
+    run(&tool, r#"{"action":"add","paths":"-A"}"#)
+        .await
+        .expect("documented -A staging form must be allowed");
+    let status = run(&tool, r#"{"action":"status"}"#).await.unwrap();
+    assert!(
+        status.contains("a.txt") && status.contains("b.txt"),
+        "-A must stage both files, got: {status}"
+    );
+}
+
 // --- BUG-20261123-004：失败文本走 stdout 的命令被三态当成功上报 ------------
 // 阳性对照实证：`git stash pop` 冲突 = CONFLICT 行+状态打 stdout、stderr 空、
 // exit 1。旧三态「stdout 非空即 Ok」把冲突当成功；修后 success 旗标优先，

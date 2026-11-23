@@ -285,6 +285,29 @@ impl GitTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| format!("action '{}' requires a non-empty '{}' param", action, key))
     }
+
+    /// 写动作专用参数值的选项闸（BUG-20261124-009）：enum 白名单 + 专用
+    /// 键只挡住了 free-form `args`，但**值本身**仍可走私 git 选项——
+    /// `restore` 的 paths 逐 token 可带 `--source=<commit> --staged
+    /// --worktree .`（= reset --hard 等价回滚，恰是刻意不暴露的破坏面）、
+    /// `checkout` 的 ref 可带 `--force`（丢弃工作区改动）、`add` 可带
+    /// `-f`（强加 ignored 文件）。以 `-` 开头的值一律诚实拒绝并给出
+    /// 指引；唯一豁免 = schema 文档化的 `-A`（stage-everything）。
+    fn reject_option_values<'a>(&self, values: &[&'a str], action: &str) -> Result<(), String> {
+        for tok in values {
+            if tok.starts_with('-') && *tok != "-A" {
+                return Err(format!(
+                    "git write action '{}' parameter value '{}' looks like an option: \
+                     options are not accepted in dedicated params (e.g. restore \
+                     --source/--staged/--worktree or checkout --force would smuggle in \
+                     destructive git ops); pass plain paths/refs only ('-A' is the \
+                     only allowed form)",
+                    action, tok
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -327,8 +350,10 @@ impl Tool for GitTool {
             "add" => {
                 self.reject_freeform_args(&v, action, false)?;
                 let paths = self.required_str(&v, "paths", action)?;
+                let tokens: Vec<&str> = paths.split_whitespace().collect();
+                self.reject_option_values(&tokens, action)?;
                 let mut base = vec!["add"];
-                base.extend(paths.split_whitespace());
+                base.extend(tokens);
                 return self.run_three_state(&base, action);
             }
             "commit" => {
@@ -364,18 +389,22 @@ impl Tool for GitTool {
             "branch_create" => {
                 self.reject_freeform_args(&v, action, false)?;
                 let name = self.required_str(&v, "name", action)?;
+                self.reject_option_values(&[name], action)?;
                 return self.run_three_state(&["branch", name], action);
             }
             "checkout" => {
                 self.reject_freeform_args(&v, action, false)?;
                 let target = self.required_str(&v, "ref", action)?;
+                self.reject_option_values(&[target], action)?;
                 return self.run_three_state(&["checkout", target], action);
             }
             "restore" => {
                 self.reject_freeform_args(&v, action, false)?;
                 let paths = self.required_str(&v, "paths", action)?;
+                let tokens: Vec<&str> = paths.split_whitespace().collect();
+                self.reject_option_values(&tokens, action)?;
                 let mut base = vec!["restore"];
-                base.extend(paths.split_whitespace());
+                base.extend(tokens);
                 return self.run_three_state(&base, action);
             }
             "stash" => {
