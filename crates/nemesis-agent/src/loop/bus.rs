@@ -229,6 +229,8 @@ impl AgentLoop {
                 ),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
+                #[cfg(feature = "security")]
+                credential_auto: parking_lot::RwLock::new(None),
             },
             mcp_manager: None,
             browser_profile: None,

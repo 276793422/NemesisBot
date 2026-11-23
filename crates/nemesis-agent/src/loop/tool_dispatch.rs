@@ -1560,6 +1560,11 @@ impl AgentLoop {
         // 闸块）。plugin 不在场（feature 关/未装配）= 闸跳过。
         #[cfg(feature = "security")]
         let cred_gate = self.security.security_plugin.clone();
+        // 凭据免打扰运行时态快照（2026-11-23 ABCD 批 A/B；approval_auto
+        // 同族 dispatch 时刻捕获）。闸 auto 臂判定 + 统计打点载体；
+        // 非 security 构建不捕获（悬空绑定 = unused warning）。
+        #[cfg(feature = "security")]
+        let cred_auto = self.security.credential_auto.read().clone();
         #[cfg(not(feature = "security"))]
         #[allow(unused_variables)]
         let cred_gate: Option<()> = None;
@@ -1584,6 +1589,8 @@ impl AgentLoop {
             let cred_guard = Arc::clone(&cred_guard);
             #[cfg(feature = "security")]
             let cred_gate = cred_gate.clone();
+            #[cfg(feature = "security")]
+            let cred_auto = cred_auto.clone();
             // 并行批审批聚合（第三层）：批号物化为 owned 才能进
             // 'static Fn 闭包（Option<&str> 借用跨不过 Send+'static 边界）；
             // 凭据闸发卡的 ApprovalContext 靠它同批聚合。唯一消费点在
@@ -1605,6 +1612,8 @@ impl AgentLoop {
                 let cred_guard = Arc::clone(&cred_guard);
                 #[cfg(feature = "security")]
                 let cred_gate = cred_gate.clone();
+                #[cfg(feature = "security")]
+                let cred_auto = cred_auto.clone();
                 // 并行批审批聚合（第三层）：唯一消费点在下方 security
                 // cfg 块内（凭据发卡 ApprovalContext.batch_id）——非 security
                 // 构建不捕获（悬空 clone = unused warning，nightly 全量红）。
@@ -1707,6 +1716,31 @@ impl AgentLoop {
                                                 .to_string(),
                                         });
                                     }
+                                    // 统计打点（2026-11-23 ABCD 批 B；只含
+                                    // 别名/槽位元数据，真值零参与）。
+                                    #[cfg(feature = "security")]
+                                    if let Some(ref st) = cred_auto {
+                                        st.bump_denied();
+                                        st.record(
+                                            nemesis_security::credential_auto::CredentialUseRecord {
+                                                ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                                tool: call.name.clone(),
+                                                fields: gate_refs
+                                                    .iter()
+                                                    .map(|(f, _)| f.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", "),
+                                                aliases: gate_refs
+                                                    .iter()
+                                                    .map(|(_, a)| a.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(","),
+                                                target_summary: nemesis_security::credential_auto::truncate_target_summary(&call.arguments),
+                                                outcome: "out_of_domain",
+                                                source: "domain",
+                                            },
+                                        );
+                                    }
                                     warn!(
                                         "[AgentLoop] credential domain violation for {}（值不落日志）",
                                         call.name
@@ -1720,6 +1754,30 @@ impl AgentLoop {
                                     // 绑定即预授权：免卡直过（info 留痕，跳过
                                     // 下方 v1 卡臂）。
                                     domain_preauthorized = true;
+                                    // 统计打点（批 B；预授权臂）。
+                                    #[cfg(feature = "security")]
+                                    if let Some(ref st) = cred_auto {
+                                        st.bump_preauth();
+                                        st.record(
+                                            nemesis_security::credential_auto::CredentialUseRecord {
+                                                ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                                tool: call.name.clone(),
+                                                fields: gate_refs
+                                                    .iter()
+                                                    .map(|(f, _)| f.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", "),
+                                                aliases: gate_refs
+                                                    .iter()
+                                                    .map(|(_, a)| a.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(","),
+                                                target_summary: nemesis_security::credential_auto::truncate_target_summary(&call.arguments),
+                                                outcome: "preauth",
+                                                source: "domain",
+                                            },
+                                        );
+                                    }
                                     info!(
                                         "[AgentLoop] credential domain pre-authorized for {} ({} refs)（值不落日志）",
                                         call.name,
@@ -1742,31 +1800,106 @@ impl AgentLoop {
                             && let Some(ref security) = cred_gate
                         {
                             let auditor = security.auditor();
-                            if !auditor.has_approval_channel() {
+                            let fields_csv = gate_refs
+                                .iter()
+                                .map(|(f, _)| f.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let gate_key = format!(
+                                "gate:{}:{}",
+                                call.name,
+                                gate_refs
+                                    .iter()
+                                    .map(|(_, a)| a.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            );
+                            // 凭据免打扰 auto 臂（2026-11-23 ABCD 批 A）：
+                            // 凭据开关 ∨ 全局免打扰，任一开即免卡直放。
+                            // 前置于审批通道判定——无人值守（headless 无
+                            // 通道）同样生效；出域硬拒/域内预授权是更早的
+                            // 判定臂不受影响。auto 放行不占冷却闸（无卡无
+                            // 拒）；审计链留痕（值零参与）。
+                            let auto_source = if cred_auto.as_ref().is_some_and(|s| s.enabled()) {
+                                Some("credential_switch")
+                            } else if auditor.approval_auto_enabled() {
+                                Some("approvals_dnd")
+                            } else {
+                                None
+                            };
+                            if let Some(auto_src) = auto_source {
+                                if let Some(ref st) = cred_auto {
+                                    st.bump_auto();
+                                    st.record(
+                                        nemesis_security::credential_auto::CredentialUseRecord {
+                                            ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                            tool: call.name.clone(),
+                                            fields: fields_csv.clone(),
+                                            aliases: gate_refs
+                                                .iter()
+                                                .map(|(_, a)| a.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(","),
+                                            target_summary: nemesis_security::credential_auto::truncate_target_summary(&call.arguments),
+                                            outcome: "auto",
+                                            source: auto_src,
+                                        },
+                                    );
+                                }
+                                use nemesis_security::auditor::AuditEvent;
+                                use nemesis_security::types::{DangerLevel, OperationType};
+                                auditor.log_audit_event(&AuditEvent {
+                                    event_id: uuid::Uuid::new_v4().to_string(),
+                                    request: nemesis_security::auditor::OperationRequest {
+                                        id: format!("credauto-{}", uuid::Uuid::new_v4()),
+                                        op_type: OperationType::ProcessExec,
+                                        danger_level: DangerLevel::High,
+                                        source: "credential_gate".to_string(),
+                                        target: call.name.clone(),
+                                        ..Default::default()
+                                    },
+                                    decision: "allowed".to_string(),
+                                    reason: format!(
+                                        "credential use on {} auto-approved (source={auto_src}, fields={fields_csv})（值不落日志）",
+                                        call.name
+                                    ),
+                                    timestamp: chrono::Local::now().to_rfc3339(),
+                                    policy_rule: "security.credential_auto".to_string(),
+                                });
+                                info!(
+                                    "[AgentLoop] credential gate auto-approved for {} ({} refs, source={auto_src})（值不落日志）",
+                                    call.name,
+                                    gate_refs.len()
+                                );
+                            } else if !auditor.has_approval_channel() {
                                 debug!(
                                     "[AgentLoop] credential gate skipped for {}: no approval channel（值不落日志）",
                                     call.name
                                 );
                             } else {
-                                let fields_csv = gate_refs
-                                    .iter()
-                                    .map(|(f, _)| f.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                let gate_key = format!(
-                                    "gate:{}:{}",
-                                    call.name,
-                                    gate_refs
-                                        .iter()
-                                        .map(|(_, a)| a.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(",")
-                                );
                                 // 冷却窗（拒绝/超时后同键 600s）：静默拒绝
                                 // 不出卡——卡轰炸限速 + doom-loop 收敛加速
                                 // （复用 USER REJECTED 文案保持 turn_guard
                                 // (tool,error) 签名稳定，设计意图非巧合）。
                                 if !cred_guard.try_acquire(&ctx.session_key, &gate_key) {
+                                    #[cfg(feature = "security")]
+                                    if let Some(ref st) = cred_auto {
+                                        st.record(
+                                            nemesis_security::credential_auto::CredentialUseRecord {
+                                                ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                                tool: call.name.clone(),
+                                                fields: fields_csv.clone(),
+                                                aliases: gate_refs
+                                                    .iter()
+                                                    .map(|(_, a)| a.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(","),
+                                                target_summary: nemesis_security::credential_auto::truncate_target_summary(&call.arguments),
+                                                outcome: "cooldown",
+                                                source: "cooldown",
+                                            },
+                                        );
+                                    }
                                     debug!(
                                         "[AgentLoop] credential gate cooldown for {} ({} refs)（值不落日志）",
                                         call.name,
@@ -1800,6 +1933,24 @@ impl AgentLoop {
                                 ) {
                                     Ok(av) if av.approved => {
                                         cred_guard.release(&ctx.session_key, &gate_key);
+                                        // 统计打点（批 B；人工批准臂）。
+                                        if let Some(ref st) = cred_auto {
+                                            st.record(
+                                                nemesis_security::credential_auto::CredentialUseRecord {
+                                                    ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                                    tool: call.name.clone(),
+                                                    fields: fields_csv.clone(),
+                                                    aliases: gate_refs
+                                                        .iter()
+                                                        .map(|(_, a)| a.as_str())
+                                                        .collect::<Vec<_>>()
+                                                        .join(","),
+                                                    target_summary: nemesis_security::credential_auto::truncate_target_summary(&call.arguments),
+                                                    outcome: "approved",
+                                                    source: "user",
+                                                },
+                                            );
+                                        }
                                         info!(
                                             "[AgentLoop] credential gate approved for {} ({} refs)（值不落日志）",
                                             call.name,
@@ -1814,6 +1965,25 @@ impl AgentLoop {
                                             .filter(|n| !n.is_empty())
                                             .map(|n| format!(" 用户备注: {n}"))
                                             .unwrap_or_default();
+                                        // 统计打点（批 B；人工拒绝臂）。
+                                        if let Some(ref st) = cred_auto {
+                                            st.bump_denied();
+                                            st.record(
+                                                nemesis_security::credential_auto::CredentialUseRecord {
+                                                    ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                                    tool: call.name.clone(),
+                                                    fields: fields_csv.clone(),
+                                                    aliases: gate_refs
+                                                        .iter()
+                                                        .map(|(_, a)| a.as_str())
+                                                        .collect::<Vec<_>>()
+                                                        .join(","),
+                                                    target_summary: nemesis_security::credential_auto::truncate_target_summary(&call.arguments),
+                                                    outcome: "denied",
+                                                    source: "user",
+                                                },
+                                            );
+                                        }
                                         warn!(
                                             "[AgentLoop] credential gate rejected for {}（值不落日志）",
                                             call.name
@@ -1828,6 +1998,24 @@ impl AgentLoop {
                                             "[AgentLoop] credential gate channel error for {}: {}（值不落日志）",
                                             call.name, e
                                         );
+                                        // 统计打点（批 B；通道故障臂）。
+                                        if let Some(ref st) = cred_auto {
+                                            st.record(
+                                                nemesis_security::credential_auto::CredentialUseRecord {
+                                                    ts_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                                    tool: call.name.clone(),
+                                                    fields: fields_csv.clone(),
+                                                    aliases: gate_refs
+                                                        .iter()
+                                                        .map(|(_, a)| a.as_str())
+                                                        .collect::<Vec<_>>()
+                                                        .join(","),
+                                                    target_summary: nemesis_security::credential_auto::truncate_target_summary(&call.arguments),
+                                                    outcome: "channel_error",
+                                                    source: "channel",
+                                                },
+                                            );
+                                        }
                                         return format!(
                                             "⛔ CREDENTIAL USE — NO APPROVAL CHANNEL [layer:credential_gate|tool:{}] 本次调用声明槽位（{fields_csv}）携带 vault: 凭据引用，无可用审批通道，fail-closed 拒绝。工具未执行。Do NOT retry the same call unchanged. Inform the user.",
                                             call.name

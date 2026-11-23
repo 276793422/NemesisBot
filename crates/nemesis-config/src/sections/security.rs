@@ -140,11 +140,18 @@ pub struct ApprovalsConfig {
     /// 见计划）。默认关 = 现行为（弹窗）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_approve: bool,
+    /// 凭据免打扰（2026-11-23 ABCD 批 A）：dispatch 凭据闸（credential_use
+    /// 直卡通道，不经 RequireApproval 臂）的独立自动放行开关。`auto_approve`
+    /// 置 true 时凭据卡同样被罩住（∨ 语义，凭据闸两开关任一开即免卡），
+    /// 本键提供**只**免凭据卡的细粒度控制。默认关 = 弹卡照旧。出域硬拒
+    /// （config.vault.json 绑定越界）不受任何开关影响。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub credential_auto_approve: bool,
 }
 
 /// serde skip_serializing_if：整段处于缺省（关）时不落盘。
 fn approvals_is_default(v: &ApprovalsConfig) -> bool {
-    !v.auto_approve
+    !v.auto_approve && !v.credential_auto_approve
 }
 
 /// 单类别的滑动窗口限制规则。

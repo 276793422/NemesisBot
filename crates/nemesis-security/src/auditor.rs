@@ -973,7 +973,9 @@ impl SecurityAuditor {
     }
 
     /// 免打扰是否生效（未装配或开关关 = false，行为与旧路径一致）。
-    fn approval_auto_enabled(&self) -> bool {
+    /// 起可见（2026-11-23 ABCD 批 A）：dispatch 凭据闸 auto 臂消费——
+    /// 全局免打扰 ∨ 凭据开关任一开即凭据卡免卡（原始投诉根治）。
+    pub fn approval_auto_enabled(&self) -> bool {
         self.approval_auto
             .read()
             .as_ref()

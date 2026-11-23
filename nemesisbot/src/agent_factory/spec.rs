@@ -522,6 +522,11 @@ pub fn build_agent_loop_from_spec(
         if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
             agent_loop.set_approval_auto_approve(state);
         }
+        // 凭据免打扰运行时态挂项目 loop（同主 loop；2026-11-23 ABCD
+        // 批 A）。槽未装配 = None = 卡路径照旧。
+        if let Some(state) = nemesis_web::handlers::vault::credential_auto_state() {
+            agent_loop.set_credential_auto_approve(state);
+        }
     }
     // small_model 杂务通道与主 loop 同配置。（2026-11-20 C2 热生效语义：
     // 单一真相源 resolve_small_model_slot + 热换 resolver 注入——项目

@@ -545,7 +545,19 @@ fn module_surface() {
     assert_eq!(VaultHandler.module_name(), "vault");
     assert_eq!(
         VaultHandler.commands(),
-        &["list", "set", "remove", "status", "unlock"]
+        &[
+            "list",
+            "set",
+            "remove",
+            "status",
+            "unlock", //
+            "credential_status",
+            "credential_set",
+            "credential_stats", //
+            "bindings",
+            "bind",
+            "unbind",
+        ]
     );
 }
 
@@ -650,4 +662,314 @@ async fn concurrent_sets_all_survive() {
         }
     })
     .await;
+}
+
+// ===== ABCD 批（2026-11-23）：凭据免打扰 / 使用统计 / 域绑定管理 =====
+//
+// 进程全局静态槽（CREDENTIAL_AUTO / VAULT_IO_LOCK）：credential_* 用例
+// 各自 install 新 state（last-write-wins），**必须串行**——并行 install
+// 互相覆盖静态槽后，credential_set 的热翻落在别人 state 上（三个用例
+// 各自 install 同一槽，并行时 A 的 set_enabled 打在 B 刚装的实例上 =
+// enabled 断言假红）。CRED_AUTO_LOCK 只串行这三例（不碰 env，无需与
+// TEST_LOCK 合流）。
+
+use super::install_credential_auto;
+use nemesis_security::credential_auto::CredentialAutoApproveState;
+
+/// credential_* 三例互斥（静态槽 last-write-wins，见上方模块注记）。
+static CRED_AUTO_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn security_config_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    nemesis_path::workspace_config_dir(dir.path()).join("config.security.json")
+}
+
+#[tokio::test]
+async fn credential_status_reflects_state_and_counts() {
+    let _serial = CRED_AUTO_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let st = Arc::new(CredentialAutoApproveState::new(true));
+    st.bump_auto();
+    st.bump_preauth();
+    st.bump_denied();
+    st.bump_denied();
+    install_credential_auto(st);
+
+    let resp = VaultHandler
+        .handle_cmd("credential_status", None, &ctx)
+        .await
+        .expect("credential_status")
+        .expect("payload");
+    assert_eq!(resp["injected"], true);
+    assert_eq!(resp["enabled"], true);
+    assert_eq!(resp["auto_count"], 1);
+    assert_eq!(resp["preauth_count"], 1);
+    assert_eq!(resp["denied_count"], 2);
+}
+
+/// credential_set：持久真相源（config.security.json approvals 段）+ 运行态
+/// 热翻双写；开→关来回后盘上值与 state 同步；缺 enabled 诚实拒绝。
+#[tokio::test]
+async fn credential_set_persists_config_and_hot_flips_state() {
+    let _serial = CRED_AUTO_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let st = Arc::new(CredentialAutoApproveState::new(false));
+    install_credential_auto(st.clone());
+
+    // 开：盘上 approvals.credential_auto_approve=true + state 热翻。
+    let resp = VaultHandler
+        .handle_cmd(
+            "credential_set",
+            Some(serde_json::json!({ "enabled": true })),
+            &ctx,
+        )
+        .await
+        .expect("set on")
+        .expect("payload");
+    assert_eq!(resp["saved"], true);
+    assert_eq!(st.enabled(), true, "运行态热翻（闸下次判定即读新值）");
+    let on_disk = std::fs::read_to_string(security_config_file(&dir)).unwrap();
+    assert!(
+        on_disk.contains("\"credential_auto_approve\": true"),
+        "持久真相源未落盘: {on_disk}"
+    );
+
+    // 关：双写回 false。
+    VaultHandler
+        .handle_cmd(
+            "credential_set",
+            Some(serde_json::json!({ "enabled": false })),
+            &ctx,
+        )
+        .await
+        .expect("set off")
+        .expect("payload");
+    assert_eq!(st.enabled(), false);
+    let on_disk = std::fs::read_to_string(security_config_file(&dir)).unwrap();
+    assert!(
+        !on_disk.contains("\"credential_auto_approve\": true"),
+        "关闭后盘上不得残留 true: {on_disk}"
+    );
+
+    // 缺 enabled：诚实拒绝，不误翻。
+    let err = VaultHandler
+        .handle_cmd("credential_set", Some(serde_json::json!({})), &ctx)
+        .await
+        .expect_err("missing enabled must error");
+    assert!(err.contains("enabled"), "{err}");
+    assert_eq!(st.enabled(), false, "拒绝路径不得误翻运行态");
+}
+
+/// credential_stats：counters 三主臂 + records 序列化投影（记录载荷只有
+/// 元数据——凭据真值面纪律由 record 构造侧保证，这里钉投影形态）。
+#[tokio::test]
+async fn credential_stats_projects_counters_and_records() {
+    let _serial = CRED_AUTO_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let st = Arc::new(CredentialAutoApproveState::new(false));
+    st.bump_auto();
+    st.bump_denied();
+    st.record(nemesis_security::credential_auto::CredentialUseRecord {
+        ts_ms: 1_763_878_000_000,
+        tool: "exec".into(),
+        fields: "env".into(),
+        aliases: "env.PW104".into(),
+        target_summary: "exec: deploy.sh".into(),
+        outcome: "auto",
+        source: "credential_switch",
+    });
+    install_credential_auto(st);
+
+    let resp = VaultHandler
+        .handle_cmd("credential_stats", None, &ctx)
+        .await
+        .expect("credential_stats")
+        .expect("payload");
+    assert_eq!(resp["counters"]["auto"], 1);
+    assert_eq!(resp["counters"]["denied"], 1);
+    assert_eq!(resp["counters"]["preauth"], 0);
+    let records = resp["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["tool"], "exec");
+    assert_eq!(records[0]["aliases"], "env.PW104");
+    assert_eq!(records[0]["outcome"], "auto");
+}
+
+// 域绑定（config.vault.json 读写面；与 vault.enc 无关，不碰口令 env）
+
+fn vault_domain_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    nemesis_path::workspace_config_dir(dir.path()).join(nemesis_config::VAULT_DOMAIN_CONFIG_FILE)
+}
+
+#[tokio::test]
+async fn bindings_on_missing_config_is_empty_with_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let resp = VaultHandler
+        .handle_cmd("bindings", None, &ctx)
+        .await
+        .expect("bindings on missing config")
+        .expect("payload");
+    assert_eq!(resp["bindings"].as_object().unwrap().len(), 0);
+    assert_eq!(
+        resp["path"].as_str().unwrap(),
+        vault_domain_file(&dir).display().to_string(),
+        "path 回显 = 实际读写路径"
+    );
+}
+
+#[tokio::test]
+async fn bind_writes_config_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let args = serde_json::json!({ "alias": "env.PW104", "tool": "exec", "slot": "env" });
+
+    let first = VaultHandler
+        .handle_cmd("bind", Some(args.clone()), &ctx)
+        .await
+        .expect("first bind")
+        .expect("payload");
+    assert_eq!(first["bound"], true);
+    assert_eq!(first["count"], 1);
+
+    // 重复 bind 同 (alias,tool,slot)：幂等 no-op，count 不涨。
+    let second = VaultHandler
+        .handle_cmd("bind", Some(args.clone()), &ctx)
+        .await
+        .expect("idempotent bind")
+        .expect("payload");
+    assert_eq!(second["idempotent"], true);
+    assert_eq!(second["count"], 1);
+
+    // 同别名不同槽位：追加为第二条。
+    let third = VaultHandler
+        .handle_cmd(
+            "bind",
+            Some(serde_json::json!({ "alias": "env.PW104", "tool": "exec", "slot": "env2" })),
+            &ctx,
+        )
+        .await
+        .expect("second slot bind")
+        .expect("payload");
+    assert_eq!(third["count"], 2);
+
+    // 盘上真相：bindings 读回两条；0o600 权限位在 Unix 由 write_file_atomic 保证。
+    let ls = VaultHandler
+        .handle_cmd("bindings", None, &ctx)
+        .await
+        .expect("bindings readback")
+        .expect("payload");
+    let entries = ls["bindings"]["env.PW104"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["tool"], "exec");
+    assert_eq!(entries[0]["slot"], "env");
+
+    // 缺字段拒绝。
+    let err = VaultHandler
+        .handle_cmd(
+            "bind",
+            Some(serde_json::json!({ "alias": "a", "tool": "exec" })),
+            &ctx,
+        )
+        .await
+        .expect_err("bind missing slot must error");
+    assert!(err.contains("slot"), "{err}");
+}
+
+#[tokio::test]
+async fn unbind_flows_honest_errors_and_alias_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+
+    // 无绑定别名：诚实报错。
+    let err = VaultHandler
+        .handle_cmd(
+            "unbind",
+            Some(serde_json::json!({ "alias": "ghost", "tool": "exec", "slot": "env" })),
+            &ctx,
+        )
+        .await
+        .expect_err("unbind unknown alias must error");
+    assert!(err.contains("无任何绑定"), "{err}");
+
+    // 两条绑定，解一条。
+    VaultHandler
+        .handle_cmd(
+            "bind",
+            Some(serde_json::json!({ "alias": "a", "tool": "exec", "slot": "env" })),
+            &ctx,
+        )
+        .await
+        .expect("bind a")
+        .expect("payload");
+    VaultHandler
+        .handle_cmd(
+            "bind",
+            Some(serde_json::json!({ "alias": "a", "tool": "exec", "slot": "env2" })),
+            &ctx,
+        )
+        .await
+        .expect("bind a2")
+        .expect("payload");
+
+    let resp = VaultHandler
+        .handle_cmd(
+            "unbind",
+            Some(serde_json::json!({ "alias": "a", "tool": "exec", "slot": "env" })),
+            &ctx,
+        )
+        .await
+        .expect("unbind one")
+        .expect("payload");
+    assert_eq!(resp["unbound"], true);
+    assert_eq!(resp["count"], 1, "剩一条");
+
+    // 不存在的 (tool,slot)：诚实报错。
+    let err = VaultHandler
+        .handle_cmd(
+            "unbind",
+            Some(serde_json::json!({ "alias": "a", "tool": "exec", "slot": "nope" })),
+            &ctx,
+        )
+        .await
+        .expect_err("unbind missing binding must error");
+    assert!(err.contains("绑定不存在"), "{err}");
+
+    // 解最后一条 → 别名条目整体移除（盘上不残留空数组）。
+    VaultHandler
+        .handle_cmd(
+            "unbind",
+            Some(serde_json::json!({ "alias": "a", "tool": "exec", "slot": "env2" })),
+            &ctx,
+        )
+        .await
+        .expect("unbind last")
+        .expect("payload");
+    let on_disk = std::fs::read_to_string(vault_domain_file(&dir)).unwrap();
+    assert!(
+        !on_disk.contains("\"a\""),
+        "空别名条目应整体移除: {on_disk}"
+    );
+}
+
+/// 损坏的绑定配置：loud 拒改（CLI 同口径——不静默重置用户手编资产）。
+#[tokio::test]
+async fn bind_on_corrupt_config_is_loud_rejection() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let path = vault_domain_file(&dir);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{ not valid json !!!").unwrap();
+
+    let err = VaultHandler
+        .handle_cmd(
+            "bind",
+            Some(serde_json::json!({ "alias": "a", "tool": "t", "slot": "s" })),
+            &ctx,
+        )
+        .await
+        .expect_err("bind on corrupt config must error");
+    assert!(!err.is_empty(), "损坏配置必须报错而非重置: {err}");
 }

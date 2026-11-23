@@ -81,12 +81,16 @@ describe('VaultView 加载', () => {
 
 describe('VaultView 新增（vault.set）', () => {
   async function fillAndSubmit(w: Awaited<ReturnType<typeof mountView>>) {
-    const inputs = w.findAll('input.form-input')
-    // 新增卡：别名 / value / 域 / 备注 四个输入（解锁卡还有 1 个 password）。
-    await inputs.at(1)!.setValue('openai/prod-key')
-    await inputs.at(2)!.setValue('sk-NEW-SECRET')
-    await inputs.at(3)!.setValue('openai')
-    await inputs.at(4)!.setValue('备注')
+    // 新增卡输入按 placeholder 锚定（ABCD 批 2026-11-23 起页面还有域绑定卡
+    // 三个 form-input，索引定位脆弱——placeholder 前缀唯一区分四输入）。
+    async function setByPlaceholder(prefix: string, val: string) {
+      const el = w.findAll('input.form-input').find(i => (i.attributes('placeholder') || '').startsWith(prefix))
+      await el!.setValue(val)
+    }
+    await setByPlaceholder('别名（必填', 'openai/prod-key')
+    await setByPlaceholder('secret 值', 'sk-NEW-SECRET')
+    await setByPlaceholder('域（可选', 'openai')
+    await setByPlaceholder('备注', '备注')
     const btn = w.findAll('button').find(b => b.text() === '写入')!
     await btn.trigger('click')
     await flushPromises()
@@ -210,5 +214,152 @@ describe('VaultView 解锁测试（vault.unlock）', () => {
     await flushPromises()
     expect(requestMock.mock.calls.filter((c: any[]) => c[1] === 'unlock').length).toBe(before)
     expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('请先输入'))).toBe(true)
+  })
+})
+
+describe('VaultView 凭据免打扰（ABCD 批 A，vault.credential_status/set）', () => {
+  function okCredAuto(over: Record<string, unknown> = {}) {
+    return { injected: true, enabled: false, auto_count: 0, preauth_count: 0, denied_count: 0, ...over }
+  }
+
+  it('加载拉 credential_status；injected 时渲染开关与状态行', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'credential_status') return Promise.resolve(okCredAuto({ enabled: true, auto_count: 3 }))
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(requestMock).toHaveBeenCalledWith('vault', 'credential_status', {}, 8000)
+    const toggle = w.find('input[data-test="credential-auto-toggle"]')
+    expect(toggle.exists()).toBe(true)
+    expect((toggle.element as HTMLInputElement).checked).toBe(true)
+    expect(w.text()).toContain('免打扰中：凭据引用将自动放行（本次运行 3 次免卡）')
+  })
+
+  it('未注入（injected:false）：开关禁用 + 诚实降级提示', async () => {
+    const w = await mountView()
+    const toggle = w.find('input[data-test="credential-auto-toggle"]')
+    expect((toggle.element as HTMLInputElement).disabled).toBe(true)
+    expect(w.text()).toContain('统计载体未注入')
+  })
+
+  it('切换调用 credential_set 并回读状态', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+      if (cmd === 'credential_status') return Promise.resolve(okCredAuto({ enabled: data?.enabled ?? false }))
+      if (cmd === 'credential_set') return Promise.resolve({ saved: true })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    const toggle = w.find('input[data-test="credential-auto-toggle"]')
+    expect((toggle.element as HTMLInputElement).disabled).toBe(false)
+    await toggle.setValue(true)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('vault', 'credential_set', { enabled: true }, 8000)
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('凭据免打扰已开启'))).toBe(true)
+    expect((w.find('input[data-test="credential-auto-toggle"]').element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('切换失败：回滚勾选 + 错误 toast', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'credential_status') return Promise.resolve(okCredAuto())
+      if (cmd === 'credential_set') return Promise.reject('config 写盘失败')
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    const toggle = w.find('input[data-test="credential-auto-toggle"]')
+    expect((toggle.element as HTMLInputElement).disabled).toBe(false)
+    await toggle.setValue(true)
+    await flushPromises()
+    expect((w.find('input[data-test="credential-auto-toggle"]').element as HTMLInputElement).checked).toBe(false)
+    expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('保存失败'))).toBe(true)
+  })
+})
+
+describe('VaultView 凭据使用统计（ABCD 批 B，vault.credential_stats）', () => {
+  it('计数与记录表渲染；结果徽章按 outcome 染色文案', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'credential_stats') {
+        return Promise.resolve({
+          injected: true,
+          counters: { auto: 2, preauth: 1, denied: 1 },
+          records: [
+            { ts_ms: 1763878000000, tool: 'exec', fields: 'env', aliases: 'env.PW104', target_summary: 'exec: deploy.sh', outcome: 'auto', source: 'credential_switch' },
+            { ts_ms: 1763878100000, tool: 'web_fetch', fields: 'headers', aliases: 'openai/prod-key', target_summary: 'GET api.example.com', outcome: 'out_of_domain', source: 'domain' },
+          ],
+        })
+      }
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(requestMock).toHaveBeenCalledWith('vault', 'credential_stats', {}, 8000)
+    expect(w.text()).toContain('域内预授权')
+    expect(w.text()).toContain('拒绝/出域')
+    expect(w.text()).toContain('env.PW104')
+    expect(w.text()).toContain('exec: deploy.sh')
+    expect(w.text()).toContain('开关免卡')
+    expect(w.text()).toContain('出域硬拒')
+    // 凭据真值面纪律：记录里只有元数据，本测试载荷也全为元数据。
+  })
+
+  it('记录为空：显示空态文案', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'credential_stats') return Promise.resolve({ injected: true, counters: { auto: 0, preauth: 0, denied: 0 }, records: [] })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(w.text()).toContain('本次运行暂无凭据引用记录')
+  })
+})
+
+describe('VaultView 域绑定管理（ABCD 批 C，vault.bindings/bind/unbind）', () => {
+  it('加载拉 bindings 并按别名分组渲染', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'bindings') return Promise.resolve({
+        path: 'C:\\ws\\config\\config.vault_domain.json',
+        bindings: { 'env.PW104': [{ tool: 'exec', slot: 'env' }] },
+      })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(requestMock).toHaveBeenCalledWith('vault', 'bindings', {}, 8000)
+    expect(w.text()).toContain('env.PW104')
+    expect(w.text()).toContain('exec : env')
+  })
+
+  it('添加绑定：三字段必填校验 + bind 调用 + 刷新', async () => {
+    const w = await mountView()
+    // 空表单点添加 → 本地拒绝
+    const addBtn = w.find('button[data-test="bind-btn"]')
+    await addBtn.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter((c: any[]) => c[1] === 'bind').length).toBe(0)
+    expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('必填'))).toBe(true)
+    // 填表 → bind → 刷新回读
+    const inputs = w.findAll('input.form-input').filter(i => ['别名（如 env.PW104）', '工具（如 exec）', '槽位（如 env）'].includes(i.attributes('placeholder') || ''))
+    await inputs[0].setValue('env.PW104')
+    await inputs[1].setValue('exec')
+    await inputs[2].setValue('env')
+    await addBtn.trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('vault', 'bind', { alias: 'env.PW104', tool: 'exec', slot: 'env' }, 8000)
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('已绑定'))).toBe(true)
+  })
+
+  it('解除绑定：confirm 门 + unbind 调用', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'bindings') return Promise.resolve({ path: '', bindings: { 'env.PW104': [{ tool: 'exec', slot: 'env' }] } })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    // 取消 confirm：不发 unbind
+    confirmMock.mockReturnValue(false)
+    await w.find('button[data-test="unbind-btn"]').trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter((c: any[]) => c[1] === 'unbind').length).toBe(0)
+    // 确认：发 unbind
+    confirmMock.mockReturnValue(true)
+    await w.find('button[data-test="unbind-btn"]').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('vault', 'unbind', { alias: 'env.PW104', tool: 'exec', slot: 'env' }, 8000)
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('已解除绑定'))).toBe(true)
   })
 })

@@ -198,6 +198,15 @@ impl WebApprovalManager {
         risk_level: &str,
     ) -> Result<Option<String>, String> {
         use nemesis_security::approval_rules as rules;
+        // 总是允许死信收敛（2026-11-23 ABCD 批 D）：`credential_use` 是
+        // dispatch 凭据闸的合成 op 串，RequireApproval 规则臂**无消费者**
+        // ——持久化 = 死信（用户点「记住」却每轮照弹的根因之一）。凭据
+        // 卡的免卡面走 `security.approvals.credential_auto_approve` 开关
+        // （vault.credential_set），这里诚实跳过：当次批准语义不变，仅
+        // 不落规则（respond 侧照常返回成功）。
+        if operation == "credential_use" {
+            return Ok(None);
+        }
         let Some(path) = self.rules_path.as_ref() else {
             return Err("approval rules not configured (no workspace)".to_string());
         };

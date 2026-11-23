@@ -150,9 +150,13 @@ function riskBadgeClass(level: string): string {
 }
 
 /** 层级安全门 UX 镜像（后端 rule_permitted_for 同语义）：CRITICAL 只有
- * exec 类操作可记忆；pattern 空 = 后端派生不了规则，一律隐藏按钮。 */
+ * exec 类操作可记忆；pattern 空 = 后端派生不了规则，一律隐藏按钮。
+ * credential_use（凭据闸直卡）不可记忆——后端 save_always_rule 同步跳过
+ * （ABCD 批 D 死信收敛 2026-11-23）：合成 op 无消费者匹配，存了永不生效；
+ * 凭据卡的免卡走 vault 页「凭据免打扰」开关或域绑定（config.vault_domain）。 */
 function canAlways(req: ApprovalRequest): boolean {
   if (!req.pattern) return false
+  if (req.operation.toLowerCase() === 'credential_use') return false
   if (req.risk_level.toUpperCase() !== 'CRITICAL') return true
   const op = req.operation.toLowerCase()
   return op === 'process_exec' || op === 'process_spawn'

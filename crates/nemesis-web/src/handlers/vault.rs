@@ -29,6 +29,7 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_path::resolve_vault_path_in_workspace;
 use nemesis_security::vault::{VaultMode, VaultStore};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct VaultHandler;
 
@@ -42,6 +43,36 @@ pub struct VaultHandler;
 /// 双标签页）。`list`/`status`/`unlock` 不落盘，不入锁。
 pub(crate) static VAULT_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// ── 凭据免打扰运行时态槽（2026-11-23 ABCD 批 A/B；security handler
+// APPROVAL_AUTO 同款依赖方向：`CredentialAutoApproveState` 本体在
+// nemesis-security，gateway 装配处（security_setup）注入，本 handler
+// `credential_status`/`credential_set`/`credential_stats` 读写 +
+// AgentLoop 侧经 getter 读回（agent_factory 三装配点）——统一定义 Arc；
+// config.security.json 是持久真相源，本态是运行期投影）。
+static CREDENTIAL_AUTO: std::sync::RwLock<
+    Option<Arc<nemesis_security::credential_auto::CredentialAutoApproveState>>,
+> = std::sync::RwLock::new(None);
+
+/// gateway 装配处调用；未注入 = headless/降级形态，
+/// `credential_status` 返回 `injected: false`（前端展示「未装配」不误判）。
+pub fn install_credential_auto(
+    state: Arc<nemesis_security::credential_auto::CredentialAutoApproveState>,
+) {
+    *CREDENTIAL_AUTO
+        .write()
+        .expect("credential auto state lock poisoned") = Some(state);
+}
+
+/// 全局槽只读访问（agent_factory 挂 AgentLoop 槽复用同一 Arc；
+/// security handler `approval_auto_state` 同款）。未注入 = `None`。
+pub fn credential_auto_state()
+-> Option<Arc<nemesis_security::credential_auto::CredentialAutoApproveState>> {
+    CREDENTIAL_AUTO
+        .read()
+        .expect("credential auto state lock poisoned")
+        .clone()
+}
+
 #[async_trait::async_trait]
 impl ModuleHandler for VaultHandler {
     fn module_name(&self) -> &str {
@@ -49,7 +80,19 @@ impl ModuleHandler for VaultHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "set", "remove", "status", "unlock"]
+        &[
+            "list",
+            "set",
+            "remove",
+            "status",
+            "unlock",
+            "credential_status",
+            "credential_set",
+            "credential_stats",
+            "bindings",
+            "bind",
+            "unbind",
+        ]
     }
 
     async fn handle_cmd(
@@ -212,6 +255,152 @@ impl ModuleHandler for VaultHandler {
                 tracing::info!("[Web/WSAPI] vault.unlock ok（口令不落日志）");
                 Ok(Some(serde_json::json!({ "unlocked": true, "mode": mode })))
             }
+            "credential_status" => match credential_auto_state() {
+                Some(st) => {
+                    let (auto, preauth, denied) = st.counts();
+                    Ok(Some(serde_json::json!({
+                        "injected": true,
+                        "enabled": st.enabled(),
+                        "auto_count": auto,
+                        "preauth_count": preauth,
+                        "denied_count": denied,
+                    })))
+                }
+                None => Ok(Some(serde_json::json!({ "injected": false }))),
+            },
+            "credential_set" => {
+                let data = data.ok_or("vault.credential_set requires data")?;
+                let enabled = data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .ok_or("vault.credential_set 缺 enabled 布尔")?;
+                let ws = ctx
+                    .workspace
+                    .as_deref()
+                    .ok_or("workspace not configured")?
+                    .to_string();
+                // 持久真相源写盘（security handler update_security_config
+                // 同一事务入口；config.security.json approvals 段）。
+                crate::handlers::security::update_security_config(&ws, |cfg| {
+                    cfg.approvals.credential_auto_approve = enabled;
+                    Ok(())
+                })?;
+                // 运行态热翻（BUG-20261120-027 模式：config 是持久真相源，
+                // 这里只翻投影——闸下一次判定即读新值）。
+                if let Some(st) = credential_auto_state() {
+                    st.set_enabled(enabled);
+                }
+                tracing::info!("[Web/WSAPI] vault.credential_set enabled={enabled}");
+                Ok(Some(
+                    serde_json::json!({ "saved": true, "enabled": enabled }),
+                ))
+            }
+            "credential_stats" => match credential_auto_state() {
+                Some(st) => {
+                    let (auto, preauth, denied) = st.counts();
+                    let records: Vec<serde_json::Value> = st
+                        .records_snapshot()
+                        .into_iter()
+                        .filter_map(|r| serde_json::to_value(&r).ok())
+                        .collect();
+                    Ok(Some(serde_json::json!({
+                        "injected": true,
+                        "enabled": st.enabled(),
+                        "counters": {
+                            "auto": auto,
+                            "preauth": preauth,
+                            "denied": denied,
+                        },
+                        "records": records,
+                    })))
+                }
+                None => Ok(Some(serde_json::json!({ "injected": false }))),
+            },
+            "bindings" => {
+                let path = vault_domain_config_path(ctx)?;
+                let cfg = load_domain_cfg(&path)?;
+                let bindings: serde_json::Map<String, serde_json::Value> = cfg
+                    .bindings
+                    .iter()
+                    .map(|(alias, entries)| {
+                        (
+                            alias.clone(),
+                            serde_json::json!(
+                                entries
+                                    .iter()
+                                    .map(|b| serde_json::json!({"tool": b.tool, "slot": b.slot}))
+                                    .collect::<Vec<_>>()
+                            ),
+                        )
+                    })
+                    .collect();
+                Ok(Some(serde_json::json!({
+                    "bindings": bindings,
+                    "path": path.display().to_string(),
+                })))
+            }
+            "bind" => {
+                let data = data.ok_or("vault.bind requires data")?;
+                let alias = str_field(&data, "alias")?;
+                let tool = str_field(&data, "tool")?;
+                let slot = str_field(&data, "slot")?;
+                if alias.is_empty() || tool.is_empty() || slot.is_empty() {
+                    return Err("vault.bind 的 alias/tool/slot 均为必填且非空".to_string());
+                }
+                let path = vault_domain_config_path(ctx)?;
+                // RMW 串行锁（VAULT_IO_LOCK 注：config.vault.json 与
+                // vault.enc 同目录同族 RMW 面，一并串行防并发覆盖）。
+                let _io = VAULT_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cfg = load_domain_cfg(&path)?;
+                let entries = cfg.bindings.entry(alias.clone()).or_default();
+                let binding = nemesis_config::DomainBinding {
+                    tool: tool.clone(),
+                    slot: slot.clone(),
+                };
+                if entries.contains(&binding) {
+                    return Ok(Some(serde_json::json!({
+                        "bound": true, "idempotent": true, "alias": alias,
+                        "tool": tool, "slot": slot, "count": entries.len(),
+                    })));
+                }
+                entries.push(binding);
+                let count = entries.len();
+                save_domain_cfg(&path, &cfg)?;
+                tracing::info!(
+                    "[Web/WSAPI] vault.bind alias={alias} tool={tool} slot={slot} count={count}（值不落日志）"
+                );
+                Ok(Some(serde_json::json!({
+                    "bound": true, "alias": alias, "tool": tool, "slot": slot, "count": count,
+                })))
+            }
+            "unbind" => {
+                let data = data.ok_or("vault.unbind requires data")?;
+                let alias = str_field(&data, "alias")?;
+                let tool = str_field(&data, "tool")?;
+                let slot = str_field(&data, "slot")?;
+                let path = vault_domain_config_path(ctx)?;
+                let _io = VAULT_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cfg = load_domain_cfg(&path)?;
+                let Some(entries) = cfg.bindings.get_mut(&alias) else {
+                    return Err(format!("别名「{alias}」无任何绑定"));
+                };
+                let before = entries.len();
+                entries.retain(|b| !(b.tool == tool && b.slot == slot));
+                if entries.len() == before {
+                    return Err(format!("绑定不存在: {alias} -> {tool}:{slot}"));
+                }
+                let count = entries.len();
+                if count == 0 {
+                    cfg.bindings.remove(&alias);
+                }
+                save_domain_cfg(&path, &cfg)?;
+                tracing::info!(
+                    "[Web/WSAPI] vault.unbind alias={alias} tool={tool} slot={slot} count={count}（值不落日志）"
+                );
+                Ok(Some(serde_json::json!({
+                    "unbound": true, "alias": alias, "tool": tool, "slot": slot, "count": count,
+                })))
+            }
             _ => Err(format!("unknown command: vault.{cmd}")),
         }
     }
@@ -235,6 +424,40 @@ fn str_field(data: &serde_json::Value, key: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .ok_or_else(|| format!("vault.{key} 缺失或非字符串（{key} 为必填）"))
+}
+
+/// 域绑定配置路径 = `<workspace>/config/config.vault.json`（nemesis-path
+/// workspace_config_dir + nemesis-config 文件名常量同一拼装公式——CLI
+/// `vault bind` 写入侧同款；与 dispatch 闸读取侧（装配点注入路径）同点）。
+fn vault_domain_config_path(ctx: &RequestContext) -> Result<PathBuf, String> {
+    let ws = ctx
+        .workspace
+        .as_deref()
+        .ok_or("workspace not configured")?
+        .to_string();
+    Ok(nemesis_path::workspace_config_dir(Path::new(&ws))
+        .join(nemesis_config::VAULT_DOMAIN_CONFIG_FILE))
+}
+
+/// 读绑定配置（不存在 = 空配置）。损坏 loud 拒改（CLI 同口径：用户可手编
+/// 资产，不静默重置——修复或删除后重试）。
+fn load_domain_cfg(path: &Path) -> Result<nemesis_config::VaultDomainConfig, String> {
+    match nemesis_config::VaultDomainConfig::load_at(path) {
+        Ok(Some(c)) => Ok(c),
+        Ok(None) => Ok(Default::default()),
+        Err(e) => Err(e),
+    }
+}
+
+/// 写绑定配置（CLI save_domain_config 同款：pretty JSON + 原子写 0o600）。
+fn save_domain_cfg(path: &Path, cfg: &nemesis_config::VaultDomainConfig) -> Result<(), String> {
+    let out = serde_json::to_string_pretty(cfg).map_err(|e| format!("序列化绑定配置失败: {e}"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("创建目录失败: {}: {e}", dir.display()))?;
+    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
+        .map_err(|e| format!("写绑定配置失败（{}）: {e}", path.display()))
 }
 
 /// 打开已有 vault（不创建）。文件缺失 = 带创建指引的诚实错误。

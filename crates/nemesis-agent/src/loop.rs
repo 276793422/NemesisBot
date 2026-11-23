@@ -356,6 +356,14 @@ pub(crate) struct SecurityState {
     #[cfg(feature = "security")]
     pub(crate) approval_auto:
         parking_lot::RwLock<Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>>>,
+    /// 凭据免打扰运行时态（2026-11-23 ABCD 批 A，security feature）：
+    /// gateway 注入与 web vault handler 同一 Arc（approval_auto 同款双注入）。
+    /// dispatch 凭据闸 v1 卡臂读它判定 auto（∨ auditor 全局免打扰）+
+    /// 统计打点（counters/records 环）。未装配 = None = 卡路径照旧。
+    #[cfg(feature = "security")]
+    pub(crate) credential_auto: parking_lot::RwLock<
+        Option<Arc<nemesis_security::credential_auto::CredentialAutoApproveState>>,
+    >,
 }
 
 impl SecurityState {
@@ -1037,6 +1045,8 @@ impl AgentLoop {
                 ),
                 #[cfg(feature = "security")]
                 approval_auto: parking_lot::RwLock::new(None),
+                #[cfg(feature = "security")]
+                credential_auto: parking_lot::RwLock::new(None),
             },
             mcp_manager: None,
             browser_profile: None,
@@ -1493,6 +1503,10 @@ mod session_secrets_pipeline_tests;
 // 配置缺席与损坏 fail-secure）。
 #[cfg(test)]
 mod credential_domain_tests;
+// 凭据免打扰 auto 臂（2026-11-23 ABCD 批 A）：开关开/全局免打扰开/
+// 双关三臂矩阵（免卡直放 + 统计打点 + 出卡计数为零证明卡路径未触达）。
+#[cfg(all(test, feature = "security"))]
+mod credential_gate_auto_tests;
 // W1 #46（2026-11-19 安全图谱批）：内容隔离——外部来源工具结果
 // <untrusted_content> 包裹 + 快照边界声明（纯字符串面，零安全依赖，
 // security feature 关闭时包裹照常可用）。pub = 治理面消费窄导出

@@ -252,7 +252,10 @@ fn test_security_config_approvals_auto_approve_default_off_and_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.security.json");
     let cfg = SecurityConfig {
-        approvals: crate::ApprovalsConfig { auto_approve: true },
+        approvals: crate::ApprovalsConfig {
+            auto_approve: true,
+            credential_auto_approve: false,
+        },
         ..Default::default()
     };
     save_security_config(&path, &cfg).unwrap();
@@ -264,6 +267,28 @@ fn test_security_config_approvals_auto_approve_default_off_and_roundtrip() {
     let legacy: SecurityConfig =
         serde_json::from_str(r#"{"enabled": true, "default_action": "deny"}"#).unwrap();
     assert!(!legacy.approvals.auto_approve, "缺键 = 关");
+    assert!(
+        !legacy.approvals.credential_auto_approve,
+        "凭据免打扰缺键 = 关（2026-11-23 ABCD 批 A）"
+    );
+    // 凭据免打扰独立开关 round-trip（true 落盘 + skip 语义同段）。
+    let cfg2 = SecurityConfig {
+        approvals: crate::ApprovalsConfig {
+            auto_approve: false,
+            credential_auto_approve: true,
+        },
+        ..Default::default()
+    };
+    let path2 = dir.path().join("config.security.cred.json");
+    save_security_config(&path2, &cfg2).unwrap();
+    let raw2 = std::fs::read_to_string(&path2).unwrap();
+    assert!(
+        raw2.contains("credential_auto_approve"),
+        "true 须落盘: {raw2}"
+    );
+    let loaded2 = load_security_config(&path2).unwrap();
+    assert!(loaded2.approvals.credential_auto_approve, "回读保真");
+    assert!(!loaded2.approvals.auto_approve, "主开关独立不串");
 }
 
 #[test]

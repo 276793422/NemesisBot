@@ -98,6 +98,19 @@ impl AgentLoop {
             .is_some_and(|s| s.enabled())
     }
 
+    /// 装配凭据免打扰运行时态（2026-11-23 ABCD 批 A，gateway 与
+    /// web vault handler 同一 Arc；approval_auto 同款双注入）。dispatch
+    /// 凭据闸 v1 卡臂消费：`enabled() ∨ auditor.approval_auto_enabled()`
+    /// 任一开即免卡直放（无人值守语义，不依赖审批通道）；同时是统计面
+    /// counters/records 的载体。未装配 = None = 卡路径照旧。
+    #[cfg(feature = "security")]
+    pub fn set_credential_auto_approve(
+        &self,
+        state: Arc<nemesis_security::credential_auto::CredentialAutoApproveState>,
+    ) {
+        *self.security.credential_auto.write() = Some(state);
+    }
+
     /// （凭据 vault）：装配凭据索要卡 broker（gateway init_agent 一次性；
     /// 重复调用覆盖——agent 重启重建 broker 后以最新为准）。
     pub fn set_credential_broker(&self, broker: Arc<dyn nemesis_types::agent::CredentialBroker>) {

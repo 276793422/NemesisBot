@@ -218,6 +218,24 @@ describe('ApprovalCard', () => {
     w.unmount()
   })
 
+  it('F3: credential_use 凭据卡 → 「总是允许」隐藏（死信收敛：合成 op 无消费者，免卡走 vault 开关/域绑定）', async () => {
+    const w = await mounted()
+    fireApproval(
+      makePayload('r-cred', {
+        operation: 'credential_use',
+        target: 'exec',
+        risk_level: 'HIGH',
+        pattern: 'exec',
+      }),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(
+      w.findAll('button').find(b => b.text() === '总是允许'),
+    ).toBeUndefined()
+    expect(w.find('.approval-always-scope').exists()).toBe(false)
+    w.unmount()
+  })
+
   // ---- F6（拒绝备注：输入框 + deny 携带 note + 竞速摘卡）----
 
   it('F6: 备注输入后点拒绝 → respond 带 note；无输入 → 不带 note 键', async () => {

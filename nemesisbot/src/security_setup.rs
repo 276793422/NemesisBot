@@ -343,6 +343,26 @@ pub(crate) async fn build_security_plugin(
         info!("[Security] approvals.auto_approve: true (unattended mode)");
     }
 
+    // 凭据免打扰（2026-11-23 ABCD 批 A/B）：独立开关
+    // `security.approvals.credential_auto_approve`（dispatch 凭据闸
+    // credential_use 直卡通道的自动放行；全局免打扰开时凭据卡同样被罩，
+    // 闸侧 ∨ 语义）。同一 Arc 双注入：AgentLoop（wiring
+    // set_credential_auto_approve，agent_factory 三装配点读回）+ web vault
+    // handler（vault.credential_status/set/stats 读写）。本态同时是统计面
+    // 载体（counters + 记录环，运行期重启清零）。headless `run` 共用本
+    // 函数：槽安装无端口也无害。
+    let cred_auto = match nemesis_config::load_security_config(&sec_config_path) {
+        Ok(sec) => sec.approvals.credential_auto_approve,
+        Err(_) => false,
+    };
+    let credential_auto_state = std::sync::Arc::new(
+        nemesis_security::credential_auto::CredentialAutoApproveState::new(cred_auto),
+    );
+    nemesis_web::handlers::vault::install_credential_auto(credential_auto_state);
+    if cred_auto {
+        info!("[Security] approvals.credential_auto_approve: true (credential gate unattended)");
+    }
+
     // 会话级全部放行（长任务）：持久权威 = 会话
     // sidecar `{safe_key}.meta.json` 的 `allow_all` 字段（无 TTL 无自动关闭
     // ——纯手动开关，重启后从 sidecar 回载，与免打扰的 config 真相源形态

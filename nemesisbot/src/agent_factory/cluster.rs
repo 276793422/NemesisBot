@@ -210,6 +210,12 @@ pub fn build_cluster_agent_loop(
     if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
         agent_loop.set_approval_auto_approve(state);
     }
+    // 凭据免打扰运行时态挂集群 loop（worker 任务的凭据引用卡同样免卡；
+    // 2026-11-23 ABCD 批 A）。槽未装配 = None = 卡路径照旧。
+    #[cfg(feature = "security")]
+    if let Some(state) = nemesis_web::handlers::vault::credential_auto_state() {
+        agent_loop.set_credential_auto_approve(state);
+    }
 
     // ASM-02（横扫存量加固）：memory 审批闸接集群 loop——此前闸
     // 只在 gateway 后处理接给主 loop（commands/gateway.rs approval 装配段），

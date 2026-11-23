@@ -813,6 +813,12 @@ pub fn build_agent_loop(
         if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
             agent_loop.set_approval_auto_approve(state);
         }
+        // 凭据免打扰运行时态挂主 loop（dispatch 凭据闸 auto 臂 + 统计
+        // 载体）；槽本体在 security_setup 全局安装，未装配 = None = 卡路径
+        // 照旧（2026-11-23 ABCD 批 A）。
+        if let Some(state) = nemesis_web::handlers::vault::credential_auto_state() {
+            agent_loop.set_credential_auto_approve(state);
+        }
     }
     // Checkpoint store (edit safety net): snapshots writer-tool file changes so
     // a rewind can restore them. One per agent loop under

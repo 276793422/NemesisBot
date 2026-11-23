@@ -294,6 +294,40 @@ fn respond_always_on_critical_nonexec_op_is_ignored() {
 }
 
 #[test]
+fn respond_always_on_credential_use_writes_no_rule_death_letter_skip() {
+    // ABCD 批 D（2026-11-23）死信收敛：credential_use 是凭据闸直卡通道的
+    // 合成 op，无任何消费者匹配（审计规则/策略引擎都不认它）——此前
+    // always=true 落盘的规则永不生效=死信，还让用户误以为「已放行」。
+    // 现save_always_rule 单点跳过：本次批准照常送达，但不落规则。
+    // 免卡正道 = vault 页「凭据免打扰」开关或域绑定（config.vault_domain）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let (tx, rx) = mpsc::channel();
+    let m = mgr.clone();
+    std::thread::spawn(move || {
+        let r = m.request_approval_sync(
+            "req-cred",
+            "credential_use",
+            "exec",
+            "HIGH",
+            "凭据引用: vault:env.PW104",
+            300,
+        );
+        let _ = tx.send(r);
+    });
+    wait_pending(&mgr, 1);
+
+    // respond 返回 Ok（本次批准生效——死信跳过不改变本次裁决语义）。
+    assert!(mgr.respond("req-cred", true, true, None).unwrap());
+    let _ = rx.recv_timeout(Duration::from_secs(2));
+    assert!(
+        !path.exists(),
+        "credential_use must never produce a rule (death-letter skip)"
+    );
+}
+
+#[test]
 fn respond_always_without_rules_path_is_honest_error() {
     let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
     let result_rx = request_async(mgr.clone(), "req-nopath", 300);

@@ -39,6 +39,7 @@ pub mod command;
 pub mod command_arity;
 #[cfg(feature = "security")]
 pub mod credential;
+pub mod credential_auto;
 #[cfg(feature = "security")]
 pub mod dlp;
 #[cfg(feature = "security")]

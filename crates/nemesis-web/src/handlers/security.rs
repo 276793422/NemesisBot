@@ -367,7 +367,9 @@ fn security_config_path(workspace: &str) -> PathBuf {
 /// 「load → 闭包改 → 落盘」全程；闭包返回 Err 不落盘（abort 语义）。
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
 /// （Mutex 非重入，嵌套即死锁）。（同类横扫七期补网，。）
-fn update_security_config<T>(
+/// 起可见（2026-11-23 ABCD 批 A）：vault handler `credential_set` 复用
+/// 同一事务入口（单一真相源，不另开写路径）。
+pub(crate) fn update_security_config<T>(
     workspace: &str,
     f: impl FnOnce(&mut nemesis_config::SecurityConfig) -> Result<T, String>,
 ) -> Result<T, String> {
@@ -679,6 +681,14 @@ impl SecurityHandler {
         } else {
             Vec::new()
         };
+        // credential_use 死信投影过滤（2026-11-23 ABCD 批 D）：存量文件里
+        // 已落的 credential_use「记住」规则无任何消费者（合成 op 串，
+        // RequireApproval 规则臂永不命中——写侧 save_always_rule 已跳过新
+        // 死信）；列表面不再展示，避免「已记住却还弹」的误导。
+        let rules: Vec<serde_json::Value> = rules
+            .into_iter()
+            .filter(|r| r.get("operation").and_then(|v| v.as_str()) != Some("credential_use"))
+            .collect();
         Ok(Some(serde_json::json!({ "rules": rules })))
     }
 
