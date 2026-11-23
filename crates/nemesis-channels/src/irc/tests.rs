@@ -223,12 +223,14 @@ fn test_split_message_exact_limit() {
 
 #[test]
 fn test_split_message_multiline() {
-    // split_message chunks by IRC line-length limit, not by newline. A short
-    // multiline message (under max_len) is returned as a single whole chunk.
+    // BUG-20261123-041 后契约：短多行消息按 \n 切分为独立行（旧断言
+    // 「整段单块携带内嵌 \n」钉的正是行框架注入形态本身——writer 以
+    // `{line}\r\n` 上 wire，嵌入 \n 即以 bot 身份注入任意 IRC 命令；
+    // 旧注释「不按换行切」也与慢路径既有 rfind('\n') 纪律自相矛盾）。
+    // 长度限制切分语义只对无换行的超长内容成立（test_split_message_long）。
     let msg = "line1\nline2\nline3";
     let lines = IRCChannel::split_message(msg, 400);
-    assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0], "line1\nline2\nline3");
+    assert_eq!(lines, vec!["line1", "line2", "line3"]);
 }
 
 /// 分隔符位于 idx 0（前导换行/空格的超长文）不产出空行——空 PRIVMSG 是
@@ -765,4 +767,65 @@ fn test_irc_allow_from_casefolded() {
     assert!(ch.base.is_allowed("alice"));
     // 非白名单昵称仍被拒
     assert!(!ch.base.is_allowed("mallory"));
+}
+
+// --- BUG-20261123-041：IRC 行框架注入回归锁 -------------------------------
+// wire 形态 = `format!("{command}\r\n")`，内容段内嵌 `\n` 即以 bot 身份
+// 注入任意 IRC 命令。split_message 两处快路径此前整段直推。
+
+#[test]
+fn test_split_message_short_embedded_newline_is_split() {
+    // 入口快路径：短文（<= max_len）内嵌 \n 必须切分。修复前返回单段
+    // 含 \n——上 wire 后 "hello\r\n" 行终止、第二行 "PRIVMSG #evil :x"
+    // 变成裸命令（行框架注入）。
+    let lines = IRCChannel::split_message("hello\nPRIVMSG #evil :x", 400);
+    assert_eq!(lines, vec!["hello", "PRIVMSG #evil :x"]);
+    for line in &lines {
+        assert!(!line.contains('\n'), "分段不得携带 \\n: {line:?}");
+    }
+}
+
+#[test]
+fn test_split_message_tail_fast_path_splits_newlines() {
+    // 循环内快路径：慢路径吃掉 "abcdefghij" 后尾段 "\nevilcmd" 落入
+    // remaining.len() <= max_len 分支。修复前整段直推 → wire 上
+    // "PRIVMSG #c :\nevilcmd\r\n"（\n 终止本行，"evilcmd" 成裸命令）。
+    let lines = IRCChannel::split_message("abcdefghij\nevilcmd", 10);
+    assert_eq!(lines, vec!["abcdefghij", "evilcmd"]);
+    for line in &lines {
+        assert!(!line.contains('\n'));
+    }
+}
+
+#[test]
+fn test_split_message_all_newlines_yields_empty() {
+    // 空段跳过纪律（与慢路径 idx>0 / split_message_utf16 filter(>0) 同族）：
+    // 全换行内容不产生空 PRIVMSG（412 ERR_NOTEXTGIVEN 协议违规）。
+    let lines = IRCChannel::split_message("\n\n", 400);
+    assert!(lines.is_empty());
+}
+
+#[test]
+fn test_build_registration_strips_crlf_from_credentials() {
+    // R737 同族：config 值（password/nick）含 CR/LF 时剥除，注册命令行
+    // 不得携带行框架终止符。
+    let config = IRCConfig {
+        server: "irc.libera.chat:6697".to_string(),
+        use_tls: true,
+        nick: "Bot\nNICK evil".to_string(),
+        password: Some("secret\r\nQUIT :x".to_string()),
+        channel: "#test".to_string(),
+        allow_from: Vec::new(),
+        ..Default::default()
+    };
+    let cmds = IRCChannel::build_registration(&config);
+    assert_eq!(cmds[0], "PASS secretQUIT :x");
+    assert_eq!(cmds[1], "NICK BotNICK evil");
+    assert_eq!(cmds[2], "USER BotNICK evil 0 * :NemesisBot");
+    for cmd in &cmds {
+        assert!(
+            !cmd.contains('\r') && !cmd.contains('\n'),
+            "注册命令行不得携带 CR/LF: {cmd:?}"
+        );
+    }
 }

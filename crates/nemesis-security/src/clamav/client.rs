@@ -135,7 +135,22 @@ impl Client {
             }
             Err(_) => file_path.to_path_buf(),
         };
-        let cmd = format!("SCAN {}", abs.display());
+        let path_str = abs.display().to_string();
+        // BUG-20261123-040：路径含 CR/LF（Linux 文件名合法；来源 = 层 7 写
+        // 路径扫描的代理可控文件名、下载 hook 的远端 Content-Disposition）
+        // 无法安全走 `SCAN {path}` 命令行——send_command 的守卫会诚实拒绝，
+        // 层 7 fail-open 语义下「拒绝」=「未扫放行」。此处改回落 INSTREAM
+        // 内容扫描（读字节、分块上行，行框架无关），文件仍获得真实判定；
+        // 读取失败按普通扫描错误上报（上游按既定 fail-open 语义处置）。
+        // 内存上界由上游 Scanner::scan_file 的 max_file_size 闸先行钳制。
+        if path_needs_instream_fallback(&path_str) {
+            let bytes =
+                std::fs::read(&abs).map_err(|e| format!("read file for instream fallback: {e}"))?;
+            let mut result = self.scan_stream(&bytes).await?;
+            result.path = path_str;
+            return Ok(result);
+        }
+        let cmd = format!("SCAN {}", path_str);
         let resp = self.send_command(&cmd).await?;
         Ok(parse_scan_response(&resp))
     }
@@ -229,6 +244,18 @@ impl Client {
     }
 
     async fn send_command(&self, command: &str) -> Result<String, String> {
+        // BUG-20261123-040 协议不变量守卫：clamd 是行框架协议
+        // （`n{command}\n`），命令载荷携带 CR/LF 即成协议注入——注入命令在
+        // clamd 侧照常执行（`SHUTDOWN` 杀引擎 → 层 7 后续全 fail-open）。
+        // Linux 文件名合法含 `\n`，SCAN/CONTSCAN 的路径载荷可被代理/远端
+        // 间接控制。守卫放 send_command 单点（覆盖全部现有与未来命令）；
+        // scan_file 的 INSTREAM 回落在此守卫之前分叉，扫描面不受影响。
+        if command.contains('\r') || command.contains('\n') {
+            return Err(format!(
+                "clamd command contains CR/LF — line-framed protocol would treat it as command injection (refused): {:40}",
+                command
+            ));
+        }
         let stream = tokio::time::timeout(self.timeout, TcpStream::connect(&self.socket_addr))
             .await
             .map_err(|_| format!("connect to clamd at {} timed out", self.address))?
@@ -292,6 +319,13 @@ impl Client {
 
 fn is_single_response_command(cmd: &str) -> bool {
     matches!(cmd, "PING" | "VERSION") || cmd.starts_with("SCAN ") || cmd.starts_with("CONTSCAN ")
+}
+
+/// BUG-20261123-040：`SCAN {path}` 命令行不能携带 CR/LF（行框架协议会把
+/// 命令行剩余部分当新命令执行）。命中即回落 INSTREAM 内容扫描——纯函数
+/// 便于跨平台单测（`\n` 文件名只在 Unix 可构造，决策逻辑本身平台无关）。
+fn path_needs_instream_fallback(path_str: &str) -> bool {
+    path_str.contains('\r') || path_str.contains('\n')
 }
 
 fn parse_scan_response(raw: &str) -> ClamavScanResult {

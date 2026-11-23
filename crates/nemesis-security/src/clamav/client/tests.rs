@@ -893,3 +893,92 @@ async fn scan_file_normal_response_still_works_after_cap() {
     assert!(result.infected, "正常帽内判据行不受带帽读影响");
     assert_eq!(result.virus, "Eicar-Test-Signature");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261123-040：clamd 行框架协议注入面——SCAN/CONTSCAN 路径载荷含
+// CR/LF（Linux 文件名合法；来源 = 层 7 写路径扫描的代理可控文件名、下载
+// hook 的远端 Content-Disposition）即成协议注入，`SHUTDOWN` 在 clamd 侧
+// 执行 = 杀引擎，层 7 fail-open 放行未扫写入。修复 = send_command 单点
+// 守卫（CR/LF 拒绝）+ scan_file 对 CR/LF 路径回落 INSTREAM（保住真实
+// 判定而非跳过）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn send_command_rejects_crlf_before_connect() {
+    let client = Client::new("127.0.0.1:1"); // 端口 1 不可能有 clamd：守卫若失效会撞 connection refused 而非本错误
+    let err = client
+        .send_command("PING\nSHUTDOWN")
+        .await
+        .expect_err("CR/LF 载荷必须在连接前被守卫拒绝");
+    assert!(err.contains("CR/LF"), "错误须点名 CR/LF 守卫: {err}");
+    let err = client
+        .send_command("SCAN /tmp/a\r\rb")
+        .await
+        .expect_err("裸 CR 同样拒绝");
+    assert!(err.contains("CR/LF"), "{err}");
+}
+
+#[tokio::test]
+async fn cont_scan_rejects_crlf_directory() {
+    let client = Client::new("127.0.0.1:1");
+    let err = client
+        .cont_scan(Path::new("/tmp/dir\nSHUTDOWN"))
+        .await
+        .expect_err("CONTSCAN 路径含 CR/LF 必须拒绝");
+    assert!(err.contains("CR/LF"), "{err}");
+}
+
+/// 回归锁（Unix-only：`\n` 在 Windows 文件名非法，无法构造真实载荷）：
+/// 修复前 scan_file 把 `SCAN /ws/x\nSHUTDOWN` 原样上线（注入命令在 clamd
+/// 侧执行）；修复后同一路径走 INSTREAM 内容扫描——文件仍获得真实判定。
+/// 假 clamd 的 INSTREAM 臂应答 `stream: <总字节> FOUND`，病毒名 = 字节数
+/// 即 wire 级证明走了 INSTREAM（SCAN 臂回显路径 + OK/FOUND，形态不同）。
+#[cfg(unix)]
+#[tokio::test]
+async fn scan_file_crlf_name_falls_back_to_instream_not_injection() {
+    let addr = serve_clamd(Arc::new(|cmd: &str| {
+        // SCAN 臂（修复前唯一路径）：回显路径 + OK。若回落失效，判定会
+        // 变成 clean——断言 infected 即锁死回落。
+        if let Some(path) = cmd.strip_prefix("SCAN ") {
+            format!("{}: OK\n", path).into_bytes()
+        } else {
+            Vec::new()
+        }
+    }))
+    .await;
+    let client = Client::new(&addr);
+    let dir = tempfile::tempdir().unwrap();
+    let payload = b"EICAR-PAYLOAD-FOR-INSTREAM-PROOF";
+    let file = dir.path().join("evil\nSHUTDOWN");
+    std::fs::write(&file, payload).unwrap();
+
+    let result = client.scan_file(&file).await.unwrap();
+    assert!(
+        result.infected,
+        "CR/LF 文件名必须走 INSTREAM 回落获得真实判定（INSTREAM 臂恒 FOUND），不得静默 clean: raw={}",
+        result.raw
+    );
+    assert_eq!(
+        result.virus,
+        payload.len().to_string(),
+        "病毒名 = 总字节数 = 假 clamd INSTREAM 臂签名应答，证明 wire 上是 INSTREAM 而非 SCAN"
+    );
+    assert!(
+        result.path.contains("evil"),
+        "结果路径须回落补写成真实文件路径: {}",
+        result.path
+    );
+}
+
+/// 回落决策纯函数（跨平台）：`SCAN {path}` 命令行携带 CR/LF 即协议注入
+/// （BUG-20261123-040），命中必须回落 INSTREAM。`\n` 载荷在 Windows 测试
+/// 环境无法以真实文件名构造，决策逻辑本身平台无关——此处钉行为。
+#[test]
+fn path_needs_instream_fallback_detects_frame_breakers() {
+    assert!(path_needs_instream_fallback("/ws/evil\nSHUTDOWN"));
+    assert!(path_needs_instream_fallback("/ws/evil\r\nSHUTDOWN"));
+    assert!(path_needs_instream_fallback("/ws/evil\rb"));
+    assert!(!path_needs_instream_fallback("/ws/normal file.txt"));
+    assert!(!path_needs_instream_fallback(r"C:\ws\evil.exe"));
+    assert!(!path_needs_instream_fallback(""));
+}
