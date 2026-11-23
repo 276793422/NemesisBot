@@ -922,11 +922,30 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     // ——后者会对 cluster_logs 残留补纯记录入队，条目一旦先建，
                     // 带变更集的入队就被幂等挡死（模块头注释钦定）。
                     // 启动清扫无活跃任务（进程刚起）→ 恒不跳过。
-                    let swept = nemesis_cluster::exec_workspace::sweep_exec_residual(
-                        &home.join("workspace"),
-                        &outbox,
-                        &|_| false,
-                    );
+                    // BUG-20261123-022：sweep_exec_residual 是同步阻塞面
+                    // （finish_task_exec 内含 thread::sleep 重试退避 +
+                    // remove_file_resilient 瞬时句柄重试 + 子进程树杀等待），
+                    // 不得在 tokio worker 上裸跑。同功能三形态对齐：周期清扫
+                    // （spawn_periodic_residual_sweep 专用线程）与任务终态
+                    // 钩子（bridges on_task_terminal 专用线程）均已线程化，
+                    // 唯启动清扫漏网——spawn_blocking 对齐。Join 失败按 0
+                    // 继续（清扫是 best-effort 卫生活，启动主流程不被卡）。
+                    let home_ws = home.join("workspace");
+                    let outbox_for_sweep = std::sync::Arc::clone(&outbox);
+                    let swept = tokio::task::spawn_blocking(move || {
+                        nemesis_cluster::exec_workspace::sweep_exec_residual(
+                            &home_ws,
+                            &outbox_for_sweep,
+                            &|_| false,
+                        )
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            "[Gateway] Exec workspace residual sweep join failed (continue as 0): {e}"
+                        );
+                        0usize
+                    });
                     if swept > 0 {
                         info!(
                             "[Gateway] Exec workspace residual swept: {swept} task(s) re-enqueued"
