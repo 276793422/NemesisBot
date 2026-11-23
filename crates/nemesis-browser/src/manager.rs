@@ -98,17 +98,24 @@ impl BrowserManager {
     }
 
     /// 浏览器选择解析（D3 解析序）→ (kind, executable)。Firefox 二期诚实
-    /// 报错；全未检出诚实报错（带已探测清单）。
+    /// 报错（kind 臂 + custom 两臂都闸，见 [`gecko_family_rejection`]）；
+    /// 全未检出诚实报错（带已探测清单）。
     pub fn resolve_browser(
         &self,
         kind_override: Option<&str>,
         executable_override: Option<&str>,
     ) -> Result<(DriverKind, PathBuf), String> {
-        // ① 自定义可执行文件路径最高优先（spawn 覆盖 > 配置）。
+        // ① 自定义可执行文件路径最高优先（spawn 覆盖 > 配置）。custom 的
+        // 协议假设是 Chromium CDP——Gecko 系可执行名在此诚实拒绝，否则
+        // 拿着 Chromium 旗标启动 Firefox（--user-data-dir 它根本不认），
+        // 死在莫名其妙的调试端口等待上。
         if let Some(exe) = executable_override.filter(|s| !s.trim().is_empty()) {
             let p = PathBuf::from(exe.trim());
             if !p.is_file() {
                 return Err(format!("自定义浏览器路径不存在: {}", p.display()));
+            }
+            if let Some(err) = gecko_family_rejection(&p) {
+                return Err(err);
             }
             return Ok((DriverKind::Custom, p));
         }
@@ -120,6 +127,9 @@ impl BrowserManager {
                 let p = PathBuf::from(prefs.executable.trim());
                 if !p.is_file() {
                     return Err(format!("配置的浏览器路径不存在: {}", p.display()));
+                }
+                if let Some(err) = gecko_family_rejection(&p) {
+                    return Err(err);
                 }
                 return Ok((DriverKind::Custom, p));
             }
@@ -151,10 +161,7 @@ impl BrowserManager {
         let k = DriverKind::from_slug(kind)
             .ok_or_else(|| format!("未知浏览器 kind: {kind}（值域 edge/chrome/brave/vivaldi/chromium/firefox/auto/custom）"))?;
         if k.is_phase2() {
-            return Err(format!(
-                "{} 驱动为二期（WebDriver BiDi，P4 落地后转可用）；当前请选 Chromium 家族浏览器（Edge/Chrome/Brave/Vivaldi/Chromium）",
-                k.display_name()
-            ));
+            return Err(phase2_unavailable_err(k.display_name()));
         }
         match detect::find_executable(k) {
             Some(p) => Ok((k, p)),
@@ -374,6 +381,42 @@ impl BrowserManager {
     pub fn detect(&self) -> Vec<detect::DetectedBrowser> {
         self.record_event("b0", "detect", "", true, "枚举系统浏览器", 0);
         detect::detect_installed()
+    }
+}
+
+/// 二期驱动不可用文案（resolve_kind 臂与 custom 路径 Gecko 守卫共用——
+/// 单一真相源，两处口径漂移时用户看到两种说法）。
+fn phase2_unavailable_err(display: &str) -> String {
+    format!(
+        "{display} 驱动为二期（WebDriver BiDi，P4 落地后转可用）；当前请选 Chromium 家族浏览器（Edge/Chrome/Brave/Vivaldi/Chromium）"
+    )
+}
+
+/// Gecko 系已知可执行名（file_stem 小写）：Firefox 官方形态 + 常见 Gecko
+/// 分支（LibreWolf/Waterfox/PaleMoon）。显式 denylist 而非启发式——名单外
+/// 的自定义路径照常按 Chromium CDP 假设放行（custom 的合同就是 Chromium
+/// 协议浏览器，Chromium 分支 exe 名五花八门，启发式会误伤）。
+const GECKO_FAMILY_STEMS: [&str; 6] = [
+    "firefox",
+    "firefox-bin",
+    "librewolf",
+    "waterfox",
+    "waterfox-bin",
+    "palemoon",
+];
+
+/// custom 路径 Gecko 系守卫：命中返回二期诚实报错（提前避免「拿着
+/// Chromium 旗标启动 Firefox → 调试端口等待超时」的莫名失败——修复在
+/// 解析层，CLI/WSAPI/工具/Dashboard 设置页四个入口同源兜住）。
+fn gecko_family_rejection(executable: &std::path::Path) -> Option<String> {
+    let stem = executable.file_stem()?.to_str()?.to_lowercase();
+    if GECKO_FAMILY_STEMS.contains(&stem.as_str()) {
+        Some(format!(
+            "自定义路径指向 Gecko 系浏览器（{stem}）：{}",
+            phase2_unavailable_err("Firefox 及其分支")
+        ))
+    } else {
+        None
     }
 }
 

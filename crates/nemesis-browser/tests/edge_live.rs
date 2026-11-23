@@ -595,6 +595,9 @@ async fn edge_live_full_matrix() {
         })
         .await
         .unwrap();
+    // F55 回归见证（2026-11-23）：导航后首次 trusted 坐标点击。修复前
+    // press+release 被输入管线静默吞（6/6 挂，coordlog 恒空）；driver 侧
+    // mouseMoved 暖场后此断言必须稳定通过。
     session
         .act(&WebAction::Click {
             selector: None,

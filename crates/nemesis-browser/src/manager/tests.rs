@@ -51,6 +51,57 @@ fn resolve_kind_firefox_is_phase2_err() {
     assert!(err.contains("二期"), "{err}");
 }
 
+// --- custom 路径 Gecko 系守卫（2026-11-24：custom 的协议假设是 Chromium
+// --- CDP，Gecko 系可执行名必须在解析层诚实拒绝——否则拿着 Chromium 旗标
+// --- 启动 Firefox（--user-data-dir 它不认），死在调试端口等待超时）---
+
+#[test]
+fn resolve_executable_override_firefox_is_phase2_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let exe = dir.path().join("firefox.exe");
+    std::fs::write(&exe, b"MZ").unwrap();
+    let m = manager_with(dir.path().to_path_buf(), BrowserPrefs::default());
+    let err = m
+        .resolve_browser(None, Some(exe.to_str().unwrap()))
+        .unwrap_err();
+    assert!(err.contains("二期"), "{err}");
+    assert!(err.contains("Gecko"), "{err}");
+}
+
+#[test]
+fn resolve_config_executable_firefox_is_phase2_err() {
+    // config browser.executable 臂同闸（设置页自定义路径入口）。
+    let dir = tempfile::tempdir().unwrap();
+    let exe = dir.path().join("firefox.exe");
+    std::fs::write(&exe, b"MZ").unwrap();
+    let mut prefs = BrowserPrefs::default();
+    prefs.executable = exe.to_str().unwrap().to_string();
+    let m = manager_with(dir.path().to_path_buf(), prefs);
+    let err = m.resolve_browser(None, None).unwrap_err();
+    assert!(err.contains("二期"), "{err}");
+}
+
+#[test]
+fn resolve_executable_override_gecko_case_and_forks() {
+    // 大小写不敏感 + 分支（LibreWolf 同为 Gecko 系）+ 无扩展名 Linux 形态。
+    let dir = tempfile::tempdir().unwrap();
+    let m = manager_with(dir.path().to_path_buf(), BrowserPrefs::default());
+    for name in ["FIREFOX.EXE", "librewolf.exe", "firefox-bin"] {
+        let exe = dir.path().join(name);
+        std::fs::write(&exe, b"MZ").unwrap();
+        let err = m
+            .resolve_browser(None, Some(exe.to_str().unwrap()))
+            .unwrap_err();
+        assert!(err.contains("二期"), "{name}: {err}");
+    }
+    // Chromium 分支形态不受误伤（启发式拒绝会误伤五花八门的 exe 名——
+    // 本守卫是显式 denylist，名单外照常放行）。
+    let ok = dir.path().join("thorium-browser.exe");
+    std::fs::write(&ok, b"MZ").unwrap();
+    let (kind, _) = m.resolve_browser(None, Some(ok.to_str().unwrap())).unwrap();
+    assert_eq!(kind, DriverKind::Custom);
+}
+
 #[test]
 fn resolve_config_kind_pinned() {
     let dir = tempfile::tempdir().unwrap();

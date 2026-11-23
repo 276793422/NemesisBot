@@ -18,6 +18,7 @@ const loading = ref(true)
 const saving = ref(false)
 const config = ref<any>({})
 const entries = ref<any[]>([])
+const guardianStats = ref<any>(null)
 
 const FAILURE_CHOICES = [
   { value: 'ask', label: 'ask · 送审批卡（默认）' },
@@ -32,6 +33,12 @@ const MODE_CHOICES = [
 
 const failurePolicy = computed(() => config.value.guardian_failure_policy || 'ask')
 const guardianMode = computed(() => config.value.guardian_mode || 'off')
+
+// 误拦率百分比形态（后端给小数比率；escalated=0 时后端给 null，无分母不造 0%）。
+const misjudgeRate = computed(() => {
+  const r = guardianStats.value?.misjudge_rate
+  return typeof r === 'number' ? (r * 100).toFixed(1) + '%' : null
+})
 
 async function saveKey(key: 'guardian_failure_policy' | 'guardian_mode', value: string) {
   const prev = config.value[key]
@@ -56,6 +63,9 @@ async function loadAudit() {
     const data = await request('security', 'audit', { limit: 100 })
     const all: any[] = data?.entries || []
     entries.value = all.filter((e) => (e.policy || '').startsWith('guardian'))
+    // 误拦统计：后端全量行计数（不受本页 limit=100 分页影响），见
+    // guardian_stats 块——escalated=0 或审计无 guardian 落盘时不显示比率。
+    guardianStats.value = data?.guardian_stats || null
   } catch { /* ignore */ }
 }
 
@@ -141,6 +151,31 @@ onMounted(async () => {
             <div class="hint" style="margin: 0;">
               规则引擎（③ ABAC）判定 CRITICAL 操作需要放行时，Guardian 用一次<strong>无上下文</strong> LLM 调用对操作语义做独立二审——模型只看操作本身（工具/入参/风险级别），不带对话历史，防「对话内注入话术骗过规则表」。裁决 approved = 放行（agent loop 继续执行）、denied = 拦截；Guardian 自身异常走上方「失败姿态」。审计事件按 policy_rule <code>guardian_*</code> 记录，下方列表即其过滤视图。
             </div>
+          </div>
+        </div>
+
+        <!-- 误拦统计（审计 jsonl 全量行计数，与下方列表分页无关） -->
+        <div class="card" style="margin-bottom: var(--space-4);" data-test="guardian-stats-block">
+          <div class="card-header"><h3>误拦统计</h3></div>
+          <div class="card-body">
+            <div v-if="!guardianStats || !guardianStats.available" class="hint" style="margin: 0;">
+              暂无数据（Guardian 未开启，或审计文件未接线/无判定记录）。
+            </div>
+            <template v-else>
+              <div class="guardian-param" data-test="guardian-stats-reviewed">
+                <span class="param-key">LLM 判定</span>
+                <span><strong>{{ guardianStats.reviewed_total }}</strong> 次 · 放行 {{ guardianStats.allowed_by_judge }} · 送人审 {{ guardianStats.escalated }}</span>
+              </div>
+              <div class="guardian-param" data-test="guardian-stats-human">
+                <span class="param-key">人审结果</span>
+                <span>批准 <strong>{{ guardianStats.approved_after_review }}</strong>（judge 误拦候选）· 维持拦截 {{ guardianStats.denied_after_review }}</span>
+              </div>
+              <div class="guardian-param" data-test="guardian-misjudge-rate">
+                <span class="param-key">误拦率</span>
+                <span v-if="misjudgeRate"><strong>{{ misjudgeRate }}</strong><span class="hint" style="display: inline; margin: 0 0 0 var(--space-2);">（人批准数 ÷ 送人审数，越低 = judge 判得越准）</span></span>
+                <span v-else>—（尚无送人审判定，无分母）</span>
+              </div>
+            </template>
           </div>
         </div>
 

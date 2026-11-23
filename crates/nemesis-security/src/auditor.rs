@@ -1145,6 +1145,11 @@ impl SecurityAuditor {
                         policy_rule: "command_substitution".to_string(),
                     };
                     self.log_audit_event(&event);
+                    tracing::info!(
+                        "[CmdSubst] auto-allow rule degraded to approval: pattern `{}` target `{}`",
+                        rule.pattern,
+                        req.target
+                    );
                 }
                 if !flag_blocked && !subst_blocked {
                     self.allowed_count.fetch_add(1, Ordering::SeqCst);
@@ -1948,6 +1953,11 @@ impl SecurityAuditor {
                             && !rule.pattern.contains("$(")
                             && !rule.pattern.contains('`')
                         {
+                            tracing::info!(
+                                "[CmdSubst] allow rule degraded to approval: pattern `{}` target `{}`",
+                                rule.pattern,
+                                req.target
+                            );
                             return (
                                 SecurityDecision::RequireApproval,
                                 format!(
