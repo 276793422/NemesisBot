@@ -292,6 +292,20 @@ const MAX_TRACKED_EXECUTIONS: usize = 256;
 pub struct WorkflowEngine {
     /// Registered workflow definitions (name -> Workflow).
     workflows: DashMap<String, Workflow>,
+    /// 运行中的 cron 触发任务表（BUG-20261124-004）：键 =
+    /// (workflow 名, trigger 下标)。`register_workflow` / `persist_workflow`
+    /// 更新同名定义、`delete_workflow_file` 删除时同步 abort 对应任务——
+    /// 此前 cron 任务只在 gateway 启动时经 [`Self::spawn_cron_triggers`]
+    /// 一次性装配且从不回收：运行中改 schedule 旧任务仍按旧表达式触发
+    /// （新配置静默不生效）、删除后任务僵尸化（每周期一次 warn 直至重启）。
+    /// 兄弟面均为动态模型（nemesis-cron job 表 / board autopilot
+    /// sync_autopilot_jobs / memory dreaming sync），本表对齐该家族语义。
+    cron_handles: DashMap<(String, usize), tokio::task::AbortHandle>,
+    /// 自身弱引用（[`Self::new_arc`] / [`Self::with_persistence_arc`] /
+    /// [`Self::new_integrated_with_dirs`] 构造时填充）。`&self` 方法（如
+    /// [`Self::register_workflow`]）经它升级成 Arc 调 [`Self::resync_cron_trigger`]
+    /// ——裸 `Self::new()` 构造（CLI 临时 engine）留空即诚实降级不 resync。
+    self_weak: std::sync::OnceLock<std::sync::Weak<WorkflowEngine>>,
     /// Active and completed executions (execution ID -> Execution).
     executions: RwLock<HashMap<String, Execution>>,
     /// Node executor registry for looking up executors by type.
@@ -397,6 +411,8 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            cron_handles: DashMap::new(),
+            self_weak: std::sync::OnceLock::new(),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -427,8 +443,13 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            cron_handles: DashMap::new(),
+            self_weak: std::sync::OnceLock::new(),
             register_lock: parking_lot::Mutex::new(()),
         });
+
+        // 自引用（cron 热同步：register/delete 经 Weak 升级 resync）。
+        let _ = engine.self_weak.set(Arc::downgrade(&engine));
 
         // Wire the engine into the sub_workflow executor. `register` works
         // through `&self` (RwLock-backed interior mutability) so no `unsafe`
@@ -464,6 +485,8 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            cron_handles: DashMap::new(),
+            self_weak: std::sync::OnceLock::new(),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -491,8 +514,13 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            cron_handles: DashMap::new(),
+            self_weak: std::sync::OnceLock::new(),
             register_lock: parking_lot::Mutex::new(()),
         });
+
+        // 自引用（cron 热同步：register/delete 经 Weak 升级 resync）。
+        let _ = engine.self_weak.set(Arc::downgrade(&engine));
 
         engine.node_executors.register(
             "sub_workflow",
@@ -523,6 +551,8 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            cron_handles: DashMap::new(),
+            self_weak: std::sync::OnceLock::new(),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -551,6 +581,8 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: None,
+            cron_handles: DashMap::new(),
+            self_weak: std::sync::OnceLock::new(),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -630,8 +662,13 @@ impl WorkflowEngine {
             usage_store: crate::nodes::new_usage_store_slot(),
             execution_world: parking_lot::RwLock::new(None),
             script_tools: Some(tools.clone()),
+            cron_handles: DashMap::new(),
+            self_weak: std::sync::OnceLock::new(),
             register_lock: parking_lot::Mutex::new(()),
         });
+
+        // 自引用（cron 热同步：register/delete 经 Weak 升级 resync）。
+        let _ = engine.self_weak.set(Arc::downgrade(&engine));
 
         // Override mock node executors with real ones. Pass the engine's
         // shared usage slot so LLM calls get recorded into the gateway's
@@ -826,58 +863,251 @@ impl WorkflowEngine {
         let mut out = Vec::new();
         for entry in self.workflows.iter() {
             let wf = entry.value();
-            for trigger in &wf.triggers {
-                if trigger.trigger_type != "cron" {
-                    continue;
-                }
-                let schedule = match crate::triggers::cron_schedule_from_config(&trigger.config) {
-                    Some(s) => s.to_string(),
-                    None => {
-                        tracing::warn!(
-                            workflow = %wf.name,
-                            "[Workflow] Cron trigger missing 'schedule' field \
-                             (legacy alias 'expression' also accepted), skipping"
-                        );
-                        continue;
-                    }
-                };
-                let timezone = match trigger.config.get("timezone").and_then(|v| v.as_str()) {
-                    Some(s) => match CronTimezone::from_config_str(s) {
-                        Some(tz) => tz,
-                        None => {
-                            tracing::warn!(
-                                workflow = %wf.name,
-                                timezone = %s,
-                                "[Workflow] Unknown cron timezone, falling back to local"
-                            );
-                            CronTimezone::Local
-                        }
-                    },
-                    None => CronTimezone::Local,
-                };
-                let input = trigger
-                    .config
-                    .get("input")
-                    .and_then(|v| v.as_object())
-                    .map(|m| {
-                        let mut map: HashMap<String, serde_json::Value> =
-                            m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                        // Backfill the unified `input` string so `{{input}}`
-                        // in prompts resolves even when the cron config
-                        // doesn't explicitly declare an `input` field.
-                        if !map.contains_key("input") {
-                            let obj: serde_json::Map<String, serde_json::Value> =
-                                map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                            let serialized = serde_json::Value::Object(obj).to_string();
-                            map.insert("input".to_string(), serde_json::Value::String(serialized));
-                        }
-                        map
-                    })
-                    .unwrap_or_default();
+            for (_idx, schedule, timezone, input) in Self::cron_specs_from_workflow(wf) {
                 out.push((wf.name.clone(), schedule, timezone, input));
             }
         }
         out
+    }
+
+    /// Extract cron-trigger specs from one workflow definition: the
+    /// trigger's index within `wf.triggers`, its schedule expression,
+    /// timezone and static input map. Single extraction source shared by
+    /// [`Self::list_cron_workflows`], [`Self::spawn_cron_triggers`] and
+    /// [`Self::resync_cron_trigger`] — schedule/timezone/input semantics
+    /// (legacy `expression` alias, unknown-timezone fallback, `{{input}}`
+    /// backfill) must not drift between startup assembly and hot resync
+    /// (BUG-20261124-004).
+    fn cron_specs_from_workflow(
+        wf: &Workflow,
+    ) -> Vec<(
+        usize,
+        String,
+        CronTimezone,
+        HashMap<String, serde_json::Value>,
+    )> {
+        let mut out = Vec::new();
+        for (idx, trigger) in wf.triggers.iter().enumerate() {
+            if trigger.trigger_type != "cron" {
+                continue;
+            }
+            let schedule = match crate::triggers::cron_schedule_from_config(&trigger.config) {
+                Some(s) => s.to_string(),
+                None => {
+                    tracing::warn!(
+                        workflow = %wf.name,
+                        "[Workflow] Cron trigger missing 'schedule' field \
+                         (legacy alias 'expression' also accepted), skipping"
+                    );
+                    continue;
+                }
+            };
+            let timezone = match trigger.config.get("timezone").and_then(|v| v.as_str()) {
+                Some(s) => match CronTimezone::from_config_str(s) {
+                    Some(tz) => tz,
+                    None => {
+                        tracing::warn!(
+                            workflow = %wf.name,
+                            timezone = %s,
+                            "[Workflow] Unknown cron timezone, falling back to local"
+                        );
+                        CronTimezone::Local
+                    }
+                },
+                None => CronTimezone::Local,
+            };
+            let input = trigger
+                .config
+                .get("input")
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    let mut map: HashMap<String, serde_json::Value> =
+                        m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    // Backfill the unified `input` string so `{{input}}`
+                    // in prompts resolves even when the cron config
+                    // doesn't explicitly declare an `input` field.
+                    if !map.contains_key("input") {
+                        let obj: serde_json::Map<String, serde_json::Value> =
+                            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                        let serialized = serde_json::Value::Object(obj).to_string();
+                        map.insert("input".to_string(), serde_json::Value::String(serialized));
+                    }
+                    map
+                })
+                .unwrap_or_default();
+            out.push((idx, schedule, timezone, input));
+        }
+        out
+    }
+
+    /// Abort the cron task registered for `(workflow, trigger_idx)` if any
+    /// (BUG-20261124-004). Idempotent: no entry = no-op.
+    fn abort_cron_task(&self, wf_name: &str, trigger_idx: usize) {
+        if let Some((_, old)) = self
+            .cron_handles
+            .remove(&(wf_name.to_string(), trigger_idx))
+        {
+            old.abort();
+        }
+    }
+
+    /// Abort every cron task belonging to `wf_name` (all trigger indexes).
+    /// Idempotent: no entries = no-op.
+    fn abort_cron_tasks_for(&self, wf_name: &str) {
+        self.cron_handles.retain(|key, handle| {
+            if key.0 == wf_name {
+                handle.abort();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Spawn the tokio task that fires one cron trigger on schedule, keeping
+    /// the [`Self::cron_handles`] registry coherent: any task already
+    /// registered under the same `(workflow, trigger index)` key is aborted
+    /// first, so repeated invocation (startup assembly + hot resync after
+    /// re-register) converges to exactly one live task per trigger.
+    ///
+    /// Returns the fresh `JoinHandle` (for callers that hold explicit
+    /// handles: gateway startup / tests) or `None` when the schedule is
+    /// invalid (logged; nothing spawned; the stale entry was already
+    /// aborted).
+    fn spawn_cron_task(
+        self: &Arc<Self>,
+        wf_name: String,
+        trigger_idx: usize,
+        schedule: String,
+        timezone: CronTimezone,
+        input: HashMap<String, serde_json::Value>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        // Idempotent re-spawn: drop the previous task for this trigger so a
+        // resync never leaves two live loops firing the same schedule.
+        self.abort_cron_task(&wf_name, trigger_idx);
+
+        let cron = match croner::Cron::from_str(&schedule) {
+            Ok(c) => c,
+            Err(err) => {
+                tracing::warn!(
+                    workflow = %wf_name,
+                    schedule = %schedule,
+                    error = %err,
+                    "[Workflow] Invalid cron expression, skipping"
+                );
+                return None;
+            }
+        };
+
+        let engine = Arc::clone(self);
+        let task_name = wf_name.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                // Evaluate "now" in the configured timezone so the cron
+                // expression's wall-clock semantics match the user's
+                // intent. `find_next_occurrence` returns the next fire
+                // time in the same TZ; converting both ends to a
+                // Duration cancels out the offset.
+                let now_utc = chrono::Utc::now();
+                let now_local = chrono::Local::now();
+                let delay = match timezone {
+                    CronTimezone::Utc => match cron.find_next_occurrence(&now_utc, false) {
+                        Ok(next) => (next - now_utc)
+                            .to_std()
+                            .unwrap_or_else(|_| std::time::Duration::from_millis(100)),
+                        Err(err) => {
+                            tracing::warn!(
+                                workflow = %task_name,
+                                error = %err,
+                                "[Workflow] Failed to compute next cron fire, stopping schedule"
+                            );
+                            return;
+                        }
+                    },
+                    CronTimezone::Local => match cron.find_next_occurrence(&now_local, false) {
+                        Ok(next) => (next - now_local)
+                            .to_std()
+                            .unwrap_or_else(|_| std::time::Duration::from_millis(100)),
+                        Err(err) => {
+                            tracing::warn!(
+                                workflow = %task_name,
+                                error = %err,
+                                "[Workflow] Failed to compute next cron fire, stopping schedule"
+                            );
+                            return;
+                        }
+                    },
+                };
+                tokio::time::sleep(delay).await;
+
+                let exec_engine = Arc::clone(&engine);
+                let exec_name = task_name.clone();
+                let exec_input = input.clone();
+                tokio::spawn(async move {
+                    let trigger = TriggerSource::Cron;
+                    match exec_engine
+                        .start_async(&exec_name, exec_input, Some(trigger))
+                        .await
+                    {
+                        Ok(id) => {
+                            tracing::info!(
+                                workflow = %exec_name,
+                                execution_id = %id,
+                                "[Workflow] Cron-triggered execution started"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                workflow = %exec_name,
+                                error = %err,
+                                "[Workflow] Cron-triggered start_async failed"
+                            );
+                        }
+                    }
+                });
+            }
+        });
+
+        self.cron_handles
+            .insert((wf_name.clone(), trigger_idx), handle.abort_handle());
+
+        tracing::info!(
+            workflow = %wf_name,
+            schedule = %schedule,
+            timezone = %timezone.label(),
+            "[Workflow] Cron schedule registered"
+        );
+        Some(handle)
+    }
+
+    /// Hot-resync the cron tasks of one workflow (BUG-20261124-004): abort
+    /// every live task registered under its name, then re-spawn from the
+    /// given (already updated) definition. Reached from
+    /// [`Self::register_workflow`] / [`Self::persist_workflow`] via the
+    /// engine's `self_weak` upgrade — callers only need `&self`.
+    pub fn resync_cron_trigger(self: &Arc<Self>, workflow: &Workflow) {
+        self.abort_cron_tasks_for(&workflow.name);
+        for (idx, schedule, timezone, input) in Self::cron_specs_from_workflow(workflow) {
+            self.spawn_cron_task(workflow.name.clone(), idx, schedule, timezone, input);
+        }
+    }
+
+    /// Cron 热同步入口（register/persist 成功路径尾部调用；
+    /// BUG-20261124-004）。诚实降级两臂：`self_weak` 未填充（裸
+    /// `Self::new()` 等非 Arc 构造——CLI 临时 engine 从不 spawn cron 任务，
+    /// 无事可同步）；调用点不在 tokio 运行时上下文（同步 CLI 路径，
+    /// `tokio::spawn` 无法工作，cron 任务本就不存在）。两臂都过才经 Arc
+    /// 升级执行 [`Self::resync_cron_trigger`]。
+    fn maybe_resync_cron_after_upsert(&self, name: &str) {
+        let Some(arc) = self.self_weak.get().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        if let Some(entry) = self.workflows.get(name) {
+            arc.resync_cron_trigger(entry.value());
+        }
     }
 
     /// Spawn a tokio task per cron-triggered workflow that fires the workflow
@@ -894,102 +1124,25 @@ impl WorkflowEngine {
     /// cron expression is evaluated against UTC. Otherwise it's evaluated
     /// against local time (the default), which matches how sysadmins think
     /// about cron.
+    ///
+    /// (BUG-20261124-004) Each task is also registered in
+    /// [`Self::cron_handles`]; [`Self::register_workflow`] /
+    /// [`Self::persist_workflow`] / [`Self::delete_workflow_file`] /
+    /// [`Self::unregister`] keep that registry in sync, so schedule updates
+    /// and deletions take effect immediately instead of silently sticking
+    /// with the startup assembly until the next restart.
     pub fn spawn_cron_triggers(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
-        let cron_workflows = self.list_cron_workflows();
-        let mut handles = Vec::with_capacity(cron_workflows.len());
-
-        for (wf_name, schedule, timezone, input) in cron_workflows {
-            let cron = match croner::Cron::from_str(&schedule) {
-                Ok(c) => c,
-                Err(err) => {
-                    tracing::warn!(
-                        workflow = %wf_name,
-                        schedule = %schedule,
-                        error = %err,
-                        "[Workflow] Invalid cron expression, skipping"
-                    );
-                    continue;
+        let mut handles = Vec::new();
+        for entry in self.workflows.iter() {
+            let wf = entry.value();
+            for (idx, schedule, timezone, input) in Self::cron_specs_from_workflow(wf) {
+                if let Some(h) =
+                    self.spawn_cron_task(wf.name.clone(), idx, schedule, timezone, input)
+                {
+                    handles.push(h);
                 }
-            };
-
-            let engine = Arc::clone(self);
-            let task_name = wf_name.clone();
-            let handle = tokio::spawn(async move {
-                loop {
-                    // Evaluate "now" in the configured timezone so the cron
-                    // expression's wall-clock semantics match the user's
-                    // intent. `find_next_occurrence` returns the next fire
-                    // time in the same TZ; converting both ends to a
-                    // Duration cancels out the offset.
-                    let now_utc = chrono::Utc::now();
-                    let now_local = chrono::Local::now();
-                    let delay = match timezone {
-                        CronTimezone::Utc => match cron.find_next_occurrence(&now_utc, false) {
-                            Ok(next) => (next - now_utc)
-                                .to_std()
-                                .unwrap_or_else(|_| std::time::Duration::from_millis(100)),
-                            Err(err) => {
-                                tracing::warn!(
-                                    workflow = %task_name,
-                                    error = %err,
-                                    "[Workflow] Failed to compute next cron fire, stopping schedule"
-                                );
-                                return;
-                            }
-                        },
-                        CronTimezone::Local => match cron.find_next_occurrence(&now_local, false) {
-                            Ok(next) => (next - now_local)
-                                .to_std()
-                                .unwrap_or_else(|_| std::time::Duration::from_millis(100)),
-                            Err(err) => {
-                                tracing::warn!(
-                                    workflow = %task_name,
-                                    error = %err,
-                                    "[Workflow] Failed to compute next cron fire, stopping schedule"
-                                );
-                                return;
-                            }
-                        },
-                    };
-                    tokio::time::sleep(delay).await;
-
-                    let exec_engine = Arc::clone(&engine);
-                    let exec_name = task_name.clone();
-                    let exec_input = input.clone();
-                    tokio::spawn(async move {
-                        let trigger = TriggerSource::Cron;
-                        match exec_engine
-                            .start_async(&exec_name, exec_input, Some(trigger))
-                            .await
-                        {
-                            Ok(id) => {
-                                tracing::info!(
-                                    workflow = %exec_name,
-                                    execution_id = %id,
-                                    "[Workflow] Cron-triggered execution started"
-                                );
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    workflow = %exec_name,
-                                    error = %err,
-                                    "[Workflow] Cron-triggered start_async failed"
-                                );
-                            }
-                        }
-                    });
-                }
-            });
-            handles.push(handle);
-
-            tracing::info!(
-                workflow = %wf_name,
-                schedule = %schedule,
-                timezone = %timezone.label(),
-                "[Workflow] Cron schedule registered"
-            );
+            }
         }
-
         handles
     }
 
@@ -1272,7 +1425,13 @@ impl WorkflowEngine {
         let _register_guard = self.register_lock.lock();
         self.check_subworkflow_cycle(&workflow)?;
 
-        self.workflows.insert(workflow.name.clone(), workflow);
+        let wf_name = workflow.name.clone();
+        self.workflows.insert(wf_name.clone(), workflow);
+        // BUG-20261124-004：同名注册是 update 语义（旧定义被整体覆盖）——
+        // cron 触发任务同步重排。否则运行中改 schedule 后旧任务按旧表达式
+        // 继续触发、新配置静默不生效（零提示直至重启）。validate/cycle 失败
+        // 早退不经过这里，旧任务继续服务旧定义（旧定义仍有效）。
+        self.maybe_resync_cron_after_upsert(&wf_name);
         Ok(())
     }
 
@@ -1702,7 +1861,13 @@ impl WorkflowEngine {
             let _ = nemesis_utils::fsutil::remove_file_resilient(&stale);
         }
 
-        self.workflows.insert(workflow.name.clone(), workflow);
+        let wf_name = workflow.name.clone();
+        self.workflows.insert(wf_name.clone(), workflow);
+        // BUG-20261124-004：同名注册是 update 语义（旧定义被整体覆盖）——
+        // cron 触发任务同步重排。否则运行中改 schedule 后旧任务按旧表达式
+        // 继续触发、新配置静默不生效（零提示直至重启）。validate/cycle 失败
+        // 早退不经过这里，旧任务继续服务旧定义（旧定义仍有效）。
+        self.maybe_resync_cron_after_upsert(&wf_name);
         Ok(())
     }
 
@@ -1716,6 +1881,9 @@ impl WorkflowEngine {
         // Remove from memory first — if file deletion fails the caller can
         // retry file removal without re-running the whole flow.
         self.workflows.remove(name);
+        // BUG-20261124-004：定义删除即终止其 cron 触发任务——否则任务僵尸化，
+        // 每个周期对已删除 workflow 触发一次 WorkflowNotFound warn 直至重启。
+        self.abort_cron_tasks_for(name);
 
         if let Some(dir) = dir {
             let candidate = dir.join(format!("{}.yaml", sanitize_workflow_filename(name)));
@@ -1779,6 +1947,10 @@ impl WorkflowEngine {
     /// workflow are **not** automatically cancelled.
     pub fn unregister(&self, name: &str) {
         self.workflows.remove(name);
+        // BUG-20261124-004：内存移除同样终止其 cron 触发任务（与
+        // delete_workflow_file 对称——注册表里已无该 workflow，任务继续
+        // 触发只会周期性撞 WorkflowNotFound warn）。
+        self.abort_cron_tasks_for(name);
     }
 
     /// executions 表有界化：超 [`MAX_TRACKED_EXECUTIONS`] 时逐出最老的

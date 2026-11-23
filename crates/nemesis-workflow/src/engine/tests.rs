@@ -4921,7 +4921,10 @@ async fn w4a_spawn_cron_triggers_invalid_and_missing_workflow() {
     assert_eq!(handles.len(), 1, "invalid cron must be skipped");
 
     // Remove the workflow so the fire hits the start-failure warn arm.
-    engine.unregister("w4a_utc_ghost_wf");
+    // （BUG-20261124-004 后 unregister/delete 会同步终止 cron 任务——为继续
+    // 覆盖「任务在、workflow 已不在」的防御臂，这里直接摘内存注册表条目
+    // 绕过同步。）
+    engine.workflows.remove("w4a_utc_ghost_wf");
 
     // Let the every-2-second schedule fire at least once.
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -6933,4 +6936,122 @@ async fn test_subworkflow_failed_arm_settle_window_cancel_emits_once() {
         !engine.cancel_tokens.contains_key(&parent_id),
         "收口完成 token 必须已摘"
     );
+}
+
+/// BUG-20261124-004 回归①：同名 register（update 语义）改 cron schedule
+/// 后，旧触发任务被 abort、注册表条目换成新任务——旧 handle 终结、新任务
+/// 接管。修复前 register 从不触碰 cron 任务，运行中改 schedule 后旧任务
+/// 按旧表达式继续触发、新配置静默不生效直至重启。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2587_cron_resync_on_update_aborts_old_task() {
+    use crate::types::TriggerConfig;
+
+    let engine = WorkflowEngine::new_arc();
+    let mk = |name: &str, schedule: &str| {
+        let mut wf = make_workflow(name, vec![make_node("n1", "delay", vec![])]);
+        wf.triggers = vec![TriggerConfig {
+            trigger_type: "cron".to_string(),
+            config: HashMap::from([("schedule".to_string(), serde_json::json!(schedule))]),
+        }];
+        wf
+    };
+
+    engine
+        .register_workflow(mk("r2587_cron_update_wf", "*/2 * * * * *"))
+        .unwrap();
+    let handles = engine.spawn_cron_triggers();
+    assert_eq!(handles.len(), 1);
+    assert!(
+        engine
+            .cron_handles
+            .contains_key(&("r2587_cron_update_wf".to_string(), 0)),
+        "spawn_cron_triggers 必须登记任务表"
+    );
+
+    // update：同名重注册换 schedule（每 2 秒 → 每日 03:00），触发热重排。
+    engine
+        .register_workflow(mk("r2587_cron_update_wf", "0 3 * * *"))
+        .unwrap();
+
+    // 旧任务被 abort：轮询至多 1s 等 abort 生效（abort 协作式，任务要跑
+    // 到下一个 await 点才真正退出）。
+    let mut old_finished = false;
+    for _ in 0..40 {
+        if handles[0].is_finished() {
+            old_finished = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(old_finished, "update 后旧 cron 任务必须被 abort");
+
+    assert!(
+        engine
+            .cron_handles
+            .contains_key(&("r2587_cron_update_wf".to_string(), 0)),
+        "注册表必须保留恰好一个存活条目（新任务接管）"
+    );
+}
+
+/// BUG-20261124-004 回归②：delete_workflow_file 与 unregister 删除定义后，
+/// cron 触发任务被终止、注册表清空——不再有僵尸任务每周期一次 warn 泄漏
+/// 至重启。修复前删除面对 cron 任务完全失管。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r2587_cron_abort_on_delete_and_unregister() {
+    use crate::types::TriggerConfig;
+
+    let engine = WorkflowEngine::new_arc();
+    let mk = |name: &str| {
+        let mut wf = make_workflow(name, vec![make_node("n1", "delay", vec![])]);
+        wf.triggers = vec![TriggerConfig {
+            trigger_type: "cron".to_string(),
+            config: HashMap::from([("schedule".to_string(), serde_json::json!("*/2 * * * * *"))]),
+        }];
+        wf
+    };
+
+    // delete_workflow_file 路径（无持久化目录时照常走内存删除 + abort）。
+    engine.register_workflow(mk("r2587_cron_del_wf")).unwrap();
+    let handles = engine.spawn_cron_triggers();
+    assert_eq!(handles.len(), 1);
+    engine.delete_workflow_file("r2587_cron_del_wf").unwrap();
+    assert!(
+        engine
+            .cron_handles
+            .get(&("r2587_cron_del_wf".to_string(), 0))
+            .is_none(),
+        "delete 必须摘掉 cron 注册表条目"
+    );
+    assert!(
+        poll_task_finished(&handles[0]).await,
+        "delete 必须 abort cron 任务"
+    );
+
+    // unregister 路径（内存移除，与 delete 对称 abort）。
+    engine.register_workflow(mk("r2587_cron_unreg_wf")).unwrap();
+    let handles2 = engine.spawn_cron_triggers();
+    assert_eq!(handles2.len(), 1);
+    engine.unregister("r2587_cron_unreg_wf");
+    assert!(
+        engine
+            .cron_handles
+            .get(&("r2587_cron_unreg_wf".to_string(), 0))
+            .is_none(),
+        "unregister 必须摘掉 cron 注册表条目"
+    );
+    assert!(
+        poll_task_finished(&handles2[0]).await,
+        "unregister 必须 abort cron 任务"
+    );
+}
+
+/// 轮询等 JoinHandle 终结（abort 协作式生效需要任务跑到下一个 await 点）。
+async fn poll_task_finished(h: &tokio::task::JoinHandle<()>) -> bool {
+    for _ in 0..40 {
+        if h.is_finished() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    false
 }
