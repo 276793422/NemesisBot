@@ -266,7 +266,13 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
             .send()
             .await
             && resp.status().is_success()
-            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await
+            // BUG-20261124-007：目录列表响应体有帽读取——与同函数 Mode C
+            // （BUG-20261115-025 已修形态）对齐。025 横扫「无第五处」声明
+            // 在同函数内即漏网：contents 列表虽有 GitHub 平台条目上界，
+            // 外流统一接帽不逐域豁免（handlers/skills.rs 同名函数已同款）。
+            && let Ok(data) =
+                nemesis_utils::http_cap::read_body_capped(resp, SKILLS_DOWNLOAD_READ_CAP).await
+            && let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&data)
         {
             let skill_dirs: Vec<&str> = entries
                 .iter()
@@ -345,7 +351,10 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
             .send()
             .await
             && resp.status().is_success()
-            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await
+            // BUG-20261124-007：同 Mode A——根目录列表响应体有帽读取。
+            && let Ok(data) =
+                nemesis_utils::http_cap::read_body_capped(resp, SKILLS_DOWNLOAD_READ_CAP).await
+            && let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&data)
         {
             let skip_dirs = [
                 "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests", "examples",
