@@ -57,6 +57,26 @@ fn test_url_decode() {
     assert_eq!(url_decode("abc%3D123"), "abc=123");
 }
 
+// BUG-20261123-020 回归锁：截断/非法 hex 的 percent 序列必须诚实保留字面
+// '%'（BUG-20261122-018 家族形态）。旧实现 `unwrap_or(b'0')` +
+// `hex_val` 非法位返 0 把 "%4" 伪造成 '@'、"%"/"%zz" 伪造成 NUL——
+// 与 doc 注释声称的「不伪造码位」相反，OAuth 回调 query 解析面静默腐化。
+#[test]
+fn test_url_decode_malformed_escape_honest() {
+    assert_eq!(url_decode("%4"), "%4", "截断序列保留字面 %");
+    assert_eq!(url_decode("%"), "%", "悬挂 % 保留字面");
+    assert_eq!(url_decode("%zz"), "%zz", "非法 hex 位保留字面 %");
+    assert_eq!(
+        url_decode("100% off"),
+        "100% off",
+        "未编码百分号文案不被腐化"
+    );
+    // 合法形态回归护栏（不因修复面收窄）。
+    assert_eq!(url_decode("a%2Bb"), "a+b");
+    assert_eq!(url_decode("x+y"), "x y");
+    assert_eq!(url_decode("hello%20world"), "hello world");
+}
+
 #[test]
 fn test_hex_encode() {
     assert_eq!(hex_encode(&[0x0f, 0xff]), "0fff");
@@ -239,15 +259,9 @@ fn test_base64url_decode_with_padding_needed() {
     assert_eq!(decoded, b"a");
 }
 
-#[test]
-fn test_hex_val() {
-    assert_eq!(hex_val(b'0'), 0);
-    assert_eq!(hex_val(b'9'), 9);
-    assert_eq!(hex_val(b'a'), 10);
-    assert_eq!(hex_val(b'f'), 15);
-    assert_eq!(hex_val(b'A'), 10);
-    assert_eq!(hex_val(b'F'), 15);
-}
+// hex_val 辅助函数已随 BUG-20261123-020 修复删除（其唯一消费方是旧
+// url_decode 的伪造形态；「非法位返 0」行为正是被消除的对象，诚实保留
+// 行为由 test_url_decode_malformed_escape_honest 在 url_decode 层钉住）。
 
 // ---- Tests for public standalone functions ----
 
@@ -481,15 +495,6 @@ fn test_url_decode_percent_encoding_mixed() {
 fn test_url_decode_no_encoding() {
     assert_eq!(url_decode("hello"), "hello");
     assert_eq!(url_decode(""), "");
-}
-
-#[test]
-fn test_hex_val_non_hex() {
-    // Non-hex chars should return 0
-    assert_eq!(hex_val(b'g'), 0);
-    assert_eq!(hex_val(b'z'), 0);
-    assert_eq!(hex_val(b'G'), 0);
-    assert_eq!(hex_val(b'!'), 0);
 }
 
 #[test]
@@ -1106,16 +1111,6 @@ fn test_parse_flexible_int_object() {
 }
 
 #[test]
-fn test_hex_val_digits() {
-    assert_eq!(hex_val(b'0'), 0);
-    assert_eq!(hex_val(b'9'), 9);
-    assert_eq!(hex_val(b'a'), 10);
-    assert_eq!(hex_val(b'f'), 15);
-    assert_eq!(hex_val(b'A'), 10);
-    assert_eq!(hex_val(b'F'), 15);
-}
-
-#[test]
 fn test_hex_encode_bytes() {
     assert_eq!(hex_encode(&[0xff]), "ff");
     assert_eq!(hex_encode(&[0x00, 0x01, 0xfe, 0xff]), "0001feff");
@@ -1548,16 +1543,6 @@ fn test_url_encode_all_special() {
 #[test]
 fn test_url_decode_empty() {
     assert_eq!(url_decode(""), "");
-}
-
-#[test]
-fn test_hex_val_all_hex_chars() {
-    assert_eq!(hex_val(b'0'), 0);
-    assert_eq!(hex_val(b'9'), 9);
-    assert_eq!(hex_val(b'a'), 10);
-    assert_eq!(hex_val(b'f'), 15);
-    assert_eq!(hex_val(b'A'), 10);
-    assert_eq!(hex_val(b'F'), 15);
 }
 
 #[test]

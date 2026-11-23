@@ -879,35 +879,40 @@ fn parse_query_params(query: &str) -> HashMap<String, String> {
 /// URL-decode a string.
 ///
 /// percent-encoding 的解码必须按 UTF-8 字节序列整体重组。
-/// 旧实现逐字节 `b as char`，multibyte 序列（如 `中` = %%%AD）被拆成
+/// 旧实现逐字节 `b as char`，multibyte 序列（如 `中` = %E4%B8%AD）被拆成
 /// 三个独立码位产出 mojibake。现按字节收集后 `from_utf8_lossy` 重组——
-/// 合法 UTF-8 正确还原，非法序列以 U+FFFD 诚实降级（不伪造码位）。
+/// 合法 UTF-8 正确还原，非法序列以 U+FFFD 诚实降级。
+///
+/// 截断/非法 hex 序列诚实保留字面 `%`（BUG-20261123-020，BUG-20261122-018
+/// 家族形态对齐）——旧实现 `unwrap_or(b'0')` + `hex_val` 非法位返 0 会
+/// **伪造字节**："%4" → '@'、"%"/"%zz" → NUL，与「不伪造码位」注释相反。
 fn url_decode(s: &str) -> String {
-    let mut bytes = Vec::with_capacity(s.len());
-    let mut chars = s.bytes();
-
-    while let Some(b) = chars.next() {
-        if b == b'%' {
-            let hi = chars.next().unwrap_or(b'0');
-            let lo = chars.next().unwrap_or(b'0');
-            bytes.push(hex_val(hi) << 4 | hex_val(lo));
-        } else if b == b'+' {
-            bytes.push(b' ');
-        } else {
-            bytes.push(b);
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex_part = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                if let Ok(v) = u8::from_str_radix(hex_part, 16) {
+                    out.push(v);
+                    i += 3;
+                } else {
+                    out.push(b'%');
+                    i += 1;
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-/// Convert a hex char byte to its value.
-fn hex_val(b: u8) -> u8 {
-    match b {
-        b'0'..=b'9' => b - b'0',
-        b'a'..=b'f' => b - b'a' + 10,
-        b'A'..=b'F' => b - b'A' + 10,
-        _ => 0,
-    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// URL-encode a string.
