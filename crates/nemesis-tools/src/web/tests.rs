@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_web_fetch_tool_metadata() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     assert_eq!(tool.name(), "web_fetch");
     assert!(!tool.description().is_empty());
 
@@ -18,7 +18,7 @@ fn test_web_fetch_tool_metadata() {
 
 #[tokio::test]
 async fn test_web_fetch_missing_url() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let result = tool.execute(&serde_json::json!({})).await;
     assert!(result.is_error);
     assert!(result.for_llm.contains("missing"));
@@ -26,7 +26,7 @@ async fn test_web_fetch_missing_url() {
 
 #[tokio::test]
 async fn test_web_fetch_invalid_url_scheme() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let result = tool
         .execute(&serde_json::json!({"url": "ftp://example.com/file"}))
         .await;
@@ -442,7 +442,7 @@ fn test_duckduckgo_extract_results_with_uddg_urls() {
 
 #[tokio::test]
 async fn test_web_fetch_ssrf_localhost() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let result = tool
         .execute(&serde_json::json!({"url": "http://127.0.0.1:8080/admin"}))
         .await;
@@ -575,13 +575,13 @@ fn test_url_parse_empty_host() {
 
 #[test]
 fn test_web_fetch_tool_default() {
-    let tool = WebFetchTool::default();
+    let tool = WebFetchTool::new().expect("client build");
     assert_eq!(tool.name(), "web_fetch");
 }
 
 #[test]
 fn test_web_fetch_tool_with_options() {
-    let tool = WebFetchTool::with_options(10, 512);
+    let tool = WebFetchTool::with_options(10, 512).expect("client build");
     assert_eq!(tool.name(), "web_fetch");
 }
 
@@ -601,7 +601,7 @@ fn test_web_search_tool_parameters() {
 
 #[tokio::test]
 async fn test_web_fetch_ssrf_192_168() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let result = tool
         .execute(&serde_json::json!({"url": "http://192.168.1.1/router"}))
         .await;
@@ -611,7 +611,7 @@ async fn test_web_fetch_ssrf_192_168() {
 
 #[tokio::test]
 async fn test_web_fetch_ssrf_10_range() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let result = tool
         .execute(&serde_json::json!({"url": "http://10.0.0.1/internal"}))
         .await;
@@ -621,7 +621,7 @@ async fn test_web_fetch_ssrf_10_range() {
 
 #[tokio::test]
 async fn test_web_fetch_ssrf_0_0_0_0() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let result = tool
         .execute(&serde_json::json!({"url": "http://0.0.0.0/"}))
         .await;
@@ -630,7 +630,7 @@ async fn test_web_fetch_ssrf_0_0_0_0() {
 
 #[tokio::test]
 async fn test_web_fetch_ssrf_localhost_port() {
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let result = tool
         .execute(&serde_json::json!({"url": "http://localhost:3000/"}))
         .await;
@@ -788,7 +788,7 @@ Content-Length: 0
     )
     .await;
 
-    let tool = WebFetchTool::new();
+    let tool = WebFetchTool::new().expect("client build");
     let resp = tool
         .client
         .get(format!("http://127.0.0.1:{redirector_port}/start"))

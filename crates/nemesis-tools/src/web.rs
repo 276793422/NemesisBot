@@ -29,12 +29,18 @@ pub struct WebFetchTool {
 
 impl WebFetchTool {
     /// Create a new web fetch tool with default settings.
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, String> {
         Self::with_options(DEFAULT_TIMEOUT_SECS, DEFAULT_MAX_SIZE)
     }
 
     /// Create with custom timeout and size limit.
-    pub fn with_options(timeout_secs: u64, max_size: usize) -> Self {
+    ///
+    /// 构建失败 fail-closed（BUG-20261124-014，对齐 BUG-20261123-028 横向扫
+    /// 同文件 DDG/Brave/Perplexity 三 provider 先例）：不再
+    /// `unwrap_or_default()` 静默回落默认 client——那会同时丢 30s 超时与
+    /// `Policy::none()` 禁重定向策略，而 `validate_url` 只在首跳执行，
+    /// 默认 client 跟随 302 → 内网即绕过 SSRF 首跳闸。
+    pub fn with_options(timeout_secs: u64, max_size: usize) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .user_agent("NemesisBot/1.0")
@@ -47,19 +53,18 @@ impl WebFetchTool {
             // release_fetch 等安全敏感出口的 Policy::none 惯例一致。
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_default();
+            .map_err(|e| {
+                format!(
+                    "WebFetch client build failed (refusing default client \
+                     without timeout + no-redirect guard): {e}"
+                )
+            })?;
 
-        Self {
+        Ok(Self {
             client,
             max_size,
             timeout: Duration::from_secs(timeout_secs),
-        }
-    }
-}
-
-impl Default for WebFetchTool {
-    fn default() -> Self {
-        Self::new()
+        })
     }
 }
 
