@@ -86,7 +86,11 @@ impl AuthStore {
     pub fn delete_all(&self) -> Result<(), String> {
         let path = Path::new(&self.path);
         if path.exists() {
-            std::fs::remove_file(path).map_err(|e| format!("delete auth file: {}", e))?;
+            // BUG-20261123-018：凭据库文件删除走 fsutil 退避重试（AV/索引器
+            // 瞬时句柄 Windows 常态；文件每次 save 都重写，单发失败概率高），
+            // 耗尽才报错。
+            nemesis_utils::fsutil::remove_file_retry(path)
+                .map_err(|e| format!("delete auth file: {e}"))?;
         }
         self.creds.write().unwrap().clear();
         Ok(())

@@ -193,8 +193,11 @@ pub fn remove_goal(workspace: &Path, id: &str) -> Result<(), String> {
     })?;
     for path in [goal_md_path_in(&dir, id), evals_path_in(&dir, id)] {
         if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!("[Goals] remove {} failed: {e}", path.display());
+            // BUG-20261123-018：清理类删除走韧性版（AV/索引器瞬时句柄
+            // Windows 常态；单发失败 = 注册表已删但文件残留成永久孤儿），
+            // 重试耗尽 WARN 留痕，NotFound 视为成功。
+            if !nemesis_utils::fsutil::remove_file_resilient(&path) {
+                tracing::warn!("[Goals] remove {} failed after retries", path.display());
             }
         }
     }

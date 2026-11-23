@@ -120,12 +120,57 @@ fn dir_retry_removes_empty_dir_only() {
     remove_dir_retry(&empty).unwrap();
 }
 
-// 重试耗尽面（真 AV/索引器句柄冲突）无零依赖模拟手段：std 打开的句柄默认
-// 共享 DELETE（可删），新版 std Windows 删除实现还会清只读位——「制造稳定
-// 删失败」需要 windows-sys 控 share_mode/ACL，不值。耗尽路径是 10 次循环
-// 收尾返回最后错误的直白逻辑，语义面由上面 3 个用例覆盖。
+// 重试恢复面（BUG-20261123-018）：AV/索引器瞬时句柄的零依赖模拟——std
+// OpenOptionsExt::share_mode(0) 独占打开即可让单发 remove 报 sharing
+// violation（旧注「制造删失败需要 windows-sys 控 share_mode」已过时：std
+// 自带 share_mode 方法，不需要外部依赖）。此前的「耗尽面不可模拟」判断
+// 只覆盖了 std 默认 share_mode（含 DELETE）的常规打开形态。
+#[cfg(windows)]
+#[test]
+fn file_retry_recovers_after_transient_share_violation() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
 
-// Windows 记事本「带 BOM 的 UTF-8」保存的配置文件——
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("held.bin");
+    fs::write(&f, b"x").unwrap();
+
+    // 子线程独占持有句柄 800ms 后释放（模拟 AV 扫描窗口）；原子标记让主
+    // 线程确定性地等到「句柄已生效」再动手，避免调度抖动让对照假失败。
+    let opened = Arc::new(AtomicBool::new(false));
+    let opened2 = opened.clone();
+    let f2 = f.clone();
+    let releaser = std::thread::spawn(move || {
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0) // 不共享任何访问：DeleteFileW 的 DELETE access 被拒
+            .open(&f2)
+            .unwrap();
+        opened2.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(800));
+        drop(held);
+    });
+    while !opened.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // 机制正向对照：句柄持有时单发删除必失败（复现 AV 瞬时句柄形态；
+    // 本断言失败 = 模拟机制失效，后续重试断言不成立）。
+    assert!(
+        fs::remove_file(&f).is_err(),
+        "share_mode(0) 独占句柄应阻断单发删除"
+    );
+    // 韧性版：句柄 800ms 后释放，退避重试应在该窗口内恢复删除成功。
+    let t0 = Instant::now();
+    remove_file_retry(&f).unwrap();
+    assert!(
+        t0.elapsed() >= Duration::from_millis(100),
+        "应至少重试过一轮退避（80ms）而非首试成功"
+    );
+    assert!(!f.exists());
+    releaser.join().unwrap();
+} // Windows 记事本「带 BOM 的 UTF-8」保存的配置文件——
 // serde_json/toml 都拒 BOM（expected value at line 1 column 1），peers.toml
 // 更会走「解析失败→全新序列化覆盖写」冲掉用户手工 peers 表。read_config_string
 // 剥前导 BOM；非 BOM 文件字节不变。
