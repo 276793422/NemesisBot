@@ -630,6 +630,15 @@ impl ForgeToolExecutor {
             );
         }
 
+        // Windows 保留设备名闸（BUG-20261123-035）：slugify 对 "nul"/"con"
+        // 等恒等放行，script 型工件裸名 FILE 写入（下方 forge/scripts/{name}
+        // 段尾无扩展名）在 Windows 报成功而数据永不落盘 = 静默丢数据面；
+        // skill/mcp 型目录创建响亮失败但错误信息 cryptic。与 web/CLI
+        // test/optimize 同一判定统一拒绝。
+        if let Err(msg) = crate::forge::valid_skill_dir_name(&name) {
+            return ForgeToolResult::err(msg);
+        }
+
         // Use shared CreateSkill method for skill type (matching Go's behavior:
         // t.forge.CreateSkill(ctx, name, content, description, nil))
         if artifact_type == "skill" {
@@ -687,6 +696,12 @@ impl ForgeToolExecutor {
                     &category
                 };
                 let category = category.to_string();
+                // category 同为路径段（scripts/ 下目录），保留名同闸
+                // （BUG-20261123-035 横向面）：目录创建响亮失败，但明确
+                // 拒绝优先于 cryptic OS error。
+                if let Err(msg) = crate::forge::valid_skill_dir_name(&category) {
+                    return ForgeToolResult::err(msg);
+                }
                 forge_dir.join("scripts").join(category).join(&name)
             }
             "mcp" => {

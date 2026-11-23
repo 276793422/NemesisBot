@@ -252,13 +252,21 @@ pub fn encode_body_mime(body: &str) -> (String, String) {
 /// DATA 载荷装配（BUG-20261112-111③）：先裸 LF/CR 归一为 CRLF，再点填充。
 /// RFC 5321 会话行终止恒为 CRLF，点填充只覆盖 CRLF-dot——正文中的裸 LF
 /// 行首点不被填充，宽容解析裸 LF 的中继（SMTP smuggling 类）可把它当数据
-/// 终止、后续字节当新命令（冒认证身份发信）。归一后点填充覆盖全部行首。
+/// 终止、后续字节当新命令（冒认证身份发信）。归一后点填充覆盖全部行首
+/// ——包括**首行**（BUG-20261123-034）：`\r\n.` 替换只命中带前导 CRLF 的
+/// 行，载荷首行恰为单独 "." 时会被服务端当作 DATA 终止符、余下载荷字节
+/// 当新会话命令（最强 smuggling 形态），故首字节为点时补一个前导点。
 pub fn prepare_smtp_payload(message: &str) -> String {
     let normalized = message
         .replace("\r\n", "\n")
         .replace('\r', "\n")
         .replace('\n', "\r\n");
-    normalized.replace("\r\n.", "\r\n..")
+    let stuffed = normalized.replace("\r\n.", "\r\n..");
+    if stuffed.starts_with('.') {
+        format!(".{stuffed}")
+    } else {
+        stuffed
+    }
 }
 
 /// rustls ClientConfig 装配（ring provider；显式 CA 信任根，mqtt 同模板

@@ -37,6 +37,11 @@ pub struct ExternalConfig {
     pub sync_to: Vec<String>,
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
+    /// BUG-20261123-037：EXE 子进程 cwd 锚点（gateway 装配注入 workspace
+    /// 根）。None = 继承进程 cwd（旧行为）——gateway 部署形态 cwd 不可预测
+    /// （终端=启动目录 / 托盘自启=system32 / 任务计划=system32），用户配置
+    /// 的相对路径 EXE / 脚本侧相对路径读写随部署形态漂移。
+    pub working_dir: Option<std::path::PathBuf>,
 }
 
 /// External channel using stdin/stdout pipes.
@@ -122,6 +127,7 @@ impl ExternalChannel {
     /// `HandleMessage` + `SyncToTargets`).
     fn spawn_input_reader(&self) {
         let input_exe = self.config.input_exe.clone();
+        let working_dir = self.config.working_dir.clone();
         let chat_id = self.config.chat_id.clone();
         let running = self.running.clone();
         let base = Arc::clone(&self.base);
@@ -134,6 +140,11 @@ impl ExternalChannel {
             // 通道 EXE 多为 console 程序；gateway 托盘/无控制台运行（release
             // windows 子系统）时压掉弹窗（stdout/stderr 走管道）。
             let mut cmd = Command::new(&input_exe);
+            // cwd 锚点（BUG-20261123-037）：装配注入的 workspace 根，相对
+            // 路径不随 gateway 部署形态漂移。None = 继承进程 cwd（旧行为）。
+            if let Some(wd) = &working_dir {
+                cmd.current_dir(wd);
+            }
             cmd.stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
             #[cfg(target_os = "windows")]
@@ -331,11 +342,18 @@ impl Channel for ExternalChannel {
 
         // Spawn the output process and write to stdin
         let output_exe = self.config.output_exe.clone();
+        let working_dir = self.config.working_dir.clone();
         let content = self.format_output(&msg.content);
 
         tokio::spawn(async move {
             // 同 input EXE：压掉 console 子进程弹窗（stdin 走管道）。
             let mut cmd = Command::new(&output_exe);
+            // cwd 锚点（BUG-20261123-037）：同 input EXE——装配注入的
+            // workspace 根，相对路径不随 gateway 部署形态漂移。
+            // None = 继承进程 cwd（旧行为）。
+            if let Some(wd) = &working_dir {
+                cmd.current_dir(wd);
+            }
             cmd.stdin(std::process::Stdio::piped());
             #[cfg(target_os = "windows")]
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW

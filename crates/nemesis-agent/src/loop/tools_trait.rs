@@ -368,6 +368,17 @@ impl AgentLoop {
                 .as_ref()
                 .map(|b| b.root.clone()),
         ));
+        // BUG-20261123-037：stdio MCP server 子进程 cwd 锚 workspace 根——
+        // gateway 部署形态 cwd 不可预测（终端=启动目录 / 托盘自启=system32 /
+        // 任务计划=system32），用户配置的相对路径命令（`python ./server.py`）
+        // 随部署形态漂移。与 set_browser_profile 同一时序约定（discover_tools
+        // 之前注入）；边界缺席（standalone/测试构造时序）= None = 旧行为。
+        mgr.set_working_dir(
+            self.workspace_boundary
+                .read()
+                .as_ref()
+                .map(|b| b.root.clone()),
+        );
         if mgr.is_enabled() {
             for server in mgr.list_servers().to_vec() {
                 let server_name = server.name.clone();

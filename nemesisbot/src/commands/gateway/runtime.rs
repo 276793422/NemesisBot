@@ -1646,7 +1646,12 @@ pub(crate) async fn run_runtime(
                         if let Ok(content) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                             && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
                         {
-                            if cfg.get("cluster").is_none() {
+                            // BUG-20261123-038 同族：`get("cluster").is_none()` 对
+                            // 顶层非对象恒真 → 补建 `cfg["cluster"] = ` IndexMut
+                            // panic。对象性守卫与下方 config.cluster.json 臂
+                            // （as_object_mut 先行）同款；非对象 = 跳过补建，
+                            // 后续 as_object_mut 臂自然不写。
+                            if cfg.is_object() && cfg.get("cluster").is_none() {
                                 cfg["cluster"] = serde_json::json!({});
                             }
                             if let Some(obj) =

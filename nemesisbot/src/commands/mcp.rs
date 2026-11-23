@@ -577,6 +577,23 @@ fn cmd_add(
     } else {
         serde_json::json!({"enabled": true, "servers": []})
     };
+    // BUG-20261123-038 同族：顶层非对象（手改坏 `[...]`/标量）会让下方
+    // servers 补建 `cfg["servers"] = ...` IndexMut panic、push 臂
+    // `.expect("just normalized to array")` 同炸。顶层非对象不承载
+    // enabled/servers 语义，无可修复形态——loud 拒绝（与
+    // read_effective_mcp_config 的「解析失败诚实 Err」同口径）。
+    if !cfg.is_object() {
+        anyhow::bail!(
+            "config.mcp.json 顶层必须是对象（当前为 {}）：无法接入新 MCP server；请修复或删除该文件后重试",
+            if cfg.is_null() {
+                "null"
+            } else if cfg.is_array() {
+                "array"
+            } else {
+                "scalar"
+            }
+        );
+    }
 
     // Check for duplicate —— 宽容真相源视图（BUG-20261120-011）：查重面
     // 看到的是「运行期会挂载的全体条目」（servers 数组 + mcpServers 吸收
@@ -1120,8 +1137,17 @@ async fn cmd_discover(
             let tool_args: Vec<String> = args
                 .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            nemesis_mcp::manager::discover_server_metadata(command, tool_args, vec![], timeout)
-                .await
+            // BUG-20261123-037：CLI 侧显式传 None（继承进程 cwd）——终端里
+            // 用户手动 cwd 是显式意志，不锚 workspace（gateway 装配路径才
+            // 注入 workspace 根）。
+            nemesis_mcp::manager::discover_server_metadata(
+                command,
+                tool_args,
+                vec![],
+                timeout,
+                None,
+            )
+            .await
         }
         (None, None) => {
             anyhow::bail!("provide either --command <path> or --url <url>");

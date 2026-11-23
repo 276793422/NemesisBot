@@ -2011,6 +2011,7 @@ fn w4c_valid_init_config() -> ChannelInitConfig {
             chat_id: "external".to_string(),
             sync_to: vec![],
             allow_from: vec![],
+            working_dir: None,
         });
     }
     #[cfg(feature = "maixcam")]
@@ -2212,6 +2213,7 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             chat_id: String::new(),
             sync_to: vec![],
             allow_from: vec![],
+            working_dir: None,
         }),
         // maixcam/web/websocket 构造无校验 → 必注册（各 1 个）
         #[cfg(feature = "maixcam")]

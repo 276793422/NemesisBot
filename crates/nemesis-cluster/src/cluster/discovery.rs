@@ -745,9 +745,13 @@ impl Cluster {
                     // 占位可继承的拨号候选：地址池原样 + base.address 的
                     // host 部分（静态 loader 装载的条目地址池常为空，拨号
                     // 走 base.address 的 host 回退分支——不并入则升级后
-                    // 回环候选直接丢失）。
+                    // 回环候选直接丢失）。形态走 host_fallback_candidate
+                    // 单一真相源：旧 `split(':').next()` 对 bracketed IPv6
+                    // 恒得 "["、对 iroh 原子恒得 "iroh"——垃圾候选入池
+                    // 白撞拨号（BUG-20261123-036；iroh 整条语义与
+                    // resolve_dial_candidates roaming 臂同源）。
                     let mut addrs = p.addresses.clone();
-                    let host = p.base.address.split(':').next().unwrap_or("").to_string();
+                    let host = super::tasks::host_fallback_candidate(&p.base.address);
                     if !host.is_empty() && !addrs.contains(&host) {
                         addrs.push(host);
                     }
@@ -1426,8 +1430,10 @@ impl Cluster {
             0
         };
         // 占位 base.address 的 host 并入地址池（单机拓扑回环往往是唯一
-        // 可达地址，见 handle_discovered_node 升级臂 注记）。
-        let host = ph.base.address.split(':').next().unwrap_or("").to_string();
+        // 可达地址，见 handle_discovered_node 升级臂 注记）。形态走
+        // host_fallback_candidate 单一真相源（IPv6 full 形态 / iroh 整条，
+        // 旧 `split(':').next()` 恒得 "["/"iroh" 垃圾候选——BUG-20261123-036）。
+        let host = super::tasks::host_fallback_candidate(&ph.base.address);
         let mut addresses = ph.addresses.clone();
         if !host.is_empty() && !addresses.contains(&host) {
             addresses.push(host);

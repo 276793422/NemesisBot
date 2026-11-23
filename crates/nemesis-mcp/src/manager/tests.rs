@@ -807,10 +807,15 @@ async fn test_w4c_discover_server_metadata_success() {
         eprintln!("Skipping test: python not available");
         return;
     }
-    let result =
-        discover_server_metadata("python", vec!["-c".into(), W4C_FAKE_MCP.into()], vec![], 5)
-            .await
-            .expect("discovery should succeed");
+    let result = discover_server_metadata(
+        "python",
+        vec!["-c".into(), W4C_FAKE_MCP.into()],
+        vec![],
+        5,
+        None,
+    )
+    .await
+    .expect("discovery should succeed");
     let info = result.server_info.expect("server_info");
     assert_eq!(info.name, "fake");
     assert_eq!(info.version, "1.2.3");
@@ -829,12 +834,13 @@ async fn test_w4c_discover_server_metadata_timeout_hint() {
         return;
     }
     let script = "import time\ntime.sleep(30)\n";
-    let err = match discover_server_metadata("python", vec!["-c".into(), script.into()], vec![], 1)
-        .await
-    {
-        Ok(_) => panic!("expected error"),
-        Err(e) => e,
-    };
+    let err =
+        match discover_server_metadata("python", vec!["-c".into(), script.into()], vec![], 1, None)
+            .await
+        {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e,
+        };
     assert!(err.contains("timed out after 1s"), "unexpected: {}", err);
     assert!(err.contains("parameter instead"), "unexpected: {}", err);
 }
@@ -991,6 +997,7 @@ sys.exit(0)
                 vec!["-c".into(), script.into()],
                 vec![],
                 5,
+                None,
             ))
         })
     })
@@ -1253,4 +1260,21 @@ fn bug070_one_shot_request_timeout_saturates_not_wraps() {
     assert_eq!(one_shot_request_timeout_ms(u64::MAX), u64::MAX);
     // 常规值不受影响（毫秒换算 + 1s 让位宽限仍精确）。
     assert_eq!(one_shot_request_timeout_ms(30), 31_000);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261123-037：working_dir 槽位（gateway 装配注入 workspace 根，
+// discover_tools 构造 stdio transport 时消费）。缺省 None = 旧行为；
+// setter/getter roundtrip。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_manager_working_dir_slot_roundtrip() {
+    let mut mgr = McpManager::new(std::path::PathBuf::from("nonexistent-config.mcp.json"));
+    assert!(mgr.working_dir().is_none(), "缺省必须 None（旧行为）");
+    let anchor = std::path::PathBuf::from("some/workspace/root");
+    mgr.set_working_dir(Some(anchor.clone()));
+    assert_eq!(mgr.working_dir(), Some(anchor.as_path()));
+    mgr.set_working_dir(None);
+    assert!(mgr.working_dir().is_none());
 }

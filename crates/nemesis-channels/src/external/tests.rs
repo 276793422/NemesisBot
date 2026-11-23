@@ -13,6 +13,7 @@ fn test_external_channel_new_validates() {
         chat_id: "default".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     assert!(ExternalChannel::new(config.clone(), w4c_test_bus()).is_err());
 }
@@ -25,6 +26,7 @@ async fn test_external_channel_lifecycle() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     assert_eq!(ch.name(), "external");
@@ -44,6 +46,7 @@ fn test_process_input_line() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -61,6 +64,7 @@ fn test_process_input_line_empty() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -76,6 +80,7 @@ fn test_format_output() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -90,6 +95,7 @@ async fn test_send_validates_chat_id() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -112,6 +118,7 @@ fn test_external_config_accessors() {
         chat_id: "my-chat".to_string(),
         sync_to: vec!["web".to_string()],
         allow_from: vec!["user1".to_string()],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     assert_eq!(ch.input_exe(), "/path/to/input");
@@ -127,6 +134,7 @@ fn test_new_requires_input_exe() {
         chat_id: "test".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     assert!(ExternalChannel::new(config.clone(), w4c_test_bus()).is_err());
 }
@@ -139,6 +147,7 @@ fn test_new_requires_output_exe() {
         chat_id: "test".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     assert!(ExternalChannel::new(config.clone(), w4c_test_bus()).is_err());
 }
@@ -151,6 +160,7 @@ async fn test_send_not_running() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     // Not started - should fail
@@ -172,6 +182,7 @@ fn test_process_input_line_whitespace() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -189,6 +200,7 @@ fn test_process_input_line_unicode() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -204,6 +216,7 @@ fn test_process_input_line_newlines() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -219,6 +232,7 @@ fn test_process_input_line_tabs() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -234,6 +248,7 @@ fn test_process_input_line_long_line() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -250,6 +265,7 @@ fn test_format_output_empty() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -264,6 +280,7 @@ fn test_format_output_unicode() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -278,6 +295,7 @@ fn test_process_input_line_returns_chat_id_as_sender() {
         chat_id: "my-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -294,6 +312,7 @@ fn test_new_validates_both_exes() {
         chat_id: "test".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     // Both empty - should fail
     assert!(ExternalChannel::new(config.clone(), w4c_test_bus()).is_err());
@@ -307,6 +326,7 @@ fn test_sync_to_config() {
         chat_id: "test".to_string(),
         sync_to: vec!["web".to_string(), "discord".to_string()],
         allow_from: vec!["user1".to_string()],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     assert_eq!(ch.input_exe(), "/bin/echo");
@@ -322,6 +342,7 @@ async fn test_start_stop_multiple_cycles() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -343,6 +364,7 @@ async fn test_send_correct_chat_id() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -367,6 +389,7 @@ fn test_process_input_line_special_chars() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -382,6 +405,7 @@ fn test_format_output_special_chars() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -396,6 +420,7 @@ fn test_process_input_line_only_spaces() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -410,6 +435,7 @@ fn test_process_input_line_only_tabs() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -426,6 +452,7 @@ fn test_external_config_all_fields() {
         chat_id: "my-chat".to_string(),
         sync_to: vec!["web".to_string(), "discord".to_string()],
         allow_from: vec!["admin".to_string()],
+        working_dir: None,
     };
     assert_eq!(config.input_exe, "/usr/bin/input");
     assert_eq!(config.output_exe, "/usr/bin/output");
@@ -442,6 +469,7 @@ fn test_process_input_line_with_spaces_and_text() {
         chat_id: "chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -459,6 +487,7 @@ async fn test_start_stop_idempotent() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -478,6 +507,7 @@ fn test_format_output_multi_line() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -495,6 +525,7 @@ fn test_process_input_line_carriage_return() {
         chat_id: "test-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
 
@@ -510,6 +541,7 @@ async fn test_send_with_sync_to_config() {
         chat_id: "test-chat".to_string(),
         sync_to: vec!["web".to_string()],
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -538,6 +570,7 @@ fn test_external_config_default_fields() {
         chat_id: "c".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     assert_eq!(ch.name(), "external");
@@ -552,6 +585,7 @@ async fn test_send_validates_running_state() {
         chat_id: "chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     // Never started, so send should fail
@@ -575,6 +609,7 @@ fn test_format_output_multiline_content() {
         chat_id: "chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     let output = ch.format_output("line1\nline2\nline3");
@@ -589,6 +624,7 @@ async fn test_send_with_invalid_chat_id_error_message() {
         chat_id: "expected-chat".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -616,6 +652,7 @@ fn test_new_valid_config() {
         chat_id: "chat-1".to_string(),
         sync_to: vec!["web".to_string()],
         allow_from: vec!["user1".to_string()],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus());
     assert!(ch.is_ok());
@@ -640,6 +677,7 @@ async fn test_stop_takes_cancel_tx_after_start() {
         chat_id: "stop-test".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -665,6 +703,7 @@ async fn test_stop_without_start_takes_none_cancel_tx() {
         chat_id: "nostart".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     assert!(ch.cancel_tx.lock().is_none());
@@ -681,6 +720,7 @@ fn test_process_input_line_single_char() {
         chat_id: "c".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     let (s, c, content) = ch.process_input_line("x").unwrap();
@@ -698,6 +738,7 @@ fn test_process_input_line_null_byte_preserved() {
         chat_id: "c".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     let (_, _, content) = ch.process_input_line("a\u{0}b").unwrap();
@@ -713,6 +754,7 @@ fn test_format_output_preserves_existing_trailing_newline() {
         chat_id: "c".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     assert_eq!(ch.format_output("already\n"), "already\n\n");
@@ -728,6 +770,7 @@ fn test_process_input_line_preserves_internal_spaces() {
         chat_id: "c".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     let (_, _, content) = ch.process_input_line("  a   b\tc  ").unwrap();
@@ -743,6 +786,7 @@ fn test_external_config_clone_is_equal() {
         chat_id: "chat".to_string(),
         sync_to: vec!["web".to_string()],
         allow_from: vec!["u1".to_string()],
+        working_dir: None,
     };
     let cloned = config.clone();
     assert_eq!(cloned.input_exe, config.input_exe);
@@ -761,6 +805,7 @@ fn test_process_input_line_returns_same_chat_id_in_both_slots() {
         chat_id: "dup-check".to_string(),
         sync_to: Vec::new(),
         allow_from: Vec::new(),
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config.clone(), w4c_test_bus()).unwrap();
     let (a, b, _) = ch.process_input_line("payload").unwrap();
@@ -795,6 +840,7 @@ async fn test_w4c_external_input_publishes_to_bus() {
         chat_id: "ext-chat".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -827,6 +873,7 @@ async fn test_w4c_external_input_allow_list_blocks() {
         chat_id: "ext-chat".to_string(),
         sync_to: vec![],
         allow_from: vec!["someone-else".to_string()],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -886,6 +933,7 @@ async fn test_w4c_external_input_syncs_to_targets() {
         chat_id: "ext-chat".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
 
@@ -933,6 +981,7 @@ async fn test_w4c_external_send_writes_to_output_exe_stdin() {
         chat_id: "ext-chat".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -982,6 +1031,7 @@ async fn test_w4c_external_stop_cancels_long_running_input() {
         chat_id: "ext-chat".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -1016,6 +1066,7 @@ async fn s2_external_input_publish_with_no_bus_receivers_logs_warn() {
         chat_id: "s2-norx".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -1043,6 +1094,7 @@ async fn s2_external_input_empty_line_is_skipped() {
         chat_id: "s2-empty".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -1069,6 +1121,7 @@ async fn s2_external_trait_is_running_call() {
         chat_id: "s2-ir".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     assert!(!ch.is_running());
@@ -1091,6 +1144,7 @@ async fn s2_external_send_broken_pipe_on_output_exe_logs_error() {
         chat_id: "s2-pipe".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -1132,6 +1186,7 @@ async fn input_exe_stderr_flood_does_not_block_stdout_lines_windows() {
         chat_id: "w4c-flood".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();
@@ -1177,6 +1232,7 @@ async fn input_exe_stderr_flood_does_not_block_stdout_lines_unix() {
         chat_id: "flood-chat".to_string(),
         sync_to: vec![],
         allow_from: vec![],
+        working_dir: None,
     };
     let ch = ExternalChannel::new(config, bus).unwrap();
     ch.start().await.unwrap();

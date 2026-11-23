@@ -493,6 +493,53 @@ fn test_parse_host_port() {
         parse_host_port("no-port"),
         ("no-port".into(), DEFAULT_RPC_PORT)
     );
+    // BUG-20261123-036 回归锁：IPv6 形态。旧 rfind(':') 撞内部冒号——
+    // "[::1]:9000" 侥幸正确、host-only "[::1]" 拆成 ("[::", DEFAULT)、
+    // 裸 "::1" 拆成 (":", 1)（垃圾 host + 幻影端口）。
+    assert_eq!(parse_host_port("[::1]:9000"), ("[::1]".into(), 9000u16));
+    assert_eq!(
+        parse_host_port("[2001:db8::5]:22050"),
+        ("[2001:db8::5]".into(), 22050u16)
+    );
+    assert_eq!(parse_host_port("[::1]"), ("[::1]".into(), DEFAULT_RPC_PORT));
+    assert_eq!(parse_host_port("::1"), ("::1".into(), DEFAULT_RPC_PORT));
+    // 端口段非法宽松落缺省（lenient 既有契约不回退）
+    assert_eq!(
+        parse_host_port("host:bad"),
+        ("host".into(), DEFAULT_RPC_PORT)
+    );
+}
+
+#[test]
+fn test_host_fallback_candidate() {
+    // BUG-20261123-036 回归锁：base.address → 拨号候选形态单一真相源。
+    // 拨号侧 `contains(':')` 启发式把含冒号候选视为已限定全形态，IPv6
+    // 候选必须落 full `[h]:p`；IPv4/主机名维持 host-only（拨号侧补端口
+    // 旧行为不变）；iroh 原子整条放行。
+    assert_eq!(host_fallback_candidate(""), "");
+    assert_eq!(
+        host_fallback_candidate("iroh:abc123@http://127.0.0.1:33440"),
+        "iroh:abc123@http://127.0.0.1:33440"
+    );
+    // IPv4 / 主机名：host-only（与旧 split(':').next() 行为一致）
+    assert_eq!(host_fallback_candidate("10.0.0.1:21949"), "10.0.0.1");
+    assert_eq!(host_fallback_candidate("example.com:8080"), "example.com");
+    assert_eq!(host_fallback_candidate("no-port"), "no-port");
+    // IPv6：一律 full `[h]:p` 形态（已带端口保持 / 缺端口补缺省 /
+    // 裸地址补 bracket）
+    assert_eq!(host_fallback_candidate("[::1]:9000"), "[::1]:9000");
+    assert_eq!(
+        host_fallback_candidate("[2001:db8::5]:22050"),
+        "[2001:db8::5]:22050"
+    );
+    assert_eq!(
+        host_fallback_candidate("[::1]"),
+        format!("[::1]:{DEFAULT_RPC_PORT}")
+    );
+    assert_eq!(
+        host_fallback_candidate("::1"),
+        format!("[::1]:{DEFAULT_RPC_PORT}")
+    );
 }
 
 #[test]
@@ -896,6 +943,70 @@ fn test_cluster_peer_resolver_returns_peer_info() {
     assert!(addresses.contains(&"203.0.113.11".to_string()));
     assert_eq!(port, 21949);
     assert!(is_online);
+}
+
+#[test]
+fn test_cluster_peer_resolver_ipv6_static_peer_full_form_candidates() {
+    // BUG-20261123-036 回归锁：静态 peer（地址池常为空，discovery.rs
+    // 注释明载）的 IPv6 base.address 走 host 回退臂——候选必须落 full
+    // `[h]:p` 形态。旧链路：parse_host_port 拆坏 bracketed 形态 + 回退臂
+    // 推 host-only bracketed IPv6 → 拨号侧 contains(':') 误判已限定 →
+    // 无端口直拨 `invalid socket address` 恒败（静态 IPv6 peer 永不可达）。
+    // 端口选 22050/22051（≠9000 本测 bind、≠21949 缺省）+ 2001:db8 文档
+    // 段地址避开 is_self_endpoint 自端点过滤。
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    let mk = |id: &str, addr: &str| ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: id.into(),
+            name: id.into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: addr.into(),
+            category: "test".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec!["llm".into()],
+        tags: Vec::new(),
+        addresses: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+        security_level: None,
+    };
+
+    // ① bracketed 带端口：回退候选原形态保留（full 已限定）
+    cluster.register_node(mk("peer-v6-full", "[2001:db8::5]:22050"));
+    // ② 裸 IPv6 无端口：补 bracket + 缺省端口成 full 形态
+    cluster.register_node(mk("peer-v6-bare", "2001:db8::6"));
+    // ③ full 形态已在池：dedup 不重复入池（旧 split(':').next() 判据对
+    // bracketed 形态恒得 "["，dedup 恒 miss → 同 host 重复候选）
+    let mut peer_with_pool = mk("peer-v6-pool", "[2001:db8::7]:22051");
+    peer_with_pool.addresses = vec!["[2001:db8::7]:22051".into()];
+    cluster.register_node(peer_with_pool);
+
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+        rpc_port: cluster.rpc_port,
+    };
+
+    let (addresses, port, is_online) = resolver.get_peer_info("peer-v6-full").unwrap();
+    assert_eq!(addresses, vec!["[2001:db8::5]:22050".to_string()]);
+    assert_eq!(port, 22050);
+    assert!(is_online);
+
+    let (addresses, port, _) = resolver.get_peer_info("peer-v6-bare").unwrap();
+    assert_eq!(addresses, vec![format!("[2001:db8::6]:{DEFAULT_RPC_PORT}")]);
+    assert_eq!(port, DEFAULT_RPC_PORT);
+
+    let (addresses, port, _) = resolver.get_peer_info("peer-v6-pool").unwrap();
+    assert_eq!(addresses, vec!["[2001:db8::7]:22051".to_string()]);
+    assert_eq!(port, 22051);
 }
 
 #[test]

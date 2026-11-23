@@ -990,13 +990,13 @@ async fn http_probe_timeout_reports_honest_detail() {
 #[cfg(windows)]
 #[tokio::test]
 async fn command_probe_exit_code_semantics() {
-    let (up, detail) = command_probe("cmd /c exit 0", 10).await;
+    let (up, detail) = command_probe("cmd /c exit 0", 10, None).await;
     assert!(up, "退出码 0 必须 up，detail: {detail}");
-    let (up, detail) = command_probe("cmd /c exit 3", 10).await;
+    let (up, detail) = command_probe("cmd /c exit 3", 10, None).await;
     assert!(!up);
     assert!(detail.contains("退出码 3"), "detail: {detail}");
     // 启动失败（程序不存在）= down
-    let (up, detail) = command_probe("definitely-not-a-real-program-xyz", 10).await;
+    let (up, detail) = command_probe("definitely-not-a-real-program-xyz", 10, None).await;
     assert!(!up);
     assert!(detail.contains("启动失败"), "detail: {detail}");
 }
@@ -1004,11 +1004,11 @@ async fn command_probe_exit_code_semantics() {
 #[cfg(not(windows))]
 #[tokio::test]
 async fn command_probe_exit_code_semantics() {
-    let (up, detail) = command_probe("true", 10).await;
+    let (up, detail) = command_probe("true", 10, None).await;
     assert!(up, "detail: {detail}");
-    let (up, _detail) = command_probe("false", 10).await;
+    let (up, _detail) = command_probe("false", 10, None).await;
     assert!(!up, "false(1) 必须 down");
-    let (up, detail) = command_probe("definitely-not-a-real-program-xyz", 10).await;
+    let (up, detail) = command_probe("definitely-not-a-real-program-xyz", 10, None).await;
     assert!(!up);
     assert!(detail.contains("启动失败"), "detail: {detail}");
 }
@@ -1026,6 +1026,7 @@ async fn run_probe_unknown_probe_type_sends_nothing() {
         },
         reqwest::Client::new(),
         tx,
+        None,
     )
     .await;
     // 未知类型：防御分支静默返回——channel 关闭且无缓冲消息 = Ok(None)
@@ -1416,4 +1417,81 @@ async fn pump_cancel_during_park_exits_promptly() {
         .await
         .expect("cancel 后泵必须及时退出（令牌臂优先于 tick）")
         .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261123-037：command 探测 cwd 锚点。Some(dir) → 子进程 cwd = dir
+// （marker 落 dir）；None → 继承父进程 cwd（旧行为）。探针用 PATH 解析
+// 的 cmd/sh 写 marker——绕开裸文件名可执行搜索的平台歧义，证明语义是
+// 「子进程 cwd 正确」。
+// -------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[tokio::test]
+async fn command_probe_cwd_anchor_child_cwd_is_anchored_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = "probe_cwd_anchor_marker.txt";
+    // cmd 的 `cd` 恒退出码 0（up）——用 marker 文件落锚定目录证明 cwd。
+    let (up, detail) = command_probe(&format!("cmd /C cd>{marker}"), 10, Some(dir.path())).await;
+    assert!(up, "cd 恒 0 必须 up，detail: {detail}");
+    let printed = tokio::fs::read_to_string(dir.path().join(marker))
+        .await
+        .expect("marker 必须落在锚定目录（cwd 锚定生效）");
+    let tail = dir.path().file_name().unwrap().to_string_lossy();
+    assert!(
+        printed.trim().ends_with(tail.as_ref()),
+        "子进程 cd 回显尾部必须 = 锚定目录尾部组件（{tail}），got: {:?}",
+        printed.trim()
+    );
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn command_probe_cwd_anchor_child_cwd_is_anchored_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = "probe_cwd_anchor_marker.txt";
+    // `test -f <marker>` 在子进程 cwd（= 锚定目录）内检查文件存在性——
+    // 先用同 cwd 探测写入，再用同 cwd 探测断言（两步都锚定才 up）。
+    let (up, detail) =
+        command_probe(&format!("sh -c 'pwd > {marker}'"), 10, Some(dir.path())).await;
+    assert!(up, "pwd 恒 0 必须 up，detail: {detail}");
+    let (up, detail) = command_probe(&format!("test -f {marker}"), 10, Some(dir.path())).await;
+    assert!(
+        up,
+        "marker 已写进锚定目录，cwd 锚定的 test -f 必须 up，detail: {detail}"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn command_probe_cwd_none_inherits_parent_process_cwd() {
+    // None = 旧行为：marker 落父进程 cwd（测试二进制目录），断言在位后即删。
+    let marker = format!("probe_cwd_none_marker_{}.txt", std::process::id());
+    let (up, detail) = command_probe(&format!("cmd /C cd>{marker}"), 10, None).await;
+    assert!(up, "cd 恒 0 必须 up，detail: {detail}");
+    let parent_cwd = std::env::current_dir().unwrap();
+    let printed = tokio::fs::read_to_string(parent_cwd.join(&marker))
+        .await
+        .expect("None = 旧行为：marker 必须落在父进程 cwd");
+    let tail = parent_cwd.file_name().unwrap().to_string_lossy();
+    assert!(
+        printed.trim().ends_with(tail.as_ref()),
+        "cd 回显尾部必须 = 父进程 cwd 尾部组件（{tail}），got: {:?}",
+        printed.trim()
+    );
+    let _ = std::fs::remove_file(parent_cwd.join(&marker));
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn command_probe_cwd_none_inherits_parent_process_cwd() {
+    let marker = format!("probe_cwd_none_marker_{}.txt", std::process::id());
+    let (up, detail) = command_probe(&format!("sh -c 'pwd > {marker}'"), 10, None).await;
+    assert!(up, "detail: {detail}");
+    let parent_cwd = std::env::current_dir().unwrap();
+    let printed = tokio::fs::read_to_string(parent_cwd.join(&marker))
+        .await
+        .expect("None = 旧行为：marker 必须落在父进程 cwd");
+    assert_eq!(printed.trim(), parent_cwd.to_str().unwrap());
+    let _ = std::fs::remove_file(parent_cwd.join(&marker));
 }

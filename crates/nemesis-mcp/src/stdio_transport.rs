@@ -52,6 +52,13 @@ pub struct StdioTransport {
     /// 次 send 开头检测到即诚实断链，绝不往半行残留后追写下一条请求。
     /// connect() 重建子进程时复位（新管道帧干净）。
     write_interrupted: bool,
+    /// BUG-20261123-037：子进程工作目录锚点（gateway agent loop 装配经
+    /// McpManager 注入 workspace 根）。None = 继承进程 cwd（旧行为）——
+    /// gateway 部署形态 cwd 不可预测（终端=启动目录 / 托盘自启=system32），
+    /// 用户配置的相对路径命令（`python ./server.py`）随部署形态漂移。
+    /// Some = `connect()` spawn 时显式 `current_dir`（与 cc_hooks/exec
+    /// 工具「用户脚本 cwd 锚 workspace」家族纪律同源）。
+    cwd: Option<std::path::PathBuf>,
 }
 
 impl StdioTransport {
@@ -70,7 +77,14 @@ impl StdioTransport {
             browser_profile: None,
             browser_profile_opt_in: false,
             write_interrupted: false,
+            cwd: None,
         }
+    }
+
+    /// 设置子进程工作目录锚点（装配期一次性注入；None = 继承进程 cwd 旧行为）。
+    pub fn with_cwd(mut self, cwd: Option<std::path::PathBuf>) -> Self {
+        self.cwd = cwd;
+        self
     }
 
     /// Create from a `ServerConfig`（profile 走进程 env 回落——一次性探测
@@ -234,6 +248,12 @@ impl Transport for StdioTransport {
             None
         };
         let mut cmd = Command::new(&self.command);
+        // cwd 锚点（BUG-20261123-037）：相对路径命令按装配注入的 workspace
+        // 根解析，不随 gateway 部署形态（终端/托盘自启/任务计划的进程 cwd）
+        // 漂移。None = 继承进程 cwd（旧行为）。
+        if let Some(cwd) = &self.cwd {
+            cmd.current_dir(cwd);
+        }
         cmd.args(args_with_browser_profile(
             &self.args,
             profile.as_deref(),

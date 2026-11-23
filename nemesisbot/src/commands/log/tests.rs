@@ -96,6 +96,48 @@ fn test_read_logging_config_file_without_logging() {
     assert_eq!(config["llm"]["enabled"], false);
 }
 
+// BUG-20261123-038 回归锁：非对象 logging 段（手改坏 `"logging": "x"`/`[]`）
+// 不回传原样 Value——原样回传会让 cmd_llm_* 的 `logging["llm"] = ...`
+// 补建 IndexMut panic。读侧必须落默认段（写回时自愈覆盖坏段）。
+#[test]
+fn test_read_logging_config_non_object_section_falls_back_to_default() {
+    for broken in [
+        r#"{"logging": "corrupted"}"#,
+        r#"{"logging": []}"#,
+        r#"{"logging": 5}"#,
+        r#"{"logging": true}"#,
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(&cfg, broken).unwrap();
+        let config = read_logging_config(&cfg).unwrap();
+        assert!(
+            config.is_object(),
+            "logging 段 {broken} 必须回落默认对象，got {config}"
+        );
+        assert_eq!(
+            config["llm"]["enabled"], false,
+            "logging 段 {broken} 回落默认 llm 段: {config}"
+        );
+        assert_eq!(
+            config["general"]["level"], "INFO",
+            "logging 段 {broken} 回落默认 general 段: {config}"
+        );
+    }
+
+    // 合法对象段不受影响（原样回传）
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"logging": {"llm": {"enabled": true, "detail_level": "raw", "log_dir": "d"}}}"#,
+    )
+    .unwrap();
+    let config = read_logging_config(&cfg).unwrap();
+    assert_eq!(config["llm"]["enabled"], true, "合法对象段必须原样回传");
+    assert_eq!(config["llm"]["detail_level"], "raw");
+}
+
 #[test]
 fn test_write_logging_config_creates_file() {
     let tmp = TempDir::new().unwrap();

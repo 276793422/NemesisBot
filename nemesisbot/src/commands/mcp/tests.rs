@@ -1468,6 +1468,39 @@ fn test_cmd_add_non_array_servers_is_repaired_not_dropped() {
     assert_eq!(servers[0]["name"], "healed-server");
 }
 
+// BUG-20261123-038 回归锁：config.mcp.json 顶层非对象（手改坏 `[...]`/
+// 标量）必须 loud Err 拒绝——修复前进 servers 补建 `cfg["servers"] = ...`
+// IndexMut panic（push 臂 `.expect("just normalized to array")` 同炸）。
+#[test]
+fn test_cmd_add_non_object_config_is_loud_rejected() {
+    for broken in ["[]", r#""corrupted""#, "5"] {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.mcp.json");
+        std::fs::write(&cfg, broken).unwrap();
+
+        let err = add_stdio(
+            &cfg,
+            &main_cfg_of(&tmp),
+            "rejected-server",
+            "python",
+            None,
+            &[],
+            30,
+        )
+        .expect_err("顶层非对象必须 loud 拒绝");
+        assert!(
+            err.to_string().contains("顶层必须是对象"),
+            "错误信息必须点名顶层形态：{err}"
+        );
+
+        // 拒绝 = 不落盘（坏文件原样保留，用户可自行修复或删除）。
+        let after = std::fs::read_to_string(&cfg).unwrap();
+        assert_eq!(after, broken, "拒绝路径不得改写坏文件");
+    }
+}
+
 // ===========================================================================
 // r10（覆盖率 A 类 miss 补充）：
 // - cmd_list 的「配置存在但无 enabled 键」通路：显式 disabled 早退判否

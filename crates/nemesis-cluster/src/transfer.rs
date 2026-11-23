@@ -69,6 +69,16 @@ const MAX_MANIFEST_FILES: usize = 100_000;
 /// 4 KiB..8 MiB——太小拖死速率限制，太大逼近帧上限）。
 const CHUNK_ENV: &str = "NEMESISBOT_TRANSFER_CHUNK_BYTES";
 
+/// end 组装块数上限。BUG-20261123-042：声明的 chunk_count 只过一致性
+/// 对账（与 sizes/chunk_size 自洽即可），绝对量不受体积护栏间接钳制
+/// （chunk_size=1 + total=2GiB = 2.1e9 块）——plan_chunks 物化计划 Vec
+/// （24B/块）在组装前分配，无界声明 = OOM 面。上限推导：诚实发送方
+/// chunk_size 钳 4KiB..8MiB（resolve_chunk_bytes），默认 2GiB 护栏 ÷ 4KiB
+/// = 524,288 块为诚实上界；4M 留 8 倍余量（覆盖 0=不限配置下 16GiB@4KiB
+/// 的巨型合法传输；4M×24B ≈ 96MB 瞬时物化可控）。更大的合法传输走增大
+/// chunk_size（1MiB 块 16GiB 也只 16k 块）。
+const MAX_ASSEMBLY_CHUNKS: usize = 4_000_000;
+
 /// chunk 大小：env 覆盖 > 默认。每次调用现读（UAT 进程启动前置即可生效）。
 pub fn chunk_bytes() -> usize {
     resolve_chunk_bytes(
@@ -843,6 +853,16 @@ impl TransferSink {
         let begin = read_staging_manifest(&st)
             .ok_or_else(|| format!("staging manifest 缺失（transfer {transfer_id}）"))?;
 
+        // BUG-20261123-042 组装闸（见 MAX_ASSEMBLY_CHUNKS 推导）：在
+        // plan_chunks 物化之前用算术式块数对账拒绝无界声明——0=不限体积
+        // 护栏配置下本闸是组装面唯一绝对上界。
+        let declared_chunks = chunk_count(&begin.files, begin.chunk_size);
+        if declared_chunks > MAX_ASSEMBLY_CHUNKS {
+            return Err(format!(
+                "组装块数 {declared_chunks} 超上限 {MAX_ASSEMBLY_CHUNKS}（chunk_size 过小或清单异常）——请增大 chunk_size 后重传"
+            ));
+        }
+
         // 1. 组装 + 核验到临时 out/ 目录（载荷放 files/ 子层，manifest/回执
         //    在落地根——不污染 inbox，核验过了才落地）。
         let out = st.join("out");
@@ -1155,15 +1175,40 @@ fn read_staging_manifest(dir: &Path) -> Option<TransferBegin> {
 /// （写入侧已改原子写，此处读侧双保险兜住存量/异源
 /// 半块）。长度不符 = 不进 have，sender 重发覆盖自愈。
 fn list_received_chunks(st: &Path, begin: &TransferBegin) -> Vec<usize> {
+    // BUG-20261123-042：旧实现按**远端声明的** chunk_count 逐 seq stat——
+    // 声明值只过 validate_manifest 的算术一致性对账（与 sizes/chunk_size
+    // 自洽即可），绝对量不受体积护栏间接钳制：total=2GiB（护栏 `>` 恰好
+    // 不拦）+ chunk_size=1（只查 `>0`）→ chunk_count=2^31，2.1e9 次
+    // fs::metadata 全打在不存在的路径上 = begin 处理线程挂死数小时/次，
+    // 同参数重发 begin 即可重复触发（0=不限护栏配置下上界 u64::MAX =
+    // 永久挂死）。改为 read_dir 单遍枚举**实际落盘**的 chunk 文件——
+    // O(已收块数)，工作集只由真实传输行为产生；对正常续传语义等价
+    // （不存在的 seq 本来就不在 have 里；resume 要求同 content_hash+
+    // chunk_size，计划一致，不存在声明外的合法 seq）。
     let mut have = Vec::new();
-    for seq in 0..begin.chunk_count {
-        let Ok(meta) = std::fs::metadata(st.join(format!("chunk_{seq:06}.bin"))) else {
+    let Ok(entries) = std::fs::read_dir(st) else {
+        return have;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(seq) = name
+            .strip_prefix("chunk_")
+            .and_then(|s| s.strip_suffix(".bin"))
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            continue; // manifest.json 等非块文件/畸形名不进判定
+        };
+        let Ok(meta) = entry.metadata() else {
             continue;
         };
         if Some(meta.len() as usize) == planned_chunk_len(&begin.files, begin.chunk_size, seq) {
             have.push(seq);
         }
     }
+    have.sort_unstable(); // 升序对齐旧 `0..chunk_count` 顺序（协议形态不变）
     have
 }
 

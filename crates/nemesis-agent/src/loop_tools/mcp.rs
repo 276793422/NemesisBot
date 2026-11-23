@@ -8,7 +8,11 @@ use super::*;
 ///
 /// Connects to an MCP server via stdio or HTTP, performs the handshake, collects
 /// metadata, formats it as markdown, and closes the connection.
-pub struct McpDiscoverTool;
+pub struct McpDiscoverTool {
+    /// BUG-20261123-037：stdio 子进程 cwd 锚点（注册点注入 workspace 根）。
+    /// None = 继承进程 cwd（旧行为）。
+    cwd: Option<std::path::PathBuf>,
+}
 
 impl Default for McpDiscoverTool {
     fn default() -> Self {
@@ -18,7 +22,14 @@ impl Default for McpDiscoverTool {
 
 impl McpDiscoverTool {
     pub fn new() -> Self {
-        Self
+        Self { cwd: None }
+    }
+
+    /// 设置 stdio 子进程 cwd 锚点（BUG-20261123-037：装配期注入 workspace
+    /// 根，相对路径命令不随 gateway 部署形态漂移；None = 旧行为）。
+    pub fn with_cwd(mut self, cwd: Option<std::path::PathBuf>) -> Self {
+        self.cwd = cwd;
+        self
     }
 }
 
@@ -100,6 +111,7 @@ impl Tool for McpDiscoverTool {
                     tool_args,
                     vec![],
                     timeout_secs,
+                    self.cwd.clone(),
                 )
                 .await
             }

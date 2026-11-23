@@ -171,7 +171,11 @@ impl IRCChannel {
     /// Splits a message into lines that fit within IRC line limits.
     pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
         if content.len() <= max_len {
-            return vec![content.to_string()];
+            // BUG-20261123-041：短文快路径此前整段直推——content 内嵌 \n
+            // 会以裸命令形态上线（writer 以 `{line}\r\n` 上 wire，嵌入 \n
+            // 即行框架注入：`hello\nPRIVMSG #evil :x` = 以 bot 身份向 #evil
+            // 发话/QUIT 等）。与下方慢路径同一纪律：\n 处切分、空段跳过。
+            return split_newlines(content);
         }
 
         let mut lines = Vec::new();
@@ -179,7 +183,9 @@ impl IRCChannel {
 
         while !remaining.is_empty() {
             if remaining.len() <= max_len {
-                lines.push(remaining.to_string());
+                // BUG-20261123-041：循环内快路径同款泄漏（短尾段可携带
+                // 慢路径没切到的 \n），同一纪律处理。
+                lines.extend(split_newlines(remaining));
                 break;
             }
 
@@ -238,13 +244,18 @@ impl IRCChannel {
     /// 关联函数形态：连接任务里只有 config 没有 self（注册写与此处
     /// 统一定义，连接循环直接复用，不再 inline 重复）。
     pub fn build_registration(config: &IRCConfig) -> Vec<String> {
+        // BUG-20261123-041：PASS/NICK/USER 载荷直拼行框架 wire——config 值
+        // 含 CR/LF 即成以 bot 身份的命令注入。R737 同款剥除纪律（配置值
+        // 含换行即非法，剥除对齐 imap_quoted / header_safe 既有形态）。
+        let line_safe = |s: &str| s.replace(['\r', '\n'], "");
         let mut commands = Vec::new();
 
         if let Some(ref pass) = config.password {
-            commands.push(format!("PASS {pass}"));
+            commands.push(format!("PASS {}", line_safe(pass)));
         }
-        commands.push(format!("NICK {}", config.nick));
-        commands.push(format!("USER {} 0 * :NemesisBot", config.nick));
+        let nick = line_safe(&config.nick);
+        commands.push(format!("NICK {nick}"));
+        commands.push(format!("USER {nick} 0 * :NemesisBot"));
 
         commands
     }
@@ -678,6 +689,10 @@ impl Channel for IRCChannel {
         } else {
             msg.chat_id
         };
+        // BUG-20261123-041：PRIVMSG 目标含 CR/LF = 行框架注入面
+        // （config.channel 来自配置可含换行；chat_id 出自 wire 解析天然无
+        // CRLF——单点剥除防御两侧，R737 同款剥除纪律）。
+        let target = target.replace(['\r', '\n'], "");
 
         let lines = Self::split_message(&msg.content, 400);
         for line in lines {
@@ -686,6 +701,17 @@ impl Channel for IRCChannel {
 
         Ok(())
     }
+}
+
+/// BUG-20261123-041 共用原语：行框架协议的内容段不允许携带 `\n`——一律在
+/// `\n` 处切分、空段跳过（对齐慢路径 idx 0 空段纪律与
+/// `split_message_utf16` 的 filter(>0) 家族形态）。裸 `\r` 不切：主流
+/// ircd 行帧以 `\r\n`/`\n` 扫描，裸 `\r` 是文本不是终止符。
+fn split_newlines(s: &str) -> Vec<String> {
+    s.split('\n')
+        .filter(|seg| !seg.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn ensure_hash_prefix(channel: &str) -> String {

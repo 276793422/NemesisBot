@@ -498,6 +498,13 @@ impl Forge {
             tracing::warn!(name = %distilled.name, "[Forge] auto_skill: draft name slugified to empty, skipping");
             return None;
         }
+        // Windows 保留设备名闸（BUG-20261123-035）：与 create_skill/工具
+        // 入口同一判定——保留名按既定语义「名字非法 → 跳过」warn 留痕
+        // 返回 None（6h 后下轮反思可能产出不同草稿）。
+        if valid_skill_dir_name(&slug).is_err() {
+            tracing::warn!(name = %slug, "[Forge] auto_skill: draft name is a reserved Windows device name, skipping");
+            return None;
+        }
         // dedup：同名**非降级**产物已存在则跳过（反思 6h 一轮，同题材不
         // 重复出草稿）。 复查（F）：此前 find_by_name 匹配任意
         // 状态——Degraded/Archived 的旧产物也会挡住重蒸馏，与
@@ -1010,6 +1017,12 @@ impl Forge {
         if name.is_empty() {
             return Err("skill name contains no usable characters (need [a-z0-9_-])".into());
         }
+        // Windows 保留设备名闸（BUG-20261123-035）：slugify 对 "nul"/"con"
+        // 等恒等放行——保留名目录创建在 Windows 响亮失败（cryptic OS error
+        // 而非明确拒绝），Linux 上能落盘但跨节点同步到 Windows 侧即成
+        // 不可读死档。围栏统一拒绝（与 web/CLI test/optimize 同一判定），
+        // 覆盖工具执行器之外的全部 caller（learning_engine 蒸馏等）。
+        valid_skill_dir_name(&name)?;
 
         // F-: frontmatter must be at the very start — `contains("---")`
         // treated any Markdown horizontal rule as existing frontmatter and
@@ -1236,8 +1249,14 @@ pub(crate) fn slug_or_placeholder(name: &str) -> String {
 /// 技能目录名合法性围栏（跨入口统一定义）：必须是单段 kebab 目录
 /// 名。`../x` 直拼 join 有穿越面；`C:evil` 盘符相对形态 `is_absolute()==false`
 /// 且无分隔符，但 join 会整段换基座（Windows）；`.`/`..`/空串同理拒。
-/// 合法域 = `slugify_skill_name` 的产物域。web `forge.test` 与 CLI
-/// `forge test` / `forge optimize` 三入口共用同一判定。
+/// Windows 保留设备名族（BUG-20261123-035）：裸名与带扩展名形态（base
+/// 判定）一并拒绝——目录创建响亮失败尚算诚实，但裸名 FILE 写入（script
+/// 型工件 `forge/scripts/{name}`）报成功而数据永不落盘（Win11 实测，见
+/// nemesis-utils sanitize 同族注释）= 静默丢数据；判定复用 nemesis-utils
+/// 22 名单单一真相源（skills installer / image_gen 同源）。合法域 =
+/// `slugify_skill_name` 产物域去除保留设备名。web `forge.test` 与 CLI
+/// `forge test` / `forge optimize` 三入口共用同一判定（版本段消费方
+/// exporter/forge_tools 基底为数字恒不命中，零行为漂移）。
 pub fn valid_skill_dir_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name.contains('/')
@@ -1252,6 +1271,7 @@ pub fn valid_skill_dir_name(name: &str) -> Result<(), String> {
         // 不依赖文件系统行为兜底）。
         || name != name.trim()
         || name.trim_end_matches(['.', ' ']) != name.trim()
+        || nemesis_utils::sanitize::is_windows_reserved_device_base(name)
     {
         return Err(format!("invalid skill name: {name}"));
     }

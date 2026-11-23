@@ -1121,6 +1121,10 @@ pub struct EventWatchManager {
     /// 形态）。None（缺省/测试装配）= never-cancelled 默认令牌，泵 select
     /// 令牌臂恒 pending，行为与旧版逐字节一致。
     terminal: Option<tokio_util::sync::CancellationToken>,
+    /// BUG-20261123-037：command 探测子进程 cwd 锚点（gateway 装配注入
+    /// workspace 根）。None = 继承进程 cwd（旧行为）——gateway 部署形态
+    /// cwd 不可预测，相对路径探测命令随部署形态漂移（false-alert 风险）。
+    working_dir: Option<PathBuf>,
 }
 
 impl EventWatchManager {
@@ -1139,6 +1143,7 @@ impl EventWatchManager {
             probe_rx: Some(probe_rx),
             proc_reader: None,
             terminal: None,
+            working_dir: None,
         }
     }
 
@@ -1162,6 +1167,13 @@ impl EventWatchManager {
     /// 行为与旧版一致。
     pub fn with_terminal_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
         self.terminal = Some(token);
+        self
+    }
+
+    /// command 探测子进程 cwd 锚点（BUG-20261123-037；gateway 装配传
+    /// workspace 根）。None = 继承进程 cwd（旧行为）。
+    pub fn with_working_dir(mut self, working_dir: Option<PathBuf>) -> Self {
+        self.working_dir = working_dir;
         self
     }
 
@@ -1348,7 +1360,8 @@ impl EventWatchManager {
                     for req in st.probe_checks(now_ms(), frozen_now) {
                         let tx = probe_tx.clone();
                         let client = probe_client.clone();
-                        tokio::spawn(run_probe(req, client, tx));
+                        let cwd = self.working_dir.clone();
+                        tokio::spawn(run_probe(req, client, tx, cwd));
                     }
                 }
                 let frozen = (self.is_frozen)();
@@ -1369,11 +1382,12 @@ pub(crate) async fn run_probe(
     req: ProbeRequest,
     client: reqwest::Client,
     tx: tokio::sync::mpsc::Sender<ProbeOutcome>,
+    cwd: Option<PathBuf>,
 ) {
     let (up, detail) = match req.probe_type.as_str() {
         "http" => http_probe(&client, &req.target, req.timeout_secs).await,
         "tcp" => tcp_probe(&req.target, req.timeout_secs).await,
-        "command" => command_probe(&req.target, req.timeout_secs).await,
+        "command" => command_probe(&req.target, req.timeout_secs, cwd.as_deref()).await,
         _ => return,
     };
     let _ = tx
@@ -1413,14 +1427,23 @@ async fn tcp_probe(target: &str, timeout_secs: u64) -> (bool, String) {
 /// command 探测：up = 退出码 0。target 按空白切 program+args（不经 shell；
 /// 带空格路径的引号形态不支持，管理员配置面文档声明）。kill_on_drop：探测
 /// 任务被丢弃（停机）时子进程跟着死，不留孤儿进程。stdio 全 null——探测
-/// 只关心退出码，不给目标进程管道背压机会。
-async fn command_probe(target: &str, timeout_secs: u64) -> (bool, String) {
+/// 只关心退出码，不给目标进程管道背压机会。`cwd`（BUG-20261123-037）=
+/// 装配注入的 workspace 根锚点：相对路径探测命令按它解析，不随 gateway
+/// 部署形态漂移；None = 继承进程 cwd（旧行为）。
+async fn command_probe(
+    target: &str,
+    timeout_secs: u64,
+    cwd: Option<&std::path::Path>,
+) -> (bool, String) {
     let mut parts = target.split_whitespace();
     let Some(program) = parts.next() else {
         return (false, "空命令".to_string());
     };
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(parts);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
     cmd.kill_on_drop(true);
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());

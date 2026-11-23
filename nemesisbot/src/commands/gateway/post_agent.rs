@@ -1323,6 +1323,10 @@ pub(crate) async fn init_post_agent(
         // sweeper）：泵是常驻 timer-park 循环，等待点必须消费进程终态令牌
         // ——Step 24 cancel 后排空窗内不再采样不注入。
         .with_terminal_token(terminal_cancel_token().clone())
+        // command 探测 cwd 锚 workspace 根（BUG-20261123-037）：探测命令
+        // 相对路径按 workspace 解析，不随 gateway 部署形态（终端/托盘自启/
+        // 任务计划的进程 cwd）漂移成 false-alert。
+        .with_working_dir(Some(shared_resources.workspace_dir()))
         // proc 事件源（2026-11-16 事件源扩展 P1）：增量读闭包持
         // background_registry Arc——`output(id, offset)` 公开 API，零 registry
         // 侵入（泵每 ~1s 逐 proc 规则读新增字节 → 正则行匹配）。

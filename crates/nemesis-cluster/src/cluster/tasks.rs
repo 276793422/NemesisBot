@@ -1848,16 +1848,32 @@ impl ClusterPeerResolver {
         };
         let mut addresses = info.addresses.clone();
         // iroh 原子 host 按整串相等去重（`split(':').next()` 对 iroh 形态
-        // 恒得 "iroh"，会把整条重复候选拱进池）。
+        // 恒得 "iroh"，会把整条重复候选拱进池）。IPv6 host 同理按解析后
+        // host 段比对（`split(':').next()` 对 bracketed 形态恒得 "["——
+        // 旧判据恒 miss，同 host 重复入池；BUG-20261123-036 同族）。
+        let host_is_ipv6 = !crate::is_roaming_address(&host) && host.contains(':');
         let host_in_pool = if crate::is_roaming_address(&host) {
             addresses.iter().any(|a| a == &host)
+        } else if host_is_ipv6 {
+            addresses
+                .iter()
+                .any(|a| a == &host || parse_host_port(a).0 == host)
         } else {
             addresses
                 .iter()
                 .any(|a| a.split(':').next() == Some(host.as_str()))
         };
         if !host.is_empty() && !host_in_pool {
-            addresses.push(host);
+            // IPv6 host 回退候选必须落 full `[h]:p` 形态——拨号侧
+            // `contains(':')` 启发式把含冒号候选视为已限定，host-only
+            // bracketed IPv6 会被无端口直拨恒败（见 host_fallback_candidate
+            // 注记；静态 peer 恰恰依赖本回退臂——地址池常为空）。
+            addresses.push(if host_is_ipv6 {
+                let core = host.trim_start_matches('[').trim_end_matches(']');
+                format!("[{core}]:{port}")
+            } else {
+                host.clone()
+            });
         }
 
         if info.base.id == self.node_id {
@@ -1912,13 +1928,63 @@ impl ClusterPeerResolver {
 }
 
 pub(super) fn parse_host_port(addr: &str) -> (String, u16) {
-    if let Some(idx) = addr.rfind(':') {
-        let host = &addr[..idx];
-        let port_str = &addr[idx + 1..];
-        let port = port_str.parse().unwrap_or(DEFAULT_RPC_PORT);
-        (host.into(), port)
+    // BUG-20261123-036：旧形态 rfind(':') 撞上 IPv6 内部冒号——"[::1]:9000"
+    // 侥幸正确（末冒号恰为分隔），但 host-only "[::1]" 拆成 ("[::", DEFAULT)、
+    // 裸 "::1" 拆成 (":", 1)（垃圾 host + 幻影端口）。四臂判据与
+    // is_self_endpoint 同族（bracket 剥离 / ≥2 冒号整体即主机）。
+    // "[IPv6]:port"（bracket + ]: 分隔——host 含 ']' 整体保留，拨号侧
+    // TcpStream::connect 接受 bracketed 形态）。
+    if let Some(idx) = addr.rfind("]:")
+        && addr.starts_with('[')
+    {
+        let host = &addr[..=idx];
+        let port = addr[idx + 2..].parse().unwrap_or(DEFAULT_RPC_PORT);
+        return (host.to_string(), port);
+    }
+    // 纯 "[IPv6]"（无端口）
+    if addr.starts_with('[') && addr.ends_with(']') {
+        return (addr.to_string(), DEFAULT_RPC_PORT);
+    }
+    // 裸 IPv6（≥2 冒号）：整体即主机（无端口信息，同 no-colon 臂落缺省）
+    if addr.matches(':').count() > 1 {
+        return (addr.to_string(), DEFAULT_RPC_PORT);
+    }
+    // host:port / host（IPv4 / 主机名；端口段非法宽松落缺省——announce 池
+    // 条目可能缺端口，lenient 是既有契约，pair.rs 的 strict 版另行负责 loud）
+    match addr.rsplit_once(':') {
+        Some((host, port_str)) => (
+            host.to_string(),
+            port_str.parse().unwrap_or(DEFAULT_RPC_PORT),
+        ),
+        None => (addr.to_string(), DEFAULT_RPC_PORT),
+    }
+}
+
+/// base.address → 地址池拨号候选形态单一真相源（discovery 占位升级两处 +
+/// resolve_dial_candidates host 回退臂共用）。
+///
+/// 拨号侧拼接语义（rpc/client.rs full_addresses）：候选**含冒号即视为已限定
+/// 全形态**原样直拨，不含冒号才拼 rpc_port。故 IPv6 候选必须落 **full
+/// `[h]:p` 形态**——host-only bracketed IPv6（"[::1]"）会被误判为已限定而
+/// 无端口直拨（`invalid socket address` 恒败，静态 IPv6 peer 永不可达）。
+/// 裸 IPv6 补 bracket；iroh 形态整条入池（与 resolve_dial_candidates
+/// roaming 臂同语义——拆 host 只会得到 "iroh" 垃圾候选）。
+pub(super) fn host_fallback_candidate(addr: &str) -> String {
+    if addr.is_empty() {
+        return String::new();
+    }
+    if crate::is_roaming_address(addr) {
+        return addr.to_string();
+    }
+    let (host, port) = parse_host_port(addr);
+    if host.is_empty() {
+        return String::new();
+    }
+    if host.contains(':') {
+        let core = host.trim_start_matches('[').trim_end_matches(']');
+        format!("[{core}]:{port}")
     } else {
-        (addr.into(), DEFAULT_RPC_PORT)
+        host
     }
 }
 

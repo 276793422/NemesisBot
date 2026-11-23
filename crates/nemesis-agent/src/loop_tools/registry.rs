@@ -971,7 +971,13 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // MCP discovery and listing tools.
-    tools.insert("mcp_discover".to_string(), Box::new(McpDiscoverTool::new()));
+    // BUG-20261123-037：mcp_discover stdio 臂 cwd 锚 workspace 根（注册点
+    // 有边界上下文；None = 旧行为）。
+    let mcp_discover_cwd = config.workspace_boundary.as_ref().map(|b| b.root.clone());
+    tools.insert(
+        "mcp_discover".to_string(),
+        Box::new(McpDiscoverTool::new().with_cwd(mcp_discover_cwd)),
+    );
     tools.insert(
         "cli_reference".to_string(),
         Box::new(CliReferenceTool::new()),

@@ -45,6 +45,11 @@ pub struct McpManager {
     /// MCP server 返回 image content 时经槽落盘，`[Image saved: <path>]`
     /// 注记替代旧占位。None = 旧行为（启动默认，装配方显式 set 才启用）。
     image_sink: Option<crate::adapter::McpImageSink>,
+    /// 子进程 cwd 锚点（BUG-20261123-037：gateway agent loop 装配注入
+    /// workspace 根；None = 继承进程 cwd 旧行为）。`discover_tools` 是
+    /// 单一消费点——stdio server 的相对路径命令随 gateway 部署形态
+    /// （终端/托盘自启/任务计划的进程 cwd）漂移的根修。
+    working_dir: Option<PathBuf>,
 }
 
 impl McpManager {
@@ -58,6 +63,7 @@ impl McpManager {
             last_content: None,
             browser_profile: None,
             image_sink: None,
+            working_dir: None,
         };
         if let Err(e) = mgr.load_config() {
             warn!("[McpManager] Failed to load config on init: {}", e);
@@ -75,6 +81,17 @@ impl McpManager {
     /// 当前生效的 per-agent 浏览器 profile（可观测面）。
     pub fn browser_profile(&self) -> Option<&str> {
         self.browser_profile.as_deref()
+    }
+
+    /// 设置子进程 cwd 锚点（BUG-20261123-037；须在 `discover_tools` 之前
+    /// 调用，与 browser profile 同时序约定；None = 继承进程 cwd 旧行为）。
+    pub fn set_working_dir(&mut self, working_dir: Option<PathBuf>) {
+        self.working_dir = working_dir;
+    }
+
+    /// 当前生效的子进程 cwd 锚点（可观测面）。
+    pub fn working_dir(&self) -> Option<&std::path::Path> {
+        self.working_dir.as_deref()
     }
 
     /// 设置图像落盘槽（Phase 5 F1；须在 `discover_tools` 之前调用，
@@ -241,9 +258,12 @@ impl McpManager {
         // ，与 CLI `mcp test/tools/...` 连接路径共用。
         // per-agent 浏览器 profile 随此处注入（opt-in 闸在 transport
         // 侧按 server 配置执行——未 opt-in 的 server 目录在场也不注入）。
-        let mut client: Box<dyn Client> = match McpClient::from_server_config_with_profile(
+        // cwd 锚点随此处注入（BUG-20261123-037）：stdio server 的相对
+        // 路径命令按 workspace 根解析，不随 gateway 部署 cwd 漂移。
+        let mut client: Box<dyn Client> = match McpClient::from_server_config_with_profile_cwd(
             server,
             self.browser_profile.as_deref(),
+            self.working_dir.clone(),
         ) {
             Ok(c) => Box::new(c),
             Err(e) => return Err(e.to_string()),
@@ -357,8 +377,9 @@ pub async fn discover_server_metadata(
     args: Vec<String>,
     env: Vec<String>,
     timeout_secs: u64,
+    cwd: Option<std::path::PathBuf>,
 ) -> Result<DiscoveryResult, String> {
-    let transport = StdioTransport::new(command, args, env);
+    let transport = StdioTransport::new(command, args, env).with_cwd(cwd);
     let mut client: Box<dyn Client> = Box::new(
         McpClient::new(Box::new(transport))
             .with_request_timeout_ms(one_shot_request_timeout_ms(timeout_secs)),
