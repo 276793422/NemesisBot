@@ -19,19 +19,6 @@ version = 2
 # 台账同步维护（每条必须有理由 + 复查条件）。注意 deny 扫激活依赖图而
 # cargo-audit 扫 lockfile 全集，两道闸互补（见台账 §3.1 双闸差异教训）。
 ignore = [
-  # ===== 无升级路径的 unmaintained（全部为编译期/构建期依赖，无运行时不可信输入暴露）=====
-  # gtk3-rs 全家（2024 年归档，RUSTSEC-2024-0412/0413/0415/0416/0418/0419/0420）。
-  # 传递链：tray-icon → libappindicator → gtk 0.18（Linux 系统托盘）。项目已显式
-  # 决策保留 GTK3 托盘方案（GMenuModel 迁移因多数面板不支持被否决，ksni 迁移也已
-  # 否决，见 docs/INFO/2026-06-10_ksni-tray-migration.md）。上游 gtk3-rs 永不再发
-  # 版，等 tray-icon 生态整体迁移 gtk4 才可移除本组豁免。
-  { id = "RUSTSEC-2024-0412", reason = "gtk3-rs archived (gdk); Linux tray stack, deliberate GTK3 retention decision" },
-  { id = "RUSTSEC-2024-0413", reason = "gtk3-rs archived (gdk-sys); Linux tray stack, deliberate GTK3 retention decision" },
-  { id = "RUSTSEC-2024-0415", reason = "gtk3-rs archived (gtk3-macros); Linux tray stack, deliberate GTK3 retention decision" },
-  { id = "RUSTSEC-2024-0416", reason = "gtk3-rs archived (gtk); Linux tray stack, deliberate GTK3 retention decision" },
-  { id = "RUSTSEC-2024-0418", reason = "gtk3-rs archived (gdkx11); Linux tray stack, deliberate GTK3 retention decision" },
-  { id = "RUSTSEC-2024-0419", reason = "gtk3-rs archived (gdkwayland-sys); Linux tray stack, deliberate GTK3 retention decision" },
-  { id = "RUSTSEC-2024-0420", reason = "gtk3-rs archived (atk); Linux tray stack, deliberate GTK3 retention decision" },
   # proc-macro-error 维护者失联（RUSTSEC-2024-0370）。传递链：glib-macros 0.18
   # （gtk3-rs 生态，Linux 托盘链）——随 gtk3-rs 豁免一并处置；纯 proc-macro，
   # 只在编译期展开宏，无运行时暴露。上游 glib 0.20+ 已换 proc-macro-error2。
