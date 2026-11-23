@@ -132,10 +132,25 @@ pub async fn assemble(home: &Path) -> Result<McpServeAssembly, String> {
         if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
             let memory_data_dir = home.join("workspace").join("memory_vector");
             let config_dir = home.join("workspace").join("config");
-            let mgr = Arc::new(nemesis_memory::manager::MemoryManager::with_config_dir(
-                &memory_data_dir,
-                &config_dir,
-            ));
+            // R2590（异步上下文阻塞调用面）：与 gateway ctx.rs 同款——
+            // with_config_dir 首次启用且模型缺失时同步下载 embedding 模型
+            //（最长 600s/文件），async 装配路径直接调用会阻塞 tokio worker
+            // 整个下载窗口。移入 spawn_blocking；JoinError = 初始化 panic，
+            // 按原语义上抛终止装配。
+            let mgr = Arc::new(
+                tokio::task::spawn_blocking({
+                    let memory_data_dir = memory_data_dir.clone();
+                    let config_dir = config_dir.clone();
+                    move || {
+                        nemesis_memory::manager::MemoryManager::with_config_dir(
+                            &memory_data_dir,
+                            &config_dir,
+                        )
+                    }
+                })
+                .await
+                .map_err(|e| format!("memory manager init panicked: {e}"))?,
+            );
             // #47 记忆投毒隔离：与 gateway ctx 同源双信号内容闸（MCP 出口
             // 不是安全旁路——memory_write 同样要过隔离扫描）。
             #[cfg(feature = "security")]

@@ -1426,11 +1426,26 @@ impl GatewayCtx {
             if onnx_allowed && memory_enabled {
                 let memory_data_dir = home.join("workspace").join("memory_vector");
                 let config_dir = home.join("workspace").join("config");
-                let mgr =
-                    std::sync::Arc::new(nemesis_memory::manager::MemoryManager::with_config_dir(
-                        &memory_data_dir,
-                        &config_dir,
-                    ));
+                // R2590（异步上下文阻塞调用面）：with_config_dir 在首次启用
+                // 且模型文件缺失时同步下载 embedding 模型（reqwest::blocking，
+                // 单文件总超时 600s / 帽 2GB）——此前直接在 async 装配路径
+                // 调用，tokio worker 线程被阻塞整个下载窗口且无进度提示。
+                // 移入 spawn_blocking：下载在阻塞线程池跑，assemble 所在
+                // worker 照常调度；JoinError = 初始化 panic，按原语义上抛
+                // 终止装配。
+                let mgr = tokio::task::spawn_blocking({
+                    let memory_data_dir = memory_data_dir.clone();
+                    let config_dir = config_dir.clone();
+                    move || {
+                        nemesis_memory::manager::MemoryManager::with_config_dir(
+                            &memory_data_dir,
+                            &config_dir,
+                        )
+                    }
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("memory manager init panicked: {e}"))?;
+                let mgr = std::sync::Arc::new(mgr);
                 // #47 记忆投毒隔离：写入前双信号扫描（注入检测 + eval 规则），
                 // 可疑记忆入库隔离留取证（W2 批三）。
                 #[cfg(all(feature = "memory", feature = "security"))]

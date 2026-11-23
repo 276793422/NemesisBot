@@ -2313,3 +2313,14 @@ async fn delete_paths_run_outside_vector_store_guard() {
     let removed = mgr.cleanup_episodic(5).await.unwrap();
     assert_eq!(removed, 1, "cleanup_episodic 应删掉 10 天前的 episode");
 }
+
+/// R2590 回归锁：MemoryManager 必须 `Send + 'static`——gateway ctx.rs /
+/// mcp_serve.rs 的装配路径已把 with_config_dir（首启用时含最长 600s/文件
+/// 的同步模型下载）移入 `tokio::task::spawn_blocking`，该约束是编译期
+/// 前提。此前为纯同步调用无此要求；若未来给 manager 加非 Send 字段，
+/// 本断言在编译期失败，防止有人「顺手」改回 async 路径直调形态。
+#[test]
+fn r2590_memory_manager_is_send_and_static() {
+    fn assert_send_static<T: Send + 'static>() {}
+    assert_send_static::<crate::manager::MemoryManager>();
+}
