@@ -918,6 +918,84 @@ fn test_is_unsafe_rel_path() {
     assert!(!is_unsafe_rel_path("a..b.txt"));
     assert!(!is_unsafe_rel_path("SKILL.md"));
     assert!(!is_unsafe_rel_path("sub/dir/file.md"));
+    // BUG-20261124-001：Windows 文件名怪癖类（rustc 实证 Win11 26300）。
+    // ADS 冒号语法——任何位置的冒号都拒（`a.txt:ads` 写「成功」进备用
+    // 数据流，主流长度 0、正常枚举不可见）。
+    assert!(is_unsafe_rel_path("a.txt:ads"));
+    assert!(is_unsafe_rel_path("dir/file:hidden.exe"));
+    assert!(is_unsafe_rel_path("x:y/z.txt"));
+    // 保留设备名——`NUL` 写「成功」不产生文件（静默缺件）；带扩展名
+    // 同拒（Win32 语义：stem 命中即保留）。
+    assert!(is_unsafe_rel_path("NUL"));
+    assert!(is_unsafe_rel_path("nul.txt"));
+    assert!(is_unsafe_rel_path("CON"));
+    assert!(is_unsafe_rel_path("COM1"));
+    assert!(is_unsafe_rel_path("lpt9.bak"));
+    assert!(is_unsafe_rel_path("dir/NUL/readme.md"));
+    // 保留名误伤面：stem 不精确命中的普通名放行。
+    assert!(!is_unsafe_rel_path("null.txt"));
+    assert!(!is_unsafe_rel_path("console.md"));
+    assert!(!is_unsafe_rel_path("com1x"));
+    assert!(!is_unsafe_rel_path("com.note"));
+}
+
+/// BUG-20261124-001 行为级：extract_zip 对 ADS 冒号条目整包拒绝（不再
+/// 写「成功」落进备用数据流——rustc 实证主流不可见、读回流才见载荷）。
+#[test]
+fn test_extract_zip_rejects_ads_colon_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("dest");
+    let zip_path = dir.path().join("ads.zip");
+    {
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("virus/scan.txt:ads", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"PAYLOAD").unwrap();
+        writer.finish().unwrap();
+    }
+    let err = extract_zip(
+        zip_path.to_string_lossy().as_ref(),
+        dest.to_string_lossy().as_ref(),
+    )
+    .unwrap_err();
+    assert!(err.contains("zip slip detected"), "{err}");
+    // 主流与任何落盘产物都不允许出现。
+    assert!(
+        !dest.join("virus").exists(),
+        "冒号条目必须整体拒绝，不得产生部分落盘"
+    );
+}
+
+/// BUG-20261124-001：[`sanitize_windows_entry_name`] 净化单测——冒号与
+/// 保留名不消失（扫描内容必须照收），只改形。
+#[test]
+fn test_sanitize_windows_entry_name() {
+    use super::sanitize_windows_entry_name;
+    // ADS 冒号 → 下划线（内容保留、落盘名合法）。
+    assert_eq!(
+        sanitize_windows_entry_name(std::path::Path::new("virus/scan.txt:ads")),
+        std::path::Path::new("virus/scan.txt_ads")
+    );
+    // 保留设备名 → 前缀下划线（带扩展名同改）。
+    assert_eq!(
+        sanitize_windows_entry_name(std::path::Path::new("NUL")),
+        std::path::Path::new("_NUL")
+    );
+    assert_eq!(
+        sanitize_windows_entry_name(std::path::Path::new("dir/nul.txt")),
+        std::path::Path::new("dir/_nul.txt")
+    );
+    // 普通名逐字节不变；非 Normal 组件（穿越已被上游 enclosed_name 拦，
+    // 此处保形透传）原样保留。
+    assert_eq!(
+        sanitize_windows_entry_name(std::path::Path::new("ok/file.md")),
+        std::path::Path::new("ok/file.md")
+    );
+    assert_eq!(
+        sanitize_windows_entry_name(std::path::Path::new("null.txt")),
+        std::path::Path::new("null.txt")
+    );
 }
 
 /// extract_zip 消费词法闸：`..` 条目整包拒绝（旧子串兜底已覆盖，钉住不回退）。

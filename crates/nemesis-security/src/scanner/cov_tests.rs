@@ -656,3 +656,44 @@ fn extract_zip_archive_capped_rejects_bomb_and_cleans_partial() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// BUG-20261124-001 行为级：扫描提取对 ADS 冒号/保留设备名条目**净化落盘
+// 而非拒绝跳过**——扫描的目的就是把内容交给 ClamAV，拒绝/跳过会给恶意
+// 归档留「坏名字条目逃过扫描」的口子。rustc 实证：`a.txt:ads` 落进备用
+// 数据流（主流不可见）、`NUL` 写「成功」不产生文件（静默缺件）。
+#[test]
+fn extract_zip_archive_capped_sanitizes_ads_and_reserved_entry_names() {
+    let bytes = zip_bytes(&[
+        ("virus/scan.txt:ads", b"ads-payload" as &[u8]),
+        ("NUL", b"nul-payload"),
+        ("ok.txt", b"normal-content"),
+        ("sub/../../../evil.txt", b"escape-attempt"),
+    ]);
+    let dir = temp_dir("extract-sanitize");
+    let zip_file = dir.join("evil.zip");
+    std::fs::write(&zip_file, &bytes).unwrap();
+    let dest = dir.join("out");
+    super::extract_zip_archive_capped(&zip_file, &dest, 4 * 1024 * 1024).unwrap();
+
+    // 冒号条目 → 净化名落盘、内容完整（照扫，不进 ADS）。
+    let ads = dest.join("virus").join("scan.txt_ads");
+    assert_eq!(
+        std::fs::read(&ads).unwrap(),
+        b"ads-payload",
+        "ADS 名净化后内容必须照扫"
+    );
+    // 保留设备名 → 前缀下划线（不再写「成功」缺件）。
+    let nul = dest.join("_NUL");
+    assert_eq!(std::fs::read(&nul).unwrap(), b"nul-payload");
+    // 普通名逐字节不变（阳性对照）。
+    let ok = dest.join("ok.txt");
+    assert_eq!(std::fs::read(&ok).unwrap(), b"normal-content");
+    // 穿越条目在 None 臂复判后仍跳过（zip-slip 语义不变，净化名含 `..`
+    // 被统一词法闸拒绝）——dest 外不得出现逃逸文件。
+    assert!(
+        !dir.join("evil.txt").exists(),
+        "穿越条目必须继续被跳过，不得逃出 dest"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -5,7 +5,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use zip::ZipArchive;
 
@@ -159,8 +159,74 @@ pub fn is_unsafe_rel_path(rel: &str) -> bool {
     if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
         return true; // Windows 盘符前缀（"C:/x"、"C:\x"），跨平台一致拒绝
     }
-    p.components()
-        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    p.components().any(|c| match c {
+        std::path::Component::Normal(os) => {
+            let s = os.to_string_lossy();
+            // BUG-20261124-001：Windows 文件名怪癖也是 Normal 组件，
+            // 上面的组件检查放行——必须显式拒。rustc 实证（Win11
+            // 26300，`std::fs` 直通 CreateFileW）：
+            // - 条目名含冒号 → 写进 NTFS 备用数据流（`a.txt:ads`
+            //   写「成功」且回读 PAYLOAD，主流 `a.txt` 长度 0，正常
+            //   枚举不可见）；
+            // - 保留设备名 `NUL` → 写「成功」但不产生真实文件
+            //   （静默缺件）；`CON`/`COM1` 在 Win11 落成真实文件
+            //   （老设备劫持不可达，保留名拒绝对齐
+            //   `sanitize_path_segment` 同仓先例，Linux 合法名在
+            //   跨平台归档里本就必坏——拒绝是诚实形态）。
+            s.contains(':') || is_windows_reserved_stem(&s)
+        }
+        _ => true,
+    })
+}
+
+/// Windows 保留设备名主干判定（首 `.` 前的 stem，大小写不敏感）。
+fn is_windows_reserved_stem(comp: &str) -> bool {
+    let stem = comp.split('.').next().unwrap_or("").to_ascii_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+/// [`is_unsafe_rel_path`] 所拒形态的**净化版**（`:` → `_`，保留设备名
+/// 前缀 `_`），供「内容必须照收不能拒绝」的位点（scanner 扫描提取）
+/// 使用：拒绝/跳过会给恶意归档留「坏名字条目逃过扫描」的口子，净化
+/// 落盘名则内容照扫、不进 ADS、不静默缺件。
+pub fn sanitize_windows_entry_name(rel: &Path) -> PathBuf {
+    rel.components()
+        .map(|c| match c {
+            std::path::Component::Normal(os) => {
+                let s = os.to_string_lossy().replace(':', "_");
+                if is_windows_reserved_stem(&s) {
+                    PathBuf::from(format!("_{s}"))
+                } else {
+                    PathBuf::from(s)
+                }
+            }
+            other => PathBuf::from(other.as_os_str()),
+        })
+        .collect()
 }
 
 /// Create a ZIP file from all files in a source directory.

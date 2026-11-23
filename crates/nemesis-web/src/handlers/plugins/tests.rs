@@ -268,3 +268,67 @@ async fn dispatch_set_metrics_enabled_flips_and_roundtrips() {
         .unwrap_err();
     assert!(err.contains("enabled"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261124-001 行为级：devkit 解包条目名统一词法闸（ADS 冒号/保留设备
+// 名拒绝）。extract_zip_root_stripped 是 plugins-wasm 门控函数——测试同门控。
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "plugins-wasm")]
+mod bug20261124_001_tests {
+    // 不 glob 导入 super——函数按 `super::` 显式路径引用（clippy unused）。
+
+    fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut w = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, data) in entries {
+            w.start_file(*name, opts).unwrap();
+            std::io::Write::write_all(&mut w, data).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn devkit_extract_rejects_ads_colon_entry() {
+        // `dir/file.txt:ads` 形态（rustc 实证：写「成功」落进备用数据流，
+        // 主流不可见）——统一词法闸必须整包拒绝。
+        let bytes = zip_bytes(&[("devkit/dir/file.txt:ads", b"PAYLOAD")]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        let err = super::extract_zip_root_stripped(&bytes, &dest).unwrap_err();
+        assert!(err.contains("路径不合法"), "{err}");
+        assert!(
+            !dest.join("dir").exists(),
+            "冒号条目必须整体拒绝，不得部分落盘"
+        );
+    }
+
+    #[test]
+    fn devkit_extract_rejects_reserved_device_entry() {
+        // `NUL` 写「成功」不产生文件（静默缺件）——保留名必须前置拒绝。
+        let bytes = zip_bytes(&[("devkit/NUL", b"x")]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        let err = super::extract_zip_root_stripped(&bytes, &dest).unwrap_err();
+        assert!(err.contains("路径不合法"), "{err}");
+    }
+
+    #[test]
+    fn devkit_extract_normal_entries_still_land() {
+        // 阳性对照：普通条目照常剥根目录落盘（闸不误伤合法包）。
+        let bytes = zip_bytes(&[
+            ("wasm-plugin-devkit/README.md", b"readme"),
+            ("wasm-plugin-devkit/src/lib.rs", b"lib code"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        let n = super::extract_zip_root_stripped(&bytes, &dest).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(std::fs::read(dest.join("README.md")).unwrap(), b"readme");
+        assert_eq!(
+            std::fs::read(dest.join("src").join("lib.rs")).unwrap(),
+            b"lib code"
+        );
+    }
+}

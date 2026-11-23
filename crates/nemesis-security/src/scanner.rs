@@ -900,7 +900,29 @@ fn extract_zip_archive_capped(
 
         let outpath = match entry.enclosed_name() {
             Some(path) => dest_dir.join(path),
-            None => continue,
+            None => {
+                // BUG-20261124-001：enclosed_name 在 Windows 对 ADS 冒号
+                // 语法/保留设备名返回 None（zip 9.7
+                // `is_windows_invalid_component`——rustc 实证 `a.txt:ads`
+                // 落进备用数据流、`NUL` 写「成功」不产生文件），Unix 上只
+                // 拒穿越类。直接 continue 会让坏名字条目的**内容逃过
+                // ClamAV 扫描**（恶意归档可用 `virus/scan.txt:ads` 形态藏
+                // 载荷）——对净化名过统一词法闸复判：穿越/绝对类仍不落
+                // 盘（zip-slip 语义不变）；仅 Windows 怪癖类净化落盘
+                // （`:`→`_`、保留名前缀 `_`），内容照扫、不进 ADS、不缺件。
+                let raw = match entry.name() {
+                    Ok(n) => n,
+                    Err(_) => continue, // 名字不可解码：无法安全落盘，跳过
+                };
+                let sanitized = nemesis_utils::zip_util::sanitize_windows_entry_name(
+                    std::path::Path::new(raw.as_ref()),
+                );
+                let sanitized_str = sanitized.to_string_lossy();
+                if nemesis_utils::zip_util::is_unsafe_rel_path(sanitized_str.as_ref()) {
+                    continue;
+                }
+                dest_dir.join(sanitized)
+            }
         };
 
         if entry.is_dir() {

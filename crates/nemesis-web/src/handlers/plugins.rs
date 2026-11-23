@@ -345,7 +345,10 @@ impl Default for PluginsHandler {
 
 /// 解包 devkit zip 到 `dest`，剥掉zip 内根目录段（`wasm-plugin-devkit/…`
 /// → `dest/…`）。zip-slip 防护：路径段含 `..`、绝对形态（`/` 开头或
-/// Windows 盘符前缀）一律诚实拒绝。目录条目懒建——只落文件，父目录
+/// 解包 devkit zip 到 `dest`，剥掉zip 内根目录段（`wasm-plugin-devkit/…`
+/// → `dest/…`）。zip-slip 防护：条目相对名过统一词法闸
+/// [`is_unsafe_rel_path`]（`..`/绝对/盘符 + ADS 冒号/保留设备名，
+/// BUG-20261124-001）一律诚实拒绝。目录条目懒建——只落文件，父目录
 /// 逐级 create_dir_all。返回写入的文件数。
 #[cfg(feature = "plugins-wasm")]
 fn extract_zip_root_stripped(bytes: &[u8], dest: &std::path::Path) -> Result<usize, String> {
@@ -371,17 +374,10 @@ fn extract_zip_root_stripped(bytes: &[u8], dest: &std::path::Path) -> Result<usi
             continue; // 根目录条目本身
         }
         let rel_path = std::path::PathBuf::from(rel.replace('\\', "/"));
-        // zip-slip：显式逐段检查（starts_with 词法比较之外再拦 `..` 与
-        // 前缀/绝对形态——包名是攻击者可控的，不能只信词法前缀）。
-        let mut suspect = rel_path.is_absolute() || has_drive_prefix(&rel_path);
-        for comp in rel_path.components() {
-            match comp {
-                std::path::Component::ParentDir => suspect = true,
-                std::path::Component::RootDir | std::path::Component::Prefix(_) => suspect = true,
-                _ => {}
-            }
-        }
-        if suspect {
+        // zip-slip：统一词法闸 [`is_unsafe_rel_path`]（绝对/盘符/非 Normal
+        // 组件 + ADS 冒号语法与保留设备名——BUG-20261124-001 rustc 实证；
+        // 包名是攻击者可控的，不能只信词法前缀）。
+        if nemesis_utils::zip_util::is_unsafe_rel_path(rel) {
             return Err(format!("ZIP 条目路径不合法（疑似路径穿越）：{raw}"));
         }
         let out = dest_canonical.join(&rel_path);
@@ -401,14 +397,6 @@ fn extract_zip_root_stripped(bytes: &[u8], dest: &std::path::Path) -> Result<usi
         written += 1;
     }
     Ok(written)
-}
-
-/// Windows 盘符前缀检测（`C:` / `C:\` 形态——Path::is_absolute 在
-/// Windows 对 `C:foo` 相对盘符路径返回 false，但落盘仍会跳出 dest）。
-#[cfg(feature = "plugins-wasm")]
-fn has_drive_prefix(p: &std::path::Path) -> bool {
-    use std::path::Component::*;
-    matches!(p.components().next(), Some(Prefix(_)))
 }
 
 #[async_trait::async_trait]
