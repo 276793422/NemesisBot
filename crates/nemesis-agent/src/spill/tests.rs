@@ -541,3 +541,80 @@ fn cleanup_expired_huge_retention_days_keeps_fresh_files() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261124-002：save_tool_output 并行批同名覆盖防回——web.rs 的
+// call_id=`web_fetch_{host}` 不含调用唯一成分，并行批同 host 同毫秒完成
+// 时 File::create 截断覆盖先写者 → 读回串台零报错。修=create_new 原子
+// 防覆盖 + AlreadyExists 递增 _N 后缀 + 返回实际路径。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_save_tool_output_same_name_second_gets_unique_suffix_no_clobber() {
+    let root = temp_root("collide");
+    // 同参数（同会话/同戳/同 call_id——并行批同 host 同毫秒形态）连存两次。
+    let first = save_tool_output(
+        "first-payload",
+        &root,
+        "sess",
+        "20260821_000000_001",
+        "web_fetch_example.com",
+    )
+    .unwrap();
+    let second = save_tool_output(
+        "second-payload",
+        &root,
+        "sess",
+        "20260821_000000_001",
+        "web_fetch_example.com",
+    )
+    .unwrap();
+
+    // 首存无后缀（路径形态不变，阳性对照）；再存递增 _1。
+    assert!(
+        first.ends_with("20260821_000000_001_web_fetch_example.com.txt"),
+        "{first:?}"
+    );
+    assert!(
+        second.ends_with("20260821_000000_001_web_fetch_example.com_1.txt"),
+        "{second:?}"
+    );
+    // 互不覆盖：两份内容各自完整（旧实现 second 会截断覆盖 first）。
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "first-payload");
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "second-payload");
+
+    // 三连存落 _2（递增链）。注意 ends_with 是组件级匹配：短后缀 "_2.txt"
+    // 会被当成独立路径组件（恒 false），必须用完整文件名组件。
+    let third = save_tool_output(
+        "third-payload",
+        &root,
+        "sess",
+        "20260821_000000_001",
+        "web_fetch_example.com",
+    )
+    .unwrap();
+    assert!(
+        third.ends_with("20260821_000000_001_web_fetch_example.com_2.txt"),
+        "{third:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&third).unwrap(), "third-payload");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_save_tool_output_distinct_call_ids_unchanged_paths() {
+    // 不同 call_id（正常路径）不吃后缀——防覆盖逻辑不改变既有命名形态。
+    let root = temp_root("distinct");
+    let a = save_tool_output("a", &root, "sess", "20260821_000000_001", "run_checks_all").unwrap();
+    let b = save_tool_output("b", &root, "sess", "20260821_000000_001", "run_checks_rust").unwrap();
+    assert!(
+        a.ends_with("20260821_000000_001_run_checks_all.txt"),
+        "{a:?}"
+    );
+    assert!(
+        b.ends_with("20260821_000000_001_run_checks_rust.txt"),
+        "{b:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

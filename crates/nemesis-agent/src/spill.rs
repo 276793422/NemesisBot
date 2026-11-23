@@ -127,14 +127,55 @@ pub fn save_tool_output(
     call_id: &str,
 ) -> Result<PathBuf, String> {
     let path = spill_path(spill_root, session_key, stamp, call_id);
+    // owned 化——后续 path 被 `let mut` 接管改名重试，dir 不再借它。
     let dir = path
         .parent()
-        .ok_or_else(|| "spill path has no parent".to_string())?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("create spill dir failed: {e}"))?;
-    let mut file = std::fs::File::create(&path).map_err(|e| format!("create spill failed: {e}"))?;
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("write spill failed: {e}"))?;
-    Ok(path)
+        .ok_or_else(|| "spill path has no parent".to_string())?
+        .to_path_buf();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create spill dir failed: {e}"))?;
+    // BUG-20261124-002：并行工具批内多个 web_fetch 同 host 同毫秒完成 →
+    // `{stamp}_web_fetch_{host}.txt` 同名，`File::create` 截断**覆盖**先
+    // 写者内容 → 先写者回灌消息里的 locator 指向被换掉的文件，读回串台
+    // 且零报错（web.rs 的 call_id=`web_fetch_{host}` 不含调用唯一成分，
+    // 与 `spill_tool_result` 用 tool_use id 的自动 spill 路径不同）。
+    // `create_new` 原子防覆盖（存在即失败，TOCTOU 免疫），AlreadyExists
+    // 递增 `_N` 后缀重试，返回**实际**路径——回灌端用返回值指路，读回
+    // 端天然一致。
+    let original_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let stem = original_name
+        .strip_suffix(".txt")
+        .unwrap_or(&original_name)
+        .to_string();
+    let mut path = path;
+    for attempt in 0..100u32 {
+        if attempt > 0 {
+            path = dir.join(format!("{stem}_{attempt}.txt"));
+        }
+        match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                return file
+                    .write_all(content.as_bytes())
+                    .map(|_| path.clone())
+                    .map_err(|e| {
+                        // 半截残件比覆盖更糟（locator 指向截断文件）——对齐
+                        // `spill_tool_result` 的写败清理语义。
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(&path);
+                        format!("write spill failed: {e}")
+                    });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("create spill failed: {e}")),
+        }
+    }
+    Err("spill name collision persisted after 100 attempts".to_string())
 }
 
 /// retention cleanup: delete spill files older than `retention_days`
