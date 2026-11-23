@@ -66,14 +66,16 @@ pub(crate) struct TurnState {
     pub(crate) steer_exempt_rounds: u32,
     /// L2：break 点记录的终端原因（turn_end 边界标记不再靠文案嗅探）。
     pub(crate) terminal_reason: Option<&'static str>,
-    /// K2 (U14)：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
-    /// （fail-open，与 MAX_LLM_HOOK_RETRIES 同纪律）。
+    /// K2 (U14)：turn-end 钩子（Stop 方言）续命计数；预算 = config
+    /// `agents.turn_end_continues`（缺省 2=旧常量行为；**显式 0=不限
+    /// opt-in**）；有限帽耗尽 → 仍停（fail-open，与 MAX_LLM_HOOK_RETRIES
+    /// 同纪律）。
     pub(crate) turn_end_continues: u32,
     /// K2 扩展（提示词型钩子 / LLM 执行体）：turn-end 钩子返回
     /// [`crate::hooks::TurnEndDecision::Inject`] 时暂存的提示词。turn 照常
     /// 收尾（Done 照发、checkpoint 照落），`run_llm_loop` 在
     /// [`Self::finalize_turn`] 之后把它作为新的用户消息注入会话开启全新
-    /// 一轮。**不受 [`MAX_TURN_END_CONTINUES`]** 约束——永续是钩点正常执行
+    /// 一轮。**不受 `agents.turn_end_continues` 拦停预算约束**——永续是钩点正常执行
     /// 的自然副作用（每轮结束 Stop 钩点触发 → 注入 → 新轮 → 再触发）；
     /// estop/取消打断 turn 走非 Accept 路径，本字段保持 None，循环自然停。
     pub(crate) pending_prompt_inject: Option<String>,
@@ -855,8 +857,10 @@ impl AgentLoop {
                     // is recorded, before the Done event. `Continue`
                     // injects the hook feedback as a user message and
                     // grants one more round, bounded by
-                    // MAX_TURN_END_CONTINUES (exhausted → stop anyway,
-                    // fail-open). Only the normal Accept path fires —
+                    // `agents.turn_end_continues` (default 2 = legacy
+                    // const behavior; explicit 0 = unlimited opt-in;
+                    // finite cap exhausted → stop anyway, fail-open).
+                    // Only the normal Accept path fires —
                     // heartbeat (its own branch above), GiveUp and
                     // error/stop paths do not.
                     //
@@ -880,24 +884,42 @@ impl AgentLoop {
                             };
                             match crate::hooks::run_turn_end_hooks(&lifecycle, &end).await {
                                 crate::hooks::TurnEndDecision::Continue { feedback } => {
-                                    if st.turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES
-                                    {
+                                    // 持续性预算（2026-11-23 拍板二次修订）：
+                                    // `agents.turn_end_continues` 世代快照读
+                                    // （改键下轮生效），缺省 2 = 修复前硬编码
+                                    // 常量行为（兼容老版本）；**显式 0 = 不限
+                                    // （opt-in 新特性）**；显式 N>0 = 拦 N 次，
+                                    // 第 N+1 次停车 fail-open 放行（防钩子故障
+                                    // 把会话钉死在续轮）。无上限时的兜底上界是
+                                    // max_tool_iterations 迭代闸（每轮迭代都计数，
+                                    // 到顶 grace+暂停；2026-11-23 起缺省 0=不限，
+                                    // 迭代闸仅在显式配置非 0 时存在，常驻护栏 =
+                                    // turn_guard 循环检测 + estop）。
+                                    let cap = self.current_turn_end_continues();
+                                    if cap == 0 || st.turn_end_continues < cap {
                                         st.turn_end_continues += 1;
-                                        info!(
-                                            "[AgentLoop] turn-end hook blocked stopping \
-                                             ({}/{}, session '{}') — one more round",
-                                            st.turn_end_continues,
-                                            crate::hooks::MAX_TURN_END_CONTINUES,
-                                            context.session_key
-                                        );
+                                        if cap == 0 {
+                                            info!(
+                                                "[AgentLoop] turn-end hook blocked stopping \
+                                                 (continue #{}, unlimited, session '{}') — \
+                                                 one more round",
+                                                st.turn_end_continues, context.session_key
+                                            );
+                                        } else {
+                                            info!(
+                                                "[AgentLoop] turn-end hook blocked stopping \
+                                                 ({}/{}, session '{}') — one more round",
+                                                st.turn_end_continues, cap, context.session_key
+                                            );
+                                        }
                                         instance.add_user_message(&feedback);
                                         return Some(TurnFlow::Continue);
                                     }
                                     warn!(
                                         "[AgentLoop] turn-end hook keeps blocking stop after {} \
-                                         continues; stopping anyway (fail-open), session '{}'",
-                                        crate::hooks::MAX_TURN_END_CONTINUES,
-                                        context.session_key
+                                         continues (agents.turn_end_continues); stopping anyway \
+                                         (fail-open), session '{}'",
+                                        cap, context.session_key
                                     );
                                 }
                                 crate::hooks::TurnEndDecision::Inject { prompt } => {

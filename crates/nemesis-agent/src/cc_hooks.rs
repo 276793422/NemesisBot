@@ -12,7 +12,7 @@
 //! | `UserPromptSubmit` | [`LifecycleHook::on_user_prompt`]（在消息进 history 之前） | exit 2 → 拦下 prompt（模型永远看不到）；exit 0 → 观察（stdout 只记日志，**不**注入上下文——诚实边界，见下） |
 //! | `PreToolUse` | [`ToolHook::pre_tool_use`]（security 固定闸之后） | exit 2 / JSON `{"decision":"block"}` → Block（stderr 作 reason 回灌模型） |
 //! | `PostToolUse` | [`ToolHook::post_tool_use`]（Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（反馈给模型；不撤销已执行的操作） |
-//! | `Stop` | [`LifecycleHook::on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`MAX_TURN_END_CONTINUES` 封顶 fail-open）；`stop_hook_active` 标志随第二次起置 true |
+//! | `Stop` | [`LifecycleHook::on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`agents.turn_end_continues` 封顶，缺省 2=旧常量行为、显式 0=不限 opt-in；有限帽耗尽 fail-open）；`stop_hook_active` 标志随第二次起置 true |
 //! | `SubagentStart` | [`CcHookBridge::dispatch_subagent_start`]（spawn 闭包内、`run_detached` 前——**仅本地 spawn 的子代理**；内部 LLM 委托如评审/冲突解决不发） | exit 2 / JSON block → **拒绝 spawn**（SpawnFn 返 Err，子代理不启动） |
 //! | `SubagentStop` | [`CcHookBridge::dispatch_subagent_stop`]（spawn 闭包内、detached 轮次返回/后台任务完成处） | 观察型（任务已跑完，exit 2 无阻断语义——响亮 warn 记录） |
 //! | `Notification` | [`CcHookBridge::dispatch_notification`]（审批/提问边界 fire-and-forget）+ [`ObservingQuestionAsker`]（loop 提问端装饰）+ `ObservingApprovalManager`（security 审批 manager 装饰） | **纯观察型**（exit 2 无任何阻断语义——通知已发出，outcome 由真实装配端决定）；覆盖面诚实边界见两包装器文档 |
@@ -1262,7 +1262,8 @@ pub struct CcHookBridge {
     /// SessionStart 只跑一次的判重（session_key → 已）。
     seen_sessions: Mutex<HashSet<String>>,
     /// 每 session 的 Stop 连续阻断计数（`stop_hook_active` 来源；正常
-    /// Stop 时清除）。真正的轮次封顶在 loop 侧（MAX_TURN_END_CONTINUES）。
+    /// Stop 时清除）。真正的轮次封顶在 loop 侧（`agents.turn_end_continues`，
+    /// 缺省 2=旧常量行为，显式 0=不限 opt-in）。
     stop_blocks: Mutex<HashMap<String, u32>>,
 }
 

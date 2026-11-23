@@ -507,6 +507,9 @@ pub fn default_config() -> Config {
             image_downscale: true,
             // B30 工具结果统一 cap（serde 缺省 8000）——全字段初始化器补齐。
             tool_result_cap: default_tool_result_cap(),
+            // 持续性预算（serde 缺省 2=旧常量行为；显式 0=不限 opt-in）
+            // ——全字段初始化器补齐。
+            turn_end_continues: default_turn_end_continues(),
             lease_enabled: true,
             codemode: CodeModeConfig::default(),
             delegate: DelegateToolConfig::default(),
@@ -524,7 +527,8 @@ pub fn default_config() -> Config {
                 llm: "zhipu/glm-4.7-flash".to_string(),
                 max_tokens: nemesis_types::capability::DEFAULT_MAX_TOKENS,
                 temperature: 0.7,
-                max_tool_iterations: 100,
+                // 单源：crate::default_max_tool_iterations()（2026-11-23 起 0=不限）。
+                max_tool_iterations: crate::default_max_tool_iterations(),
                 // concurrent_request_mode intentionally omitted — filled by
                 // `..Default::default` → `default_concurrent_request_mode`
                 // (single truth source; a stale "reject" literal lived here

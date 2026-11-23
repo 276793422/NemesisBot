@@ -282,15 +282,14 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
         sel.api_key = nemesis_utils::header_guard::header_safe_credential("api_key", &sel.api_key)
             .map_err(|e| format!("model {} 拒绝装配：{e}", sel.model))?;
     }
-    if !sel.account_id.is_empty() {
-        if let Err(e) =
+    if !sel.account_id.is_empty()
+        && let Err(e) =
             nemesis_utils::header_guard::header_safe_credential("account_id", &sel.account_id)
-        {
-            // account_id 是可选头：非法 → 置空（header 省略）+ WARN 降级，
-            // 不拒装配（与 api_key 的凭据地位不同）。
-            tracing::warn!("[Factory] {e}；Chatgpt-Account-Id 头已省略");
-            sel.account_id.clear();
-        }
+    {
+        // account_id 是可选头：非法 → 置空（header 省略）+ WARN 降级，
+        // 不拒装配（与 api_key 的凭据地位不同）。
+        tracing::warn!("[Factory] {e}；Chatgpt-Account-Id 头已省略");
+        sel.account_id.clear();
     }
 
     // cache_breakpoints 仅 anthropic lane 消费；其他 lane 显式开启 =

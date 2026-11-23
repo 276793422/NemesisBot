@@ -561,7 +561,11 @@ fn default_temperature() -> f64 {
     0.7
 }
 fn default_max_tool_iterations() -> i64 {
-    100
+    // 2026-11-23 拍板：缺省 0 = 不限（原缺省 100——长任务撞顶 grace+暂停
+    // 中断现场，用户裁决改为不限）。0=不限 是本键既有惯例（显式 0 本来就
+    // 支持）；无界形态的常驻护栏 = turn_guard 循环检测（交替/退化阶梯 +
+    // 终级无超时卡）+ estop + 各预算保险丝，迭代闸仅在显式配置非 0 时存在。
+    0
 }
 /// default concurrent mode is **steer** — busy sessions accept new input
 /// inline (the model sees the latest user intent mid-turn). 2026-11-03
@@ -667,6 +671,39 @@ pub fn resolve_tool_result_cap(cfg: Option<&serde_json::Value>) -> usize {
     cfg.and_then(|v| v.get("agents")?.get("tool_result_cap")?.as_i64())
         .map(|n| n.max(0) as usize)
         .unwrap_or(DEFAULT_TOOL_RESULT_CAP)
+}
+
+/// （持续性预算，2026-11-23 拍板二次修订）：turn-end hook（Stop 钩点
+/// Continue 形态）拦停续轮预算的**缺省值** = 2（= 修复前硬编码常量
+/// `MAX_TURN_END_CONTINUES` 的行为，键缺席即旧版语义，老版本/老配置
+/// 零漂移）。**显式 `0` = 不限**（opt-in 新特性）；显式 N>0 = 拦 N 次。
+pub const DEFAULT_TURN_END_CONTINUES: u32 = 2;
+
+/// [`DEFAULT_TURN_END_CONTINUES`] 的 serde 缺省函数形态（typed 字段 u32）。
+fn default_turn_end_continues() -> u32 {
+    DEFAULT_TURN_END_CONTINUES
+}
+
+/// （持续性预算，2026-11-23 拍板二次修订）：raw config JSON 读取
+/// `agents.turn_end_continues`——turn-end hook（Stop 钩点 Continue 形态）
+/// 每 turn 内拦停续轮的次数上限。AgentLoop 的 hook Continue 判定点走
+/// fresh-read raw JSON（同 `resolve_tool_result_cap` 模式，运行中改键
+/// 下一轮生效），不经过 typed `Config`——键路径与缺省值必须和 typed
+/// 字段单源，这里就是那个单源。缺键/缺段/非数/负数 → 缺省 **2**（= 修复
+/// 前硬编码常量行为，兼容老版本）；**显式 `0` = 不限**（opt-in 新特性，
+/// 拦停循环的兜底上界是 `agents.defaults.max_tool_iterations` 迭代闸）；
+/// 显式 N>0 = 拦 N 次，第 N+1 次停车 fail-open 放行。
+pub fn resolve_turn_end_continues(cfg: Option<&serde_json::Value>) -> u32 {
+    match cfg.and_then(|v| v.get("agents")?.get("turn_end_continues")) {
+        // 键缺席 = 缺省 2（旧常量行为，兼容老版本）。
+        None => DEFAULT_TURN_END_CONTINUES,
+        // 显式值：0 = 不限（opt-in）、N>0 = 有限帽；负数/类型怪无语义
+        // → 缺省（0 在本键是「不限」哨兵，垃圾输入不得被晋升成不限）。
+        Some(v) => match v.as_i64() {
+            Some(n) if n >= 0 => n as u32,
+            _ => DEFAULT_TURN_END_CONTINUES,
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,8 +1174,13 @@ mod bridge_serde_tests;
 #[cfg(test)]
 mod eval_rules_tests;
 
+// B30（2026-11-06 三方对比整改）：`agents.tool_result_cap` 配置面测试。
 #[cfg(test)]
 mod tool_result_cap_tests;
+
+// （持续性预算，2026-11-23 拍板）：`agents.turn_end_continues` 配置面测试。
+#[cfg(test)]
+mod turn_end_continues_tests;
 
 // W1 安全图谱地基批（2026-11-19）：chat_scan / untrusted_wrap /
 // result_scan / rate_limit / usage.budget 配置面测试。

@@ -964,8 +964,10 @@ async fn loop_integration_prompt_block_aborts_before_llm() {
     );
 }
 
-/// Stop exit 2 → 拒停：feedback 进 user 消息、模型再答一轮；轮次预算
-/// （MAX_TURN_END_CONTINUES=2）耗尽后 fail-open 停在最后一个响应上。
+/// Stop exit 2 → 拒停：feedback 进 user 消息、模型再答一轮；**缺省预算
+/// （键缺席 = 2 = 修复前硬编码常量行为，2026-11-23 二次拍板：兼容老版本）**
+/// 耗尽后 fail-open 停在最后一个响应上。本测试不绑 config——它同时就是
+/// 「缺省 = 旧版行为零漂移」的回归锁。
 #[tokio::test]
 async fn loop_integration_stop_block_forces_extra_rounds() {
     let tmp = tempdir();
@@ -976,7 +978,7 @@ async fn loop_integration_stop_block_forces_extra_rounds() {
         )
         .expect("bridge"),
     );
-    // r1 → Stop 拒停 → r2 → Stop 拒停 → r3 → Stop 拒停但预算（2）耗尽 →
+    // r1 → Stop 拒停 → r2 → Stop 拒停 → r3 → Stop 拒停但缺省预算（2）耗尽 →
     // fail-open 停在 r3。共 1 + 2 次 LLM 调用。
     let (provider, recorder) = recording_provider(vec![
         scripted_resp("r1"),
@@ -997,8 +999,8 @@ async fn loop_integration_stop_block_forces_extra_rounds() {
     let calls = recorder.calls();
     assert_eq!(
         calls.len(),
-        1 + crate::hooks::MAX_TURN_END_CONTINUES as usize,
-        "initial + budget-forced rounds, no more"
+        3,
+        "initial + budget-forced rounds (default cap=2 = legacy const), no more"
     );
     let second = &calls[1];
     assert!(
@@ -1006,6 +1008,67 @@ async fn loop_integration_stop_block_forces_extra_rounds() {
             .iter()
             .any(|m| m.role == "user" && m.content.contains("more work to do")),
         "hook feedback must reach the model as a user message"
+    );
+}
+
+/// **显式 `0` = 不限**（2026-11-23 拍板二次修订：opt-in 新特性，缺省仍是
+/// 旧常量 2——见 forces_extra_rounds 回归锁）：Stop 钩子连续拒停多少次都
+/// 续轮——此处拒停 3 次后放行，4 次调用全部发生（缺省帽 2 会在第 3 次
+/// 拒停时 fail-open，3 次调用即收尾）。
+#[tokio::test]
+async fn loop_integration_stop_block_unlimited_opt_in() {
+    // 无上限必须显式配置（`agents.turn_end_continues: 0` opt-in 哨兵）。
+    // 世代快照读：绑定即发布，本次 run 全程见 cap=0=不限。
+    let tmp = tempdir();
+    let cfg_path = tmp.join("config.json");
+    std::fs::write(&cfg_path, br#"{"agents": {"turn_end_continues": 0}}"#).expect("write cfg");
+    struct BlockNTimes {
+        n: std::sync::atomic::AtomicU32,
+    }
+    #[async_trait::async_trait]
+    impl LifecycleHook for BlockNTimes {
+        fn name(&self) -> String {
+            "block-n-times".to_string()
+        }
+        async fn on_turn_end(&self, _e: &HookTurnEnd) -> crate::hooks::TurnEndDecision {
+            let k = self.n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if k < 3 {
+                crate::hooks::TurnEndDecision::Continue {
+                    feedback: format!("keep going #{}", k + 1),
+                }
+            } else {
+                crate::hooks::TurnEndDecision::Stop
+            }
+        }
+    }
+
+    // r1 拒停 → r2 拒停 → r3 拒停 → r4 放行（帽已过 3 次，Stop 生效）。
+    let (provider, recorder) = recording_provider(vec![
+        scripted_resp("r1"),
+        scripted_resp("r2"),
+        scripted_resp("r3"),
+        scripted_resp("r4"),
+    ]);
+    let mut cfg = test_config();
+    cfg.max_turns = 20; // 迭代闸兜底别抢在本测试语义前触发
+    let lp = AgentLoop::new(provider, cfg);
+    lp.set_config_path(cfg_path);
+    lp.add_lifecycle_hook(Arc::new(BlockNTimes {
+        n: std::sync::atomic::AtomicU32::new(0),
+    }));
+
+    let instance = AgentInstance::new(test_config());
+    let events = lp.run(&instance, "work", &test_context()).await;
+
+    assert_eq!(
+        first_done(&events),
+        "r4",
+        "opt-in unlimited honors every stop block until the hook allows"
+    );
+    assert_eq!(
+        recorder.calls().len(),
+        4,
+        "1 initial + 3 unlimited continues (default cap=2 would fail-open at 3 calls)"
     );
 }
 
@@ -2903,7 +2966,7 @@ async fn shell_continue_takes_precedence_over_prompt_inject() {
     };
     match bridge.on_turn_end(&end).await {
         crate::hooks::TurnEndDecision::Continue { .. } => {
-            // shell 拦截优先（Continue 进 MAX_TURN_END_CONTINUES 预算），
+            // shell 拦截优先（Continue 进 agents.turn_end_continues 预算），
             // prompt 注入被压住。
         }
         other => panic!("shell exit 2 must Continue before prompt check, got {other:?}"),

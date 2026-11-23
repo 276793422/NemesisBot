@@ -154,7 +154,8 @@ async fn stop_hook_active_escalates_instead_of_skipping() {
 
     // v2 语义反转：本轮已被 Continue 过一次（stop_hook_active=true）不再是
     // 自限跳过，而是升级拦停——模板从「继续执行」换成「列证据或继续干活」，
-    // 第 3 次停车由 loop 侧 MAX_TURN_END_CONTINUES=2 硬封顶放行。
+    // 拦停预算耗尽由 loop 侧 agents.turn_end_continues（缺省 2=旧常量行为，
+    // 显式 0=不限 opt-in）兜底放行。
     match hook_with(&ws).on_turn_end(&turn_end(true)).await {
         TurnEndDecision::Continue { feedback } => {
             assert!(

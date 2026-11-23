@@ -550,6 +550,19 @@ impl AgentLoop {
         nemesis_config::resolve_tool_result_cap(self.config_generation().as_deref())
     }
 
+    /// （持续性预算，2026-11-23 拍板二次修订）：`agents.turn_end_continues`
+    /// 世代快照读（L18 模式；config.json 唯一真相源，dashboard/CLI 改键
+    /// 下轮生效）。键路径 / 缺省 2=旧常量行为 / 显式 0=不限 opt-in /
+    /// 负数与类型怪落缺省的单一真相源在
+    /// `nemesis_config::resolve_turn_end_continues`（typed 字段同源）——
+    /// 此处整段复用，不自建散表。0 = 不限：turn-end hook Continue 判定
+    /// 不受次数封顶（拦停循环的兜底上界是 max_tool_iterations 迭代闸——
+    /// 2026-11-23 起该键缺省 0=不限，迭代闸仅在显式配置非 0 时存在）；
+    /// 有限值 N = 拦 N 次后第 N+1 次停车 fail-open 放行。
+    pub(crate) fn current_turn_end_continues(&self) -> u32 {
+        nemesis_config::resolve_turn_end_continues(self.config_generation().as_deref())
+    }
+
     /// W1 #26（2026-11-19 安全图谱批）：`security.chat_scan` 世代快照读
     /// → (入站, 出站) 模式对。键路径/缺省/非法值语义的单一真相源
     /// `nemesis_config::resolve_chat_scan`（typed 字段同源）。无

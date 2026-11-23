@@ -55,6 +55,20 @@ pub struct AgentsConfig {
     /// edits take effect from the next turn (fresh-read, no restart).
     #[serde(default)]
     pub hidden_tools: Vec<String>,
+    /// （持续性预算，2026-11-23 拍板二次修订）：turn-end hook（Stop 钩点
+    /// Continue 形态：todo-closeout / cc_hooks Stop 脚本 / discipline）
+    /// 每 turn 内拦停续轮的次数上限。**缺省 2**（= 修复前硬编码常量
+    /// `MAX_TURN_END_CONTINUES` 的行为——键缺席即旧版语义，老版本/老配置
+    /// 零漂移）；**显式 `0` = 不限**（opt-in 新特性，拦停循环的兜底上界是
+    /// `agents.defaults.max_tool_iterations` 迭代闸——每轮迭代都计数，
+    /// 到顶 grace+暂停；2026-11-23 起该键缺省 0=不限，迭代闸仅在显式
+    /// 配置非 0 时存在，常驻护栏 = turn_guard 循环检测 + estop）；
+    /// 显式 N>0 = 拦 N 次，
+    /// 第 N+1 次停车放行（fail-open，防钩子故障把会话钉死在续轮）。
+    /// loop 侧 fresh-read（世代快照读，每次 hook Continue 判定现读），
+    /// 改键下一轮生效，无需重启。
+    #[serde(default = "default_turn_end_continues")]
+    pub turn_end_continues: u32,
     /// （加固）：
     /// MCP 工具惰性供给。开 = `mcp_*` 长尾工具
     /// schema 不全量随轮上行（tool_defs 只见 meta 工具 `mcp_call`），模型
@@ -267,6 +281,7 @@ impl Default for AgentsConfig {
             doom_loop_approval: false,
             image_downscale: default_true(),
             tool_result_cap: default_tool_result_cap(),
+            turn_end_continues: default_turn_end_continues(),
             lease_enabled: default_true(),
             discipline: DisciplineConfig::default(),
             prompt_system: default_prompt_system(),

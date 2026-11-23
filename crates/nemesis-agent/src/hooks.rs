@@ -488,11 +488,17 @@ pub async fn run_llm_post_hooks(
 // Prompt/turn lifecycle hooks (— 方言 SessionStart/UserPromptSubmit/Stop 桥)
 // ---------------------------------------------------------------------------
 
-/// Per-turn safety cap for `TurnEndDecision::Continue` demands (dialect Stop-hook
-/// "block stopping"). Exhausted → the turn stops anyway with a loud warn
-/// (fail-open, same discipline as [`MAX_LLM_HOOK_RETRIES`]: a buggy hook must
-/// not be able to keep a session answering forever).
-pub const MAX_TURN_END_CONTINUES: u32 = 2;
+// Per-turn budget for `TurnEndDecision::Continue` demands (dialect Stop-hook
+// "block stopping") lives in config: `agents.turn_end_continues` (fresh-read
+// via the loop's config generation; **default 2 = the pre-fix hardcoded
+// constant's behavior, legacy-compatible; explicit `0` = unlimited, the
+// 2026-11-23 opt-in**). A finite cap N grants N continues, then the turn
+// stops anyway with a loud warn (fail-open, same discipline as
+// MAX_LLM_HOOK_RETRIES: a buggy hook must not be able to keep a session
+// answering forever). With the cap unlimited, the backstop is the
+// `max_tool_iterations` iteration gate when explicitly configured non-zero
+// (default 0 = unlimited since 2026-11-23; the always-on guards are the
+// turn_guard doom-loop ladder + estop).
 
 /// Snapshot of an arriving user prompt (BEFORE it enters instance history —
 /// a blocked prompt is never seen by the model, matching the dialect's
@@ -535,13 +541,15 @@ pub enum TurnEndDecision {
     /// Deliver the final answer and end the turn.
     Stop,
     /// Block stopping: inject `feedback` as a user message and give the
-    /// model one more round. Bounded by [`MAX_TURN_END_CONTINUES`] in the
-    /// loop (exhausted → stop anyway, fail-open).
+    /// model one more round. Bounded by `agents.turn_end_continues` in the
+    /// loop (default 2 = legacy const behavior; explicit 0 = unlimited
+    /// opt-in; finite cap exhausted → stop anyway, fail-open).
     Continue { feedback: String },
     /// 提示词型钩子（LLM 执行体）：turn **照常收尾**（Done 照发、checkpoint
     /// 照落），收尾完成后由 loop 把 `prompt` 作为一条新的用户消息注入会话，
     /// 开启全新一轮。与 [`TurnEndDecision::Continue`] 的本质区别：Continue
-    /// 拦截停止、turn 内续轮、受 [`MAX_TURN_END_CONTINUES`] 封顶；Inject
+    /// 拦截停止、turn 内续轮、受 `agents.turn_end_continues` 封顶（缺省 2=
+    /// 旧常量行为，显式 0=不限 opt-in）；Inject
     /// 不拦截、轮与轮之间接力、**无封顶**——「每轮结束注入提示词」的钩子
     /// 在 Stop 钩点每次触发都会再注入，循环是钩点正常执行的自然副作用
     /// （estop/取消打断 turn → 非 Accept 路径 → 钩子不触发 → 循环自然停）。
