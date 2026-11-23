@@ -274,14 +274,7 @@ pub fn configure(cfg: &SecurityAlertsConfig, jsonl_dir: PathBuf) {
     // webhook 出口内建注册（URL 配置层信任，与 model api_base 同语义）。
     st.webhook_urls = Arc::new(cfg.webhooks.clone());
     let has_webhook = !cfg.webhooks.is_empty();
-    st.webhook_client = if has_webhook {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .ok()
-    } else {
-        None
-    };
+    st.webhook_client = if has_webhook { webhook_client() } else { None };
     st.outlets.retain(|(name, _)| name != WEBHOOK_OUTLET);
     if has_webhook {
         let urls = st.webhook_urls.clone();
@@ -548,6 +541,24 @@ pub fn take_pending_digests() -> Vec<AlertDigest> {
 // ---------------------------------------------------------------------------
 // 出口：webhook 直发（内建）
 // ---------------------------------------------------------------------------
+
+/// webhook 出口共享 client 构造（单一测试缝）。BUG-20261123-024：reqwest
+/// 默认重定向策略跨主机 **307/308 保方法保 body**——webhook POST 的
+/// SecurityAlertEvent 载荷（凭据扫描/DLP 告警的 evidence 字段可含检出
+/// 的真实秘密）会随重定向转发到第三方主机；webhook URL 还常内嵌 query
+/// token（钉钉/飞书形态）。同族防线 BUG-20261109-014（channels base.rs
+/// 等 webhook POST 面）已确立「带凭据外呼统一 no_cross_host」纪律，本
+/// 出口晚于该防线落地（2026-11-20 a03d4ee3）漏挂。单一真相源
+/// `nemesis_utils::http_redirect`：同源跟随（CDN/网关合规场景不断链），
+/// 跨源 `stop()` 把 3xx 透传为最终响应——投递语义与现状一致（状态码
+/// 本就不检查，非 2xx 静默），只有跨主机第二跳不再发生。
+fn webhook_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+        .build()
+        .ok()
+}
 
 /// webhook 直发：逐 URL POST JSON envelope，5s 超时失败即弃不重试
 /// （best-effort——告警链路故障不得反噬主管线）。无 tokio runtime 的

@@ -486,3 +486,117 @@ async fn webhook_delivery_reaches_http_server() {
     assert!(body.contains("webhook e2e body"), "body: {body}");
     reset_for_tests();
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261123-024 回归锁：webhook client 重定向策略行为级测试
+//
+// 防线本体（跨源终停/同源跟随裁决语义）由 nemesis_utils::http_redirect
+// 纯函数测试钉死；本组在行为层（真实 HTTP 往返，本地 loopback 双监听）
+// 钉住 webhook_client() 的挂线：跨源 302 必须终停（告警载荷 body——凭据
+// 扫描 evidence 可含真实秘密——不得随 307/308 转发到第三方主机）、同源
+// 302 必须跟随（CDN/网关合规场景不断链）。若摘掉
+// `.redirect(no_cross_host_redirect_policy())`（reqwest 默认 = 跨源也
+// 跟随），跨源测试当轮红。不触静态 HUB（直接调构造函数），无需 TEST_LOCK。
+// ---------------------------------------------------------------------------
+
+/// 读一次 HTTP 请求并写出响应（009 形态；请求头 < 2KB，一段 read 足够）。
+async fn serve_one_redirect(listener: &tokio::net::TcpListener, response: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut sock, _) = listener.accept().await.expect("accept");
+    let mut buf = [0u8; 2048];
+    let n = AsyncReadExt::read(&mut sock, &mut buf).await.unwrap_or(0);
+    AsyncWriteExt::write_all(&mut sock, response.as_bytes())
+        .await
+        .expect("write response");
+    String::from_utf8_lossy(&buf[..n]).to_string()
+}
+
+/// 跨源 302 必须终停：3xx 透传为最终响应，第二跳主机不得收到任何请求
+/// （POST body 中的告警载荷不出站）。
+#[tokio::test]
+async fn webhook_client_stops_cross_host_redirect() {
+    let l_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let l_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_b = l_b.local_addr().unwrap().port();
+    let url_a = format!("http://127.0.0.1:{}/hook", l_a.local_addr().unwrap().port());
+
+    // 第二跳哨兵：策略生效时永远等不到连接（500ms 超时 = 诚实通过）；
+    // 策略漏挂时 reqwest 立即跟随，哨兵捕获带载荷的请求 → 断言红。
+    let sentry_b = tokio::spawn(async move {
+        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        serve_one_redirect(&l_b, resp).await
+    });
+    let hop_a = tokio::spawn(async move {
+        let target = format!("http://127.0.0.1:{port_b}/evil");
+        let resp = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        serve_one_redirect(&l_a, &resp).await
+    });
+
+    let client = webhook_client().expect("webhook client builds");
+    let resp = client
+        .post(&url_a)
+        .json(&serde_json::json!({
+            "kind": "credential_scan_hit",
+            "evidence": "SECRET-PAYLOAD-SHOULD-NOT-LEAVE-HOP-A"
+        }))
+        .send()
+        .await
+        .expect("first hop send");
+
+    assert_eq!(
+        resp.status().as_u16(),
+        302,
+        "跨源 302 必须透传为最终响应（no_cross_host_redirect_policy 终停）"
+    );
+    let _ = hop_a.await;
+    let leaked = tokio::time::timeout(std::time::Duration::from_millis(500), sentry_b).await;
+    if let Ok(Ok(second_hop_req)) = leaked {
+        panic!(
+            "BUG-20261123-024：跨源重定向把告警 POST 带去了第三方主机，第二跳收到: {second_hop_req}"
+        );
+        // 超时/哨兵被丢 = 第二跳无连接 = 载荷未出站 ✓
+    }
+}
+
+/// 同源 302 必须跟随：单监听两次 accept，第二跳命中同源新路径
+/// （策略不是一刀切 Policy::none()）。
+#[tokio::test]
+async fn webhook_client_follows_same_origin_redirect() {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/hook");
+
+    let server = tokio::spawn(async move {
+        let target = format!("http://127.0.0.1:{port}/second");
+        let first_resp = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let _first_req = serve_one_redirect(&l, &first_resp).await;
+        serve_one_redirect(
+            &l,
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        )
+        .await
+    });
+
+    let client = webhook_client().expect("webhook client builds");
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"kind": "estop_triggered"}))
+        .send()
+        .await
+        .expect("follow send");
+
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "同源 302 必须跟随到第二跳（回归不得误改成一刀切 Policy::none()）"
+    );
+    let second_req = server.await.expect("server task");
+    assert!(
+        second_req.starts_with("GET /second"),
+        "重定向后第二跳应为 GET（302 POST→GET 语义），实际: {second_req}"
+    );
+}
