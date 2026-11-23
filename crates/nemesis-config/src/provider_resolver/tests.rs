@@ -1356,6 +1356,71 @@ fn test_get_model_by_name_case_insensitive_tier_collects() {
     );
 }
 
+// R2495 标识符等价审计契约锁（防漂移锁，非缺陷修复——本轮初判
+// get_model_by_name 层序漂移，TDD 实测证伪：其 (ci,bare) 四元组循环
+// 在 name 层 miss 时**同层内**回落 model 字段收集，实际层序 = 权威六层
+// exact name → exact model → CI name → CI model → bare → bare-CI，与其余
+// 四站一致。本锁把交叉别名冲突形态（A 的 model 精确命中 vs B 的 name CI
+// 变体截胡）钉成五站同判契约，防未来层序漂移——capability.rs
+// BUG-20261119-210 声明「改层序必须两端同步」，此锁是该声明的行为面守卫。
+#[test]
+fn test_get_model_by_name_layer_order_exact_model_beats_ci_name() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "Q2".to_string(),
+                model: "Q".to_string(),
+                api_key: "kA".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "q".to_string(),
+                model: "zz".to_string(),
+                api_key: "kB".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    // 权威站点：resolve / find（config 侧）。
+    assert_eq!(
+        resolve_model_config(&cfg, "Q").unwrap().api_key,
+        "kA",
+        "resolve_model_config：精确 model 层先于 CI name 层"
+    );
+    assert_eq!(
+        find_model_by_name(&cfg, "Q").unwrap().api_key,
+        "kA",
+        "find_model_by_name：精确 model 层先于 CI name 层"
+    );
+    // lib.rs 站点。
+    assert_eq!(
+        cfg.get_model_by_model_name("Q").unwrap().api_key,
+        "kA",
+        "Config::get_model_by_model_name：精确 model 层先于 CI name 层"
+    );
+    // types 侧 tier/timeout 九键单一真相源：同判 A。
+    let vcfg = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(
+        nemesis_types::capability::find_model_entry(&vcfg, "Q")
+            .unwrap()
+            .get("api_key")
+            .and_then(|v| v.as_str())
+            .unwrap(),
+        "kA",
+        "find_model_entry（types 侧）：精确 model 层先于 CI name 层"
+    );
+    // 第五站点同判（防漂移锁：层序若漂移此断言先红）。
+    assert_eq!(
+        get_model_by_name(&cfg, "Q").unwrap().api_key,
+        "kA",
+        "get_model_by_name 必须与其余四站同判：精确 model 层先于 CI name 层"
+    );
+}
+
 /// `Config::get_model_by_model_name`（lib.rs 站点）同口径：CI 兜底命中。
 #[test]
 fn test_config_get_model_by_model_name_case_insensitive() {
