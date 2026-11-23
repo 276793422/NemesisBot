@@ -149,13 +149,25 @@ impl AgentLoopManager {
             agent_loop.stop();
             agent_loop.clear_session_busy();
             agent_task.abort();
-            return Ok(self
+            // 重拿锁期间并发 `remove` 可整体完成（胜者的摘表+停机在锁外
+            // 跑，输者自身的 stop/abort 清理恰好拉宽了无锁窗口）——胜者
+            // 句柄可能已消失。诚实 Err 而非 expect（BUG-20261123-023）：
+            // expect 在持 state 锁状态下 panic 会毒化锁，manager 此后全部
+            // `.lock().unwrap()` 连环炸 = 整个 loop manager 瘫痪到进程重启，
+            // 失败模式与「复合竞态几乎不触发」完全不成比例；Err 语义与
+            // 下方「构建在途被删」臂同构，两个调用方（send_message /
+            // loop_for_agent）都按 Result 诚实传播。复合竞态窗口无法确定性
+            // 注入（构建与重拿锁之间无外部可观测钩子），回归锁以同构臂
+            // 契约 + 既有套件为准。
+            return self
                 .state
                 .lock()
                 .unwrap()
                 .get(agent_id)
                 .map(|h| h.agent_loop.clone())
-                .expect("double-spawn guard: winner handle must exist"));
+                .ok_or_else(|| {
+                    format!("agent {agent_id} 在双 spawn 裁决窗口内被并发移除（胜者句柄已消失）")
+                });
         }
         // 顺序契约收口（二轮复查）：构建在途（early get 之后、
         // insert 之前）`AgentManager::remove` 可整体完成——store.remove 已
