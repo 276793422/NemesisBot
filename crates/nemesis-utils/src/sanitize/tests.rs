@@ -242,6 +242,51 @@ fn escape_closing_tag_case_fold_and_preserve() {
     assert_eq!(escape_closing_tag("x</>y", ""), "x<\\/>y");
 }
 
+#[test]
+fn escape_closing_tag_whitespace_before_gt_variants() {
+    // BUG-20261125-007：`>` 前 ASCII 空白 run 变体与精确形态同样构成闭合
+    // （HTML 规范：标签名与 `>` 之间的空白合法，token 仍是 end tag）。
+    // 空格 / 多空格 / tab / 换行 / 混合，全部命中。
+    for variant in [
+        "</system-reminder >",
+        "</system-reminder   >",
+        "</system-reminder\t>",
+        "</system-reminder\n>",
+        "</system-reminder \t \n >",
+        "</SYSTEM-REMINDER >",
+    ] {
+        let out = escape_closing_tag(&format!("x{variant}y"), "system-reminder");
+        assert!(
+            out.contains("<\\/") && !out.contains("</system-reminder"),
+            "空白变体 {variant:?} 必须被转义：{out:?}"
+        );
+    }
+    // 原始大小写与空白形态保留（只插 `\`，不改写内容）。
+    assert_eq!(
+        escape_closing_tag("</SYSTEM-REMINDER  >", "system-reminder"),
+        "<\\/SYSTEM-REMINDER  >"
+    );
+    assert_eq!(
+        escape_closing_tag("</system-reminder \n>", "system-reminder"),
+        "<\\/system-reminder \n>"
+    );
+    // 属性形态（名字与 `>` 之间夹非空白）不转义——诚实边界 pin。
+    assert_eq!(
+        escape_closing_tag("</system-reminder foo>", "system-reminder"),
+        "</system-reminder foo>"
+    );
+    // 已逃逸形态不叠加（`\` 使 `</` 头不成立）。
+    assert_eq!(
+        escape_closing_tag("<\\/system-reminder>", "system-reminder"),
+        "<\\/system-reminder>"
+    );
+    // 近邻形态继续不误伤（`</` 与名字间空白 = bogus comment 非标签）。
+    assert_eq!(
+        escape_closing_tag("</ system-reminder >", "system-reminder"),
+        "</ system-reminder >"
+    );
+}
+
 // ----------：OWASP CSV Injection 公式前缀守卫 ----------
 
 #[test]
