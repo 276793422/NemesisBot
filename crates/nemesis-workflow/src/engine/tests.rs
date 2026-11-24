@@ -7055,3 +7055,84 @@ async fn poll_task_finished(h: &tokio::task::JoinHandle<()>) -> bool {
     }
     false
 }
+
+// BUG-20261124-025：启动闸——estop 冻结面收口。三臂：gate 在场拒绝一切
+// 新启动（记录零落表）+ reason 原文透传；恢复面同闸；gate 返回 None 放行。
+
+#[tokio::test]
+async fn test_start_gate_blocks_new_executions() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "gate_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    engine.set_start_gate(std::sync::Arc::new(|| {
+        Some("⛔ frozen for test".to_string())
+    }));
+
+    // run → create_execution 入口拒绝：StartBlocked + reason 原文透传。
+    let result = engine.run("gate_wf", HashMap::new(), None).await;
+    match result {
+        Err(EngineError::StartBlocked(reason)) => {
+            assert_eq!(reason, "⛔ frozen for test");
+        }
+        other => panic!("expected StartBlocked, got ok={}", other.is_ok()),
+    }
+
+    // 记录零落表（拒绝发生在 mint 执行 ID 之前）。
+    assert!(engine.list_executions(None).await.is_empty());
+
+    // start_async 同漏斗（fire-and-forget 面同步 Err）。
+    let result = engine
+        .clone()
+        .start_async("gate_wf", HashMap::new(), None)
+        .await;
+    assert!(matches!(result, Err(EngineError::StartBlocked(_))));
+}
+
+#[tokio::test]
+async fn test_start_gate_blocks_resume() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "gate_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    // 空槽期先铸一条记录，再装闸——闸命中先于状态校验（记录非 Waiting
+    // 也会返回 StartBlocked 而非 InvalidState，冻结语义优先）。
+    let execution = engine
+        .create_execution("gate_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    engine.set_start_gate(std::sync::Arc::new(|| {
+        Some("⛔ frozen for test".to_string())
+    }));
+
+    let result = engine.resume_execution(&execution.id, HashMap::new()).await;
+    assert!(matches!(result, Err(EngineError::StartBlocked(_))));
+}
+
+#[tokio::test]
+async fn test_start_gate_none_allows_executions() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "gate_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+    engine.set_start_gate(std::sync::Arc::new(|| None));
+
+    // gate 返回 None = 放行；缺省空槽（不装闸）行为由全部既有测试覆盖。
+    let execution = engine
+        .create_execution("gate_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(execution.state, ExecutionState::Running);
+    assert_eq!(engine.list_executions(None).await.len(), 1);
+}

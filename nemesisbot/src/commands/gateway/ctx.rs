@@ -843,6 +843,28 @@ impl GatewayCtx {
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         info!("[Gateway] Global e-stop (kill switch) initialized (released)");
 
+        // BUG-20261124-025：workflow 启动闸（estop 冻结面收口）。七个启动
+        // 消费面（message/event 驱动循环、automations 泵、WSAPI×4、
+        // workflow_chat、引擎内 cron）与 human_review 恢复面全部经引擎
+        // create_execution / resume_execution_node 单点裁决；在途执行由
+        // estop watcher 的 cancel_all_running 收口（workflow_secure_executor
+        // 侧），两层互补。空槽缺省 = CLI/测试引擎零影响（CLI 短命进程
+        // estop 不可达、墙钟预算独立生效的既有边界不变）。
+        #[cfg(feature = "workflow")]
+        {
+            let estop_for_gate = estop.clone();
+            workflow_engine.set_start_gate(std::sync::Arc::new(move || {
+                if estop_for_gate.is_engaged() {
+                    Some(
+                        "⛔ 已急停 (E-STOP) — workflow 启动/恢复已冻结。发送 `nemesisbot estop --release` 恢复。"
+                            .to_string(),
+                    )
+                } else {
+                    None
+                }
+            }));
+        }
+
         // 紫微系统会话管理器（总控）：feature + config 双闸开
         // → 装配 SessionManager 全局槽 + estop 卸载钩子 + estop 上升沿订阅
         // （触发即全会话卸载序列，逐行审计日志）。闸关 = 不装配（WSAPI/CLI
