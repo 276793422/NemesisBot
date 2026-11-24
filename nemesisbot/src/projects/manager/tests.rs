@@ -1485,3 +1485,31 @@ async fn project_supervisor_death_without_hook_exits_cleanly() {
     ));
     let _ = sup.await;
 }
+
+/// BUG-20261125-018 回归锁：reload 热切的 per-loop workspace 选择——
+/// registry 命中 = 项目目录（与初建 build_project_agent_loop 同源，
+/// CLI 型 lane 子进程 cwd 消费该字段）；未命中 = 主 workspace 回落
+/// （绝不落 gateway cwd）。纯函数两臂语义钉死。
+#[test]
+fn reload_workspace_for_registry_hit_and_fallback() {
+    let mut dirs = std::collections::HashMap::new();
+    let proj_a = PathBuf::from("D:/work/project-a");
+    dirs.insert("proj-a".to_string(), proj_a.clone());
+
+    // 命中臂：registry 里的项目目录原样返回。
+    let hit = super::reload_workspace_for(&dirs, "proj-a", std::path::Path::new("F:/fallback"));
+    assert_eq!(hit, proj_a, "registry 命中必须返回项目目录");
+
+    // 回落臂：未知 id（含已移除/孤儿）回落主 workspace，非空不落 gateway cwd。
+    let miss = super::reload_workspace_for(&dirs, "gone", std::path::Path::new("F:/fallback"));
+    assert_eq!(
+        miss,
+        PathBuf::from("F:/fallback"),
+        "registry 未命中必须回落主 workspace"
+    );
+
+    // 空映射 = 全回落（无在册项目的退化形态）。
+    let empty = std::collections::HashMap::new();
+    let degenerate = super::reload_workspace_for(&empty, "proj-a", std::path::Path::new("W:/ws"));
+    assert_eq!(degenerate, PathBuf::from("W:/ws"), "空 registry 全回落");
+}

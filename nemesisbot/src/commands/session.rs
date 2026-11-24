@@ -239,7 +239,10 @@ async fn generate_branch_summary_cli(
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
-        workspace: home.to_string_lossy().to_string(),
+        // workspace = <home>/workspace（BUG-20261125-018：CLI 型 lane 子进程
+        // cwd 消费该字段，与 gateway 冷启动 agent_factory 口径对齐——裸 home
+        // 会让 claude-cli/codex-cli 落在 .nemesisbot 根而非工作区）。
+        workspace: home.join("workspace").to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode.clone(),
         protocol: resolution.protocol.clone(),
         timeout_secs: resolution.timeout_secs,
