@@ -640,10 +640,50 @@ fn all_migrated_prompt_constants_are_nonempty() {
     assert!(spawn::SPAWN_SUBAGENT_SYSTEM_PROMPT.contains("You are a subagent"));
     assert!(spawn::SUBAGENT_TOOL_SYSTEM_PROMPT.contains("You are a subagent"));
 
-    // 补收（漏网扫描）：forge 生成/修复 prompt（SKILL_AUTHOR/
-    // SCRIPT_AUTHOR 已随死接线 factory 模块删除）。
-    assert!(forge::SKILL_GENERATOR_SYSTEM_PROMPT.contains("技能定义生成器"));
+    // 补收（漏网扫描）：forge prompt 资产。SKILL_GENERATOR/
+    // SKILL_DISTILLATION/skill_distillation_prompt 已随自学习铺路批次三
+    // 退役；SKILL_FIXER 消费点 = 批次四装前闸 refine；学习对话四阶段
+    // 协议资产为批次三新增（阶段标记 `# 学习对话阶段 N/4` 是引擎×
+    // 测试模型对键契约）。
     assert!(forge::SKILL_FIXER_SYSTEM_PROMPT.contains("技能定义生成器"));
+    assert!(forge::LEARN_DIALOGUE_SYSTEM_PROMPT.contains("注入经济学"));
+    for phase in 1..=4 {
+        let p = match phase {
+            1 => forge::learn_phase1_prompt("PACK"),
+            2 => forge::learn_phase2_prompt("T"),
+            3 => forge::learn_phase3_prompt("T", "L", "S"),
+            _ => forge::learn_phase4_prompt("T", "K"),
+        };
+        assert!(
+            p.starts_with(&format!("# 学习对话阶段 {phase}/4：")),
+            "阶段标记漂移：{p}"
+        );
+    }
+    assert!(forge::learn_phase1_prompt("P").contains("empty_reason"));
+    assert!(
+        forge::learn_phase3_prompt("T", "", "").contains("keep|duplicate|conflict_drop|supersede")
+    );
+    let p4 = forge::learn_phase4_prompt("T", "K");
+    assert!(p4.contains("tests") && p4.contains("skill_md"));
+    // 双缝互通缝二（2026-11-25）：主语分型契约——system prompt 必要判定 +
+    // phase4 词表分野 + user 主语不产技能（Rust 侧诚实丢弃的合同面）。
+    assert!(
+        forge::LEARN_DIALOGUE_SYSTEM_PROMPT.contains("主语分型"),
+        "system prompt 缺主语判定契约"
+    );
+    assert!(p4.contains("\"subject\""));
+    assert!(
+        p4.contains("workflow|correction|tool_preference|style|environment|quality_bar"),
+        "画像词表漂移"
+    );
+    assert!(
+        p4.contains("behavior|process_constraint|error_signature|user_preference|efficiency"),
+        "assistant 词表漂移"
+    );
+    assert!(
+        p4.contains("subject 恒 \"assistant\""),
+        "user 主语技能禁令漂移"
+    );
 
     // persona_gen：模板占位契约 + 渲染产物含取向文本 + 字面单大括号不被误改
     assert!(persona_gen::EXTRACT_PROMPT_TEMPLATE.contains("{orientation}"));

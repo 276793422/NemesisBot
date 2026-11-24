@@ -17,15 +17,16 @@ use std::time::Instant;
 
 // Test infrastructure (mirror of tests.rs)
 
-fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
-    let ws = dir.path().to_string_lossy().to_string();
-    let state = Arc::new(AppState {
+/// 最小 AppState（workspace/home 可选；estop 缺省 None——急停用例经
+/// `Arc::get_mut` 覆盖，构造期引用计数为 1 必成功）。
+fn base_app_state(ws: Option<String>) -> Arc<AppState> {
+    Arc::new(AppState {
         cors_manager: None,
         events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
-        workspace: Some(ws.clone()),
-        home: Some(ws.clone()),
+        workspace: ws.clone(),
+        home: ws.clone(),
         version: "test".to_string(),
         start_time: Instant::now(),
         model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
@@ -67,75 +68,27 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         session_stats: None,
         cron: None,
         board: None,
-    });
+    })
+}
+
+fn ctx_from_state(state: Arc<AppState>, ws: Option<String>) -> RequestContext {
     RequestContext {
         session_id: "test-session".to_string(),
         chat_id: "test-chat".to_string(),
-        workspace: Some(ws.clone()),
-        home: Some(ws),
+        workspace: ws.clone(),
+        home: ws,
         state,
         auth_method: crate::session::AuthMethod::default(),
     }
 }
 
+fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
+    let ws = dir.path().to_string_lossy().to_string();
+    ctx_from_state(base_app_state(Some(ws.clone())), Some(ws))
+}
+
 fn make_ctx_no_workspace() -> RequestContext {
-    let state = Arc::new(AppState {
-        cors_manager: None,
-        events_snapshot: None,
-        auth_token: String::new(),
-        session_count: Arc::new(AtomicUsize::new(0)),
-        workspace: None,
-        home: None,
-        version: "test".to_string(),
-        start_time: Instant::now(),
-        model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
-        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
-        model_has_key: Arc::new(AtomicBool::new(false)),
-        event_hub: Arc::new(EventHub::new()),
-        running: Arc::new(AtomicBool::new(true)),
-        session_manager: Arc::new(SessionManager::with_default_timeout()),
-        inbound_tx: None,
-        streaming_provider: None,
-        ws_router: None,
-        agent_service: None,
-        data_store: None,
-        memory_manager: None,
-        forge: None,
-        agent_loop: Arc::new(parking_lot::RwLock::new(None)),
-        cluster: None,
-        quic_relay: None,
-        mail_plugin: None,
-        cluster_service: None,
-        cluster_log_dir: None,
-        workflow_engine: None,
-        #[cfg(feature = "workflow")]
-        chat_secret_store: std::sync::Arc::new(
-            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
-        ),
-        #[cfg(not(feature = "workflow"))]
-        chat_secret_store: std::sync::Arc::new(()),
-        #[cfg(feature = "workflow")]
-        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
-        #[cfg(not(feature = "workflow"))]
-        webhook_rate_limiter: Arc::new(()),
-        internal_cmd_tx: None,
-        estop: None,
-        estop_audit: None,
-        background_registry: None,
-        signature_verify: None,
-        skills_install_gate: None,
-        session_stats: None,
-        cron: None,
-        board: None,
-    });
-    RequestContext {
-        session_id: "test-session".to_string(),
-        chat_id: "test-chat".to_string(),
-        workspace: None,
-        home: None,
-        state,
-        auth_method: crate::session::AuthMethod::default(),
-    }
+    ctx_from_state(base_app_state(None), None)
 }
 
 fn write_config(workspace: &Path) {
@@ -1474,7 +1427,6 @@ async fn test_advanced_config_set_creates_side_file_and_roundtrips() {
             "test.judge_threshold": 0.8,
             "optimize.budget_tokens": 4000,
             "reflection.use_llm": true,
-            "artifacts.auto_skill": true,
             "validation.auto_validate": false,
             "collection.max_experiences": 800
         }
@@ -1485,7 +1437,7 @@ async fn test_advanced_config_set_creates_side_file_and_roundtrips() {
         .unwrap()
         .unwrap();
     assert_eq!(out["saved"], true);
-    assert_eq!(out["updated"], 8);
+    assert_eq!(out["updated"], 7);
 
     let back = handler
         .handle_cmd("config.get", None, &ctx)
@@ -1498,7 +1450,6 @@ async fn test_advanced_config_set_creates_side_file_and_roundtrips() {
     assert_eq!(back["config"]["test"]["judge_threshold"], 0.8);
     assert_eq!(back["config"]["optimize"]["budget_tokens"], 4000);
     assert_eq!(back["config"]["reflection"]["use_llm"], true);
-    assert_eq!(back["config"]["artifacts"]["auto_skill"], true);
     assert_eq!(back["config"]["validation"]["auto_validate"], false);
     assert_eq!(back["config"]["collection"]["max_experiences"], 800);
 }
@@ -1669,4 +1620,226 @@ async fn test_registry_list_skill_directories_sorted_by_name() {
         list.iter().all(|v| v["type"] == "directory"),
         "散文件不得进入 skill_directories"
     );
+}
+
+// ---------------------------------------------------------------------------
+// forge.insights.list / forge.insights.update（自学习铺路批次一：
+// 洞察台账治理面——store 路径视图按调用现构造，表面契约测试）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_insights_list_empty_ledger_and_status_filter() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    // 空台账（文件缺席）→ entries=[] 非报错（合法初态）
+    let out = handler
+        .handle_cmd("insights.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["entries"].as_array().unwrap().len(), 0);
+    // 合法 status 过滤
+    let out = handler
+        .handle_cmd(
+            "insights.list",
+            Some(serde_json::json!({ "status": "active" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["entries"].as_array().unwrap().len(), 0);
+    // 未知 status loud 拒绝（不静默吞）
+    let err = handler
+        .handle_cmd(
+            "insights.list",
+            Some(serde_json::json!({ "status": "bogus" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("status"), "报错应含过滤值现场：{err}");
+}
+
+#[tokio::test]
+async fn test_insights_update_action_contract() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    // 缺 id / 缺 action → 诚实报错
+    assert!(
+        handler
+            .handle_cmd(
+                "insights.update",
+                Some(serde_json::json!({"action":"promote"})),
+                &ctx
+            )
+            .await
+            .unwrap_err()
+            .contains("id")
+    );
+    assert!(
+        handler
+            .handle_cmd(
+                "insights.update",
+                Some(serde_json::json!({"id":"ins-x"})),
+                &ctx
+            )
+            .await
+            .unwrap_err()
+            .contains("action")
+    );
+    // 未知 action loud 拒绝（报错列支持集，不给探测面信号差）
+    let err = handler
+        .handle_cmd(
+            "insights.update",
+            Some(serde_json::json!({"id":"ins-x","action":"delete"})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("promote|veto|retire"),
+        "未知 action 报错：{err}"
+    );
+    // 不存在的 id promote → 未找到
+    let err = handler
+        .handle_cmd(
+            "insights.update",
+            Some(serde_json::json!({"id":"ins-20990101-999","action":"promote"})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("未找到条目"), "未知 id 报错：{err}");
+}
+
+#[tokio::test]
+async fn test_insights_promote_then_veto_roundtrip() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    // store 直落一条 dialogue candidate（批次三之前的合法造数形态）
+    let store = nemesis_forge::insights::InsightStore::new(dir.path());
+    let e = store
+        .add_candidate(
+            "先尝试自行解决，确实需要授权再询问",
+            "process_constraint",
+            "",
+            nemesis_forge::insights::InsightSource::Dialogue,
+            0.5,
+            None,
+        )
+        .unwrap();
+    // candidate 不进 active 视图
+    let out = handler
+        .handle_cmd(
+            "insights.list",
+            Some(serde_json::json!({"status":"active"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["entries"].as_array().unwrap().len(), 0);
+    // WSAPI 晋升 → active
+    let out = handler
+        .handle_cmd(
+            "insights.update",
+            Some(serde_json::json!({ "id": e.id, "action": "promote" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["entry"]["status"], "active");
+    // active 视图可见
+    let out = handler
+        .handle_cmd(
+            "insights.list",
+            Some(serde_json::json!({"status":"active"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["entries"].as_array().unwrap().len(), 1);
+    // veto → retired(vetoed)
+    let out = handler
+        .handle_cmd(
+            "insights.update",
+            Some(serde_json::json!({ "id": e.id, "action": "veto" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["entry"]["status"], "retired");
+    assert_eq!(out["entry"]["retire_reason"], "vetoed");
+    // 已退役再 promote → 拒绝
+    assert!(
+        handler
+            .handle_cmd(
+                "insights.update",
+                Some(serde_json::json!({ "id": e.id, "action": "promote" })),
+                &ctx,
+            )
+            .await
+            .is_err()
+    );
+}
+
+// ── learn.run（自学习铺路批次三）──────────────────────────────────────
+
+/// 带 estop 的 ctx（base_app_state 构造期引用计数为 1，`Arc::get_mut`
+/// 必成功——estop 槽注入不走第二个 AppState 字面量）。
+fn make_ctx_with_estop(
+    dir: &tempfile::TempDir,
+    estop: Arc<nemesis_agent::estop::EstopState>,
+) -> RequestContext {
+    let ws = dir.path().to_string_lossy().to_string();
+    let mut state = base_app_state(Some(ws.clone()));
+    Arc::get_mut(&mut state).unwrap().estop = Some(estop);
+    ctx_from_state(state, Some(ws))
+}
+
+/// learn.run 命令注册进 commands() 清单（system.commands 发布面契约）。
+#[test]
+fn test_learn_run_in_commands_list() {
+    assert!(forge::ForgeHandler::new().commands().contains(&"learn.run"));
+}
+
+/// estop 冻结中 → 手动学习对话入口即拒（显式用户动作也压不过全局急停）。
+/// 回归钉咬合：摘掉 estop 预检臂，本断言翻红。
+#[tokio::test]
+async fn test_learn_run_rejected_when_estop_engaged() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let ctx = make_ctx_with_estop(&dir, estop);
+    let err = handler
+        .handle_cmd("learn.run", None, &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("急停"), "got: {err}");
+}
+
+/// 无 forge 实例 + 无任何模型条目 → 回落链全臂失败 = 诚实报错「无可用
+/// 模型」。间接咬合「手动触发不受 learn.enabled 总闸约束」：默认配置
+/// enabled=false 仍推进到 caller 解析（若被总闸拦下，报错文案会是别的）。
+#[tokio::test]
+async fn test_learn_run_no_models_reports_honest_error() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    let ctx = make_ctx(&dir);
+    let err = handler
+        .handle_cmd("learn.run", None, &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("无可用模型"), "got: {err}");
+    // 失败路径零留痕（trace 目录都不该出现）。
+    assert!(!forge_dir(dir.path()).join("learn").exists());
 }

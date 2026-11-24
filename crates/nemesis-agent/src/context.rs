@@ -336,6 +336,43 @@ pub fn prompt_profile_section(profile: PromptProfile) -> String {
     }
 }
 
+/// SKILL.md 描述提取（load_skills 单点）：frontmatter（`---` 定界）优先
+/// 取 frontmatter `description:` 键值（单一真相源 nemesis-skills
+/// learned::extract_description，引号剥离同源——合并收敛：上游
+/// BUG-20261122-013 修复与本侧助手合一）；带 frontmatter 但缺该键（含
+/// 未闭合形态）= 留空（渲染 "(no description)"，不回落首行启发式）；
+/// 无 frontmatter 保持旧行为（首非空行去 `#` 前缀）。
+///
+/// 修复 BUG：旧逻辑「首非空行去 `#`」对 frontmatter 形态（learn 对话
+/// 产出与 Skills/ 目录的标准形态）把分隔线 `---` 当成描述——Loaded
+/// Skills 段全部渲染成 `name: ---`，语义信号归零。
+pub(crate) fn extract_skill_description(content: &str) -> String {
+    // BOM 剥离（config.json 同款先例）——`\u{feff}---` 会让 frontmatter
+    // 判定失灵（nemesis-skills 同源提取同样吃这个亏，先剥再喂）。
+    let content = content.trim_start_matches('\u{feff}');
+    if content.trim_start().starts_with("---") {
+        // frontmatter 形态：描述提取委托 nemesis-skills 同源；`---` 门在
+        // 委托前——正文中部水平线不误开 frontmatter 判定。
+        let extracted = nemesis_skills::learned::extract_description(content);
+        if !extracted.is_empty() {
+            return extracted;
+        }
+        // 带 frontmatter 但缺 description 键 → 留空（上游口径：作者没写
+        // 就是没写，不发明描述）。
+        return String::new();
+    }
+    body_description(content)
+}
+
+/// 正文首非空行去 `#` 前缀（旧行为锚点）。
+fn body_description(content: &str) -> String {
+    content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim_start_matches('#').trim().to_string())
+        .unwrap_or_default()
+}
+
 impl ContextBuilder {
     /// Create a new context builder for the given workspace directory.
     pub fn new(workspace: &Path) -> Self {
@@ -448,30 +485,7 @@ impl ContextBuilder {
                         && let Ok(content) = std::fs::read_to_string(&skill_md)
                     {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        // BUG-20261122-013：SKILL.md 首非空行恒为 YAML
-                        // frontmatter 的 `---` 开栏（全部内建模板 + forge
-                        // 生成技能都带 frontmatter），旧「首行剥 #」启发式
-                        // 让所有技能描述在 system prompt Loaded Skills 段
-                        // 渲染成字面 "---"。frontmatter 描述提取复用
-                        // nemesis-skills 单一真相源（learned::extract_
-                        // description，引号剥离同源）；带 frontmatter 但无
-                        // description 字段 → 空（渲染 "(no description)"，
-                        // 不回落首行启发式——首行仍是 `---`）；无 frontmatter
-                        // → 保留旧行为（首个内容行剥 # 作描述）。
-                        let extracted = nemesis_skills::learned::extract_description(&content);
-                        let description = if !extracted.is_empty() {
-                            extracted
-                        } else if content.trim_start().starts_with("---") {
-                            String::new()
-                        } else {
-                            content
-                                .lines()
-                                .find(|l| !l.trim().is_empty())
-                                .unwrap_or("")
-                                .trim_start_matches('#')
-                                .trim()
-                                .to_string()
-                        };
+                        let description = extract_skill_description(&content);
                         self.skills_info.push(SkillInfo {
                             name,
                             description,

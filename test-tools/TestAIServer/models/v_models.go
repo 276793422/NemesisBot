@@ -751,3 +751,77 @@ func (m *TestAIMail) Process(messages []Message) string {
 }
 
 func (m *TestAIMail) Delay() time.Duration { return 0 }
+
+// ------------------------------------------------------------- testai-learn-1.0
+//
+// Scripted four-phase learn-dialogue judge (self-learning road-paving batch
+// three). The learn dialogue engine (nemesis-forge learn_dialogue) drives a
+// stateless single-call LLM through four phases; each phase's user prompt
+// opens with a unique header and the transcript accumulates prior rounds, so
+// phase detection = marker containment in the last user message:
+//
+//	# 学习对话阶段 1/4：提议  → {"proposals":[...],"empty_reason":...}
+//	# 学习对话阶段 2/4：定形  → {"items":[{id,form,reason}]}
+//	# 学习对话阶段 3/4：对账  → {"items":[{id,verdict,target,note}]}
+//	# 学习对话阶段 4/4：定稿  → {"insights":[...],"skills":[...]}
+//
+// Deterministic branches keyed on evidence-pack markers (pack text rides the
+// phase-1 prompt and thus every later transcript):
+//
+//	<LEARN_NOTHING>  → phase 1 returns empty proposals + honest reason
+//	                   (「没有值得学的」 first-class answer path)
+//	<LEARN_GARBAGE>  → every phase replies prose (non-JSON), exercising the
+//	                   retry-once + honest-drop-with-raws path
+//
+// Default script lands exactly one insight (id l1) through all four phases —
+// skill drafts stay out of the default script so the oracle needs no
+// tests-segment semantics.
+type TestAILearn struct{}
+
+func NewTestAILearn() *TestAILearn { return &TestAILearn{} }
+
+func (m *TestAILearn) Name() string         { return "testai-learn-1.0" }
+func (m *TestAILearn) Delay() time.Duration { return 0 }
+
+func (m *TestAILearn) Process(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	last := messages[len(messages)-1]
+
+	garbage := strings.Contains(last.Content, "<LEARN_GARBAGE>")
+	if garbage {
+		return "这不是 JSON：我觉得候选里有一条洞察值得沉淀。"
+	}
+
+	// 阶段检测（逆序 4→1）。协议形态：阶段 N 的 prompt 以自身标记开头，
+	// 且内嵌前几轮往返原文（transcript 累积）——于是 phase-N 的消息**同时
+	// 含全部 ≤N 的标记、不含 >N 的标记**。正序 Contains 会在阶段 ≥2 的
+	// 消息上先命中内嵌的阶段 1 标记而全部误路由回阶段 1（2026-11-24 真机
+	// 彩排实证：阶段 2 回了阶段 1 的 proposals JSON）；逆序取命中的最大阶
+	// 段号 = 恰为当前阶段。Contains 而非 HasPrefix 的理由不变：标记虽在
+	// prompt 头部，但消息可能带前置材料。
+	if strings.Contains(last.Content, "# 学习对话阶段 4/4：定稿") {
+		return `{"insights":[{"id":"l1","statement":"停下询问前先自己尝试可行路径","category":"behavior","evidence":"候选 l1：可行路径明确时仍停下询问授权被纠正","confidence":0.9}],"skills":[]}`
+	}
+
+	// 阶段 3：对账（keep——无既有台账冲突的默认脚本）。
+	if strings.Contains(last.Content, "# 学习对话阶段 3/4：对账") {
+		return `{"items":[{"id":"l1","verdict":"keep","target":"","note":""}]}`
+	}
+
+	// 阶段 2：定形（洞察形态——单条 proposal，注入经济学一句话常驻）。
+	if strings.Contains(last.Content, "# 学习对话阶段 2/4：定形") {
+		return `{"items":[{"id":"l1","form":"insight","reason":"一句话行为修正，常驻注入即可"}]}`
+	}
+
+	// 阶段 1：提议（「没有值得学的」一等答案分支）。
+	if strings.Contains(last.Content, "# 学习对话阶段 1/4：提议") {
+		if strings.Contains(last.Content, "<LEARN_NOTHING>") {
+			return `{"proposals":[],"empty_reason":"<LEARN_NOTHING> 命中：候选是正常咨询与环境噪声，没有值得学的"}`
+		}
+		return `{"proposals":[{"id":"l1","title":"停下询问前先自己尝试可行路径","observation":"agent 多次在可行路径明确时停下询问授权","lesson":"先自己尝试可行路径，失败后再询问"}]}`
+	}
+
+	return "learn dialogue out of script (no phase marker in last message)"
+}

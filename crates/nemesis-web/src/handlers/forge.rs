@@ -63,6 +63,9 @@ impl ModuleHandler for ForgeHandler {
             "replay_extract",
             "config.get",
             "config.set",
+            "insights.list",
+            "insights.update",
+            "learn.run",
         ]
     }
 
@@ -97,6 +100,42 @@ impl ModuleHandler for ForgeHandler {
                 let data = data.ok_or("missing data")?;
                 forge_test_cmd(home, workspace, &data, ctx.state.data_store.clone())
             }
+            // 学习对话手动触发（自学习铺路批次三）。显式用户动作即用户意
+            // 志：不受 learn.enabled 总闸约束（该闸只管 cycle 自动周期）。
+            // caller 链 = resolve_learn_caller（learn.model → small_model →
+            // 主模型），优先复用运行时 Forge 实例的注入槽（agent_factory
+            // 装配 ChainLearnCaller——每次调用现场解析，模型热切即时生效）；
+            // 实例缺席（headless/测试）本地组装最小对话面。
+            "learn.run" => {
+                if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+                    return Err("学习对话被拒绝：急停（estop）冻结中".into());
+                }
+                let outcome = match ctx.state.forge.as_ref() {
+                    Some(forge) => forge.run_learn_dialogue("manual").await?,
+                    None => {
+                        let forge_cfg = load_forge_config(workspace);
+                        let forge =
+                            nemesis_forge::forge::Forge::new(forge_cfg, PathBuf::from(workspace));
+                        let caller =
+                            resolve_learn_caller(home, workspace, ctx.state.data_store.as_ref())?
+                                .ok_or("无可用模型（回落链全臂失败），学习对话无法进行")?;
+                        forge.set_learn_caller(caller);
+                        forge.run_learn_dialogue("manual").await?
+                    }
+                };
+                Ok(Some(serde_json::json!({
+                    "triggered": true,
+                    "phases_completed": outcome.phases_completed,
+                    "empty_reason": outcome.empty_reason,
+                    "insights": outcome.insights,
+                    "skills": outcome.skills,
+                    "retired": outcome.retired,
+                    "activated": outcome.activated,
+                    "dropped": outcome.dropped,
+                    "proposals_total": outcome.proposals_total,
+                    "truncated": outcome.truncated,
+                })))
+            }
 
             // 失败重放（C 线）：提取/待审列表/确认入库（执行面归 CLI）。
             "replay_list" => forge_replay_list(workspace),
@@ -126,6 +165,57 @@ impl ModuleHandler for ForgeHandler {
 
             // Experiences
             "experiences.stats" => self.experiences_stats(workspace),
+
+            // 洞察台账治理面（自学习铺路批次一，2026-11-24）。store 是
+            // 路径视图按调用现构造（RMW 由 forge 侧模块级全局写锁串行）。
+            "insights.list" => {
+                let store = nemesis_forge::insights::InsightStore::new(Path::new(workspace));
+                let filter = match data
+                    .as_ref()
+                    .and_then(|d| d.get("status"))
+                    .and_then(|v| v.as_str())
+                {
+                    Some(s) => nemesis_forge::insights::parse_status(s)?,
+                    None => None,
+                };
+                let entries = store.list(filter)?;
+                // 实效统计随行（自学习铺路批次四）：纠正率 delta 前后窗
+                // 对照最近一次 refresh_stats 落盘值；从未刷新 = null。
+                Ok(Some(
+                    serde_json::json!({ "entries": entries, "stats": store.stats() }),
+                ))
+            }
+            "insights.update" => {
+                let data = data.ok_or("missing data")?;
+                let id = data
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing id")?;
+                let action = data
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing action")?;
+                let store = nemesis_forge::insights::InsightStore::new(Path::new(workspace));
+                let entry = match action {
+                    // 人工权威三动作：晋升 / 否决 / 退役（原因缺省 superseded）。
+                    "promote" => store.promote(id)?,
+                    "veto" => store.veto(id)?,
+                    "retire" => {
+                        let reason = data
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("superseded");
+                        let r = nemesis_forge::insights::parse_retire_reason(reason)?;
+                        store.retire(id, r)?
+                    }
+                    other => {
+                        return Err(format!(
+                            "未知 insights.update action `{other}`（支持 promote|veto|retire）"
+                        ));
+                    }
+                };
+                Ok(Some(serde_json::json!({ "entry": entry })))
+            }
 
             // Reflections
             "reflections.list" => self.reflections_list(workspace),
@@ -288,7 +378,8 @@ impl ForgeHandler {
                 "cleanup_interval_secs": forge_config.storage.cleanup_interval_secs,
                 "max_experience_age_days": forge_config.storage.max_experience_age_days,
                 "min_pattern_frequency": forge_config.learning.min_pattern_frequency,
-                "max_auto_creates": forge_config.learning.max_auto_creates,
+                "learn_enabled": forge_config.learn.enabled,
+                "learn_budget_tokens": forge_config.learn.budget_tokens,
             },
             "experiences": {
                 "total": experience_count,
@@ -1319,16 +1410,16 @@ pub fn load_forge_config(workspace: &str) -> nemesis_forge::config::ForgeConfig 
     )
 }
 
-/// `forge.config.set` 允许的 dot-path 白名单（8 键，2026-11-08 配置页补全
-/// 批次 2 用户拍板 B-5 裁剪：只铺这 8 键，其余 27+ 管线调优键不导出）。
-/// 值域检查在 [`forge_advanced_config_set`] 内逐路径做。
+/// `forge.config.set` 允许的 dot-path 白名单（7 键，2026-11-08 配置页补全
+/// 批次 2 用户拍板 B-5 裁剪：只铺这些键，其余 27+ 管线调优键不导出；
+/// 2026-11-24 自学习铺路批次三：`artifacts.auto_skill` 随线 B 蒸馏退役
+/// 移出白名单）。值域检查在 [`forge_advanced_config_set`] 内逐路径做。
 const FORGE_CONFIG_SET_PATHS: &[&str] = &[
     "replay_auto_ingest",
     "test.judge_model",
     "test.judge_threshold",
     "optimize.budget_tokens",
     "reflection.use_llm",
-    "artifacts.auto_skill",
     "validation.auto_validate",
     "collection.max_experiences",
 ];
@@ -1386,10 +1477,7 @@ fn validate_forge_config_value(
 ) -> Result<serde_json::Value, String> {
     let bad = |expect: &str| format!("config path `{path}` expects {expect}");
     match path {
-        "replay_auto_ingest"
-        | "reflection.use_llm"
-        | "artifacts.auto_skill"
-        | "validation.auto_validate" => {
+        "replay_auto_ingest" | "reflection.use_llm" | "validation.auto_validate" => {
             if !value.is_boolean() {
                 return Err(bad("a boolean"));
             }
@@ -1562,16 +1650,108 @@ pub fn resolve_judge_caller(
     }
     arms.push(String::new()); // 臂 3：默认模型（resolve 语义见下）
 
-    for arm in &arms {
-        match build_caller_for_ref(&cfg, arm, workspace, data_store) {
+    resolve_caller_from_arms(&cfg, &arms, workspace, data_store, "judge")
+}
+
+/// 学习对话的杂务模型回落链（自学习铺路批次三；judge 链同构新臂）。
+/// 臂序：`forge.learn.model` 显式别名 → `agents.small_model` → 主模型。
+/// 降级纪律与 [`resolve_judge_caller`] 相同：warn 留痕逐臂回落，全败 =
+/// `Ok(None)`。
+pub fn resolve_learn_caller(
+    home: &str,
+    workspace: &str,
+    data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
+) -> Result<Option<std::sync::Arc<dyn nemesis_forge::reflector_llm::LLMCaller>>, String> {
+    let cfg = crate::handlers::config::load_config(home)?;
+    let forge_cfg = load_forge_config(workspace);
+
+    let mut arms: Vec<String> = Vec::new();
+    if let Some(a) = forge_cfg
+        .learn
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "small_model")
+    {
+        arms.push(a.to_string());
+    }
+    if let Some(s) = cfg
+        .agents
+        .small_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        arms.push(s.to_string());
+    }
+    arms.push(String::new()); // 臂 3：默认模型（resolve 语义见下）
+
+    resolve_caller_from_arms(&cfg, &arms, workspace, data_store, "learn")
+}
+
+/// 学习对话回落链 caller（nemesisbot 侧 `ChainLearnCaller` 的 web 侧同构
+/// 形态）：每阶段现场解析 [`resolve_learn_caller`]（learn.model →
+/// small_model → 主模型）。存在动机：`models.set_default` 热切会经
+/// `Forge::set_provider` 级联用主模型 bridge 覆盖启动时注入的
+/// ChainLearnCaller——此类型给热切路径一个同语义的重装点，保证热切后
+/// 对话仍走完整回落链而非钉死主模型。
+pub struct LearnChainCaller {
+    home: String,
+    workspace: String,
+    data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
+}
+
+impl LearnChainCaller {
+    pub fn new(home: String, workspace: String) -> Self {
+        Self {
+            home,
+            workspace,
+            data_store: None,
+        }
+    }
+
+    /// aux 账本归因（与启动装配同源；None = 不落账）。
+    pub fn with_data_store(mut self, ds: Option<std::sync::Arc<nemesis_data::DataStore>>) -> Self {
+        self.data_store = ds;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_forge::reflector_llm::LLMCaller for LearnChainCaller {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        let caller = resolve_learn_caller(&self.home, &self.workspace, self.data_store.as_ref())?
+            .ok_or_else(|| {
+            "learn caller chain resolved to none (all arms failed)".to_string()
+        })?;
+        caller.chat(system_prompt, user_prompt, max_tokens).await
+    }
+}
+
+/// 回落链臂循环单一真相源（judge/learn 两链共用）：逐臂构造，失败 warn
+/// 降下一臂，全败 `Ok(None)`。
+fn resolve_caller_from_arms(
+    cfg: &nemesis_config::Config,
+    arms: &[String],
+    workspace: &str,
+    data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
+    tag: &str,
+) -> Result<Option<std::sync::Arc<dyn nemesis_forge::reflector_llm::LLMCaller>>, String> {
+    for arm in arms {
+        match build_caller_for_ref(cfg, arm, workspace, data_store) {
             Ok(Some(caller)) => return Ok(Some(caller)),
             Ok(None) => {
                 // 解析失败降下一臂——warn 留痕（臂名空串 = 默认模型）。
                 let shown = if arm.is_empty() { "default" } else { arm };
-                tracing::warn!("[Forge] judge caller arm '{shown}' unresolved; falling back");
+                tracing::warn!("[Forge] {tag} caller arm '{shown}' unresolved; falling back");
             }
             Err(e) => {
-                tracing::warn!("[Forge] judge caller arm '{arm}' failed: {e}; falling back");
+                tracing::warn!("[Forge] {tag} caller arm '{arm}' failed: {e}; falling back");
             }
         }
     }

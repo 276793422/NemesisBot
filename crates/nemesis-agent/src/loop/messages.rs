@@ -681,6 +681,20 @@ impl AgentLoop {
                     sections.push(reminder);
                 }
             }
+            // 自学习铺路批次一（2026-11-24）：active 洞察常驻段（forge
+            // 台账 <workspace>/forge/insights.json）。闭包缺席（headless/
+            // 测试/forge 裁剪装配）或台账空/损坏 fail-closed = 段缺席零
+            // 字节（cache 纪律）；每 build 从盘重渲，文件不变 ⇒ 输出字节
+            // 不变（与 skills digest 同款字节稳定语义）。渲染异常不炸
+            // loop（闭包内部已吞错降级 None）。
+            if let Some(section) = self
+                .insights_section_source
+                .read()
+                .as_ref()
+                .and_then(|source| source())
+            {
+                sections.push(section);
+            }
             if let Some(ref root) = ws_root {
                 // 信任档三分——isolated 整段跳过（指令链
                 // 完全不进上下文）；annotate 注入但前置不可信来源横幅；

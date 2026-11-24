@@ -1,5 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createPinia } from 'pinia'
 import { useToast } from '../../composables/useToast'
 
 const requestMock = vi.fn()
@@ -42,7 +43,8 @@ beforeEach(() => {
 })
 
 async function mountView() {
-  const w = mount(ForgeView)
+  // 洞察页接线（2026-11-24）：setup 使用 session store，需 active Pinia。
+  const w = mount(ForgeView, { global: { plugins: [createPinia()] } })
   await flushPromises()
   return w
 }

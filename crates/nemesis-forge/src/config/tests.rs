@@ -13,7 +13,6 @@ fn test_default_config() {
     assert_eq!(config.reflection.min_experiences, 10);
     assert!(config.reflection.use_llm);
     assert_eq!(config.reflection.llm_budget_tokens, 4000);
-    assert!(!config.artifacts.auto_skill);
     assert_eq!(config.artifacts.max_skills, 50);
     assert_eq!(config.artifacts.max_scripts, 100);
     assert!(config.validation.auto_validate);
@@ -24,14 +23,15 @@ fn test_default_config() {
     assert_eq!(config.trace.max_trace_age_days, 30);
     assert_eq!(config.trace.min_traces_for_analysis, 0);
     assert_eq!(config.learning.min_pattern_frequency, 5);
-    assert_eq!(config.learning.high_conf_threshold, 0.8);
-    assert_eq!(config.learning.max_auto_creates, 3);
-    assert_eq!(config.learning.max_refine_rounds, 3);
     assert_eq!(config.learning.min_outcome_samples, 5);
     assert_eq!(config.learning.monitor_window_days, 7);
     assert_eq!(config.learning.degrade_threshold, -0.2);
     assert_eq!(config.learning.degradation_cooldown_days, 7);
-    assert_eq!(config.learning.llm_budget_tokens, 2000);
+    // learn 段（批次三）：默认全关（交付后行为零变化）。
+    assert!(!config.learn.enabled);
+    assert_eq!(config.learn.budget_tokens, 8192);
+    assert_eq!(config.learn.activation_recurrence, 3);
+    assert_eq!(config.learn.model, None);
 }
 
 #[test]
@@ -125,14 +125,10 @@ fn test_learning_config_defaults() {
     let lc = LearningConfig::default();
     assert!(!lc.enabled);
     assert_eq!(lc.min_pattern_frequency, 5);
-    assert!((lc.high_conf_threshold - 0.8).abs() < 0.001);
-    assert_eq!(lc.max_auto_creates, 3);
-    assert_eq!(lc.max_refine_rounds, 3);
     assert_eq!(lc.min_outcome_samples, 5);
     assert_eq!(lc.monitor_window_days, 7);
     assert!((lc.degrade_threshold - (-0.2)).abs() < 0.001);
     assert_eq!(lc.degradation_cooldown_days, 7);
-    assert_eq!(lc.llm_budget_tokens, 2000);
 }
 
 #[test]
@@ -163,7 +159,6 @@ fn test_reflection_config_defaults() {
 #[test]
 fn test_artifacts_config_defaults() {
     let config = ForgeConfig::default();
-    assert!(!config.artifacts.auto_skill);
     assert_eq!(config.artifacts.max_skills, 50);
     assert_eq!(config.artifacts.max_scripts, 100);
     assert_eq!(config.artifacts.default_status, "draft");
@@ -192,18 +187,18 @@ fn test_config_json_roundtrip_custom_values() {
     let mut config = ForgeConfig::default();
     config.enabled = true;
     config.learning.enabled = true;
-    config.learning.high_conf_threshold = 0.95;
     config.collection.max_experiences = 2000;
-    config.artifacts.auto_skill = true;
+    config.learn.enabled = true;
+    config.learn.budget_tokens = 4096;
     config.artifacts.max_skills = 200;
 
     let json = serde_json::to_string(&config).unwrap();
     let back: ForgeConfig = serde_json::from_str(&json).unwrap();
     assert!(back.enabled);
     assert!(back.learning.enabled);
-    assert!((back.learning.high_conf_threshold - 0.95).abs() < 0.001);
     assert_eq!(back.collection.max_experiences, 2000);
-    assert!(back.artifacts.auto_skill);
+    assert!(back.learn.enabled);
+    assert_eq!(back.learn.budget_tokens, 4096);
     assert_eq!(back.artifacts.max_skills, 200);
 }
 
@@ -230,25 +225,43 @@ fn test_learning_config_serialization() {
     let lc = LearningConfig {
         enabled: true,
         min_pattern_frequency: 10,
-        high_conf_threshold: 0.9,
-        max_auto_creates: 5,
-        max_refine_rounds: 2,
         min_outcome_samples: 8,
         monitor_window_days: 14,
         degrade_threshold: -0.3,
         degradation_cooldown_days: 14,
-        llm_budget_tokens: 3000,
-        success_template_skill_threshold: 7,
-        error_recovery_suggest_min: 0.35,
     };
     let json = serde_json::to_string(&lc).unwrap();
     let back: LearningConfig = serde_json::from_str(&json).unwrap();
     assert!(back.enabled);
     assert_eq!(back.min_pattern_frequency, 10);
-    assert!((back.high_conf_threshold - 0.9).abs() < 0.001);
-    // B2 决策表新键 round-trip（2026-11-14 缺陷整改批次）
-    assert_eq!(back.success_template_skill_threshold, 7);
-    assert!((back.error_recovery_suggest_min - 0.35).abs() < 0.001);
+    assert_eq!(back.min_outcome_samples, 8);
+    assert_eq!(back.monitor_window_days, 14);
+    assert!((back.degrade_threshold - (-0.3)).abs() < 0.001);
+    assert_eq!(back.degradation_cooldown_days, 14);
+}
+
+/// 线 A generate/execute 决策表退役（自学习铺路批次三）：存量盘上配置里
+/// 的六个决策表键 + artifacts.auto_skill 由 serde 默认容忍（未知字段忽略
+/// 不炸）——漂移锁，防未来有人给 struct 加 deny_unknown_fields。
+#[test]
+fn test_retired_learning_keys_tolerated_on_load() {
+    let raw = r#"{"learning":{"enabled":true,"high_conf_threshold":0.8,"max_auto_creates":3,"max_refine_rounds":2,"llm_budget_tokens":3000,"success_template_skill_threshold":7,"error_recovery_suggest_min":0.35},"artifacts":{"auto_skill":true,"max_skills":50}}"#;
+    let cfg: ForgeConfig = serde_json::from_str(raw).unwrap();
+    assert!(cfg.learning.enabled);
+    assert_eq!(cfg.learning.min_pattern_frequency, 5);
+    assert_eq!(cfg.artifacts.max_skills, 50);
+
+    let lc: LearningConfig = serde_json::from_str(
+        r#"{"high_conf_threshold":0.9,"max_auto_creates":5,"llm_budget_tokens":3000}"#,
+    )
+    .unwrap();
+    let d = LearningConfig::default();
+    assert!(!lc.enabled);
+    assert_eq!(lc.min_pattern_frequency, d.min_pattern_frequency);
+    assert_eq!(lc.min_outcome_samples, d.min_outcome_samples);
+    assert_eq!(lc.monitor_window_days, d.monitor_window_days);
+    assert_eq!(lc.degrade_threshold, d.degrade_threshold);
+    assert_eq!(lc.degradation_cooldown_days, d.degradation_cooldown_days);
 }
 
 #[test]

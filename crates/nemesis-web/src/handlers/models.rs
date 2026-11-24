@@ -1136,6 +1136,18 @@ impl ModelsHandler {
                                 ForgeProviderBridge::new(provider.clone(), swap.model.clone())
                                     .with_data_store(ctx.state.data_store.clone());
                             forge.set_provider(Arc::new(bridge));
+                            // learn 槽重装回落链 caller（自学习铺路批次三）：
+                            // set_provider 级联用主模型 bridge 覆盖了启动时
+                            // 注入的 bot 侧 ChainLearnCaller——同口径重装保证
+                            // 热切后学习对话仍走 learn.model → small_model →
+                            // 新主模型链（caller 每阶段现场解析，无陈旧 Arc）。
+                            forge.set_learn_caller(Arc::new(
+                                crate::handlers::forge::LearnChainCaller::new(
+                                    crate::handlers::require_home(ctx)?.to_string(),
+                                    crate::handlers::require_workspace(ctx)?.to_string(),
+                                )
+                                .with_data_store(ctx.state.data_store.clone()),
+                            ));
                             tracing::info!(model = %swap.model, "[Models] Forge provider updated");
                         }
                     }
