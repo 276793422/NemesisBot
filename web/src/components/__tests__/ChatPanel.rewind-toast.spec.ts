@@ -197,6 +197,11 @@ describe('ChatPanel rewind toast 文件回滚计数（restored_files 嵌套键�
       message_index: 0,
       mode: 'before',
       force: true,
+      // BUG-20261124-024：force 重试必须与首个请求同带 anchor_content——
+      // 锚定位在冲突预检之前，force 豁免的只是 conflict 预检不是锚定位；
+      // 丢锚 = 斜杠回声虚高场景下按裸 index 截错行（确认的波及面与实际
+      // 截断窗错位）+ 零命中 fail-closed 防线失效。
+      anchor_content: 'q1',
     })
     // force 成功后走 rewindToastSummary，不残留 blocked 错误 toast。
     const toasts = useToast().toasts
