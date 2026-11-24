@@ -488,7 +488,7 @@ fn test_rollup_old_logs() {
     }
 
     let deleted = store
-        .retention_sweep(Some(30), None)
+        .retention_sweep(Some(30), None, None)
         .expect("Failed to rollup old logs");
 
     // Should delete 5 old logs
@@ -521,7 +521,7 @@ fn test_rollup_old_logs_when_no_old_logs() {
     }
 
     let deleted = store
-        .retention_sweep(Some(30), None)
+        .retention_sweep(Some(30), None, None)
         .expect("Failed to rollup old logs");
 
     // Should delete 0 logs

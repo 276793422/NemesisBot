@@ -31,4 +31,4 @@ pub use pricing_filter::{
 };
 pub use pricing_lite::{LITELLM_PRICE_URL, parse_litellm_json};
 pub use pricing_store::{PricingMeta, PricingStore, validate_downloaded_entries};
-pub use usage_store::DataStore;
+pub use usage_store::{DataStore, month_start_unix_secs};

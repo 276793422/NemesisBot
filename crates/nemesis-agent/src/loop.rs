@@ -1707,6 +1707,11 @@ mod rate_limit_retry_tests;
 // "invalid api key" 不误入压缩环回归 + 词表盲区配额/deadline 文案进对应环）。
 #[cfg(test)]
 mod recovery_classifier_tests;
+// 会话级封禁用户面提示回归锁（2026-11-24 用户事故批）：Forbidden 臂的
+// forbidden_user_hint 按 is_session_scoped_block 分流——封会话（码族/
+// 实测短语命中）给「请新建会话」可行动出路；普通 403 文案逐字节不变。
+#[cfg(test)]
+mod recovery_session_block_tests;
 // 停机感知回归锁（tokio 停机 panic 根修）：retry_transient/
 // retry_rate_limited 重试 sleep 被 stop() 唤醒 + 循环顶停机闸
 // （process_direct 直调任务不在 turn_task_handles，abort 覆盖不到，停机

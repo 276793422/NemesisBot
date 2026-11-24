@@ -3,7 +3,7 @@
 use super::*;
 use nemesis_agent::context::RequestContext;
 use nemesis_agent::r#loop::Tool;
-use nemesis_loop::load_loop;
+use nemesis_loop::{load_loop, save_loop};
 
 const SESSION_KEY: &str = "agent:main:session:bench-loop-a";
 

@@ -21,7 +21,7 @@
 //! big/Unresolved 全量档可见）——自配速是重决策面，小模型不供给。
 
 use nemesis_agent::context::RequestContext;
-use nemesis_loop::{LoopState, LoopStatus, list_loops, save_loop};
+use nemesis_loop::{LoopState, LoopStatus, list_loops, update_loop};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -122,42 +122,46 @@ impl nemesis_agent::r#loop::Tool for LoopWakeupTool {
             return Err("急停（estop）已触发，loop 排程冻结——释放急停后再试".to_string());
         }
 
-        let mut st = find_bound_loop(&self.loops_dir, &context.session_key)?
+        // 快照预检只作提前失败优化（提示语用）；状态机校验与落盘在锁内以
+        // 盘上最新状态重做（BUG-20261125-003 RMW 串行化）。
+        let snap = find_bound_loop(&self.loops_dir, &context.session_key)?
             .ok_or_else(|| "本会话未绑定任何 loop（由人经 CLI/WSAPI 创建并绑定）".to_string())?;
-
-        match st.status {
-            LoopStatus::Active => {}
-            LoopStatus::Paused | LoopStatus::Parked => {
-                return Err(format!(
+        if snap.status != LoopStatus::Active {
+            return Err(match snap.status {
+                LoopStatus::Paused | LoopStatus::Parked => format!(
                     "loop {} 当前状态 {}（仅人可暂停/恢复）——请告知用户经 CLI `loop resume` 或 WSAPI loops.resume 解除",
+                    snap.id,
+                    snap.status.as_str()
+                ),
+                t => format!("loop {} 已终态（{}），无法再排程", snap.id, t.as_str()),
+            });
+        }
+
+        let ts = now_ms();
+        // 排程合法性纯函数校验锁外做（不依赖状态）；裁决与落盘锁内。
+        let (next, cron_set) = nemesis_loop::compute_next_wake(ts, delay, cron)?;
+        let st = update_loop(&self.loops_dir, &snap.id, |st| {
+            if st.status != LoopStatus::Active {
+                return Err(format!(
+                    "loop {} 当前状态 {}，无法排程（仅 active 可自配速）",
                     st.id,
                     st.status.as_str()
                 ));
             }
-            t @ (LoopStatus::Done | LoopStatus::Failed) => {
-                return Err(format!(
-                    "loop {} 已终态（{}），无法再排程",
-                    st.id,
-                    t.as_str()
-                ));
+            st.next_wake_ms = next;
+            st.cron = cron_set;
+            if let Some(p) = plan {
+                st.plan = p.to_string();
             }
-        }
-
-        let ts = now_ms();
-        let (next, cron_set) = nemesis_loop::compute_next_wake(ts, delay, cron)?;
-        st.next_wake_ms = next;
-        st.cron = cron_set;
-        if let Some(p) = plan {
-            st.plan = p.to_string();
-        }
-        if let Some(n) = note {
-            st.push_progress(ts, n.to_string());
-        }
+            if let Some(n) = note {
+                st.push_progress(ts, n.to_string());
+            }
+            Ok(true)
+        })?;
         let when = st
             .next_wake_ms
             .map(nemesis_loop::format_wake_time)
             .unwrap_or_else(|| "unknown".to_string());
-        save_loop(&self.loops_dir, &st)?;
         Ok(format!(
             "已排程：loop {} 将在 {} 唤醒本会话（{}）。届时你会收到唤醒消息并自主决定继续/调整/收尾。",
             st.id,
@@ -262,30 +266,52 @@ impl nemesis_agent::r#loop::Tool for LoopFinishTool {
             .filter(|s| !s.is_empty())
             .ok_or("缺少 summary（必填——收尾必须留下总结）")?;
 
-        let mut st = find_bound_loop(&self.loops_dir, &context.session_key)?
+        let snap = find_bound_loop(&self.loops_dir, &context.session_key)?
             .ok_or_else(|| "本会话未绑定任何 loop".to_string())?;
-        if st.status.is_terminal() {
+        if snap.status.is_terminal() {
             return Ok(format!(
                 "loop {} 已是终态（{}），无需重复收尾{}",
-                st.id,
-                st.status.as_str(),
-                st.finish_summary
+                snap.id,
+                snap.status.as_str(),
+                snap.finish_summary
                     .as_deref()
                     .map(|s| format!("；已有总结：{s}"))
                     .unwrap_or_default()
             ));
         }
         let ts = now_ms();
-        st.status = LoopStatus::Done;
-        st.finish_summary = Some(summary.to_string());
-        st.next_wake_ms = None;
-        st.cron = None;
-        st.push_progress(ts, format!("[finish] {summary}"));
-        save_loop(&self.loops_dir, &st)?;
-        Ok(format!(
-            "loop {} 已收尾（done）。驱动器不再唤醒本会话。总结已入进度日志。",
-            st.id
-        ))
+        // 锁内 RMW（BUG-20261125-003）：终态判定用锁内最新状态（快照预检
+        // 与落盘之间驱动器可能刚 park / 人可能刚 remove）。返回锁内终态
+        // 供消息生成。
+        let st = update_loop(&self.loops_dir, &snap.id, |st| {
+            if st.status.is_terminal() {
+                // 已终态：幂等命中，不重复写（消息按返回态生成）。
+                return Ok(false);
+            }
+            st.status = LoopStatus::Done;
+            st.finish_summary = Some(summary.to_string());
+            st.next_wake_ms = None;
+            st.cron = None;
+            st.push_progress(ts, format!("[finish] {summary}"));
+            Ok(true)
+        })?;
+        if st.status.is_terminal() && st.finish_summary.is_some() {
+            Ok(format!(
+                "loop {} 已收尾（done）。驱动器不再唤醒本会话。总结已入进度日志。",
+                st.id
+            ))
+        } else {
+            // 锁内刚被判终态（他人收尾/预算 park）——诚实上报不假装成功。
+            Ok(format!(
+                "loop {} 在收尾前已进入终态（{}）——无需重复收尾{}",
+                st.id,
+                st.status.as_str(),
+                st.finish_summary
+                    .as_deref()
+                    .map(|s| format!("；已有总结：{s}"))
+                    .unwrap_or_default()
+            ))
+        }
     }
 }
 

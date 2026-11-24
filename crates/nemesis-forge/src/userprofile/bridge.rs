@@ -83,8 +83,11 @@ pub fn outbound_lessons_path(workspace: &Path) -> PathBuf {
         .join("outbound_lessons.jsonl")
 }
 
-/// append 写串行（反思 sweep 与未来 Forge 消费 ack 并发的行交错防线；
-/// telemetry.rs 同族模式）。
+/// 队列写串行：append 追加与全量重写族（ack/resolve/prune）共用，且
+/// 重写族的**读改写全程**必须在本锁内（BUG-20261125-004：重写读在锁外
+/// 时，读→写窗内 sweep 并发 append 的行不在读到的快照里，整文件写回即
+/// 静默丢失 pending 教训/观察——锁只护写臂是假防线）。telemetry.rs
+/// 同族模式。
 static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 /// id 单调分配器（上次分配的 nanos）：时钟粒度碰撞/回拨防线——同批连续
 /// append 或并发分配时保证严格递增不重复（撞 id 会让 ack 误确认多条）。
@@ -153,6 +156,9 @@ pub fn ack_lessons(workspace: &Path, ids: &[String]) -> Result<usize, String> {
         return Ok(0);
     }
     let path = outbound_lessons_path(workspace);
+    // RMW 全程持锁（BUG-20261125-004）：读在锁外时，读→写窗内 sweep 并发
+    // append 的行不在本次快照里，整文件写回即静默丢失。
+    let _w = WRITE_LOCK.lock();
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read lessons: {e}"))?;
     let mut acked = 0usize;
     let mut out = String::new();
@@ -175,7 +181,6 @@ pub fn ack_lessons(workspace: &Path, ids: &[String]) -> Result<usize, String> {
             }
         }
     }
-    let _w = WRITE_LOCK.lock();
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
         .map_err(|e| format!("write lessons: {e}"))?;
     Ok(acked)
@@ -331,6 +336,8 @@ pub fn resolve_observation(
     confirm: bool,
 ) -> Result<Option<ObservationEntry>, String> {
     let path = observations_path(workspace);
+    // RMW 全程持锁（BUG-20261125-004，同 ack_lessons）。
+    let _w = WRITE_LOCK.lock();
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read observations: {e}"))?;
     let mut resolved: Option<ObservationEntry> = None;
     let mut out = String::new();
@@ -358,7 +365,6 @@ pub fn resolve_observation(
             }
         }
     }
-    let _w = WRITE_LOCK.lock();
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
         .map_err(|e| format!("write observations: {e}"))?;
     Ok(resolved)
@@ -388,6 +394,9 @@ pub fn observation_stats(workspace: &Path) -> (usize, usize, usize) {
 /// 返回删除条数。缺文件 = Ok(0)。
 pub fn prune_lessons_older_than(workspace: &Path, cutoff_ms: i64) -> Result<usize, String> {
     let path = outbound_lessons_path(workspace);
+    // RMW 全程持锁（BUG-20261125-004，同 ack_lessons）；缺文件早退在锁内
+    // 发生（parking_lot 无 poison，提前 return 即释放）。
+    let _w = WRITE_LOCK.lock();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -414,7 +423,6 @@ pub fn prune_lessons_older_than(workspace: &Path, cutoff_ms: i64) -> Result<usiz
     if pruned == 0 {
         return Ok(0); // 无删除不重写（省一次原子写）
     }
-    let _w = WRITE_LOCK.lock();
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
         .map_err(|e| format!("write lessons: {e}"))?;
     Ok(pruned)
@@ -426,6 +434,8 @@ pub fn prune_lessons_older_than(workspace: &Path, cutoff_ms: i64) -> Result<usiz
 /// Ok(0)。
 pub fn prune_observations_older_than(workspace: &Path, cutoff_ms: i64) -> Result<usize, String> {
     let path = observations_path(workspace);
+    // RMW 全程持锁（BUG-20261125-004，同 ack_lessons）。
+    let _w = WRITE_LOCK.lock();
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -455,7 +465,6 @@ pub fn prune_observations_older_than(workspace: &Path, cutoff_ms: i64) -> Result
     if pruned == 0 {
         return Ok(0);
     }
-    let _w = WRITE_LOCK.lock();
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
         .map_err(|e| format!("write observations: {e}"))?;
     Ok(pruned)

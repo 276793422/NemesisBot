@@ -239,6 +239,13 @@ pub fn class_by_code(code: &str) -> Option<LlmErrorClass> {
     if normalized.ends_with("_policy_violation") {
         return Some(LlmErrorClass::Forbidden);
     }
+    // 会话级封禁码族（2026-11-24 用户事故批；[`is_session_scoped_block`]
+    // 同一词表的码形态臂）：`session_blocked_by_cyber_policy` 不落在上方
+    // 精确表（`cyber_policy` 是裸码条目，带前缀的完整码精确匹配不命中），
+    // 受控前缀族收敛同构变体——封会话恒终态 Forbidden。
+    if normalized.starts_with("session_blocked") {
+        return Some(LlmErrorClass::Forbidden);
+    }
     None
 }
 
@@ -530,6 +537,32 @@ pub fn is_connect_error(msg: &str) -> bool {
         "failed to resolve",
     ];
     PATTERNS.iter().any(|p| msg.contains(p))
+}
+
+/// 会话级封禁（session-scoped block）判定（2026-11-24 用户事故批）。
+///
+/// 语义：上游封的是**会话身份**不是单条请求——删除本轮/重发/改内容都无法
+/// 解除，唯一出路是换会话身份（新建会话/清空当前会话）。与普通 403（换
+/// 内容可解）在提示面上必须区分，否则用户在死会话里反复删除重试（实录：
+/// 403 会话封禁后用户反复删轮/重发均撞同一封禁）。
+///
+/// 单一真相源：loop 层 Forbidden 臂的用户面提示选择（recovery）与
+/// [`class_by_code`] 的码族映射共用本词表。词表是**黑名单制非穷举**（码形
+/// 态 + 实测短语，遇到新厂商形态再扩）；大小写不敏感 contains，内部自行
+/// lowercase（与 [`is_context_overflow`] 同款纪律——调用方可能传原始大小
+/// 写文本）。
+pub fn is_session_scoped_block(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    const MARKERS: &[&str] = &[
+        // 错误码族锚（CC Switch 实录 `session_blocked_by_cyber_policy`；
+        // `session_blocked` 前缀族覆盖同构码变体）：
+        "session_blocked",
+        // 实录英文原文短语（无码形态的兜底，高特异性）：
+        "blocked by cyber-security policy",
+        // 实录中文原文短语（同上）：
+        "请开启新会话",
+    ];
+    MARKERS.iter().any(|p| m.contains(p))
 }
 
 /// 上下文溢出（prompt 超出模型窗口）文案族判定（B29/D1 2026-11-06）。

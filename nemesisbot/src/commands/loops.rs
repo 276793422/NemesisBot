@@ -296,38 +296,45 @@ fn cmd_show(dir: &Path, id: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_pause_resume(dir: &Path, id: &str, pause: bool) -> Result<()> {
-    let mut st = nemesis_loop::load_loop(dir, id)
-        .map_err(anyhow::Error::msg)?
-        .ok_or_else(|| anyhow::anyhow!("loop {id} 不存在"))?;
+    // 锁内 RMW（BUG-20261125-003）：状态机校验与落盘用锁内最新状态，
+    // 防与驱动器/agent 工具交错丢更新（pause 被旧快照写回复活）。
     let ts = now_ms();
+    let st = nemesis_loop::update_loop(dir, id, |st| {
+        if pause {
+            if st.status != nemesis_loop::LoopStatus::Active {
+                return Err(format!(
+                    "loop {} 当前状态 {}，仅 active 可暂停",
+                    st.id,
+                    st.status.as_str()
+                ));
+            }
+            st.status = nemesis_loop::LoopStatus::Paused;
+            st.push_progress(ts, "[paused] 人经 CLI 暂停".to_string());
+        } else {
+            if st.status != nemesis_loop::LoopStatus::Paused
+                && st.status != nemesis_loop::LoopStatus::Parked
+            {
+                return Err(format!(
+                    "loop {} 当前状态 {}，仅 paused/parked 可恢复",
+                    st.id,
+                    st.status.as_str()
+                ));
+            }
+            st.status = nemesis_loop::LoopStatus::Active;
+            st.push_progress(ts, "[resumed] 人经 CLI 恢复".to_string());
+            if st.next_wake_ms.is_none() && st.cron.is_none() {
+                println!("  注意：当前未排程——agent 下一次 loop_wakeup 或编辑状态文件后才会被唤醒");
+            }
+        }
+        st.updated_at_ms = ts;
+        Ok(true)
+    })
+    .map_err(anyhow::Error::msg)?;
     if pause {
-        if st.status != nemesis_loop::LoopStatus::Active {
-            bail!(
-                "loop {id} 当前状态 {}，仅 active 可暂停",
-                st.status.as_str()
-            );
-        }
-        st.status = nemesis_loop::LoopStatus::Paused;
-        st.push_progress(ts, "[paused] 人经 CLI 暂停".to_string());
-        println!("Loop {id} paused");
+        println!("Loop {} paused", st.id);
     } else {
-        if st.status != nemesis_loop::LoopStatus::Paused
-            && st.status != nemesis_loop::LoopStatus::Parked
-        {
-            bail!(
-                "loop {id} 当前状态 {}，仅 paused/parked 可恢复",
-                st.status.as_str()
-            );
-        }
-        st.status = nemesis_loop::LoopStatus::Active;
-        st.push_progress(ts, "[resumed] 人经 CLI 恢复".to_string());
-        println!("Loop {id} resumed");
-        if st.next_wake_ms.is_none() && st.cron.is_none() {
-            println!("  注意：当前未排程——agent 下一次 loop_wakeup 或编辑状态文件后才会被唤醒");
-        }
+        println!("Loop {} resumed", st.id);
     }
-    st.updated_at_ms = ts;
-    nemesis_loop::save_loop(dir, &st).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
