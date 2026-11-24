@@ -6,7 +6,7 @@
 #![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -112,6 +112,39 @@ struct GetRecordResponse {
     cid: String,
 }
 
+/// seen 去重表（有界 FIFO）。
+///
+/// BUG-20261125-026：原 `HashMap<String, bool>` 溢出（>500）时 `clear()`
+/// 全遗忘——制造了与「重启丢内存」同态的状态，却不触发重启路径的既有
+/// 不变量（first_poll 基线：只建基线不发布）。后果：溢出触发点同批其后
+/// 的窗口内旧通知立即重发布，下一轮窗口内其余旧通知（~24 条）再重灌
+/// ——bot 对早已回复过的旧帖成批重复回复。家族原则（email.rs
+/// prune_seen_uids 注释）：去重语义只需覆盖近期重投递窗口——
+/// listNotifications 恒回最近 ≤25 条（倒序），最旧条目离开窗口后永不
+/// 重现，FIFO 逐出恰好人只逐出不可复现条目、窗口内条目任何时刻完整
+/// 保留（500 容量 = 窗口 20 倍余量）；对比家族另两形态：email/signal
+/// 任意序半量修剪（窗口命中概率低、已定性可接受），bluesky 全清是
+/// 家族内离群点（email 注释点名「bluesky 500 全清」）。
+#[derive(Default)]
+struct SeenTable {
+    map: HashMap<String, bool>,
+    order: VecDeque<String>,
+}
+
+impl SeenTable {
+    /// 插入（幂等：已存在键不重复入队）并按 FIFO 逐出最旧保持容量帽。
+    fn insert(&mut self, notif_id: String) {
+        if self.map.insert(notif_id.clone(), true).is_none() {
+            self.order.push_back(notif_id);
+            if self.order.len() > 500
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.map.remove(&oldest);
+            }
+        }
+    }
+}
+
 /// Bluesky channel using AT Protocol REST API.
 pub struct BlueskyChannel {
     base: BaseChannel,
@@ -120,7 +153,7 @@ pub struct BlueskyChannel {
     running: Arc<parking_lot::RwLock<bool>>,
     access_token: Arc<parking_lot::RwLock<String>>,
     did: Arc<parking_lot::RwLock<String>>,
-    seen_notifs: std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>>,
+    seen_notifs: std::sync::Arc<parking_lot::RwLock<SeenTable>>,
     bus_sender: broadcast::Sender<InboundMessage>,
 }
 
@@ -154,7 +187,7 @@ impl BlueskyChannel {
             running: Arc::new(parking_lot::RwLock::new(false)),
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),
             did: Arc::new(parking_lot::RwLock::new(String::new())),
-            seen_notifs: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            seen_notifs: std::sync::Arc::new(parking_lot::RwLock::new(SeenTable::default())),
             bus_sender,
         })
     }
@@ -288,24 +321,19 @@ impl BlueskyChannel {
 
     /// Marks a notification as seen.
     pub fn mark_seen(&self, notif_id: &str) {
-        let mut map = self.seen_notifs.write();
-        map.insert(notif_id.to_string(), true);
-        if map.len() > 500 {
-            *map = HashMap::new();
-            map.insert(notif_id.to_string(), true);
-        }
+        self.seen_notifs.write().insert(notif_id.to_string());
     }
 
     /// Checks if a notification has been seen.
     pub fn is_seen(&self, notif_id: &str) -> bool {
-        self.seen_notifs.read().contains_key(notif_id)
+        self.seen_notifs.read().map.contains_key(notif_id)
     }
 
     /// 首轮基线：把窗口内全部 mention/reply 通知 uri 标记为已见（不发布）。
     /// 供 start() 轮询循环在首次成功拉取后调用。
     fn mark_notifications_seen(
         notifications: &[serde_json::Value],
-        seen: &std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>>,
+        seen: &std::sync::Arc<parking_lot::RwLock<SeenTable>>,
     ) {
         for notif in notifications {
             let reason = notif["reason"].as_str().unwrap_or("");
@@ -313,7 +341,7 @@ impl BlueskyChannel {
                 continue;
             }
             if let Some(uri) = notif["uri"].as_str() {
-                seen.write().insert(uri.to_string(), true);
+                seen.write().insert(uri.to_string());
             }
         }
     }
@@ -327,7 +355,7 @@ impl BlueskyChannel {
     fn ingest_notification(
         notif: &serde_json::Value,
         own_did: &str,
-        seen: &std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>>,
+        seen: &std::sync::Arc<parking_lot::RwLock<SeenTable>>,
         allow_from: &[String],
         bus: &broadcast::Sender<InboundMessage>,
     ) -> bool {
@@ -363,17 +391,14 @@ impl BlueskyChannel {
 
         let notif_id = notif["uri"].as_str().unwrap_or("").to_string();
 
-        // Dedup
+        // Dedup（BUG-20261125-026：FIFO 有界淘汰取代 clear 全遗忘，
+        // 见 SeenTable 文档）
         {
-            let mut map = seen.write();
-            if map.contains_key(&notif_id) {
+            let mut table = seen.write();
+            if table.map.contains_key(&notif_id) {
                 return false;
             }
-            map.insert(notif_id.clone(), true);
-            if map.len() > 500 {
-                map.clear();
-                map.insert(notif_id, true);
-            }
+            table.insert(notif_id);
         }
 
         let inbound = InboundMessage::user_ingress(

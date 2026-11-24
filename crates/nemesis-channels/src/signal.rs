@@ -33,7 +33,17 @@ pub struct SignalEnvelope {
 }
 
 /// Inner envelope data.
+///
+/// BUG-20261125-025：wire 字段名权威真相源 = signal-cli-rest-api swagger
+/// `receive.MessageEnvelope`（camelCase：`sourceNumber`/`sourceUuid`/
+/// `dataMessage`/`syncMessage`...）。本结构体曾用 snake_case 且无
+/// `rename_all`——serde 精确匹配字段名，线上全部 camelCase 键静默忽略：
+/// `data_message` 恒 None → receive loop 每条消息 `continue` → 通道 100%
+/// 静默丢消息；`source_number` 恒 None → sender 恒 "unknown"（allow_from
+/// 配置时所有真实消息被过滤 / 未配置时跨发送者会话键塌缩）。
+/// 测试 fixture 自建 snake_case JSON 与线上格式脱锚 = 假绿实证。
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalEnvelopeInner {
     pub source: Option<String>,
     pub source_number: Option<String>,
@@ -45,6 +55,7 @@ pub struct SignalEnvelopeInner {
 
 /// Signal data message.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalDataMessage {
     pub timestamp: Option<i64>,
     pub message: Option<String>,
@@ -53,9 +64,52 @@ pub struct SignalDataMessage {
 
 /// Signal group info.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalGroupInfo {
     pub group_id: Option<String>,
-    pub name: Option<String>,
+    pub group_name: Option<String>,
+}
+
+/// Sender 身份提取单一真相源：优先手机号（sourceNumber），回落 source，
+/// 再回落 sourceUuid（隐藏号码账户只有 UUID 形态身份），全缺 = "unknown"。
+fn envelope_sender(inner: &SignalEnvelopeInner) -> String {
+    inner
+        .source_number
+        .as_deref()
+        .or(inner.source.as_deref())
+        .or(inner.source_uuid.as_deref())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Processes a received envelope → (sender, chat_id, content, timestamp)。
+///
+/// 模块级自由函数：receive loop 与测试共用同一提取逻辑（此前 loop 内联
+/// 副本与 pub 方法双路径，测试锚不到生产路径——025 假绿的结构性成因之一）。
+pub fn process_envelope(envelope: &SignalEnvelopeInner) -> Option<(String, String, String, i64)> {
+    let data_msg = envelope.data_message.as_ref()?;
+    let content = data_msg.message.as_deref().unwrap_or("");
+    if content.is_empty() {
+        return None;
+    }
+
+    let sender = envelope_sender(envelope);
+
+    let chat_id = if let Some(ref group_info) = data_msg.group_info {
+        group_info
+            .group_id
+            .clone()
+            .unwrap_or_else(|| sender.clone())
+    } else {
+        sender.clone()
+    };
+
+    Some((
+        sender,
+        chat_id,
+        content.to_string(),
+        data_msg.timestamp.unwrap_or(0),
+    ))
 }
 
 /// Signal send request.
@@ -120,32 +174,6 @@ impl SignalChannel {
             "{}/v1/receive/{}",
             self.config.api_url, self.config.phone_number
         )
-    }
-
-    /// Processes a received envelope.
-    pub fn process_envelope(
-        &self,
-        envelope: &SignalEnvelopeInner,
-    ) -> Option<(String, String, String)> {
-        let data_msg = envelope.data_message.as_ref()?;
-        let content = data_msg.message.as_deref().unwrap_or("");
-        if content.is_empty() {
-            return None;
-        }
-
-        let sender_id = envelope.source_number.as_deref().unwrap_or("unknown");
-
-        let chat_id = if let Some(ref group_info) = data_msg.group_info {
-            group_info.group_id.as_deref().unwrap_or(sender_id)
-        } else {
-            sender_id
-        };
-
-        Some((
-            sender_id.to_string(),
-            chat_id.to_string(),
-            content.to_string(),
-        ))
     }
 
     /// Checks if a timestamp has already been processed.
@@ -279,38 +307,26 @@ impl Channel for SignalChannel {
                         None => continue,
                     };
 
-                    let sender = inner.source_number.as_deref().unwrap_or("unknown");
+                    // BUG-20261125-025：提取逻辑与测试共用模块级自由函数
+                    // （单一真相源；此前此处内联副本与 pub 方法双路径漂移，
+                    // 测试锚不到生产路径）。
+                    let (sender, chat_id, content, timestamp) = match process_envelope(&inner) {
+                        Some(t) => t,
+                        None => continue,
+                    };
 
                     // Filter by allow_from
                     if !allow_from.is_empty()
-                        && !crate::base::allow_list_contains(&allow_from, sender)
+                        && !crate::base::allow_list_contains(&allow_from, &sender)
                     {
                         continue;
                     }
 
-                    let data_msg = match inner.data_message.as_ref() {
-                        Some(m) => m,
-                        None => continue,
-                    };
-
-                    let content = match data_msg.message.as_deref() {
-                        Some(t) if !t.is_empty() => t,
-                        _ => continue,
-                    };
-
-                    let timestamp = data_msg.timestamp.unwrap_or(0);
-
-                    let chat_id = if let Some(ref group_info) = data_msg.group_info {
-                        group_info.group_id.as_deref().unwrap_or(sender).to_string()
-                    } else {
-                        sender.to_string()
-                    };
-
                     let inbound = InboundMessage::user_ingress(
                         "signal".to_string(),
-                        sender.to_string(),
+                        sender,
                         chat_id.clone(),
-                        content.to_string(),
+                        content,
                     )
                     .with_session_key(chat_id)
                     .with_metadata_map({
