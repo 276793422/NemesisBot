@@ -366,8 +366,18 @@ impl Channel for WhatsAppChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261125-019（BUG-20261121-050 同构家族横向扫漏网补齐）：
+        // 幂等双启守卫 + base running 旗标接线——无守卫的重复 start 会
+        // spawn 多个并行 receive loop 每条消息 N 倍喂 agent；trait
+        // is_running()（读 base 旗标）恒 false 使 manager 运行中守卫
+        // （start_all / any_channel_running / status 上报三消费点）失真。
+        if self.base.is_running() {
+            info!("[WhatsAppChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
         info!(url = %self.config.bridge_url, "[WhatsAppChannel] starting WhatsApp channel");
         *self.running.write() = true;
+        self.base.set_running(true);
         self.base.set_enabled(true);
 
         // Start the receive loop
@@ -380,6 +390,8 @@ impl Channel for WhatsAppChannel {
     async fn stop(&self) -> Result<()> {
         info!("[WhatsAppChannel] stopping WhatsApp channel");
         *self.running.write() = false;
+        // BUG-20261125-019：对称清 base 旗标（契约面见 start 内注释）。
+        self.base.set_running(false);
         self.base.set_enabled(false);
 
         // Cancel the receive loop

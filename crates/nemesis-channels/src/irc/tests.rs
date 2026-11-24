@@ -829,3 +829,44 @@ fn test_build_registration_strips_crlf_from_credentials() {
         );
     }
 }
+
+/// BUG-20261125-019 回归锁：start/stop 必须维护 base running 旗标（trait
+/// is_running 契约面——manager 的 start_all 守卫 / any_channel_running /
+/// status 上报三消费点都读它，恒 false 时三面对本通道全部失真）；二次
+/// start 走幂等守卫诚实跳过（不 spawn 第二个连接循环）。server 指 loopback
+/// 死端口（TCP connect 立即拒绝，零外网；连接循环后台退避重连为非阻断
+/// 分支，stop 后 running=false 使循环在下一个退避周期退出）。
+#[tokio::test]
+async fn b019_start_stop_maintain_base_running_flag_and_guard_duplicate_start() {
+    let config = IRCConfig {
+        server: "127.0.0.1:1".to_string(),
+        use_tls: false,
+        nick: "nb".to_string(),
+        password: None,
+        channel: "#test".to_string(),
+        allow_from: Vec::new(),
+        reconnect_backoff_secs: 1,
+        max_reconnect_backoff_secs: 2,
+    };
+    let (tx, _) = tokio::sync::broadcast::channel(16);
+    let ch = IRCChannel::new(config, tx).unwrap();
+    assert!(!ch.base.is_running());
+
+    ch.start().await.unwrap();
+    assert!(
+        ch.base.is_running(),
+        "start 成功后 trait is_running 必须为 true（BUG-20261125-019）"
+    );
+    assert!(*ch.running.read());
+
+    // 幂等守卫：已运行时二次 start 诚实跳过（不 spawn 第二个连接循环）。
+    ch.start().await.unwrap();
+    assert!(ch.base.is_running());
+
+    ch.stop().await.unwrap();
+    assert!(
+        !ch.base.is_running(),
+        "stop 后 trait is_running 必须为 false"
+    );
+    assert!(!*ch.running.read());
+}

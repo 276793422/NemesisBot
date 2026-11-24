@@ -216,3 +216,34 @@ fn signal_api_url_trailing_slash_normalized() {
     let ch2 = SignalChannel::new(cfg2, test_bus()).unwrap();
     assert_eq!(ch2.receive_url(), ch.receive_url());
 }
+
+/// BUG-20261125-019 回归锁：start/stop 必须维护 base running 旗标 + 幂等双启
+/// 守卫（BUG-20261121-050 同构家族横向扫漏网补齐——manager 的 start_all 守卫 /
+/// any_channel_running / status 上报三消费点都读 trait is_running）。
+/// 服务端点指 loopback 死端口（后台 receive loop 连接失败零外网，start 本体
+/// 不阻塞）；二次 start 走幂等守卫诚实跳过（不 spawn 第二个 receive loop）。
+#[tokio::test]
+async fn b019_start_stop_maintain_base_running_flag_and_guard_duplicate_start() {
+    let config = SignalConfig {
+        api_url: "http://127.0.0.1:1".to_string(),
+        phone_number: "+10000000000".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _) = tokio::sync::broadcast::channel(16);
+    let ch = SignalChannel::new(config, tx).unwrap();
+    assert!(!ch.base.is_running());
+
+    ch.start().await.unwrap();
+    assert!(
+        ch.base.is_running(),
+        "start 后 trait is_running 必须为 true（BUG-20261125-019）"
+    );
+    ch.start().await.unwrap();
+    assert!(ch.base.is_running());
+
+    ch.stop().await.unwrap();
+    assert!(
+        !ch.base.is_running(),
+        "stop 后 trait is_running 必须为 false"
+    );
+}
