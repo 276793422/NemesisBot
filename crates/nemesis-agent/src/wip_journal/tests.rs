@@ -448,6 +448,65 @@ fn test_fold_deletion_survives_transient_handle() {
     releaser.join().unwrap();
 }
 
+/// BUG-20261124-046：turn 装配点（loop/turn.rs）经 spawn_blocking 驱动
+/// consume/register/fold——fsutil 同步版韧性包装的 thread::sleep 退避不得
+/// 占 async worker 线程。本锁钉住 spawn_blocking 包装路径下的消费/截断/
+/// 折叠语义与直接调用完全一致。
+#[tokio::test]
+async fn test_spawn_blocking_assembly_preserves_semantics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    // 上轮崩溃现场：写入后弃实例（硬杀模拟）。
+    let j = WipJournal::default();
+    j.register(&root, "sb");
+    j.append(
+        "sb",
+        WipEvent::Text {
+            ts: 1,
+            text: "遗留现场".into(),
+        },
+    );
+    drop(j);
+
+    // 新 turn 装配（turn.rs 同款两步闭包）：spawn_blocking 消费+注册。
+    let j2 = WipJournal::default();
+    {
+        let j = j2.clone();
+        let r = root.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            j.consume_previous(&r, "sb");
+            j.register(&r, "sb");
+        })
+        .await;
+    }
+    let rendered = j2
+        .pending_for("sb")
+        .expect("spawn_blocking 消费现场进 pending");
+    assert!(rendered.contains("遗留现场"));
+    j2.append(
+        "sb",
+        WipEvent::Text {
+            ts: 2,
+            text: "本轮事件".into(),
+        },
+    );
+    let raw = std::fs::read_to_string(root.join("logs").join("wip").join("sb.jsonl")).unwrap();
+    assert_eq!(raw.lines().count(), 1, "截断语义经 spawn_blocking 不变");
+    assert!(raw.contains("本轮事件"));
+    assert!(!raw.contains("遗留现场"), "旧现场不混入");
+
+    // 折叠同款包装：文件删除生效。
+    {
+        let j = j2.clone();
+        let _ = tokio::task::spawn_blocking(move || j.fold("sb")).await;
+    }
+    assert!(
+        !root.join("logs").join("wip").join("sb.jsonl").exists(),
+        "折叠删除经 spawn_blocking 生效"
+    );
+    assert!(j2.pending_for("sb").is_none());
+}
+
 #[test]
 fn test_render_injection_section_contract() {
     let text = render_injection_section("[12:00:00] 调用工具 exec，参数：ls");
