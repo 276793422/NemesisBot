@@ -1,19 +1,22 @@
 /**
  * 用户习惯画像视觉自测（Forge 化重构 2026-11-24，UI 视觉自测纪律；
- * 批 D 增补：五维分组 + 挖掘统计卡 + trust 类别）。
+ * 批 D 增补：五维分组 + 挖掘统计卡 + trust 类别；扩展批二增补：待确认
+ * 观察卡 + 确认入画像闭环）。
  *
- * 截图四处 UI 人工看图（test-results/profile-visual/shots/）：
+ * 截图五处 UI 人工看图（test-results/profile-visual/shots/）：
  *   1. /#/profile 未开启空态（profile-disabled；统计卡零值诚实形态）
  *   2. 结构化条目列表：五维分组组头 + steps 编号清单 + auto 徽标 +
  *      quality_bar/trust 类别 + evidence 溯源 + pinned + 统计卡有数
  *      （profile-structured）
+ *   2b. 接口二·待确认观察卡：pending 列表 + 步骤清单 + 三态计数 +
+ *      确认一条后入画像（来源徽标「反思观察」）（profile-observations）
  *   3. 遥测开关关闭态（telemetry-toggle 取消勾选后 toast + 状态）
  *   4. 开启态 + 条目 + 遥测开（profile-enabled-telemetry-on）
  *
  * 数据种子：直写盘上真相源（config/user_profile.json + sessions/todo_*.json
- * + forge/userprofile/{signals,outbound_lessons}.jsonl）——handler
- * profile.list / profile.stats 每请求重读盘，无需 sweep 即可得结构化条目
- * 与统计卡视觉态；spec 结束恢复现场。
+ * + forge/userprofile/{signals,outbound_lessons,observations}.jsonl）——
+ * handler profile.list / profile.stats / profile.observations 每请求重读盘，
+ * 无需 sweep 即可得结构化条目与统计卡视觉态；spec 结束恢复现场。
  */
 import { test, expect } from './fixtures'
 import path from 'node:path'
@@ -26,6 +29,7 @@ const PROFILE = path.join(WORKSPACE_DIR, 'config', 'user_profile.json')
 const TODO_SEED = path.join(WORKSPACE_DIR, 'sessions', 'todo_visual_seed.json')
 const SIGNALS = path.join(WORKSPACE_DIR, 'forge', 'userprofile', 'signals.jsonl')
 const LESSONS = path.join(WORKSPACE_DIR, 'forge', 'userprofile', 'outbound_lessons.jsonl')
+const OBSERVATIONS = path.join(WORKSPACE_DIR, 'forge', 'userprofile', 'observations.jsonl')
 
 function habit(over: Record<string, unknown>) {
   return {
@@ -87,7 +91,7 @@ function seedStatsSources(): void {
 }
 
 function cleanupSeed(): void {
-  for (const f of [PROFILE, TODO_SEED, SIGNALS, LESSONS]) {
+  for (const f of [PROFILE, TODO_SEED, SIGNALS, LESSONS, OBSERVATIONS]) {
     try {
       fs.rmSync(f, { force: true })
     } catch {
@@ -179,6 +183,31 @@ test('profile 视觉自测：未开启空态/结构化条目/遥测开关/开启
   await expect(page.locator('[data-testid="stats-signals"]')).toContainText('审批卡 3')
   await expect(page.locator('[data-testid="stats-signals"]')).toContainText('急停 1')
   await page.screenshot({ path: path.join(SHOT_DIR, '2-profile-structured.png'), fullPage: true })
+
+  // —— 2b. 接口二·待确认观察卡（种观察队列 → 卡渲染 → 确认一条入画像闭环）——
+  fs.mkdirSync(path.dirname(OBSERVATIONS), { recursive: true })
+  fs.writeFileSync(
+    OBSERVATIONS,
+    [
+      { id: 'obs-e2e-1', ts_ms: 1764000010000, kind: 'observation', category: 'workflow', content: '边缘结论甲：倾向先跑测试再补文档', confidence: 0.62, steps: ['先跑测试', '再补文档'], status: 'pending' },
+      { id: 'obs-e2e-2', ts_ms: 1764000011000, kind: 'observation', category: 'style', content: '边缘结论乙：回复常带简短开头摘要', confidence: 0.55, status: 'pending' },
+    ].map((r) => JSON.stringify(r)).join('\n'),
+  )
+  await gotoRoute(page, '/#/profile')
+  await page.locator('[data-testid="observations-card"]').waitFor({ state: 'visible' })
+  await expect(page.locator('[data-testid="obs-row-0"]')).toContainText('边缘结论甲')
+  await expect(page.locator('[data-testid="obs-row-1"]')).toContainText('边缘结论乙')
+  await expect(page.locator('[data-testid="obs-step-0-0"]')).toContainText('先跑测试')
+  await expect(page.locator('[data-testid="stats-observations"]')).toContainText('已确认 0')
+  await page.screenshot({ path: path.join(SHOT_DIR, '2b-profile-observations.png'), fullPage: true })
+  // 确认第一条：入画像（来源徽标「反思观察」）+ 队列收缩。
+  await page.locator('[data-testid="obs-confirm-0"]').click()
+  await expect(page.locator('[data-testid="obs-row-0"]')).toContainText('边缘结论乙')
+  expect(await page.locator('[data-testid^="obs-row-"]').count()).toBe(1)
+  await expect(page.locator('[data-testid="stats-observations"]')).toContainText('已确认 1')
+  const confirmedBadge = page.locator('[data-testid^="source-badge-"]').filter({ hasText: '反思观察' })
+  await expect(confirmedBadge).toHaveCount(1)
+  await page.screenshot({ path: path.join(SHOT_DIR, '2c-profile-observation-confirmed.png'), fullPage: true })
 
   // —— 3. 遥测开关关闭态 ——
   await page.locator('[data-testid="telemetry-toggle"]').uncheck()

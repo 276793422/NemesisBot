@@ -105,6 +105,18 @@ pub fn sweep_once(
         &collection::read_recent_signals(workspace, 200),
         &now,
     ));
+    // 终端会话命令挖掘（2026-11-24 T 批）：PTY 审计（logs/terminal）旁路
+    // 读取——读取失败 warn 不炸 sweep。凭据防线在采集层（密码提示邻接行
+    // 整行丢弃 + 秘密形态行整行丢弃 + ANSI 行跳过），挖掘器只见清洗后的
+    // 命令行（shell 偏好 + 常用命令族，参数不采集）。
+    match collection::collect_terminal_sessions(workspace, window_start) {
+        Ok(terms) if !terms.is_empty() => {
+            candidates.extend(mining::shell_preference_candidates(&terms, &now));
+            candidates.extend(mining::terminal_command_candidates(&terms, &now));
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("[UserProfile] terminal collect failed: {e}"),
+    }
     match collection::collect_todos(workspace, collect_started_ms, TODO_MAX_AGE_MS) {
         Ok(todos) => candidates.extend(mining::todo_candidates(&todos, &now)),
         Err(e) => tracing::warn!("[UserProfile] todo collect failed: {e}"),
@@ -152,12 +164,32 @@ pub fn sweep_once(
         ) {
             // 批 A 主语分型路由：habit → 画像 upsert；lesson（助手/LLM
             // 教训）→ bridge 队列落盘（Forge 未来消费，**不丢弃**也不入
-            // 画像——upsert 双保险兜底）。两类结论都进 ledger（知识复利
-            // 回灌，教训不每轮重提）。
-            Ok((habits, lessons)) => {
+            // 画像——upsert 双保险兜底）；观察提名（接口二·低于置信度闸
+            // 的边缘带 habit 结论）→ bridge 观察队列，人工裁决。
+            Ok((habits, lessons, observations)) => {
+                // 观察提名先入队（有 cap——只把实际入队的写 ledger）。
+                let mut admitted_observations: Vec<String> = Vec::new();
+                if !observations.is_empty() {
+                    let admitted = bridge::append_observations(workspace, &observations);
+                    admitted_observations = observations
+                        .iter()
+                        .take(admitted)
+                        .map(|o| o.content.clone())
+                        .collect();
+                    if admitted < observations.len() {
+                        tracing::warn!(
+                            "[UserProfile] observation queue full: {admitted}/{} admitted",
+                            observations.len()
+                        );
+                    }
+                }
+                // 两类结论 + 已入队提名都进 ledger（知识复利回灌——教训/
+                // 提名不每轮重提；被 cap 丢弃的提名不锁死，用户清完积压
+                // 后同结论证据支持时可再提名）。
                 let mut conclusions: Vec<String> =
                     habits.iter().map(|e| e.content.clone()).collect();
                 conclusions.extend(lessons.iter().map(|l| l.content.clone()));
+                conclusions.extend(admitted_observations);
                 reflection::append_ledger(workspace, &conclusions);
                 candidates.extend(habits);
                 if !lessons.is_empty() {

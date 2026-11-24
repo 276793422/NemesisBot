@@ -465,5 +465,185 @@ pub fn read_recent_signals(workspace: &Path, limit: usize) -> Vec<serde_json::Va
     out.split_off(start)
 }
 
+// ---------- 终端会话采集（2026-11-24 T 批：PTY 审计 → 命令行投影） ----------
+
+/// 单文件终端命令行数上限（防超长 TUI 会话淹没挖掘器；截断 = 诚实降级）。
+pub const TERMINAL_MAX_LINES_PER_SESSION: usize = 200;
+/// 单条命令行字符上限（参数超长的命令截断——挖掘器只消费首 token，
+/// 截断只为防内存异常行）。
+pub const TERMINAL_LINE_CHARS: usize = 120;
+
+/// 输出流凭据提示标记（大小写不敏感子串）：命中 = 下一条完整输入行是
+/// 密码类输入（password/passphrase 提示后紧跟的键入），整行丢弃。
+/// 过度丢弃（提示后第一条是正常命令时误丢）= 保守方向，可接受。
+const PASSWORD_PROMPT_MARKERS: &[&str] = &[
+    "password:",
+    "密码：",
+    "密码:",
+    "passphrase",
+    "口令：",
+    "口令:",
+    "[sudo]",
+    "pin:",
+    "pin：",
+];
+
+/// 输入行秘密形态标记（大小写不敏感子串）：命中 = 该行携带凭据字面量
+/// （token=xxx / api_key=yyy / Bearer zzz / sk-…），整行丢弃——这些行
+/// 永远不进挖掘面。
+const INPUT_SECRET_PATTERNS: &[&str] = &[
+    "sk-",
+    "ghp_",
+    "gho_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+    "akia",
+    "bearer ",
+    "token=",
+    "password=",
+    "passwd=",
+    "pwd=",
+    "secret=",
+    "api_key=",
+    "apikey=",
+    "apisecret",
+    "access_key=",
+    "private_key=",
+];
+
+/// 终端会话命令投影（单 PTY 审计文件清洗后的命令行集）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalSession {
+    /// 审计文件名（溯源）。
+    pub file: String,
+    /// `# shell:` 头声明（缺头 = 未知空串——shell 偏好挖掘器跳过）。
+    pub shell: String,
+    /// 文件 mtime（epoch 毫秒；审计行无时间戳，文件级时间是诚实下限）。
+    pub ts_ms: i64,
+    /// 清洗后的输入命令行（凭据防线已过；保序；截 [`TERMINAL_MAX_LINES_PER_SESSION`]）。
+    pub commands: Vec<String>,
+}
+
+/// 读 `<ws>/logs/terminal/pty_*.log` 审计，投影清洗后的命令行集。
+///
+/// 审计形态（nemesis-web pty.rs AuditWriter）：`#` 头行（含
+/// `# shell: {shell}`）+ 帧行 `[I] <data>` / `[O] <data>`（原始终端字节
+/// 可含换行 → 续行不属于任何帧头）。纪律：
+/// - `read_dir` 结果显式排序（目录序是平台实现细节）；
+/// - 文件 mtime 缺失或早于 `window_start_ms` → 整文件跳过（仅向前）；
+/// - 输出帧（含续行）含凭据提示标记 → **下一条完整输入行丢弃**
+///   （密码提示后紧跟的键入；两道防线之一）；
+/// - 输入行含秘密形态标记 → 整行丢弃（二）；含 ANSI ESC（\x1b）→ 跳过
+///   （TUI 序列行不是人敲的命令）；空行跳过；
+/// - 缺目录 = 从未用内嵌终端（常态），Ok(空) 不报错；
+/// - 解析永远成功（审计是行文本，坏行只是不产出命令）。
+pub fn collect_terminal_sessions(
+    workspace: &Path,
+    window_start_ms: i64,
+) -> Result<Vec<TerminalSession>, String> {
+    let dir = workspace.join("logs").join("terminal");
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(format!("read terminal dir: {e}")),
+    };
+    let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    paths.sort();
+    for p in paths {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with("pty_") || !name.ends_with(".log") {
+            continue;
+        }
+        let mtime_ms = std::fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        let Some(ts_ms) = mtime_ms else { continue };
+        if ts_ms < window_start_ms {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let (shell, commands) = parse_terminal_audit(&content);
+        out.push(TerminalSession {
+            file: name.to_string(),
+            shell,
+            ts_ms,
+            commands,
+        });
+    }
+    Ok(out)
+}
+
+/// 单文件审计解析（纯函数）：返回 (shell 声明, 清洗后命令行)。
+///
+/// 单遍扫描（清理与时序一致——密码提示标记只压制**其后**出现的输入行，
+/// 两遍法会把提示误套到更早的命令上）：`[I] `/`[O] ` 开行 = 新帧，其余
+/// 非头非空行 = 上一帧的续行（原始终端数据换行）。每个输入帧/续行行即
+/// 一条终端输入行，就地清洗（空行 / ANSI 行 / 秘密形态行 / 密码提示邻接
+/// 行过滤 + 长度与条数上限）；输出帧只用于凭据提示探测。`# shell:` 头
+/// 提取 shell 声明。
+fn parse_terminal_audit(content: &str) -> (String, Vec<String>) {
+    let mut shell = String::new();
+    let mut commands: Vec<String> = Vec::new();
+    let mut suppress_next_input = false;
+    let mut in_input_frame = false;
+    for line in content.lines() {
+        let (input_line, output_line) = if let Some(data) = line.strip_prefix("[I] ") {
+            in_input_frame = true;
+            (Some(data), false)
+        } else if line.starts_with("[O] ") {
+            in_input_frame = false;
+            (None, true)
+        } else if line.starts_with('#') {
+            // 头部行（writer 每帧后补空行，头只出现在文件头部；续行以
+            // '#' 开头的误判代价 = 该行不进命令流，保守方向可接受）。
+            in_input_frame = false;
+            if let Some(rest) = line.strip_prefix("# shell:") {
+                shell = rest.trim().to_string();
+            }
+            (None, false)
+        } else if line.is_empty() {
+            continue; // 帧间分隔空行
+        } else if in_input_frame {
+            // 输入帧续行（终端原始数据换行）= 同样是一条终端输入行。
+            (Some(line), false)
+        } else {
+            // 输出帧续行：凭据提示也可能跨行，同帧头同判。
+            (None, true)
+        };
+        if output_line {
+            let lower = line.to_lowercase();
+            if PASSWORD_PROMPT_MARKERS.iter().any(|m| lower.contains(m)) {
+                suppress_next_input = true;
+            }
+            continue;
+        }
+        let Some(raw) = input_line else { continue };
+        let line = raw.trim();
+        if line.is_empty() || line.contains('\u{1b}') {
+            continue; // 空行 / ANSI TUI 序列行（不是人敲的命令）
+        }
+        let lower = line.to_lowercase();
+        if INPUT_SECRET_PATTERNS.iter().any(|m| lower.contains(m)) {
+            continue; // 秘密形态行整行丢弃（两道防线之二）
+        }
+        if suppress_next_input {
+            suppress_next_input = false;
+            continue; // 密码提示邻接输入行整行丢弃（两道防线之一）
+        }
+        let clipped: String = line.chars().take(TERMINAL_LINE_CHARS).collect();
+        commands.push(clipped);
+        if commands.len() >= TERMINAL_MAX_LINES_PER_SESSION {
+            break;
+        }
+    }
+    (shell, commands)
+}
+
 #[cfg(test)]
 mod tests;

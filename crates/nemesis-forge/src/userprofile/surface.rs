@@ -47,6 +47,65 @@ pub fn pin(workspace: &Path, content_sub: &str, pinned: bool) -> Result<bool, St
     store::set_pinned(workspace, content_sub, pinned)
 }
 
+// ---------- 观察队列用户侧消费面（接口二·待确认观察，2026-11-24） ----------
+
+/// 确认观察提名入画像：resolve(confirmed) → [`store::ingest_external_entry`]
+/// （source=`"observation"` 强制标记——画像条目带来源，UI 徽标「来自
+/// 反思观察」；stats 归 external 桶）。id 不存在 / 已裁决 = Ok(None)。
+/// 确认走 ingest 而非直写 = 安全边界过滤（security 语义内容照拒）与
+/// 合并语义与 Forge 抛入同源。
+pub fn confirm_observation(workspace: &Path, id: &str) -> Result<Option<()>, String> {
+    let Some(o) = super::bridge::resolve_observation(workspace, id, true)? else {
+        return Ok(None);
+    };
+    let now = chrono::Local::now().to_rfc3339();
+    let entry = store::HabitEntry {
+        category: o.category,
+        content: o.content,
+        confidence: o.confidence,
+        hits: 1,
+        first_seen: now.clone(),
+        last_seen: now,
+        status: store::STATUS_ACTIVE.into(),
+        pinned: false,
+        steps: o.steps,
+        scope: String::new(),
+        evidence: vec![format!("observation:{}", o.id)],
+        auto: false,
+        kind: store::KIND_HABIT.into(),
+        source: String::new(), // ingest_external_entry 强制覆盖为 "observation"
+    };
+    store::ingest_external_entry(workspace, entry, "observation")?;
+    Ok(Some(()))
+}
+
+/// 忽略观察提名（负样本回流）：resolve(dismissed) + events.jsonl
+/// `kind="dismiss"` 行——反思通道下轮当「勿重提同类」注记回灌（与
+/// veto/forget 同族纪律）；忽略的结论同时进 Forge 语义分析的负样本面。
+/// id 不存在 / 已裁决 = Ok(None)。
+pub fn dismiss_observation(workspace: &Path, id: &str) -> Result<Option<String>, String> {
+    let Some(o) = super::bridge::resolve_observation(workspace, id, false)? else {
+        return Ok(None);
+    };
+    append_event(
+        workspace,
+        &serde_json::json!({
+            "kind": "dismiss",
+            "content": o.content,
+            "ts_ms": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
+    Ok(Some(o.content))
+}
+
+/// 读待裁决观察提名（UI 列表面；尾部 `limit` 条 pending）。
+pub fn pending_observations(
+    workspace: &Path,
+    limit: usize,
+) -> Vec<super::bridge::ObservationEntry> {
+    super::bridge::read_pending_observations(workspace, limit)
+}
+
 /// 开启画像（enabled_at 锚点；幂等）。`max_entries` 由调用方从 config
 /// 现读传入。
 pub fn enable(workspace: &Path, max_entries: usize) -> Result<UserProfile, String> {
@@ -63,6 +122,8 @@ pub fn list(workspace: &Path) -> UserProfile {
 /// - `todos`：todo 快照完成度（[`super::mining::todo_completion_stats`]，
 ///   与 sweep 同一 7 天窗）；
 /// - `lessons`：教训队列分流计数（pending/acked，接口一消费进度）；
+/// - `observations`：观察队列分流计数（pending/confirmed/dismissed，接口二
+///   待确认观察进度）；
 /// - `habits_by_category` / `habits_by_source`：画像条目分布（分流统计）；
 /// - `signals_recent`：交互强信号近 200 行计数（审批卡/急停——批 C 采集
 ///   面存活的直观读数）。
@@ -96,6 +157,9 @@ pub fn collect_stats(workspace: &Path) -> serde_json::Value {
     // 教训队列分流计数。
     let (pending, acked) = bridge::lesson_stats(workspace);
 
+    // 观察队列分流计数（接口二·待确认观察）。
+    let (obs_pending, obs_confirmed, obs_dismissed) = bridge::observation_stats(workspace);
+
     // 画像条目分布（按类别 / 按来源分流）。
     let profile = list(workspace);
     let mut by_category = std::collections::BTreeMap::<String, usize>::new();
@@ -127,6 +191,11 @@ pub fn collect_stats(workspace: &Path) -> serde_json::Value {
     serde_json::json!({
         "todos": todos,
         "lessons": { "pending": pending, "acked": acked },
+        "observations": {
+            "pending": obs_pending,
+            "confirmed": obs_confirmed,
+            "dismissed": obs_dismissed,
+        },
         "habits_by_category": by_category,
         "habits_by_source": {
             "auto": by_source_auto,

@@ -12,6 +12,10 @@
 // user_profile.json enabled_at 仅向前锚点）。生成侧免确认自动生效——本页
 // 只做展示与人工后门，不做审批闸。硬边界：权限/安全语义内容在渲染层
 // 过滤（后端 store::violates_security_boundary），页面不重复判断。
+// 接口二（2026-11-24）：「待确认观察」卡——反思通道低于置信度闸的边缘
+// 结论人工裁决（profile.observations / observation_respond：确认 =
+// ingest source=observation 入画像；忽略 = 负样本回流）；stats 卡补
+// observations 三态计数；条目来源徽标 observation → 「反思观察」。
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
@@ -24,6 +28,8 @@ const enabledAt = ref<string | null>(null)
 const uiTelemetry = ref(true)
 const habits = ref<any[]>([])
 const stats = ref<any>(null)
+const observations = ref<any[]>([])
+const obsCounts = ref<any>(null)
 const loading = ref(true)
 const telemetryBusy = ref(false)
 
@@ -39,6 +45,15 @@ const CATEGORY_LABEL: Record<string, string> = {
 
 function categoryLabel(c: string): string {
   return CATEGORY_LABEL[c] || c
+}
+
+// 来源徽标文案（外部抛入 source 标记 → 中文；未知标记原文展示）。
+const SOURCE_LABEL: Record<string, string> = {
+  observation: '反思观察',
+}
+
+function sourceLabel(s: string): string {
+  return SOURCE_LABEL[s] || s
 }
 
 // 五维分组（批 D）：类别 → 维度归属；未知类别落「其他」兜底组。
@@ -96,17 +111,38 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    const [listData, statsData] = await Promise.all([
+    const [listData, statsData, obsData] = await Promise.all([
       request('profile', 'list'),
       request('profile', 'stats').catch(() => null),
+      request('profile', 'observations').catch(() => null),
     ])
     enabled.value = !!listData?.enabled
     enabledAt.value = listData?.enabled_at || null
     habits.value = listData?.habits || []
     uiTelemetry.value = listData?.ui_telemetry !== false
     stats.value = statsData?.stats || null
+    observations.value = obsData?.observations || []
+    obsCounts.value = obsData?.counts || null
   } catch { /* ignore */ } finally {
     loading.value = false
+  }
+}
+
+/// 裁决观察提名（接口二·待确认观察）：确认入画像 / 忽略负样本回流；
+/// 裁决后整页重载（画像表 + 统计 + 队列同步刷新）。
+async function respondObservation(o: any, approved: boolean) {
+  try {
+    const data = await request('profile', 'observation_respond', { id: o.id, approved })
+    if (data?.resolved) {
+      toast.success(approved
+        ? '已确认入画像（来源标记「反思观察」）'
+        : '已忽略（负样本回流，不再重提同类）')
+    } else {
+      toast.info('该提名已被处理')
+    }
+    await load()
+  } catch (e: any) {
+    toast.error('操作失败: ' + e)
   }
 }
 
@@ -226,10 +262,49 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
               条目来源：<strong style="font-variant-numeric: tabular-nums;">自动 {{ stats.habits_by_source?.auto || 0 }}</strong>
               <span style="color: var(--text-muted);">/ 手动 {{ stats.habits_by_source?.manual || 0 }} / 外部 {{ stats.habits_by_source?.external || 0 }}</span>
             </span>
+            <span v-if="stats.observations" data-testid="stats-observations">
+              待确认观察：<strong style="font-variant-numeric: tabular-nums;">{{ stats.observations?.pending || 0 }}</strong>
+              <span style="color: var(--text-muted);">/ 已确认 {{ stats.observations?.confirmed || 0 }} / 已忽略 {{ stats.observations?.dismissed || 0 }}</span>
+            </span>
             <span data-testid="stats-signals">
               近期强信号：<strong style="font-variant-numeric: tabular-nums;">审批卡 {{ stats.signals_recent?.approval_cards || 0 }}</strong>
               <span style="color: var(--text-muted);"> · 急停 {{ stats.signals_recent?.estop || 0 }}</span>
             </span>
+          </div>
+        </div>
+
+        <!-- 待确认观察卡（接口二：反思边缘结论人工裁决；确认入画像 / 忽略负样本） -->
+        <div v-if="observations.length" class="card" style="margin-bottom: var(--space-4);" data-testid="observations-card">
+          <div class="card-header">
+            <h3>待确认观察</h3>
+            <span style="font-size: var(--text-xs); color: var(--text-muted);">
+              反思通道不够确定的结论（共 {{ obsCounts?.pending || observations.length }} 条待裁决）
+            </span>
+          </div>
+          <div class="card-body">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th style="width: 110px;">类别</th><th>观察</th><th>置信度</th><th style="width: 160px;">操作</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(o, i) in observations" :key="o.id" :data-testid="'obs-row-' + i">
+                    <td><span class="badge badge-info">{{ categoryLabel(o.category) }}</span></td>
+                    <td style="max-width: 420px;">
+                      {{ o.content }}
+                      <ol v-if="o.steps && o.steps.length" style="margin: var(--space-1) 0 0; padding-left: var(--space-5); font-size: var(--text-xs); color: var(--text-secondary);">
+                        <li v-for="(s, si) in o.steps" :key="si" :data-testid="'obs-step-' + i + '-' + si">{{ s }}</li>
+                      </ol>
+                    </td>
+                    <td style="font-variant-numeric: tabular-nums;">{{ (o.confidence * 100).toFixed(0) }}%</td>
+                    <td style="white-space: nowrap;">
+                      <button class="btn btn-primary" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'obs-confirm-' + i" @click="respondObservation(o, true)">确认入画像</button>
+                      <button class="btn" style="font-size: var(--text-xs);" :data-testid="'obs-dismiss-' + i" @click="respondObservation(o, false)">忽略</button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
@@ -258,7 +333,7 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
                     <td style="max-width: 420px;">
                       {{ it.h.content }}
                       <span v-if="it.h.auto" class="badge badge-neutral" style="margin-left: var(--space-1);" data-testid="auto-badge">自动挖掘</span>
-                      <span v-if="it.h.source" class="badge badge-info" style="margin-left: var(--space-1);" :data-testid="'source-badge-' + it.idx" title="外部经验（由其他学习子系统抛入，来源已标记）">来自 {{ it.h.source }}</span>
+                      <span v-if="it.h.source" class="badge badge-info" style="margin-left: var(--space-1);" :data-testid="'source-badge-' + it.idx" title="外部经验（由其他学习子系统抛入，来源已标记）">来自 {{ sourceLabel(it.h.source) }}</span>
                       <span v-if="it.h.pinned" class="badge badge-neutral" style="margin-left: var(--space-1);">📌 pinned</span>
                       <ol v-if="it.h.steps && it.h.steps.length" class="habit-steps" style="margin: var(--space-1) 0 0; padding-left: var(--space-5); font-size: var(--text-xs); color: var(--text-secondary);">
                         <li v-for="(s, si) in it.h.steps" :key="si" :data-testid="'habit-step-' + it.idx + '-' + si">{{ s }}</li>

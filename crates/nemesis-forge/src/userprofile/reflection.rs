@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use super::bridge::LessonEntry;
+use super::bridge::{LessonEntry, ObservationEntry};
 use super::collection::DialogueRow;
 use super::store::{HabitEntry, KIND_HABIT, KIND_LESSON, MAX_EVIDENCE};
 
@@ -29,6 +29,11 @@ pub const REFLECT_EVERY_SWEEPS_DEFAULT: u32 = 20;
 /// `user_profile.reflect_min_new_messages` 可调；G1 主触发——活跃用户
 /// 两天就能攒够 25 条新消息，不必等 20 个小时 tick）。
 pub const REFLECT_MIN_NEW_MESSAGES_DEFAULT: u32 = 25;
+/// 观察提名下限（2026-11-24 接口二·待确认观察）：habit 类结论低于置信度
+/// 闸但**高于本值** = 观察提名（交人工裁决）；低于本值 = 明显弱信号，
+/// 连提名都不配（防队列洪泛）。半程带设计：threshold 0.7 时观察带 =
+/// [0.5, 0.7)。
+pub const OBSERVATION_MIN_CONFIDENCE: f64 = 0.5;
 /// 反思摘要总预算（字符）。超出丢最旧会话并加诚实注记。
 const DIGEST_MAX_CHARS: usize = 24000;
 /// user 消息摘录长度。
@@ -149,7 +154,7 @@ fn render_session(session: &str, rows: &[&DialogueRow]) -> String {
     out
 }
 
-/// 反思通道：LLM 按主语分型归纳 →（习惯候选，教训候选）二元组。
+/// 反思通道：LLM 按主语分型归纳 →（习惯候选，教训候选，观察提名）三元组。
 /// **反思通道产物 auto=false**，与挖掘器固定产物分桶（G8）。
 /// `prior_conclusions` = ledger 尾部结论（知识复利上下文）；`threshold` =
 /// 置信度闸（config）。
@@ -160,6 +165,12 @@ fn render_session(session: &str, rows: &[&DialogueRow]) -> String {
 /// 用户习惯）；② 序列意识（明确要求识别**跨消息的多步仪式**，输出
 /// steps 数组，G3）；③ 负样本注记（veto/forget/rewind 事件摘要——被否决
 /// 的归纳不再提）；④ ledger 回灌（已有结论不重复，可细化补充步骤）。
+///
+/// 三元组第三元（2026-11-24 接口二）：habit 类结论落**边缘带**
+/// `[OBSERVATION_MIN_CONFIDENCE, threshold)` → 观察提名（bridge 队列，
+/// Dashboard「待确认观察」人工裁决——确认入画像/忽略转负样本）；lesson
+/// 类低置信 = 丢弃（教训消费面在 Forge，无人工确认面）。
+#[allow(clippy::type_complexity)]
 pub fn reflect_semantic_habits(
     caller: &std::sync::Arc<dyn crate::reflector_llm::LLMCaller>,
     rows: &[DialogueRow],
@@ -167,10 +178,10 @@ pub fn reflect_semantic_habits(
     negative_events: &[serde_json::Value],
     rt: &tokio::runtime::Handle,
     threshold: f64,
-) -> Result<(Vec<HabitEntry>, Vec<LessonEntry>), String> {
+) -> Result<(Vec<HabitEntry>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
     let digest = build_digest(rows);
     if digest.trim().is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
     let now = chrono::Local::now().to_rfc3339();
     let mut prompt = String::from(
@@ -252,14 +263,18 @@ fn extract_entry_values(resp: &str) -> Option<Vec<serde_json::Value>> {
 /// 批 A：`kind` 分型解析——缺省/未知值回落 habit（旧响应零迁移）；
 /// `lesson` 项构造 [`LessonEntry`]（confidence 同闸、同白名单、evidence
 /// 解析截断），与 habit 项分流返回。
+/// 接口二（2026-11-24）：habit 类结论落边缘带
+/// `[OBSERVATION_MIN_CONFIDENCE, threshold)` → [`ObservationEntry`] 观察提名
+/// 第三元（不自动生效也不丢弃，人工裁决）；lesson 类低置信 = 丢弃。
 pub fn parse_reflection_response(
     resp: &str,
     now: &str,
     threshold: f64,
-) -> Result<(Vec<HabitEntry>, Vec<LessonEntry>), String> {
+) -> Result<(Vec<HabitEntry>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
     let arr = extract_entry_values(resp).ok_or("reflect response is not valid JSON")?;
     let mut habits = Vec::new();
     let mut lessons = Vec::new();
+    let mut observations = Vec::new();
     for item in arr {
         let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let category = item
@@ -279,11 +294,6 @@ pub fn parse_reflection_response(
             continue; // 空陈述 / 夹带换行（会伪造注入行结构）= 整条跳过
         }
         if !REFLECT_CATEGORIES.contains(&category) {
-            continue;
-        }
-        // 先钳制再过阈值：>1.0 的候选经 clamp 后仍可参与比较。
-        let confidence = confidence.clamp(0.0, 1.0);
-        if confidence < threshold {
             continue;
         }
         let steps: Vec<String> = item
@@ -306,6 +316,27 @@ pub fn parse_reflection_response(
                     .collect()
             })
             .unwrap_or_default();
+        // 先钳制再过阈值：>1.0 的候选经 clamp 后仍可参与比较。
+        let confidence = confidence.clamp(0.0, 1.0);
+        // 边缘带（接口二·待确认观察）：habit 类低于置信度闸但高于观察
+        // 下限 = 观察提名（人工裁决）；lesson 类低置信 = 丢弃（教训无
+        // 人工确认面，弱教训进 Forge 队列只会稀释消费面）。
+        if confidence < threshold {
+            if kind != KIND_LESSON && confidence >= OBSERVATION_MIN_CONFIDENCE {
+                observations.push(ObservationEntry {
+                    id: String::new(), // bridge::append_observations 入队时分配
+                    ts_ms: chrono::Utc::now().timestamp_millis(),
+                    kind: "observation".into(),
+                    category: category.to_string(),
+                    content: content.chars().take(200).collect(),
+                    confidence,
+                    steps: HabitEntry::sanitize_steps(&steps),
+                    status: super::bridge::OBS_STATUS_PENDING.into(),
+                    resolved_ts_ms: None,
+                });
+            }
+            continue;
+        }
         if kind == KIND_LESSON {
             lessons.push(LessonEntry {
                 id: String::new(), // bridge::append_lessons 入队时分配
@@ -344,7 +375,7 @@ pub fn parse_reflection_response(
         entry.evidence.truncate(MAX_EVIDENCE);
         habits.push(entry);
     }
-    Ok((habits, lessons))
+    Ok((habits, lessons, observations))
 }
 
 // ---------- ledger（反思结论持久化，知识复利面） ----------

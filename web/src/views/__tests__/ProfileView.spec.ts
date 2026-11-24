@@ -6,6 +6,9 @@
 // - veto/forget/pin 后门动作带 content 载荷；
 // - telemetry_set 切换 UI 遥测（config user_profile.ui_telemetry 面）；
 // - 未开启 → 空态文案诚实标注 + 显示开启按钮。
+// - 接口二（2026-11-24）：待确认观察卡（profile.observations 列表 +
+//   observation_respond 裁决载荷 {id, approved}）+ stats 卡 observations
+//   三态计数 + source=observation 徽标「反思观察」。
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useToast } from '../../composables/useToast'
@@ -222,6 +225,83 @@ describe('ProfileView（B 线习惯面板）', () => {
     await flushPromises()
     expect(w.find('[data-testid="stats-card"]').exists()).toBe(false)
     expect(w.find('[data-testid="habit-row-0"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('接口二：待确认观察卡渲染 pending 列表；确认/忽略带 {id, approved} 载荷', async () => {
+    const calls: any[] = []
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      calls.push([cmd, data])
+      if (cmd === 'list') {
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [] }
+      }
+      if (cmd === 'stats') {
+        return {
+          stats: {
+            todos: { completion_ratio: 0, item_count: 0, completed_count: 0, snapshots_with_pending: 0 },
+            lessons: { pending: 0, acked: 0 },
+            observations: { pending: 2, confirmed: 1, dismissed: 0 },
+          },
+        }
+      }
+      if (cmd === 'observations') {
+        return {
+          observations: [
+            { id: 'obs-1', kind: 'observation', category: 'workflow', content: '边缘结论甲', confidence: 0.6, steps: ['步骤一'], status: 'pending' },
+            { id: 'obs-2', kind: 'observation', category: 'style', content: '边缘结论乙', confidence: 0.55, steps: [], status: 'pending' },
+          ],
+          counts: { pending: 2, confirmed: 1, dismissed: 0 },
+        }
+      }
+      if (cmd === 'observation_respond') return { resolved: true, approved: data?.approved }
+      return {}
+    })
+    const w = mount(ProfileView)
+    await flushPromises()
+    // 观察卡渲染两条 pending + 步骤清单 + 统计卡三态计数。
+    expect(w.find('[data-testid="observations-card"]').exists()).toBe(true)
+    expect(w.find('[data-testid="obs-row-0"]').text()).toContain('边缘结论甲')
+    expect(w.find('[data-testid="obs-row-1"]').text()).toContain('边缘结论乙')
+    expect(w.find('[data-testid="obs-step-0-0"]').text()).toContain('步骤一')
+    expect(w.find('[data-testid="stats-observations"]').text()).toContain('已确认 1')
+    // 确认第一条：载荷 {id, approved: true} → 重载后队列变化（此 mock 恒返两条）。
+    await w.find('[data-testid="obs-confirm-0"]').trigger('click')
+    await flushPromises()
+    // 忽略第二条。
+    await w.find('[data-testid="obs-dismiss-1"]').trigger('click')
+    await flushPromises()
+    const respondCalls = calls.filter(([cmd]) => cmd === 'observation_respond')
+    expect(respondCalls).toContainEqual(['observation_respond', { id: 'obs-1', approved: true }])
+    expect(respondCalls).toContainEqual(['observation_respond', { id: 'obs-2', approved: false }])
+    w.unmount()
+  })
+
+  it('接口二：observations 请求失败 → 观察卡不渲染不阻塞；无 pending 不渲染卡', async () => {
+    requestMock.mockImplementation(async (_m: string, cmd: string) => {
+      if (cmd === 'list') return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      if (cmd === 'observations') throw new Error('boom')
+      return {}
+    })
+    const w = mount(ProfileView)
+    await flushPromises()
+    expect(w.find('[data-testid="observations-card"]').exists()).toBe(false)
+    expect(w.find('[data-testid="habit-row-0"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('接口二：source=observation 条目来源徽标显示「反思观察」', async () => {
+    requestMock.mockImplementation(async (_m: string, cmd: string) => {
+      if (cmd === 'list') {
+        return {
+          enabled: true, enabled_at: null, ui_telemetry: true,
+          habits: [habit({ source: 'observation', content: '确认后的观察条目' })],
+        }
+      }
+      return {}
+    })
+    const w = mount(ProfileView)
+    await flushPromises()
+    expect(w.find('[data-testid="source-badge-0"]').text()).toContain('来自 反思观察')
     w.unmount()
   })
 })

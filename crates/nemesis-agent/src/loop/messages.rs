@@ -357,7 +357,10 @@ impl AgentLoop {
         }
         #[cfg(feature = "forge")]
         {
-            let Some(ref root) = *self.workspace_root.read() else {
+            // 画像根（2026-11-24 项目会话注入修复）：显式注入优先（项目
+            // loop = 主 workspace），回落 workspace_root（主/集群/headless
+            // 旧行为）。
+            let Some(root) = self.profile_store_root() else {
                 return String::new();
             };
             let mtime_ns = |p: &std::path::Path| {
@@ -370,7 +373,7 @@ impl AgentLoop {
                             .unwrap_or(0)
                     })
             };
-            let profile_path = nemesis_forge::userprofile::store::profile_path(root);
+            let profile_path = nemesis_forge::userprofile::store::profile_path(&root);
             let profile_mtime = mtime_ns(&profile_path);
             // config.json mtime 进缓存键：enabled 翻转（disable/enable）即时
             // 失效重渲染，不再依赖画像文件自身变化。
@@ -395,7 +398,7 @@ impl AgentLoop {
                 if !enabled {
                     return String::new();
                 }
-                let profile = match nemesis_forge::userprofile::store::try_load_profile(root) {
+                let profile = match nemesis_forge::userprofile::store::try_load_profile(&root) {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::warn!("[UserProfile] profile load failed, skip injection: {e}");

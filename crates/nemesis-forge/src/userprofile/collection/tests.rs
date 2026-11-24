@@ -412,3 +412,126 @@ fn signals_roundtrip() {
     assert_eq!(out[0]["kind"], "approval");
     assert_eq!(out[1]["duration_ms"], 15000);
 }
+
+// ---------- 终端会话采集（2026-11-24 T 批） ----------
+
+/// 解析 happy path：shell 头提取 / 输入帧出命令 / 输出帧不出命令 /
+/// 续行归属 / 空行跳过。
+#[test]
+fn terminal_audit_parse_basic_frames() {
+    let audit = "# session log\n\
+                 # shell: pwsh\n\
+                 # 注：终端原始字节含回显密码，本文件应视为敏感\n\
+                 \n\
+                 [I] git status\n\
+                 \n\
+                 [O] On branch main\n\
+                 \n\
+                 [I] cargo build --release\n\
+                 \n\
+                 [O] Finished\n\
+                 line2-of-output\n\
+                 \n\
+                 [I] kubectl get pods\n";
+    let (shell, commands) = parse_terminal_audit(audit);
+    assert_eq!(shell, "pwsh");
+    assert_eq!(
+        commands,
+        vec!["git status", "cargo build --release", "kubectl get pods"]
+    );
+}
+
+/// 凭据两道防线：输出帧密码提示 → 下一条输入行整行丢弃（时序正确：
+/// 提示只压制其后输入，之前已收集的命令不受影响）；秘密形态输入行
+/// 直接丢弃；ANSI 行跳过。
+#[test]
+fn terminal_audit_parse_credential_guards() {
+    let audit = "[I] cargo build\n\
+                 \n\
+                 [O] [sudo] password for zoo:\n\
+                 \n\
+                 [I] hunter2\n\
+                 \n\
+                 [I] curl -H \"Authorization: Bearer sk-abc123\" https://x\n\
+                 \n\
+                 [I] \x1b[31m colored\n\
+                 \n\
+                 [I] git status\n";
+    let (_, commands) = parse_terminal_audit(audit);
+    assert_eq!(
+        commands,
+        vec!["cargo build", "git status"],
+        "密码邻接行 + 秘密形态行 + ANSI 行全部不进命令流，其余保留"
+    );
+}
+
+/// 续行输入帧：终端原始数据换行 → 多条输入行；行长截 120 字符。
+#[test]
+fn terminal_audit_parse_continuation_and_line_cap() {
+    let long = "x".repeat(300);
+    let audit = format!(
+        "[I] echo one\n\
+         tail-of-same-frame\n\
+         \n\
+         [I] {long}\n"
+    );
+    let (_, commands) = parse_terminal_audit(&audit);
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0], "echo one");
+    assert_eq!(commands[1], "tail-of-same-frame");
+    assert_eq!(commands[2].chars().count(), 120, "超长行截断");
+}
+
+/// 单会话命令条数上限 200。
+#[test]
+fn terminal_audit_parse_session_cap() {
+    let mut audit = String::new();
+    for i in 0..250 {
+        audit.push_str(&format!("[I] cmd{i}\n\n"));
+    }
+    let (_, commands) = parse_terminal_audit(&audit);
+    assert_eq!(commands.len(), 200);
+}
+
+/// 采集 IO：正常文件收集（shell + mtime 在窗内）；窗外 mtime 跳过；
+/// 非 pty_ 前缀 / 非 .log 后缀跳过；缺目录 = 空。
+#[test]
+fn collect_terminal_sessions_window_and_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let tdir = ws.join("logs").join("terminal");
+    std::fs::create_dir_all(&tdir).unwrap();
+    std::fs::write(
+        tdir.join("pty_20261124_1.log"),
+        "# shell: pwsh\n\n[I] git status\n",
+    )
+    .unwrap();
+    // 非 pty 审计文件（同目录的其它产物）跳过。
+    std::fs::write(tdir.join("readme.txt"), "[I] hack\n").unwrap();
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let out = collect_terminal_sessions(ws, now_ms - 60_000).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].shell, "pwsh");
+    assert_eq!(out[0].commands, vec!["git status"]);
+    assert_eq!(out[0].file, "pty_20261124_1.log");
+
+    // mtime 早于窗起点 → 整文件跳过。
+    let old = std::fs::OpenOptions::new()
+        .append(true)
+        .open(tdir.join("pty_20261124_1.log"))
+        .unwrap();
+    old.set_times(
+        std::fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_000)),
+    )
+    .unwrap();
+    drop(old);
+    let out = collect_terminal_sessions(ws, now_ms - 60_000).unwrap();
+    assert!(out.is_empty(), "窗外文件必须跳过");
+
+    // 缺目录 = 空（从未用内嵌终端的常态）。
+    let empty_ws = dir.path().join("no-terminal");
+    std::fs::create_dir_all(&empty_ws).unwrap();
+    assert!(collect_terminal_sessions(&empty_ws, 0).unwrap().is_empty());
+}

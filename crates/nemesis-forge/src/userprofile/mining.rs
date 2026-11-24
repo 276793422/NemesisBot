@@ -35,6 +35,12 @@
 //! - [`approval_strong_candidates`]：审批交互**强**信号（signals.jsonl
 //!   审批卡决策耗时，批 C ④——与弱信号通道互补：弱信号看遥测响应成败，
 //!   强信号看真实卡片的决策墙钟）。
+//!
+//! 2026-11-24 T 批追加（终端纳入）：[`shell_preference_candidates`]（PTY
+//! 审计 `# shell:` 头主导 shell 偏好）+ [`terminal_command_candidates`]
+//! （首 token 命令族，**参数不采集**——敏感面零暴露）。输入 = 采集层
+//! （[`super::collection::collect_terminal_sessions`]）凭据防线清洗后的
+//! 命令行投影，挖掘器不再见原始审计。
 
 use super::collection::{DialogueRow, TodoSnapshot};
 use super::store::HabitEntry;
@@ -1225,6 +1231,123 @@ pub fn approval_strong_candidates(signals: &[serde_json::Value], now: &str) -> V
     );
     entry.evidence = vec![format!("cards={}", approved.len()), format!("avg_ms={avg}")];
     vec![entry]
+}
+
+// ---------- 终端会话挖掘（2026-11-24 T 批） ----------
+
+/// shell 偏好挖掘的最低用过会话数。
+const SHELL_PREF_MIN_SESSIONS: usize = 3;
+/// shell 偏好挖掘的主导占比闸（≥70% 认定偏好）。
+const SHELL_PREF_DOMINANT_RATIO: f64 = 0.7;
+/// 命令族挖掘的最低总次数。
+const CMD_FAMILY_MIN_TOTAL: usize = 8;
+/// 命令族挖掘的最低跨越会话数（单会话循环敲同一条不构成习惯）。
+const CMD_FAMILY_MIN_SESSIONS: usize = 3;
+/// 命令族上榜条数上限（top-K）。
+const CMD_FAMILY_TOP_K: usize = 3;
+/// 噪声命令（shell 内建/无信息量）：不参与命令族挖掘。
+const CMD_NOISE: &[&str] = &[
+    "exit", "clear", "cls", "cd", "ls", "dir", "pwd", "history", "q", "help", "man",
+];
+
+/// 首命令 token（首 token = 程序名；**参数不采集**——参数里可能出现路径/
+/// 主机名/密钥等敏感面，挖掘器只看「用什么命令」）。
+fn first_token(line: &str) -> Option<&str> {
+    let t = line.split_whitespace().next()?;
+    let t = t.trim_matches(|c: char| matches!(c, '"' | '\'' | '`'));
+    if t.is_empty() { None } else { Some(t) }
+}
+
+/// shell 偏好挖掘（T 批）：≥3 个用过终端的会话且主导 shell 占比 ≥70%
+/// → environment 条目（「终端默认用 pwsh」）。缺 `# shell:` 头声明的
+/// 会话不参与占比分母（未知 shell 无读法）。
+pub fn shell_preference_candidates(
+    sessions: &[super::collection::TerminalSession],
+    now: &str,
+) -> Vec<HabitEntry> {
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut known = 0usize;
+    for s in sessions {
+        if s.shell.is_empty() {
+            continue;
+        }
+        known += 1;
+        *counts.entry(s.shell.to_lowercase()).or_default() += 1;
+    }
+    if known < SHELL_PREF_MIN_SESSIONS {
+        return Vec::new();
+    }
+    let Some((shell, cnt)) = counts.iter().max_by_key(|(_, c)| **c) else {
+        return Vec::new();
+    };
+    let ratio = *cnt as f64 / known as f64;
+    if ratio < SHELL_PREF_DOMINANT_RATIO {
+        return Vec::new();
+    }
+    let mut entry = HabitEntry::auto_entry(
+        "environment",
+        &format!("用户终端默认用 {shell}——环境/安装类命令与说明按 {shell} 语法给出"),
+        (0.6 + ratio * 0.2).min(0.85),
+        *cnt as u32,
+        now,
+    );
+    entry.evidence = vec![format!("sessions={known}"), format!("ratio={ratio:.2}")];
+    vec![entry]
+}
+
+/// 常用命令族挖掘（T 批）：首 token 总次数 ≥8 且跨越 ≥3 个会话且不在
+/// 噪声表 → tool_preference 条目 top-3（按次数降序；并列按名字典序——
+/// 纯函数确定性）。**参数不采集**（敏感面零暴露）。
+pub fn terminal_command_candidates(
+    sessions: &[super::collection::TerminalSession],
+    now: &str,
+) -> Vec<HabitEntry> {
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut session_spread: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    for (i, s) in sessions.iter().enumerate() {
+        let sid = format!("s{i}");
+        for line in &s.commands {
+            let Some(tok) = first_token(line) else {
+                continue;
+            };
+            let tok = tok.to_lowercase();
+            if CMD_NOISE.contains(&tok.as_str()) {
+                continue;
+            }
+            *counts.entry(tok.clone()).or_default() += 1;
+            session_spread.entry(tok).or_default().insert(sid.clone());
+        }
+    }
+    let mut qualified: Vec<(String, usize, usize)> = counts
+        .into_iter()
+        .filter(|(cmd, total)| {
+            *total >= CMD_FAMILY_MIN_TOTAL
+                && session_spread.get(cmd).map(|s| s.len()).unwrap_or(0) >= CMD_FAMILY_MIN_SESSIONS
+        })
+        .map(|(cmd, total)| {
+            let spread = session_spread.get(&cmd).map(|s| s.len()).unwrap_or(0);
+            (cmd, total, spread)
+        })
+        .collect();
+    // 次数降序，并列按名字典序（BTreeMap 迭代序兜底确定性）。
+    qualified.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if qualified.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (cmd, total, spread) in qualified.into_iter().take(CMD_FAMILY_TOP_K) {
+        let mut entry = HabitEntry::auto_entry(
+            "tool_preference",
+            &format!("用户终端常用 {cmd}——涉及该工具的任务优先考虑 {cmd} 相关方案"),
+            (0.55 + (total.min(30) as f64 / 30.0) * 0.25).min(0.8),
+            total as u32,
+            now,
+        );
+        entry.evidence = vec![format!("count={total}"), format!("sessions={spread}")];
+        out.push(entry);
+    }
+    out
 }
 
 #[cfg(test)]

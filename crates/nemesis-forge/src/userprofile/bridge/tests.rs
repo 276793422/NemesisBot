@@ -242,3 +242,206 @@ fn old_format_entries_lack_kind_and_source_still_load() {
     );
     assert_eq!(p.habits[0].source, "", "缺 source serde default = 自产");
 }
+
+// ---------- 观察队列（接口二·待确认观察，2026-11-24） ----------
+
+fn observation(content: &str, confidence: f64) -> ObservationEntry {
+    ObservationEntry {
+        id: String::new(),
+        ts_ms: 1700000000000,
+        kind: "observation".into(),
+        category: "workflow".into(),
+        content: content.into(),
+        confidence,
+        steps: Vec::new(),
+        status: OBS_STATUS_PENDING.into(),
+        resolved_ts_ms: None,
+    }
+}
+
+/// append 分配 id/pending + read_pending 尾部取回 + 缺文件空。
+#[test]
+fn observations_append_and_read_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    assert!(read_pending_observations(ws, 10).is_empty(), "缺文件 = 空");
+    let admitted = append_observations(ws, &[observation("甲", 0.6), observation("乙", 0.55)]);
+    assert_eq!(admitted, 2);
+    let pending = read_pending_observations(ws, 10);
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].content, "甲", "时间升序保序");
+    assert!(!pending[0].id.is_empty());
+    assert_ne!(pending[0].id, pending[1].id);
+    assert_eq!(pending[0].kind, "observation", "入队时强制 kind");
+    // 空批不建文件。
+    let empty_ws = dir.path().join("other");
+    std::fs::create_dir_all(&empty_ws).unwrap();
+    assert_eq!(append_observations(&empty_ws, &[]), 0);
+    assert!(!observations_path(&empty_ws).exists());
+}
+
+/// cap 洪泛防线：pending 到顶 = 新提名丢弃；裁决腾出预算后恢复入队。
+#[test]
+fn observations_cap_enforced_and_released_by_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let batch: Vec<ObservationEntry> = (0..OBS_PENDING_CAP)
+        .map(|i| observation(&format!("占位{i}"), 0.6))
+        .collect();
+    assert_eq!(append_observations(ws, &batch), OBS_PENDING_CAP);
+    assert_eq!(
+        append_observations(ws, &[observation("溢出", 0.6)]),
+        0,
+        "到顶丢弃"
+    );
+    // 忽略一条 → 预算腾 1 → 恢复入队。
+    let pending = read_pending_observations(ws, 10);
+    resolve_observation(ws, &pending[0].id, false).unwrap();
+    assert_eq!(append_observations(ws, &[observation("新提名", 0.6)]), 1);
+}
+
+/// 裁决：confirm/dismiss 置状态 + resolved 时间戳留痕；已裁决/不存在 =
+/// Ok(None)；损坏行原样保留。
+#[test]
+fn observations_resolve_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    append_observations(ws, &[observation("甲", 0.6), observation("乙", 0.6)]);
+    let pending = read_pending_observations(ws, 10);
+    let confirmed = resolve_observation(ws, &pending[0].id, true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(confirmed.status, OBS_STATUS_CONFIRMED);
+    assert!(confirmed.resolved_ts_ms.is_some());
+    let dismissed = resolve_observation(ws, &pending[1].id, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(dismissed.status, OBS_STATUS_DISMISSED);
+    // 重复裁决 / 不存在 id = Ok(None)。
+    assert!(
+        resolve_observation(ws, &pending[0].id, true)
+            .unwrap()
+            .is_none()
+    );
+    assert!(resolve_observation(ws, "no-such", true).unwrap().is_none());
+    // 裁决不吃损坏行。
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(observations_path(ws))
+            .unwrap();
+        writeln!(f, "{{broken").unwrap();
+    }
+    resolve_observation(ws, &pending[0].id, false).unwrap(); // no-op
+    let content = std::fs::read_to_string(observations_path(ws)).unwrap();
+    assert!(content.lines().any(|l| l == "{broken"), "损坏行原样保留");
+}
+
+/// observation_stats 三态计数。
+#[test]
+fn observation_stats_counts_by_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    assert_eq!(observation_stats(ws), (0, 0, 0), "缺文件全零");
+    append_observations(
+        ws,
+        &[
+            observation("甲", 0.6),
+            observation("乙", 0.6),
+            observation("丙", 0.6),
+        ],
+    );
+    let pending = read_pending_observations(ws, 10);
+    resolve_observation(ws, &pending[0].id, true).unwrap();
+    resolve_observation(ws, &pending[1].id, false).unwrap();
+    assert_eq!(observation_stats(ws), (1, 1, 1));
+}
+
+// ---------- 队列清理（底层接口） ----------
+
+/// prune 教训队列：acked 且早于 cutoff 删行；pending 永不动；损坏行保留；
+/// 零删除不重写；缺文件 Ok(0)。
+#[test]
+fn prune_lessons_only_acked_before_cutoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    assert_eq!(prune_lessons_older_than(ws, 1).unwrap(), 0, "缺文件 Ok(0)");
+    let mut old = lesson("旧教训");
+    old.ts_ms = 1_000;
+    let mut new = lesson("新教训");
+    new.ts_ms = 9_000;
+    append_lessons(ws, &[old, new]);
+    // 全部 ack 后清理：cutoff=5000 → 只删旧。
+    let ids: Vec<String> = read_pending_lessons(ws, 10)
+        .iter()
+        .map(|l| l.id.clone())
+        .collect();
+    assert_eq!(ack_lessons(ws, &ids).unwrap(), 2);
+    assert_eq!(prune_lessons_older_than(ws, 5_000).unwrap(), 1);
+    let content = std::fs::read_to_string(outbound_lessons_path(ws)).unwrap();
+    assert!(content.contains("新教训"));
+    assert!(!content.contains("旧教训"));
+    // pending 永不动。
+    append_lessons(
+        ws,
+        &[{
+            let mut p = lesson("未消费旧教训");
+            p.ts_ms = 1_000;
+            p
+        }],
+    );
+    assert_eq!(
+        prune_lessons_older_than(ws, 9_999).unwrap(),
+        1,
+        "上一轮的旧 acked 也删"
+    );
+    let content = std::fs::read_to_string(outbound_lessons_path(ws)).unwrap();
+    assert!(content.contains("未消费旧教训"), "pending 不受清理影响");
+    assert!(
+        !content.contains("新教训"),
+        "新教训 ts=9000 < cutoff=9999 也删"
+    );
+    // 损坏行原样保留。
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(outbound_lessons_path(ws))
+            .unwrap();
+        writeln!(f, "{{junk").unwrap();
+    }
+    assert_eq!(prune_lessons_older_than(ws, i64::MAX).unwrap(), 0);
+    let content = std::fs::read_to_string(outbound_lessons_path(ws)).unwrap();
+    assert!(content.lines().any(|l| l == "{junk"));
+}
+
+/// prune 观察队列：已裁决且裁决时刻早于 cutoff 删行；pending 永不动。
+#[test]
+fn prune_observations_only_resolved_before_cutoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    assert_eq!(
+        prune_observations_older_than(ws, 1).unwrap(),
+        0,
+        "缺文件 Ok(0)"
+    );
+    let mut old = observation("旧提名", 0.6);
+    old.ts_ms = 1_000;
+    let mut new = observation("新提名", 0.6);
+    new.ts_ms = 9_000;
+    append_observations(ws, &[old, new]);
+    let pending = read_pending_observations(ws, 10);
+    resolve_observation(ws, &pending[0].id, true).unwrap();
+    resolve_observation(ws, &pending[1].id, false).unwrap();
+    // 裁决完成后再取 cutoff（严格大于两条裁决时刻，消除毫秒竞态）。
+    let cutoff = chrono::Utc::now().timestamp_millis() + 1;
+    assert_eq!(prune_observations_older_than(ws, cutoff).unwrap(), 2);
+    let content = std::fs::read_to_string(observations_path(ws)).unwrap();
+    assert!(!content.contains("旧提名") && !content.contains("新提名"));
+    // pending 永不动。
+    append_observations(ws, &[observation("悬而未决", 0.6)]);
+    assert_eq!(prune_observations_older_than(ws, i64::MAX).unwrap(), 0);
+    let content = std::fs::read_to_string(observations_path(ws)).unwrap();
+    assert!(content.contains("悬而未决"), "pending 不受清理影响");
+}

@@ -3,12 +3,23 @@
 //!
 //! 命令：`profile.list` / `profile.veto` / `profile.forget` / `profile.pin`
 //! / `profile.enable` / `profile.disable` / `profile.route`
-//! / `profile.telemetry_get` / `profile.telemetry_set` / `profile.stats`。
+//! / `profile.telemetry_get` / `profile.telemetry_set` / `profile.stats`
+//! / `profile.observations` / `profile.observation_respond`
+//! / `profile.prune_queue`。
 //!
 //! 语义裁决：习惯生成**免确认**自动生效；本 handler 只承担**后门动作**
 //! （veto/forget/pin）与开关管理（enable/disable）。展示面走 `list`
 //! （HabitEntry 序列化自带 steps/evidence/auto 结构化字段）。
 //! 开关权威 = config.json `user_profile.enabled`（live 缓存优先）。
+//!
+//! `profile.observations` / `profile.observation_respond`：接口二·待确认
+//! 观察（2026-11-24）——反思通道低于置信度闸的边缘结论交人工裁决；
+//! `observation_respond {id, approved}` 确认 = `ingest_external_entry`
+//! （source=observation）入画像，忽略 = 负样本事件回流。
+//!
+//! `profile.prune_queue {older_than_days}`：队列清理**底层接口**（UI 按钮
+//! 后接；显式用户动作，不挂 sweep 自动删数据）——清理教训队列（acked 且
+//! 早于 cutoff）与观察队列（已裁决且早于 cutoff），pending 永不动。
 //!
 //! `profile.route`：前端 router.afterEach 页面路由遥测（例 2「使用集群前
 //! 先去诊断页」的页面足迹信号），经 telemetry::record_wsapi_call 以
@@ -196,6 +207,72 @@ impl ProfileHandler {
         })?;
         Ok(Some(json!({ "ui_telemetry": enabled })))
     }
+
+    /// 待确认观察列表（接口二：pending 提名 + 三态计数）。
+    fn observations(&self, ctx: &RequestContext) -> Result<Option<Value>, String> {
+        let ws = self.workspace(ctx)?;
+        let pending = surface::pending_observations(&ws, 50);
+        let (p, c, d) = nemesis_forge::userprofile::bridge::observation_stats(&ws);
+        Ok(Some(json!({
+            "observations": pending,
+            "counts": { "pending": p, "confirmed": c, "dismissed": d },
+        })))
+    }
+
+    /// 裁决观察提名：`{id, approved: bool}`——确认入画像 / 忽略负样本回流。
+    fn observation_respond(
+        &self,
+        ctx: &RequestContext,
+        data: Option<&Value>,
+    ) -> Result<Option<Value>, String> {
+        let id = data
+            .and_then(|d| d.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "missing or empty 'id'".to_string())?;
+        let approved = data
+            .and_then(|d| d.get("approved"))
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| "missing boolean 'approved'".to_string())?;
+        let ws = self.workspace(ctx)?;
+        let resolved = if approved {
+            surface::confirm_observation(&ws, id)?
+        } else {
+            surface::dismiss_observation(&ws, id)?.map(|_| ())
+        };
+        Ok(Some(json!({
+            "resolved": resolved.is_some(),
+            "approved": approved,
+        })))
+    }
+
+    /// 队列清理（底层接口；显式用户动作——UI 按钮后接，不挂 sweep）。
+    /// `older_than_days ≥ 1`：清理两个队列中早于 cutoff 的**已消费/已裁决**
+    /// 条目（pending 永不动）。
+    fn prune_queue(
+        &self,
+        ctx: &RequestContext,
+        data: Option<&Value>,
+    ) -> Result<Option<Value>, String> {
+        let days = data
+            .and_then(|d| d.get("older_than_days"))
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| "missing integer 'older_than_days'".to_string())?;
+        if days < 1 {
+            return Err("older_than_days must be >= 1".to_string());
+        }
+        let ws = self.workspace(ctx)?;
+        let cutoff = chrono::Utc::now().timestamp_millis() - days * 24 * 60 * 60 * 1000;
+        let pruned_lessons =
+            nemesis_forge::userprofile::bridge::prune_lessons_older_than(&ws, cutoff)?;
+        let pruned_observations =
+            nemesis_forge::userprofile::bridge::prune_observations_older_than(&ws, cutoff)?;
+        Ok(Some(json!({
+            "pruned_lessons": pruned_lessons,
+            "pruned_observations": pruned_observations,
+        })))
+    }
 }
 
 fn content_sub(data: Option<&Value>) -> Result<String, String> {
@@ -225,6 +302,9 @@ impl ModuleHandler for ProfileHandler {
             "telemetry_get",
             "telemetry_set",
             "stats",
+            "observations",
+            "observation_respond",
+            "prune_queue",
         ]
     }
 
@@ -245,6 +325,9 @@ impl ModuleHandler for ProfileHandler {
             "telemetry_get" => self.telemetry_get(ctx),
             "telemetry_set" => self.telemetry_set(ctx, data.as_ref()),
             "stats" => self.stats(ctx),
+            "observations" => self.observations(ctx),
+            "observation_respond" => self.observation_respond(ctx, data.as_ref()),
+            "prune_queue" => self.prune_queue(ctx, data.as_ref()),
             _ => Err(format!("unknown command: profile.{cmd}")),
         }
     }

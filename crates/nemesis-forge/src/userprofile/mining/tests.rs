@@ -872,3 +872,122 @@ fn approval_strong_fast_and_slow() {
     signals.push(serde_json::json!({"ts_ms": 9, "kind": "estop", "action": "engage"}));
     assert_eq!(approval_strong_candidates(&signals, now_s).len(), 1);
 }
+
+// ---------- 终端会话挖掘（2026-11-24 T 批） ----------
+
+fn term(shell: &str, cmds: &[&str]) -> crate::userprofile::collection::TerminalSession {
+    crate::userprofile::collection::TerminalSession {
+        file: format!("pty_{shell}.log"),
+        shell: shell.to_string(),
+        ts_ms: 0,
+        commands: cmds.iter().map(|c| c.to_string()).collect(),
+    }
+}
+
+/// shell 偏好：≥3 会话且主导占比 ≥70% → environment 条目；缺头会话不进
+/// 分母；不足 3 会话 / 占比不足 → 空。
+#[test]
+fn shell_preference_candidates_gates() {
+    let sessions = vec![
+        term("pwsh", &["a"]),
+        term("pwsh", &["b"]),
+        term("pwsh", &["c"]),
+        term("", &["d"]), // 缺 shell 头：不进分母
+    ];
+    let out = shell_preference_candidates(&sessions, now());
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].category, "environment");
+    assert!(out[0].content.contains("pwsh"), "{}", out[0].content);
+
+    // 不足 3 个已知 shell 会话 → 不挖。
+    let few = vec![term("pwsh", &["a"]), term("", &["b"]), term("", &["c"])];
+    assert!(shell_preference_candidates(&few, now()).is_empty());
+
+    // 占比不足 70%（2/3 pwsh + 1/3 bash = 0.67 < 0.7）→ 不挖。
+    let mixed = vec![term("pwsh", &[]), term("pwsh", &[]), term("bash", &[])];
+    assert!(shell_preference_candidates(&mixed, now()).is_empty());
+}
+
+/// 命令族：首 token 总数 ≥8 且跨 ≥3 会话且非噪声 → tool_preference top-3；
+/// 噪声命令 / 单会话命令 / 参数不参与。
+#[test]
+fn terminal_command_candidates_gates() {
+    // cargo 总 8 次、跨 3 会话 → 上榜；ls/cd/exit 噪声不参与；参数不采集。
+    let s1 = term(
+        "pwsh",
+        &["cargo build --release", "cargo test", "cargo run", "ls"],
+    );
+    let s2 = term(
+        "pwsh",
+        &["cargo build", "cargo clippy --tests", "cargo check"],
+    );
+    let s3 = term("pwsh", &["cargo fmt --all --check", "cargo doc", "cd .."]);
+    let out = terminal_command_candidates(&[s1, s2, s3], now());
+    assert_eq!(out.len(), 1, "cargo 8 次/3 会话达标，其余命令未达标或噪声");
+    assert_eq!(out[0].category, "tool_preference");
+    assert!(out[0].content.contains("cargo"), "{}", out[0].content);
+    assert!(
+        !out.iter().any(|e| e.content.contains("release")),
+        "参数不采集：条目内容只提命令名"
+    );
+
+    // 总数够但只跨 1 个会话（8 连敲同命令）→ 不构成习惯。
+    let spammy = vec![
+        term("pwsh", &["vec x"; 8]),
+        term("pwsh", &[]),
+        term("pwsh", &[]),
+    ];
+    assert!(terminal_command_candidates(&spammy, now()).is_empty());
+}
+
+/// top-K 排序：次数多的命令排前 + 未达标命令不出（确定性断言）。
+/// 每个命令都跨 3 会话（spread 达标），按总数区分高低。
+#[test]
+fn terminal_command_candidates_orders_by_count() {
+    // gamma：9 次（3+3+3）；delta：8 次（3+3+2）；epsilon：7 次（3+2+2，
+    // 不达标）；ls 噪声不参与。
+    let s1 = term(
+        "pwsh",
+        &[
+            "gamma --a1",
+            "gamma --a2",
+            "gamma --a3",
+            "delta --b1",
+            "delta --b2",
+            "delta --b3",
+            "epsilon --c1",
+            "epsilon --c2",
+            "epsilon --c3",
+        ],
+    );
+    let s2 = term(
+        "pwsh",
+        &[
+            "gamma --d1",
+            "gamma --d2",
+            "gamma --d3",
+            "delta --e1",
+            "delta --e2",
+            "delta --e3",
+            "epsilon --f1",
+            "epsilon --f2",
+        ],
+    );
+    let s3 = term(
+        "pwsh",
+        &[
+            "gamma --g1",
+            "gamma --g2",
+            "gamma --g3",
+            "delta --h1",
+            "delta --h2",
+            "epsilon --i1",
+            "epsilon --i2",
+            "ls",
+        ],
+    );
+    let out = terminal_command_candidates(&[s1, s2, s3], now());
+    assert_eq!(out.len(), 2, "epsilon 7 次不达标、ls 噪声");
+    assert!(out[0].content.contains("gamma"), "{}", out[0].content);
+    assert!(out[1].content.contains("delta"), "{}", out[1].content);
+}

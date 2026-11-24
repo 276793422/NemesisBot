@@ -453,6 +453,11 @@ pub fn build_agent_loop_from_spec(
     // home` 资产树不得落进去；uploads/plans/hydrate/图片/记忆域五族消费
     // 统一走 loop 的 session_homes_root（本注入是唯一裁决点）。
     agent_loop.set_session_home_root(shared.workspace_dir().to_path_buf());
+    // 用户画像存储根（2026-11-24 项目会话画像注入缺口修复）：**主
+    // workspace 锚**——项目 loop 的 workspace_root 是项目目录（上面两行），
+    // 画像资产 `config/user_profile.json` 在主 workspace；不注入 = 项目
+    // 会话读项目目录下的画像文件（永不存在）→ 画像段恒空不注入。
+    agent_loop.set_profile_root(shared.workspace_dir().to_path_buf());
     // vault 域绑定 sidecar 权威路径（L26 修复 2026-11-11）：**主 workspace
     // 锚**——项目 loop 的 workspace_root 是项目目录（上面一行），不可作
     // 推导根；恒走 SharedResources 单一推导点（与 CLI 写入侧同点）。
