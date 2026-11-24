@@ -177,6 +177,7 @@ impl RpcServer {
         let max_conns = self.config.max_connections;
         let conn_count = Arc::clone(&self.conn_count);
         let idle_timeout = self.config.idle_timeout;
+        let send_timeout = self.config.send_timeout;
 
         let handle = tokio::spawn(Self::accept_loop(
             listener,
@@ -186,6 +187,7 @@ impl RpcServer {
             max_conns,
             conn_count,
             idle_timeout,
+            send_timeout,
         ));
         *self.accept_handle.write() = Some(handle);
 
@@ -247,6 +249,7 @@ impl RpcServer {
         max_conns: usize,
         conn_count: Arc<AtomicUsize>,
         idle_timeout: std::time::Duration,
+        send_timeout: std::time::Duration,
     ) {
         loop {
             tokio::select! {
@@ -279,6 +282,7 @@ impl RpcServer {
                                     handlers,
                                     auth_token,
                                     idle_timeout,
+                                    send_timeout,
                                 )
                                 .await;
                                 conn_count.fetch_sub(1, Ordering::Relaxed);
@@ -307,12 +311,35 @@ impl RpcServer {
     // Connection handling
     // -----------------------------------------------------------------------
 
+    /// 入站连接的 [`TcpConnConfig`] 装配（TCP accept 与 roaming loopback
+    /// 两路共用单点）：`idle_timeout` / `send_timeout` / `auth_token` 三参数
+    /// 从 [`RpcServerConfig`] 同源透传。空 token = None（明文帧，无鉴权）。
+    fn inbound_conn_config(
+        address: String,
+        auth_token: String,
+        idle_timeout: std::time::Duration,
+        send_timeout: std::time::Duration,
+    ) -> TcpConnConfig {
+        TcpConnConfig {
+            address,
+            idle_timeout,
+            send_timeout,
+            auth_token: if auth_token.is_empty() {
+                None
+            } else {
+                Some(auth_token)
+            },
+            ..Default::default()
+        }
+    }
+
     async fn handle_connection(
         stream: tokio::net::TcpStream,
         remote_addr: String,
         handlers: Arc<RwLock<HashMap<String, Arc<RpcHandlerFn>>>>,
         auth_token: String,
         idle_timeout: std::time::Duration,
+        send_timeout: std::time::Duration,
     ) {
         // Auth is enforced via AEAD frame encryption: when `auth_token` is
         // non-empty, TcpConn derives an AES-256-GCM key from it and decrypts
@@ -326,16 +353,11 @@ impl RpcServer {
         // 半开连接（对端死亡无 FIN/RST）不再永久占用 conn_count 槽位，
         // 泄漏满 max_connections 拒绝一切新连接的瘫痪链从「无限窗口」
         // 收敛到「idle_timeout 窗口」。
-        let config = TcpConnConfig {
-            address: remote_addr.clone(),
-            idle_timeout,
-            auth_token: if !auth_token.is_empty() {
-                Some(auth_token)
-            } else {
-                None
-            },
-            ..Default::default()
-        };
+        //
+        // send_timeout 同样透传（BUG-20261124-026）：响应写回超时此前恒为
+        // TcpConnConfig 默认 10s，本层配置字段声明了却从未生效。
+        let config =
+            Self::inbound_conn_config(remote_addr.clone(), auth_token, idle_timeout, send_timeout);
 
         let mut conn = TcpConn::new(stream, config);
 
@@ -393,10 +415,11 @@ impl RpcServer {
         };
 
         // 快照受理参数（与旧 roaming_conn_handler 同口径：同一 handler 表
-        // ——动态注册即见、同一 AEAD token、同一空闲超时）。
+        // ——动态注册即见、同一 AEAD token、同一空闲超时、同一写回超时）。
         let handlers = Arc::clone(&self.handlers);
         let auth_token = self.auth_token.read().clone();
         let idle_timeout = self.config.idle_timeout;
+        let send_timeout = self.config.send_timeout;
         handle.spawn(async move {
             while let Some(incoming) = rx.recv().await {
                 let handlers = Arc::clone(&handlers);
@@ -406,6 +429,7 @@ impl RpcServer {
                     handlers,
                     auth_token,
                     idle_timeout,
+                    send_timeout,
                 ));
             }
             tracing::debug!("[RpcServer] roaming 入站受理循环退出（漏斗已摘除）");
@@ -423,6 +447,7 @@ impl RpcServer {
         handlers: Arc<RwLock<HashMap<String, Arc<RpcHandlerFn>>>>,
         auth_token: String,
         idle_timeout: std::time::Duration,
+        send_timeout: std::time::Duration,
     ) {
         let remote = format!("iroh:{}", incoming.remote_hex);
         let stream = match tokio::time::timeout(
@@ -453,16 +478,8 @@ impl RpcServer {
             }
         };
 
-        let config = TcpConnConfig {
-            address: remote.clone(),
-            auth_token: if auth_token.is_empty() {
-                None
-            } else {
-                Some(auth_token)
-            },
-            idle_timeout,
-            ..Default::default()
-        };
+        let config =
+            Self::inbound_conn_config(remote.clone(), auth_token, idle_timeout, send_timeout);
         let mut tc = TcpConn::from_stream(stream, config, String::new(), remote.clone());
         if let Err(e) = tc.start().await {
             tracing::error!(
