@@ -3,7 +3,10 @@
 //!
 //! 纪律：
 //! - **staging 先行**：全部释放进 `<target>/.nbsetup-stage-*`，校验全过后
-//!   逐文件 rename 提交——中途失败目标目录零污染（「零残留」承诺）；
+//!   逐文件 rename 提交——释放阶段中途失败目标目录零污染；提交阶段中途
+//!   失败时 Fresh 场景就地回滚（target 全部内容都是本次产物 → 删已提交
+//!   文件 + 摘整目录，见 ⑧），既有安装场景不回滚（被覆盖的旧文件不可
+//!   恢复，诚实保留走 install.json 哨兵自愈——BUG-20261124-023）；
 //! - **install.json 最后落盘**：提交成功的哨兵——中断后无标记 = 下次
 //!   按 Fresh 覆盖装（诚实恢复路径）；
 //! - **升级模式跳过 `workspace/` 前缀**（v1 载荷本就不含 workspace——
@@ -192,11 +195,20 @@ pub fn perform(
     fsutil::remove_dir_all(&staging)?;
     std::fs::create_dir_all(&staging)
         .with_context(|| format!("建 staging 目录失败: {}", staging.display()))?;
-    let result = perform_inner(package_path, &info.manifest, opts, &staging, &report);
+    let result = perform_inner(
+        package_path,
+        &info.manifest,
+        opts,
+        &staging,
+        &report,
+        target_existed,
+    );
     if result.is_err() {
-        // 失败零残留：staging 整体删除（best-effort，失败不掩盖主错误）；
-        // 目标目录是本次新建的则一并摘除（空目录——非空说明有既有安装，
-        // 不动）。
+        // 失败收尾：staging 整体删除（best-effort，失败不掩盖主错误）；
+        // 提交阶段中途失败的 Fresh 回滚已由 perform_inner 就地完成（target
+        // 已被摘除，本处 remove_dir 打 NotFound 静默无效）；释放阶段失败时
+        // target 尚未被触碰——本次新建则摘除空目录兜底（非空说明有既有
+        // 安装或提交残留，诚实保留）。
         let _ = fsutil::remove_dir_all(&staging);
         if !target_existed {
             let _ = std::fs::remove_dir(&opts.target_dir);
@@ -235,6 +247,7 @@ fn perform_inner(
     opts: &InstallOptions,
     staging: &Path,
     report: &dyn Fn(&Progress),
+    target_existed: bool,
 ) -> Result<(usize, usize)> {
     // ⑤ payload 区域哈希（释放前硬闸）。
     {
@@ -397,35 +410,63 @@ fn perform_inner(
     .with_context(|| format!("写安装记录失败: {}", staging.join(RECORD_FILE).display()))?;
 
     // ⑧ 原子提交：staging → target 逐文件 rename（同卷），install.json 最后。
+    // 提交中途失败（AV 瞬时锁/磁盘满/权限）：Fresh 场景就地回滚——target
+    // 全部内容都是本次产物，删已提交文件（含 uninstall 副本）后摘整目录，
+    // 「零残留」对 Fresh 真正闭环（BUG-20261124-023：此前已 rename 进 target
+    // 的文件无人清理，外层 remove_dir 只能删空目录 → 半套产物残留磁盘）；
+    // 既有安装场景不回滚——被覆盖的旧文件已不可恢复，回滚会把「新旧混合
+    // 态」换成「新文件被删 + 旧文件残缺」的更糟态，诚实保留走 install.json
+    // 哨兵自愈（无新标记 = 下次覆盖装补齐； 卸载按旧清单可能残留少量新文件，
+    // 修复装一次即归一致）。
     std::fs::create_dir_all(&opts.target_dir)
         .with_context(|| format!("建安装目录失败: {}", opts.target_dir.display()))?;
     let mut committed_count = 0usize;
-    if opts.keep_uninstall_copy {
-        let copy_name = uninstall_copy_name(&manifest.platform);
-        std::fs::rename(staging.join(copy_name), opts.target_dir.join(copy_name))
-            .with_context(|| format!("提交卸载副本失败 → {}", opts.target_dir.display()))?;
-        committed_count += 1;
-    }
-    for rel in &committed {
-        let src = staging.join(rel);
-        let dst = opts.target_dir.join(rel);
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("建提交目录失败: {}", parent.display()))?;
+    // 已提交产物绝对路径（Fresh 回滚清理面；含 uninstall 副本——不在
+    // record.files，引擎清单不含它）。
+    let mut committed_paths: Vec<PathBuf> = Vec::new();
+    let commit_result: Result<()> = (|| {
+        if opts.keep_uninstall_copy {
+            let copy_name = uninstall_copy_name(&manifest.platform);
+            let dst = opts.target_dir.join(copy_name);
+            std::fs::rename(staging.join(copy_name), &dst)
+                .with_context(|| format!("提交卸载副本失败 → {}", opts.target_dir.display()))?;
+            committed_paths.push(dst);
+            committed_count += 1;
         }
-        std::fs::rename(&src, &dst)
-            .with_context(|| format!("提交失败: {} → {}", src.display(), dst.display()))?;
+        for rel in &committed {
+            let src = staging.join(rel);
+            let dst = opts.target_dir.join(rel);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("建提交目录失败: {}", parent.display()))?;
+            }
+            std::fs::rename(&src, &dst)
+                .with_context(|| format!("提交失败: {} → {}", src.display(), dst.display()))?;
+            committed_paths.push(dst);
+            committed_count += 1;
+        }
+        std::fs::rename(staging.join(RECORD_FILE), opts.target_dir.join(RECORD_FILE))
+            .with_context(|| {
+                format!(
+                    "提交安装记录失败 → {}",
+                    opts.target_dir.join(RECORD_FILE).display()
+                )
+            })?;
         committed_count += 1;
+        Ok(())
+    })();
+    if let Err(e) = commit_result {
+        if !target_existed {
+            // Fresh 回滚：逐文件韧性删 + 整目录摘（子目录骨架是
+            // create_dir_all 留下的，remove_dir_all 收口）。失败 best-effort
+            // （单文件删失败继续，最后整目录尽量摘）——不掩盖主错误。
+            for p in &committed_paths {
+                let _ = fsutil::delete_file(p);
+            }
+            let _ = fsutil::remove_dir_all(&opts.target_dir);
+        }
+        return Err(e);
     }
-    std::fs::rename(staging.join(RECORD_FILE), opts.target_dir.join(RECORD_FILE)).with_context(
-        || {
-            format!(
-                "提交安装记录失败 → {}",
-                opts.target_dir.join(RECORD_FILE).display()
-            )
-        },
-    )?;
-    committed_count += 1;
     fsutil::remove_dir_all(staging)?;
 
     Ok((committed_count, skipped_workspace.len()))

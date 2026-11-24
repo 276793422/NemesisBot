@@ -306,3 +306,36 @@ fn allow_agent_disable_defaults_and_reads() {
     std::fs::write(&p, "{broken").unwrap();
     assert!(allow_agent_disable(Some(&p)));
 }
+
+#[tokio::test]
+async fn add_md_write_failure_leaves_registry_untouched() {
+    // BUG-20261124-037：内容先于登记提交——md 写失败（workspace/goals 被
+    // 同名文件占位 → atomic write create_dir_all 必败，确定性注入）时闭包
+    // Err = update_registry 整表放弃不落盘，注册表不留无内容 Active 条目
+    // （旧序楔死形态：评估永久 skip "md file missing" + add 拒新建）。
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    std::fs::write(ws.join("goals"), b"not a directory").unwrap();
+    let err = tool(ws)
+        .execute(r#"{"action":"add","content":"目标"}"#, &ctx())
+        .await
+        .unwrap_err();
+    assert!(err.contains("goal.md"), "unexpected: {err}");
+    assert!(
+        !ws.join("config").join("goals.json").exists(),
+        "md 写失败后注册表不得落盘（楔死形态残留）"
+    );
+    // 恢复占位后可正常新建（无楔死残留，id 从 G1 起）。
+    std::fs::remove_file(ws.join("goals")).unwrap();
+    let out = tool(ws)
+        .execute(r#"{"action":"add","content":"目标"}"#, &ctx())
+        .await
+        .unwrap();
+    assert!(out.contains("G1"), "unexpected: {out}");
+    let entries = nemesis_goals::load_registry(ws).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        nemesis_goals::read_goal_md(ws, "G1").unwrap().as_deref(),
+        Some("目标")
+    );
+}

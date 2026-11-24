@@ -11,14 +11,19 @@ use nemesis_ziwei_rev::pe::{
 };
 
 /// 最小 PeInfo：一节.rdata（rva 0x2000 / raw 0x600 / 0x300B）+ 指定目录。
+/// machine/image_base 可注入（x86 目录布局测试用 0x14C / 0x400000）。
 fn mini_pe(dirs: &[(usize, u32, u32)]) -> PeInfo {
+    mini_pe_machine(0x8664, 0x1400_0000, dirs)
+}
+
+fn mini_pe_machine(machine: u16, image_base: u64, dirs: &[(usize, u32, u32)]) -> PeInfo {
     let mut directories = vec![(0u32, 0u32); 16];
     for (idx, rva, size) in dirs {
         directories[*idx] = (*rva, *size);
     }
     PeInfo {
-        machine: 0x8664,
-        image_base: 0x1400_0000,
+        machine,
+        image_base,
         entry_rva: 0x1000,
         timestamp: 0,
         checksum: 0,
@@ -90,6 +95,28 @@ fn tls_callbacks_va_to_rva_and_termination() {
     w64(&mut f, 0x708, 0x1400_0000 + 0x1020);
     w64(&mut f, 0x710, 0);
     let cbs = pe::parse_tls_callbacks(&f, &pe).expect("回调应可解析");
+    assert_eq!(cbs, vec![0x1060, 0x1020]);
+}
+
+/// BUG-20261124-042 回归锁：x86（IMAGE_TLS_DIRECTORY32）TLS 目录布局——
+/// AddressOfCallBacks 在 +12（DWORD VA），回调数组元素 4 字节。旧代码
+/// 硬编码 64 位布局（+24 / u64 / stride 8），x86 目标 dir_size=24 <
+/// 24+8 → TLS 种子源恒静默缺席。修复后按 machine 分支正确解析。
+#[test]
+fn tls_callbacks_x86_layout() {
+    // machine 0x14C、image_base 0x400000（32 位典型）；TLS 目录 24 字节
+    // （sizeof IMAGE_TLS_DIRECTORY32）——x86 真实形态。
+    let pe = mini_pe_machine(0x14C, 0x40_0000, &[(DIRECTORY_TLS, 0x2020, 24)]);
+    let mut f = mini_file();
+    let w32 =
+        |f: &mut Vec<u8>, off: usize, v: u32| f[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    // TLS 目录 @0x2020（raw 0x620）：AddressOfCallBacks @+12 = VA(0x2100)
+    w32(&mut f, 0x62C, 0x40_0000 + 0x2100);
+    // 回调数组 @0x2100（raw 0x700）：两个 4B 回调 VA + NULL
+    w32(&mut f, 0x700, 0x40_0000 + 0x1060);
+    w32(&mut f, 0x704, 0x40_0000 + 0x1020);
+    w32(&mut f, 0x708, 0);
+    let cbs = pe::parse_tls_callbacks(&f, &pe).expect("x86 回调应可解析");
     assert_eq!(cbs, vec![0x1060, 0x1020]);
 }
 

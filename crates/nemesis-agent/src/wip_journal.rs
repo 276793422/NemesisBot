@@ -211,8 +211,12 @@ impl WipJournal {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        // 截断：遗留现场已消费进 pending，本轮从空文件起写。
-        let _ = std::fs::remove_file(&path);
+        // 截断：遗留现场已消费进 pending，本轮从空文件起写。裸单发 remove
+        // 在 Windows 上会被 AV/索引器瞬时句柄击败（BUG-20261124-045）——
+        // 截断失败 = 旧 turn 现场残留在文件头，append 追加其后，破坏「单
+        // 文件 = 当前 turn 的事件」不变量；走韧性包装退避重试，耗尽 warn
+        // 留痕。
+        nemesis_utils::fsutil::remove_file_resilient(&path);
         self.0
             .live
             .lock()
@@ -239,7 +243,10 @@ impl WipJournal {
             let overflow = kept.len().saturating_sub(MAX_EVENTS - 1);
             kept.drain(..overflow);
             if kept.is_empty() {
-                let _ = std::fs::remove_file(&entry.path);
+                // 韧性删除（BUG-20261124-045 同族）：失败=旧内容残留但
+                // events 已归零，下次触顶压缩会重读文件自愈——重试 + 耗尽
+                // warn 留痕即可，无不变量破坏。
+                nemesis_utils::fsutil::remove_file_resilient(&entry.path);
             } else {
                 let _ = std::fs::write(&entry.path, kept.join("\n") + "\n");
             }
@@ -270,7 +277,11 @@ impl WipJournal {
         self.0.pending.lock().remove(session_key);
         match entry {
             Some(e) => {
-                let _ = std::fs::remove_file(&e.path);
+                // 韧性删除（BUG-20261124-045）：裸单发 remove 被 AV/索引器
+                // 瞬时句柄击败时静默残留**完整已完成 turn 现场**——下一轮
+                // consume_previous 会把它误当中断现场注入（正常收尾被报成
+                // 「turn 中途被打断」）。重试吃掉瞬时窗口，耗尽 warn 留痕。
+                nemesis_utils::fsutil::remove_file_resilient(&e.path);
                 true
             }
             None => false,

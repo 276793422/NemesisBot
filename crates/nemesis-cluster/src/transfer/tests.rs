@@ -719,6 +719,10 @@ fn begin_rejects_invalid_paths_in_manifest() {
         "a\\b.md",
         "X:/drive.md",
         "dir~1/name.md",
+        // Windows 保留设备名 wire 级闸（BUG-20261124-030）：size=0 的 NUL
+        // 形态曾是静默完整性破坏（组装写进设备→空核验恒过→ACK ok 但落地
+        // 缺文件）。
+        "NUL",
         "",
     ] {
         let reply = sink.begin(&mk(bad));
@@ -741,6 +745,16 @@ fn safe_relative_path_unit_matrix() {
         "colon:name.md",
         "short~1.md",
         "dir/name~9.txt",
+        // Windows 保留设备名（BUG-20261124-030）：裸名/带扩展/大小写/嵌套
+        // 全拒；Linux worker 交付树可合法含这些名（意外触发面）。
+        "CON",
+        "con.txt",
+        "NUL",
+        "nul",
+        "COM1",
+        "lpt9",
+        "AUX.log",
+        "sub/CON/data.md",
         "",
         "   ",
     ] {
@@ -752,6 +766,10 @@ fn safe_relative_path_unit_matrix() {
         "中文 目录/文件.md",
         "a..b.md",
         "x~.md",
+        // 仅前缀重合的普通名不误伤（全词匹配）。
+        "CONST.md",
+        "console.log",
+        "sub/NULLIFY.md",
     ] {
         assert!(safe_relative_path(ok).is_ok(), "{ok:?} 应放行");
     }
@@ -899,6 +917,23 @@ fn collect_dir_files_is_sorted_deterministic_and_fenced() {
     assert!(collect_dir_files(&root.join("nope")).unwrap().is_empty());
     // 统一分隔符：Windows 下盘上 rel 用 '\\'，收集产物必须归一 '/'。
     assert!(files.iter().all(|f| !f.path.contains('\\')));
+}
+
+#[test]
+fn bug20261124_031_collect_fenced_path_fails_loud_not_silent() {
+    // BUG-20261124-031：围栏拒绝的文件此前静默 continue——Linux 合法名
+    // （`CON` 等保留名 / 8.3 形态名）从基线/载荷双向蒸发且零感知。现
+    // 严格 Err（与同函数 read_dir/UTF-8/哈希失败同哲学），基线下发诚实
+    // 弃派可见可修。夹具用 8.3 形态长名 `abcdef~1.txt`（is_short_name
+    // 命中；Windows 盘上可创建——裸 `CON` 在 Win32 不可创建，无法作夹具）。
+    let root = temp_root("collect_fenced");
+    let src = root.join("src");
+    make_source(&src, &[("keep.md", b"k"), ("abcdef~1.txt", b"fenced")]);
+    let err = collect_dir_files(&src).unwrap_err();
+    assert!(
+        err.contains("路径围栏拒绝") && err.contains("abcdef~1.txt"),
+        "围栏拒绝必须诚实失败且指名文件: {err}"
+    );
 }
 
 #[test]

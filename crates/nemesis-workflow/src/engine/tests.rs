@@ -2870,6 +2870,143 @@ async fn restore_mid_crash_running_execution_has_no_ended_at() {
     );
 }
 
+#[tokio::test]
+async fn resume_execution_node_saves_per_level_checkpoints() {
+    // BUG-20261124-034 回归锁①：resume 段必须挂 per-level checkpoint hook。
+    // 链条 review → a → b：run 后 Waiting（首跑尾段已落盘），resume 完成
+    // review 后 a 层、b 层依次执行——hook 应在每层收尾落盘。断言本质是
+    // 「a 完成后、b 开始前」的崩溃现场快照存在于 store（completed 含 a 不含
+    // b）：旧代码 resume 段无 hook，中途崩溃时盘上最新 checkpoint 停在
+    // Waiting 快照，resume 已完成的下游工作全部丢失。
+    let store: Arc<dyn CheckpointStore> = Arc::new(InMemoryCheckpointStore::new());
+
+    let engine = WorkflowEngine::new_arc();
+    engine.set_checkpoint_store(store.clone());
+    engine
+        .register_workflow(make_workflow(
+            "resume_ckpt_wf",
+            vec![
+                make_node("review", "human_review", vec![]),
+                make_node("a", "llm", vec!["review"]),
+                make_node("b", "llm", vec!["a"]),
+            ],
+        ))
+        .unwrap();
+
+    let exec = engine
+        .run("resume_ckpt_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(exec.state, ExecutionState::Waiting);
+    let before = store.list(&exec.id).await.unwrap().len();
+
+    let resumed = engine
+        .resume_execution_node(&exec.id, HashMap::new(), Some("review"))
+        .await
+        .unwrap();
+    assert_eq!(resumed.state, ExecutionState::Completed);
+
+    let after = store.list(&exec.id).await.unwrap();
+    assert!(
+        after.len() >= before + 2,
+        "resume 段应有至少两个新 checkpoint 写点（a 层尾 hook + b 层尾 hook/终态），\
+         before={} after={}——resume 段漏接 hook 时保持不变",
+        before,
+        after.len()
+    );
+
+    // 本质断言：「a 完成、b 未开始」的中途现场快照在盘上——这是 resume 段
+    // 崩溃后恢复不丢 a 层工作的前提。list() 只给 meta，逐条 load 完整版检查
+    // completed_nodes。
+    let mut mid_crash_snapshot = false;
+    for m in &after {
+        let cp = store.load(&exec.id, &m.id).await.unwrap();
+        if cp.completed_nodes.contains("a") && !cp.completed_nodes.contains("b") {
+            mid_crash_snapshot = true;
+            break;
+        }
+    }
+    assert!(
+        mid_crash_snapshot,
+        "store 应包含 completed=[review,a]（无 b）的 per-level 快照"
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_waiting_node_deterministic_across_writes() {
+    // BUG-20261124-034 回归锁②：所有 checkpoint 写点（run 尾段 / resume 尾段 /
+    // CheckpointHook per-level）的多等待节点取值必须确定性（id 字典序最小）。
+    // 同层双 human_review 双双 Waiting——旧 hook 用 iter().find（HashMap 迭代
+    // 序随机），概率性把 review_b 写进 checkpoint.waiting_node。
+    let store: Arc<dyn CheckpointStore> = Arc::new(InMemoryCheckpointStore::new());
+
+    let engine = WorkflowEngine::new_arc();
+    engine.set_checkpoint_store(store.clone());
+    engine
+        .register_workflow(make_workflow(
+            "dual_review_wf",
+            vec![
+                make_node("review_a", "human_review", vec![]),
+                make_node("review_b", "human_review", vec![]),
+                make_node("final", "llm", vec!["review_a", "review_b"]),
+            ],
+        ))
+        .unwrap();
+
+    let exec = engine
+        .run("dual_review_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(exec.state, ExecutionState::Waiting);
+
+    // list() 只给 meta（has_waiting 布尔），waiting_node 在完整 Checkpoint
+    // 里——对每个 has_waiting 写点 load 完整版断言（覆盖 run 尾段 + hook
+    // per-level 全部写点）。
+    let metas = store.list(&exec.id).await.unwrap();
+    let waiting_metas: Vec<_> = metas.iter().filter(|m| m.has_waiting).collect();
+    assert!(
+        !waiting_metas.is_empty(),
+        "Waiting 状态下应有 has_waiting 的 checkpoint"
+    );
+    for m in &waiting_metas {
+        let cp = store.load(&exec.id, &m.id).await.unwrap();
+        assert_eq!(
+            cp.waiting_node.as_deref(),
+            Some("review_a"),
+            "checkpoint {} 的 waiting_node 必须是字典序最小者 review_a\
+             （HashMap 迭代序随机 = 概率性漂移）",
+            m.id
+        );
+    }
+
+    // resume 定向落地 review_b 后 review_a 仍 Waiting：resume 段 hook 写点 +
+    // still_waiting 收口写点同戒律。
+    let resumed = engine
+        .resume_execution_node(&exec.id, HashMap::new(), Some("review_b"))
+        .await
+        .unwrap();
+    assert_eq!(resumed.state, ExecutionState::Waiting);
+
+    let metas_after = store.list(&exec.id).await.unwrap();
+    let new_waiting: Vec<_> = metas_after
+        .iter()
+        .filter(|m| m.has_waiting && !waiting_metas.iter().any(|w| w.id == m.id))
+        .collect();
+    assert!(
+        !new_waiting.is_empty(),
+        "resume 段应有新的 has_waiting checkpoint 写点"
+    );
+    for m in &new_waiting {
+        let cp = store.load(&exec.id, &m.id).await.unwrap();
+        assert_eq!(
+            cp.waiting_node.as_deref(),
+            Some("review_a"),
+            "resume 段 checkpoint {} 的 waiting_node 必须是 review_a",
+            m.id
+        );
+    }
+}
+
 // ============================================================
 // chat_index helpers (workflow chat URL feature)
 // ============================================================
@@ -7054,4 +7191,85 @@ async fn poll_task_finished(h: &tokio::task::JoinHandle<()>) -> bool {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     false
+}
+
+// BUG-20261124-025：启动闸——estop 冻结面收口。三臂：gate 在场拒绝一切
+// 新启动（记录零落表）+ reason 原文透传；恢复面同闸；gate 返回 None 放行。
+
+#[tokio::test]
+async fn test_start_gate_blocks_new_executions() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "gate_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    engine.set_start_gate(std::sync::Arc::new(|| {
+        Some("⛔ frozen for test".to_string())
+    }));
+
+    // run → create_execution 入口拒绝：StartBlocked + reason 原文透传。
+    let result = engine.run("gate_wf", HashMap::new(), None).await;
+    match result {
+        Err(EngineError::StartBlocked(reason)) => {
+            assert_eq!(reason, "⛔ frozen for test");
+        }
+        other => panic!("expected StartBlocked, got ok={}", other.is_ok()),
+    }
+
+    // 记录零落表（拒绝发生在 mint 执行 ID 之前）。
+    assert!(engine.list_executions(None).await.is_empty());
+
+    // start_async 同漏斗（fire-and-forget 面同步 Err）。
+    let result = engine
+        .clone()
+        .start_async("gate_wf", HashMap::new(), None)
+        .await;
+    assert!(matches!(result, Err(EngineError::StartBlocked(_))));
+}
+
+#[tokio::test]
+async fn test_start_gate_blocks_resume() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "gate_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    // 空槽期先铸一条记录，再装闸——闸命中先于状态校验（记录非 Waiting
+    // 也会返回 StartBlocked 而非 InvalidState，冻结语义优先）。
+    let execution = engine
+        .create_execution("gate_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    engine.set_start_gate(std::sync::Arc::new(|| {
+        Some("⛔ frozen for test".to_string())
+    }));
+
+    let result = engine.resume_execution(&execution.id, HashMap::new()).await;
+    assert!(matches!(result, Err(EngineError::StartBlocked(_))));
+}
+
+#[tokio::test]
+async fn test_start_gate_none_allows_executions() {
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "gate_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+    engine.set_start_gate(std::sync::Arc::new(|| None));
+
+    // gate 返回 None = 放行；缺省空槽（不装闸）行为由全部既有测试覆盖。
+    let execution = engine
+        .create_execution("gate_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(execution.state, ExecutionState::Running);
+    assert_eq!(engine.list_executions(None).await.len(), 1);
 }

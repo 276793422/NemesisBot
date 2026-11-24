@@ -348,6 +348,61 @@ fn test_import_missing_config_is_noop() {
 }
 
 #[test]
+fn test_import_reuse_only_run_does_not_dirty_creds_file() {
+    // BUG-20261124-028 回归锁：同值复用（reuse，含冲突后缀同值复用）不改
+    // 账本 → creds_file_dirty=false → credentials.yaml 不回写（文档承诺的
+    // file-untouched 幂等面）。旧行为：migrated 无差别收录 reuse 条目，
+    // 纯 reuse 轮被判 dirty → 内容恒等的伪重写（Windows AV 瞬时句柄锁
+    // 文件时该多余写入还会让整体 import 误报失败）。
+    let (_dir, config_path, cred_path) = temp_home_with_keys(&["sk-same-value"]);
+    save_credentials_file(
+        &cred_path,
+        &CredentialsFile {
+            keys: [("m0".to_string(), "sk-same-value".to_string())].into(),
+        },
+    )
+    .unwrap();
+    let creds_before = std::fs::read_to_string(&cred_path).unwrap();
+
+    let report = run_import(&config_path, &cred_path).unwrap();
+    assert_eq!(report.reused, 1);
+    assert_eq!(report.inserted, 0);
+    assert_eq!(
+        report.migrated.len(),
+        1,
+        "reuse 也改写 config 引用，计入 migrated"
+    );
+    assert!(!creds_file_dirty(&report), "纯 reuse 轮不得回写凭据文件");
+    // 凭据文件字节不动 + config 已改写为引用。
+    assert_eq!(std::fs::read_to_string(&cred_path).unwrap(), creds_before);
+    let raw = std::fs::read_to_string(&config_path).unwrap();
+    assert!(raw.contains("yaml:m0"));
+    assert!(!raw.contains("sk-same-value"));
+
+    // 冲突后缀同值复用同样不落账（候选别名已存在且值相同 = 复用非插入）。
+    let (dir2, config_path2, cred_path2) = temp_home_with_keys(&["sk-second"]);
+    save_credentials_file(
+        &cred_path2,
+        &CredentialsFile {
+            keys: [
+                ("m0".to_string(), "sk-other".to_string()),
+                ("m0__2".to_string(), "sk-second".to_string()),
+            ]
+            .into(),
+        },
+    )
+    .unwrap();
+    let report2 = run_import(&config_path2, &cred_path2).unwrap();
+    assert_eq!(
+        report2.conflicts,
+        vec![("m0".to_string(), "m0__2".to_string())]
+    );
+    assert_eq!(report2.inserted, 0);
+    assert!(!creds_file_dirty(&report2));
+    drop(dir2);
+}
+
+#[test]
 fn test_sanitize_alias() {
     assert_eq!(sanitize_alias("openai/gpt-4"), "openai_gpt-4");
     assert_eq!(sanitize_alias("my model"), "my_model");

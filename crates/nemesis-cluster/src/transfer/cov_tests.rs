@@ -114,9 +114,12 @@ fn fence_faces_portable() {
     assert!(safe_relative_path("").is_err());
 }
 
-/// collect_dir_files 围栏自检：8.3 名文件被静默跳过（宁可不传）。
+/// collect_dir_files 围栏自检：8.3 名文件**诚实失败**（BUG-20261124-031：
+/// 旧形态静默跳过会让文件从管线双向蒸发且零感知——Linux 合法名真实可触
+/// 发；现与同函数 read_dir/UTF-8/哈希失败同哲学，Err 指名文件。VCS 内部/
+/// 字节码缓存的噪声排除语义不变，另有两专测覆盖）。
 #[test]
-fn collect_skips_fence_violating_and_noise_entries() {
+fn collect_fails_loud_on_fence_violating_entry() {
     let root = temp_ws("collect-fence");
     let src = root.join("src");
     std::fs::create_dir_all(src.join(".git")).unwrap();
@@ -126,9 +129,12 @@ fn collect_skips_fence_violating_and_noise_entries() {
     std::fs::write(src.join(".git").join("HEAD"), b"ref").unwrap();
     std::fs::write(src.join("real.txt"), b"keep").unwrap();
 
-    let files = collect_dir_files(&src).unwrap();
-    let names: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
-    assert_eq!(names, vec!["real.txt"], "{names:?}");
+    // 围栏违规 = Err 指名（不再是静默跳过）；噪声文件不触发 Err。
+    let err = collect_dir_files(&src).unwrap_err();
+    assert!(
+        err.contains("路径围栏拒绝") && err.contains("PROGRA~1.txt"),
+        "{err}"
+    );
 }
 
 /// 符号链接跳过（unix；Windows 建链要特权，不跑）。

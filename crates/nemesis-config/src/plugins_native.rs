@@ -79,7 +79,7 @@ impl NativePluginId {
     }
 
     /// 开关是否即时生效（false = 重启后生效）。目前只有 eval 监控是
-    /// 事件驱动装载（每次 eval 会话开始查闸）——其余五个都在 gateway
+    /// 事件驱动装载（每次 eval 会话开始查闸）——其余七个都在 gateway
     /// 装配期一次性消费。
     pub fn immediate_effect(self) -> bool {
         matches!(self, NativePluginId::EvalMonitor)
@@ -181,10 +181,28 @@ pub fn set_enabled(config_dir: &Path, id: NativePluginId, enabled: bool) -> Resu
     let _serial = crate::config_write_lock();
     let path = plugins_native_config_path(config_dir);
     migrate_legacy_file(&path);
-    let mut file = nemesis_utils::fsutil::read_config_string(&path)
+    let mut file = match nemesis_utils::fsutil::read_config_string(&path)
         .ok()
         .and_then(|c| serde_json::from_str::<SwitchFile>(&c).ok())
-        .unwrap_or_default();
+    {
+        Some(f) => f,
+        None => {
+            // 文件缺席 = 首次保存，空底是正常路径不 WARN；**在场但不可读/
+            // 解析失败** = 空底重建必须 WARN 留痕——「损坏 = WARN + 空底
+            // 重建」家族纪律（proxy_file / proxy_keys_file 的 read_for_write、
+            // plugin_wasm 的 read_switch_file 同款）：静默重建会把其余插件的
+            // 持久开关永久抹掉（本文件缺省=启用，此前刻意停用的插件静默
+            // 复活），读侧 fail-open 是瞬态（用户可手工修复），这里的重建
+            // 是终态——至少让日志可见。
+            if path.exists() {
+                tracing::warn!(
+                    path = %path.display(),
+                    "[NativePlugin] 开关文件在场但不可读/解析失败，保存时以空底重建（其余插件条目无法保留，将回落缺省启用）"
+                );
+            }
+            SwitchFile::default()
+        }
+    };
     file.plugins
         .insert(id.id().to_string(), SwitchEntry { enabled });
     if let Some(parent) = path.parent() {

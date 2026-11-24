@@ -465,6 +465,34 @@ fn diff_tree_excludes_debug_artifacts_both_ways() {
     );
 }
 
+/// BUG-20261124-031：围栏拒绝的文件（8.3 形态名，Windows/Linux 均可创建；
+/// 裸 `CON` 在 Win32 盘上不可创建无法作夹具）进 skipped 申报而非静默蒸发
+/// ——master 验收能看到注记，普通文件照常进变更集。
+#[test]
+fn diff_tree_reports_fenced_path_in_skipped() {
+    let ws = Ws::new("fencediff");
+    let exec = exec_dir_for(&ws.root, "t-fence-1");
+    std::fs::create_dir_all(&exec).unwrap();
+    std::fs::write(exec.join("abcdef~1.txt"), b"fenced\n").unwrap();
+    std::fs::write(exec.join("keep.txt"), b"kept\n").unwrap();
+
+    let baseline: Vec<TransferFileEntry> = Vec::new(); // 全是新增
+    let (upserts, contents, deletions, skipped) = super::diff_tree(&exec, &baseline).unwrap();
+    let paths: Vec<&str> = upserts.iter().map(|u| u.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["keep.txt"],
+        "围栏拒绝文件不得进 upserts: {paths:?}"
+    );
+    assert_eq!(contents.len(), 1);
+    assert!(deletions.is_empty());
+    assert_eq!(skipped.len(), 1, "围栏拒绝必须申报 skipped: {skipped:?}");
+    assert!(
+        skipped[0].contains("abcdef~1.txt") && skipped[0].contains("围栏拒绝"),
+        "申报须指名文件并注明围栏拒绝: {skipped:?}"
+    );
+}
+
 /// 端到端钉死：只写 `_debug/` 的工作副本 = 零差异交付（纯记录，不产
 /// 变更集）——过滤在 finish 生产路径生效，不只是孤立函数。
 #[test]

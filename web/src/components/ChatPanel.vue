@@ -2212,6 +2212,13 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
         message_index: plan.turnStart,
         mode: 'before',
         force: true,
+        // B2 锚与首个请求同带（BUG-20261124-024）：锚定位在冲突预检之前
+        // （rewind.rs resolve_anchor_index 先行）——force 重试丢锚 = 按
+        // 可能被斜杠回声抬高的裸 index 重定位，确认的是锚定行的波及面、
+        // 截的却是漂移行（错窗回滚）；且丢掉零命中 fail-closed 防线
+        // （确认窗口内会话被切换/截断时盲截）。force 只豁免 conflict
+        // 预检，不豁免锚定位。
+        anchor_content: plan.content,
       })
       // force 只强过 conflict 预检——restore/commit 类失败仍可 blocked。
       if (resp?.blocked) {

@@ -464,15 +464,21 @@ pub fn build_executor_channel_with_extra_roots(
             // 尽力而为不阻塞装配。
             let exec_out = ws_root.join(".exec_out");
             if let Ok(rd) = std::fs::read_dir(&exec_out) {
-                let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-                for e in rd.flatten() {
-                    let stale = e
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .map(|t| t < cutoff)
-                        .unwrap_or(false);
-                    if stale {
-                        let _ = nemesis_utils::fsutil::remove_file_resilient(e.path());
+                // BUG-20261124-047 同族：时钟漂移到 epoch 前（无 RTC 虚机/
+                // 容器、CMOS 电池归零）时裸减 panic——checked_sub 拿不到
+                // cutoff 则跳过本轮清扫（尽力而为不阻塞装配的既有语义）。
+                if let Some(cutoff) =
+                    std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(3600))
+                {
+                    for e in rd.flatten() {
+                        let stale = e
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .map(|t| t < cutoff)
+                            .unwrap_or(false);
+                        if stale {
+                            let _ = nemesis_utils::fsutil::remove_file_resilient(e.path());
+                        }
                     }
                 }
             }

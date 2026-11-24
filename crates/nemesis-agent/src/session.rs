@@ -945,9 +945,11 @@ impl SessionStore {
         // sessions/{sanitize}.json (LLM context store)
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
-            if let Err(e) = std::fs::remove_file(&path)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
+            // BUG-20261124-036：删除走 fsutil 韧性包装（重试退避，NotFound=Ok）。
+            // 裸单发 remove 在 Windows 瞬时句柄（AV/索引器）下失败 = warn 后
+            // 无重试面——内存条目已先摘、重启 store 重载残留 json，已
+            // detach 的上下文复活（同 clear_session 处自定性「最坏方向分叉」）。
+            if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&path) {
                 warn!(
                     file = %path.display(),
                     error = %e,
@@ -977,9 +979,10 @@ impl SessionStore {
         self.sessions.write().unwrap().remove(key);
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
-            if let Err(e) = std::fs::remove_file(&path)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
+            // BUG-20261124-036：同 detach_session——fsutil 韧性包装消掉瞬时
+            // 句柄失败窗口。裸单发失败 = 盘上 json 残留 + 重启复活已清空
+            // 上下文（上方 FIX 注释自定性的「最坏方向分叉」残留窗口）。
+            if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&path) {
                 warn!(
                     file = %path.display(),
                     error = %e,

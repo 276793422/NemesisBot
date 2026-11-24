@@ -146,11 +146,14 @@ impl<'a> scheduler::ProgressHook for CheckpointHook<'a> {
         // Detect whether a human_review node paused us mid-level. The hook
         // is invoked after *every* level, Waiting or not — capturing the
         // waiting node id here keeps resume straightforward.
-        let waiting = wf_ctx
-            .get_all_node_results()
-            .iter()
-            .find(|(_, r)| r.state == ExecutionState::Waiting)
-            .map(|(id, _)| id.clone());
+        //
+        // 多等待节点并存时取 id 最小者（smallest_waiting_node_id，与
+        // run / resume 收口尾段同源）——iter().find 是 HashMap 迭代序随
+        // 机，同层多个 human_review 时 checkpoint.waiting_node 观测字段
+        // 随进程漂移（BUG-20261124-034 同族修正：该 helper 的 doc 注释
+        // 明说「run 与 resume 两处 checkpoint 收口共用」，per-level 写
+        // 点是第三处，漏用即同族疤痕漏铺）。
+        let waiting = smallest_waiting_node_id(&wf_ctx.get_all_node_results());
 
         if let Err(e) = self
             .engine
@@ -273,6 +276,9 @@ pub enum EngineError {
 
     #[error("recursion limit exceeded: {0}")]
     RecursionLimitExceeded(String),
+
+    #[error("execution start blocked: {0}")]
+    StartBlocked(String),
 }
 
 /// executions 跟踪表上限（资源生命周期审计）：字段语义是「Active and
@@ -339,6 +345,17 @@ pub struct WorkflowEngine {
     /// 的 Cancelled）。0 = 关（引擎默认关；
     /// gateway 从 config `workflow.wall_clock_budget_secs` 读，缺省 3600）。
     wall_clock_budget_secs: std::sync::atomic::AtomicU64,
+    /// 启动闸（BUG-20261124-025：外部冻结源注入点，estop 冻结面收口）。
+    /// 闭包返回 `Some(reason)` = 拒绝新执行启动与既有执行恢复；`None` =
+    /// 放行。缺省空槽 = 无外部闸——CLI 短命进程（estop 对其不可达，墙钟
+    /// 预算独立生效）与全部测试引擎零影响。gateway 装配点经
+    /// [`Self::set_start_gate`] 注入读共享 estop 的闭包；消费点 =
+    /// [`Self::create_execution`]（`run` / `start_async` / 引擎 cron 触发
+    /// 等一切新启动面经此收口）+ [`Self::resume_execution_node`]（
+    /// human_review 恢复面）。在途执行的冻结由调用方的 estop watcher
+    /// `cancel_all_running` 负责，与本闸（只拦**新**启动）互补。
+    start_gate:
+        parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>>,
     /// Observer / event-bus for workflow lifecycle events
     /// (Started/Completed/Failed/Cancelled). External systems (web dashboards,
     /// log shippers) register observers via [`event_manager`](Self::event_manager).
@@ -413,6 +430,7 @@ impl WorkflowEngine {
             script_tools: None,
             cron_handles: DashMap::new(),
             self_weak: std::sync::OnceLock::new(),
+            start_gate: parking_lot::RwLock::new(None),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -445,6 +463,7 @@ impl WorkflowEngine {
             script_tools: None,
             cron_handles: DashMap::new(),
             self_weak: std::sync::OnceLock::new(),
+            start_gate: parking_lot::RwLock::new(None),
             register_lock: parking_lot::Mutex::new(()),
         });
 
@@ -487,6 +506,7 @@ impl WorkflowEngine {
             script_tools: None,
             cron_handles: DashMap::new(),
             self_weak: std::sync::OnceLock::new(),
+            start_gate: parking_lot::RwLock::new(None),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -516,6 +536,7 @@ impl WorkflowEngine {
             script_tools: None,
             cron_handles: DashMap::new(),
             self_weak: std::sync::OnceLock::new(),
+            start_gate: parking_lot::RwLock::new(None),
             register_lock: parking_lot::Mutex::new(()),
         });
 
@@ -553,6 +574,7 @@ impl WorkflowEngine {
             script_tools: None,
             cron_handles: DashMap::new(),
             self_weak: std::sync::OnceLock::new(),
+            start_gate: parking_lot::RwLock::new(None),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -583,6 +605,7 @@ impl WorkflowEngine {
             script_tools: None,
             cron_handles: DashMap::new(),
             self_weak: std::sync::OnceLock::new(),
+            start_gate: parking_lot::RwLock::new(None),
             register_lock: parking_lot::Mutex::new(()),
         }
     }
@@ -664,6 +687,7 @@ impl WorkflowEngine {
             script_tools: Some(tools.clone()),
             cron_handles: DashMap::new(),
             self_weak: std::sync::OnceLock::new(),
+            start_gate: parking_lot::RwLock::new(None),
             register_lock: parking_lot::Mutex::new(()),
         });
 
@@ -2011,6 +2035,13 @@ impl WorkflowEngine {
         input: HashMap<String, serde_json::Value>,
         trigger_source: Option<TriggerSource>,
     ) -> Result<Execution, EngineError> {
+        // BUG-20261124-025：启动闸——estop 等外部冻结源在场时拒绝一切新
+        // 执行。置于最前（冻结语义优先于 closed/查找检查），拒绝发生在
+        // mint 执行 ID 之前——记录零落表、Started 事件零广播。
+        if let Some(reason) = self.start_gate_reason() {
+            return Err(EngineError::StartBlocked(reason));
+        }
+
         if *self.closed.read().await {
             return Err(EngineError::InvalidState("engine is closed".to_string()));
         }
@@ -2629,6 +2660,12 @@ impl WorkflowEngine {
             return Err(EngineError::InvalidState("engine is closed".to_string()));
         }
 
+        // BUG-20261124-025：启动闸——deprecated 路径与生产漏斗同语义
+        // （空槽缺省放行，legacy 测试零影响）。
+        if let Some(reason) = self.start_gate_reason() {
+            return Err(EngineError::StartBlocked(reason));
+        }
+
         let workflow = self
             .get_workflow(workflow_name)
             .ok_or_else(|| EngineError::WorkflowNotFound(workflow_name.to_string()))?;
@@ -3049,6 +3086,19 @@ impl WorkflowEngine {
             .store(secs, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// 安装启动闸（幂等覆盖旧闸）。见 [`start_gate`][Self::start_gate]
+    /// 字段注释——gateway 装配点在 estop 句柄创建后注入闭包。
+    pub fn set_start_gate(&self, gate: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>) {
+        *self.start_gate.write() = Some(gate);
+    }
+
+    /// 启动闸裁决：`Some(reason)` = 当前被外部冻结源拒绝（reason 为面向
+    /// 调用方的诚实说明，随 `EngineError::StartBlocked` 原文透传）。
+    fn start_gate_reason(&self) -> Option<String> {
+        let gate = self.start_gate.read().clone();
+        gate.and_then(|g| g())
+    }
+
     /// Resume a waiting execution (e.g., after human review).
     ///
     /// Updates the waiting node's result with the reviewer's response, then
@@ -3084,6 +3134,14 @@ impl WorkflowEngine {
         review_result: HashMap<String, serde_json::Value>,
         target_node: Option<&str>,
     ) -> Result<Execution, EngineError> {
+        // BUG-20261124-025：启动闸同样拦恢复——estop 期间放行 human_review
+        // 会把 Waiting 执行推回 node 执行（llm 节点真实调用 provider，不受
+        // 工具 dispatch 的 estop 闸约束），冻结语义必须覆盖恢复面。先于
+        // 存在性/状态检查，理由同 [`Self::create_execution`]。
+        if let Some(reason) = self.start_gate_reason() {
+            return Err(EngineError::StartBlocked(reason));
+        }
+
         // Snapshot the execution under the write lock, then release the lock
         // for the duration of the (potentially long) scheduler call.
         let execution_snapshot = {
@@ -3312,15 +3370,47 @@ impl WorkflowEngine {
             }
         };
 
-        let schedule_result = scheduler::schedule_resume(
-            &workflow.nodes,
-            &workflow.edges,
-            &self.node_executors,
-            &mut wf_ctx,
-            &completed_nodes,
-            cancel_token.clone(),
-        )
-        .await;
+        // BUG-20261124-034：resume 段同样挂 per-level checkpoint hook——
+        // schedule_resume_with_hook 与 schedule_resume 是 schedule_inner 的
+        // 同一实现的 hook 开关两形态（API 已存在且有专测
+        // w4a_schedule_resume_with_hook_invoked_per_level），旧代码只接了
+        // 无 hook 形态：resume 段中途崩溃（进程被杀/断电/panic）时盘上最新
+        // checkpoint 停在 resume 前的 Waiting 快照，resume 已完成的全部下
+        // 游节点工作（真实 LLM token 花费 + tool 副作用结果）全部丢失，
+        // 重启 restore 回到 human_review、重新 resume 重跑全部下游——重复
+        // 花费 + 副作用重放。首跑路径（run_async has_store 时
+        // schedule_with_hook）每层落盘无此问题；同一引擎同一崩溃恢复机制，
+        // 首跑能断点续跑、resume 不能的不对称即本缺陷。hook 复用
+        // CheckpointHook（find Waiting + save_checkpoint 与首跑同语义，
+        // waiting 取值已改 smallest_waiting_node_id 确定性同源）。
+        let has_store = self.checkpoint_store.read().is_some();
+        let schedule_result = if has_store {
+            let hook = CheckpointHook {
+                engine: self,
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+            };
+            scheduler::schedule_resume_with_hook(
+                &workflow.nodes,
+                &workflow.edges,
+                &self.node_executors,
+                &mut wf_ctx,
+                &completed_nodes,
+                cancel_token.clone(),
+                &hook,
+            )
+            .await
+        } else {
+            scheduler::schedule_resume(
+                &workflow.nodes,
+                &workflow.edges,
+                &self.node_executors,
+                &mut wf_ctx,
+                &completed_nodes,
+                cancel_token.clone(),
+            )
+            .await
+        };
 
         // BUG-20261120-038：token 摘除挪到下方内存终态 insert 之后（与
         // run_async 同纪律）——摘早了，窗口内 cancel_execution 查不到

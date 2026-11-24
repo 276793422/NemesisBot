@@ -1372,6 +1372,15 @@ impl Cluster {
         // 由宿主 gateway 停机链 roaming_stop 收口，集群停/启不影响中继）。
         {
             self.roaming_started.store(false, Ordering::SeqCst);
+            // announce 身份字段对称清空（BUG-20261124-027）：stop 后叠加层
+            // 不再运行，字段滞留则同实例 stop→start 且 setup_roaming 未重开
+            // （roaming 转关 / 装配臂被跳过）时 announce 继续携带死端点的
+            // iroh 身份与拨号地址——对端把不可达候选加进拨号池（每次白等
+            // 超时回落 TCP），状态面身份与 roaming_active()=false 自相矛盾。
+            // 同 rendezvous_params 清空纪律（成员回流漏斗据此丢弃迟到包）。
+            *self.roaming_id.write() = None;
+            self.roaming_dialable.write().clear();
+            *self.rendezvous_status.write() = None;
             crate::roaming::plugin_bridge::clear_incoming_sink();
             if let Ok(h) = tokio::runtime::Handle::try_current() {
                 h.spawn(async move {

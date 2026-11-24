@@ -136,9 +136,10 @@ mod engage_strict {
 
 // ---------------------------------------------------------------------------
 // serve_line 协议主体（一行 JSON 请求 → 一行响应）——纯逻辑 + mock 工具 +
-// 禁用 journal（per-call 形态），不 spawn 任何进程。stdio/pipe 两个 transport
-// loop 只是对 serve_line 的包装，它们本身需要真 stdio/管道（结构性，见
-// tests/executor.rs 的真链路 e2e）。journal 语义见下方 serve_journal。
+// 禁用 journal（per-call 形态），不 spawn 任何进程。pipe/stdio 两个调用点
+// 共用的 transport_loop 只是对 serve_line 的包装，它本身需要真 stdio/管道
+// （结构性，见 tests/executor.rs 的真链路 e2e；三态回归锁见文末
+// transport_loop_tests）。journal 语义见下方 serve_journal。
 // ---------------------------------------------------------------------------
 mod dispatch_protocol {
     use super::*;
@@ -625,7 +626,7 @@ async fn run_requires_workspace_env() {
 
 // =========================================================================
 // 补测（quality-hardening goal 冲刺）：executor_main 粘合层。
-// - stdio 传输：无 PIPE/无 SANDBOX 标记 → register_shared_tools + stdio_loop
+// - stdio 传输：无 PIPE/无 SANDBOX 标记 → register_shared_tools + transport_loop
 //   （cargo test 的 stdin 是管道 EOF → 立即干净退出）。
 // - 沙盒标记：fail-open（warn+Continue）与 严格模式（engage Err →
 //   emit_error_response 一行协议错误 + Ok 退出，不读 stdin）。
@@ -808,10 +809,11 @@ mod pipe_transport_via_run {
 }
 
 // =========================================================================
-// wave_b（覆盖率补测）：pipe_loop 的读错误臂（exec_worker.rs:358）
-// ——tokio lines() 对非 UTF-8 行返回 InvalidData → pipe_loop 上抛
-// "pipe read:..."（区别于 Ok(None) 的干净 EOF 退出）。沿用上面同一套
-// 具名管道 + worker 线程夹具；全程零子进程、零生产端口。
+// wave_b（覆盖率补测）：统一传输循环（transport_loop，BUG-20261124-039
+// 收敛前为 pipe_loop）的读错误臂——tokio read_line 对非 UTF-8 行返回
+// InvalidData → 循环上抛 "transport read:..."（区别于 Ok(0) 的干净 EOF
+// 退出）。沿用上面同一套具名管道 + worker 线程夹具；全程零子进程、
+// 零生产端口。
 // =========================================================================
 #[cfg(windows)]
 mod wave_b {
@@ -847,7 +849,7 @@ mod wave_b {
             .expect("spawn worker thread");
 
         // 假 gateway 写入一行带非法 UTF-8 字节的请求（以 \n 结尾触发行解码）：
-        // lines() 解码失败 → Err(InvalidData) → pipe_loop 的 pipe-read 错误臂。
+        // read_line 解码失败 → Err(InvalidData) → transport_loop 的读错误臂。
         server.connect().await.expect("server side connect");
         let bad: Vec<u8> = b"\xff\xfe not-utf8 \x80 payload\n".to_vec();
         server
@@ -858,10 +860,10 @@ mod wave_b {
         drop(server); // 关管道，别让服务端悬着
 
         let res = worker.join().expect("worker join");
-        let err = res.expect_err("非 UTF-8 行必须让 pipe loop 以错误退出");
+        let err = res.expect_err("非 UTF-8 行必须让传输循环以错误退出");
         assert!(
-            err.to_string().contains("pipe read"),
-            "必须是 pipe read 错误臂: {err:#}"
+            err.to_string().contains("transport read"),
+            "必须是 transport read 错误臂: {err:#}"
         );
 
         unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_PIPE") };
@@ -1053,7 +1055,8 @@ mod wave_r10_stdio_subprocess {
     use test_harness::resolve_nemesisbot_bin;
 
     /// executor 子进程协议全链：坏 JSON 行 + 未知工具行 → 逐行错误响应；
-    /// stdin EOF → 干净退出 0。覆盖 stdio_loop 的读-分发-写-刷循环体。
+    /// stdin EOF → 干净退出 0。覆盖 transport_loop stdio 臂的读-分发-写-刷
+    /// 循环体。
     #[test]
     fn r10_exec_child_stdio_two_request_protocol_round_trip() {
         let bin = match resolve_nemesisbot_bin() {
@@ -1274,4 +1277,133 @@ fn deny_patterns_env_all_empty_is_none() {
     // 全空段 = 视同缺席（回落默认词表）——不是「自定义空表」形态。
     let raw = std::ffi::OsString::from("\u{1f}\u{1f}");
     assert!(deny_patterns_from_env(Some(raw)).is_none());
+}
+
+// =========================================================================
+// transport_loop（BUG-20261124-039）：pipe/stdio 两传输收敛后的统一循环。
+// 错误语义单点回归锁——EOF=Ok（干净退出）/ 读错误=Err（上抛）/ 写失败=Err。
+// 用 tokio::io::duplex 与错误注入桩覆盖三态，不需要真 stdio/具名管道。
+// =========================================================================
+mod transport_loop_tests {
+    use super::super::{JoinRw, transport_loop};
+    use crate::exec_worker::journal::Journal;
+    use nemesis_agent::r#loop::Tool;
+    use std::collections::HashMap;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    fn empty_registry() -> HashMap<String, Box<dyn Tool>> {
+        HashMap::new()
+    }
+
+    /// 恒读错误的桩：transport_loop 必须把读错误上抛（修复前 stdio 形态
+    /// `while let Ok` 会把它吞成干净退出）。
+    struct FailRead;
+    impl AsyncRead for FailRead {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::other("injected read failure")))
+        }
+    }
+
+    /// 恒写失败的桩（读侧不参与）。
+    struct FailWrite;
+    impl AsyncWrite for FailWrite {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Err(std::io::Error::other("injected write failure")))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::other("injected flush failure")))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// 读侧发完一行请求即 EOF 的桩：驱动「serve → 写 → 写失败」路径。
+    struct OneLineThenEof;
+    impl AsyncRead for OneLineThenEof {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            // 状态无关：第一轮给行，之后给 EOF（循环体每轮只读一次，
+            // 写失败在第二次 poll_read 之前就 Err 退出，状态复用安全）。
+            let data = b"not json\n";
+            buf.put_slice(data);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_eof_exits_cleanly_after_serving_request() {
+        // duplex 全往返：客户端任务写一行坏 JSON（→ v1 错误响应行）→ 读回
+        // 一行响应 → 客户端任务结束（client drop = 关流）→ 服务端循环读到
+        // EOF 干净退出 Ok。⚠ 不能 read_to_end 等 EOF：EOF 只有客户端 drop
+        // 才产生，而 read_to_end 要等 EOF 才返回——两边互等，current_thread
+        // 协作调度无抢占 = 死锁（首版实测挂 60s+）。客户端必须读完一行
+        // 响应后主动结束。
+        let (client, server) = tokio::io::duplex(1024);
+        let mut client = tokio::io::BufReader::new(client);
+        let reader = tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+            client.write_all(b"not json\n").await.unwrap();
+            let mut line = String::new();
+            client
+                .read_line(&mut line)
+                .await
+                .expect("read response line");
+            line
+        });
+
+        let out = transport_loop(server, &empty_registry(), &mut Journal::disabled()).await;
+        assert!(out.is_ok(), "EOF 必须干净退出，实际: {out:?}");
+
+        let resp = reader.await.unwrap();
+        assert!(!resp.is_empty(), "serve 过一行请求，响应行不该为空");
+        let v: serde_json::Value =
+            serde_json::from_str(resp.trim_end_matches(['\n', '\r'])).expect("response line json");
+        assert_eq!(
+            v["ok"],
+            serde_json::json!(false),
+            "bad JSON → 错误响应: {v}"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_read_error_is_loud_err() {
+        // 读错误（非 EOF）必须 Err 上抛——gateway 侧随「exited without a
+        // response」诊断出境；静默吞掉 = 执行体异常死亡零观测（本 BUG）。
+        let out = transport_loop(
+            JoinRw(FailRead, tokio::io::sink()),
+            &empty_registry(),
+            &mut Journal::disabled(),
+        )
+        .await;
+        let err = out.expect_err("read error must surface");
+        assert!(err.to_string().contains("transport read"), "err: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn transport_write_failure_is_loud_err() {
+        // 写失败（对端已死）必须 Err 上抛——修复前 stdio 形态 `let _ =`
+        // 丢弃，响应丢失无任何信号。
+        let out = transport_loop(
+            JoinRw(OneLineThenEof, FailWrite),
+            &empty_registry(),
+            &mut Journal::disabled(),
+        )
+        .await;
+        let err = out.expect_err("write failure must surface");
+        assert!(err.to_string().contains("transport write"), "err: {err:#}");
+    }
 }

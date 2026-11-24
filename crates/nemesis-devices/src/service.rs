@@ -407,7 +407,16 @@ impl DeviceService {
                             );
                             Self::route_notification(&bus_sender, &state, &ev);
                         }
-                        None => break,
+                        // BUG-20261124-038：事件流关闭（source reader 线程退出
+                        // → tx drop）此前静默 break——监控死亡零观测面。正常
+                        // stop 周期这里与 cancelled() 臂竞争（先到先出），
+                        // info 一行无害；udevadm 被外部杀死时这是唯一线索。
+                        None => {
+                            tracing::info!(
+                                "Device event stream closed, notification task exiting"
+                            );
+                            break;
+                        }
                     }
                 }
                 _ = stop.cancelled() => break,

@@ -214,6 +214,11 @@ impl ModuleHandler for GoalsHandler {
                         ));
                     }
                     let id = alloc_id(&ws);
+                    // BUG-20261124-037：内容先于登记提交（与 goal_tool::add
+                    // 同源同序）——md 写失败时闭包 Err = update_registry 整表
+                    // 放弃不落盘，注册表不留无内容的 Active 条目（旧序楔死：
+                    // 评估永久 skip + create 拒新建，需人工删）。
+                    write_goal_md(&ws, &id, content)?;
                     entries.push(GoalEntry::new(
                         id.clone(),
                         session_key.clone(),
@@ -224,7 +229,6 @@ impl ModuleHandler for GoalsHandler {
                     ));
                     Ok(id)
                 })?;
-                write_goal_md(&ws, &id, content)?;
                 tracing::info!("[Web/WSAPI] goal {id} created for session {session_key}");
                 Ok(Some(serde_json::json!({ "created": true, "id": id })))
             }

@@ -61,6 +61,9 @@ fn engine_error(
         WorkflowNotFound(_) => (StatusCode::NOT_FOUND, "workflow_not_found"),
         ExecutionNotFound(_) => (StatusCode::NOT_FOUND, "execution_not_found"),
         CycleDetected(_) => (StatusCode::BAD_REQUEST, "cycle_detected"),
+        // BUG-20261124-025：启动闸（estop 冻结面）——503 表达「服务方冻结，
+        // 稍后重试」，message 原文透传 ⛔ 恢复指引。
+        StartBlocked(_) => (StatusCode::SERVICE_UNAVAILABLE, "start_blocked"),
         PersistenceError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
         ExecutionFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, "execution_failed"),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "engine_error"),
