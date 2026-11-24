@@ -746,22 +746,25 @@ impl CronService {
         // 带病叠加正是本缺陷。用户面不受影响：add_job / add_job_ext 走
         // add_job_internal_at，不经过本旁路（用户同名作业允许并存，既有
         // 语义不变）。
-        let stale_ids: Vec<String> = {
-            let s = self.store.lock();
-            s.jobs
-                .iter()
-                .filter(|j| j.name == name)
-                .map(|j| j.id.clone())
-                .collect()
-        };
-        for id in &stale_ids {
-            self.remove_job(id)?;
-        }
+        // BUG-20261124-016：摘除与登记必须在**同一 store 锁临界区**。旧形态
+        // 「收集同名 id（锁段①）→ 逐个 remove_job（锁段②）→
+        // add_job_internal_at 登记（锁段③）」三段分离——并发同名挂载
+        // （gateway 启动 sync 与 WSAPI autopilot.update 即时 arm 交错、
+        // 两个 update 请求竞争）时，T2 的收集可落在 T1 摘除之后、登记之前：
+        // T2 收集为空（remove_job 对已消失条目 Ok(false) 静默继续）然后照常
+        // 登记 → 双份同名作业 = 每个调度点双触发——正是 011 要防的带病叠加，
+        // 并发窗口是它的残面。合并进单临界区后：T2 整体在 T1 临界区外排队，
+        // 进锁后 retain 连 T1 刚登记的作业一并摘除再登记，恒单份。save 失败
+        // 整体快照回滚（Err 必须意味着「没换成」，011 语义不变，且比旧的
+        // 逐条 remove 回滚更强：任何失败后 store 原样）。
+        let mut s = self.store.lock();
+        let before = s.clone();
+        s.jobs.retain(|j| j.name != name);
         let now_ms = Local::now().timestamp_millis();
-        self.add_job_internal_at(
+        let job = build_job_record(
             now_ms,
             name,
-            schedule,
+            &schedule,
             message,
             deliver,
             channel,
@@ -769,12 +772,20 @@ impl CronService {
             session_key,
             max_rounds,
             enabled,
-        )
+        );
+        s.jobs.push(job.clone());
+        if let Err(e) = self.save_store_locked(&s) {
+            *s = before;
+            return Err(e);
+        }
+        Ok(job)
     }
 
     /// [`Self::add_job_internal`] 的单时钟读核心（[`Self::add_job_ext`]
     /// 漏斗以闸侧同一 `now_ms` 调入，见 BUG-20261114-056 注）。私有——
     /// 公开面只有 `add_job` / `add_job_ext` / `add_job_internal` 三个入口。
+    /// 记录构造复用 [`build_job_record`]（BUG-20261124-016：与并发原子的
+    /// `add_job_internal` 共用单一形态，防两路径漂移）。
     fn add_job_internal_at(
         &self,
         now_ms: i64,
@@ -788,42 +799,18 @@ impl CronService {
         max_rounds: Option<u32>,
         enabled: bool,
     ) -> Result<CronJob, String> {
-        let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
-        info!(
-            "[Cron] Job added: name={}, schedule_kind={}, cron={}, enabled={}",
-            name, schedule.kind, cron_expr, enabled
-        );
-        let delete_after_run = schedule.kind == "at";
-        let job = CronJob {
-            id: generate_id(),
-            name: name.to_string(),
+        let job = build_job_record(
+            now_ms,
+            name,
+            &schedule,
+            message,
+            deliver,
+            channel,
+            to,
+            session_key,
+            max_rounds,
             enabled,
-            schedule: schedule.clone(),
-            payload: CronPayload {
-                kind: "agent_turn".to_string(),
-                message: message.to_string(),
-                command: None,
-                deliver,
-                channel: channel.map(|s| s.to_string()),
-                to: to.map(|s| s.to_string()),
-                session_key: session_key.map(|s| s.to_string()),
-                max_rounds,
-            },
-            state: CronJobState {
-                next_run_at_ms: if enabled {
-                    compute_next_run(&schedule, now_ms)
-                } else {
-                    None
-                },
-                last_run_at_ms: None,
-                last_status: None,
-                last_error: None,
-                history: Vec::new(),
-            },
-            created_at_ms: now_ms,
-            updated_at_ms: now_ms,
-            delete_after_run,
-        };
+        );
         {
             let mut s = self.store.lock();
             s.jobs.push(job.clone());
@@ -1531,6 +1518,60 @@ impl CronService {
             .filter(|j| j.enabled)
             .filter_map(|j| j.state.next_run_at_ms)
             .min()
+    }
+}
+
+/// Cron job 记录构造单一形态（[`CronService::add_job_internal_at`] 与
+/// 并发原子的 [`CronService::add_job_internal`] 共用——BUG-20261124-016
+/// 重构抽出，防两条登记路径构造漂移）：同日志、同派生旗标
+/// （delete_after_run = kind=="at"）、同初始 state（enabled 才排程）。
+fn build_job_record(
+    now_ms: i64,
+    name: &str,
+    schedule: &CronSchedule,
+    message: &str,
+    deliver: bool,
+    channel: Option<&str>,
+    to: Option<&str>,
+    session_key: Option<&str>,
+    max_rounds: Option<u32>,
+    enabled: bool,
+) -> CronJob {
+    let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
+    info!(
+        "[Cron] Job added: name={}, schedule_kind={}, cron={}, enabled={}",
+        name, schedule.kind, cron_expr, enabled
+    );
+    let delete_after_run = schedule.kind == "at";
+    CronJob {
+        id: generate_id(),
+        name: name.to_string(),
+        enabled,
+        schedule: schedule.clone(),
+        payload: CronPayload {
+            kind: "agent_turn".to_string(),
+            message: message.to_string(),
+            command: None,
+            deliver,
+            channel: channel.map(|s| s.to_string()),
+            to: to.map(|s| s.to_string()),
+            session_key: session_key.map(|s| s.to_string()),
+            max_rounds,
+        },
+        state: CronJobState {
+            next_run_at_ms: if enabled {
+                compute_next_run(schedule, now_ms)
+            } else {
+                None
+            },
+            last_run_at_ms: None,
+            last_status: None,
+            last_error: None,
+            history: Vec::new(),
+        },
+        created_at_ms: now_ms,
+        updated_at_ms: now_ms,
+        delete_after_run,
     }
 }
 

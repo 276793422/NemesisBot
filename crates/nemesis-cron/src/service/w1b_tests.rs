@@ -1156,3 +1156,113 @@ async fn test_w1b_stop_terminates_fire_loop_no_fires_after_stop() {
         "no fires may happen after stop()"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261124-016：add_job_internal 摘除+登记并发原子性
+// ---------------------------------------------------------------------------
+
+// save 失败时整体快照回滚：旧同名作业保留（未被摘除）、新作业不出现、
+// store 与失败前逐字节同态（Err 必须意味着「没换成」，011 语义加强版）。
+#[test]
+fn test_bug_20261124_016_internal_replace_rolls_back_atomically_on_save_failure() {
+    let (_dir, path) = tmp_store_path("cron-016-rollback.json");
+    let svc = CronService::new(&path);
+    svc.add_job_internal(
+        "board-ap:16",
+        every_schedule(60000),
+        "old",
+        false,
+        None,
+        None,
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    let before_jobs = svc.list_jobs(true);
+
+    svc.persist_fail_next.store(true, Ordering::SeqCst);
+    let err = svc
+        .add_job_internal(
+            "board-ap:16",
+            every_schedule(60000),
+            "new",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap_err();
+    assert!(err.contains("test-injected"), "unexpected error: {err}");
+
+    let after_jobs = svc.list_jobs(true);
+    // CronJob 无 PartialEq derive（生产类型不为测试加），序列化值比对等价。
+    assert_eq!(
+        serde_json::to_value(&before_jobs).unwrap(),
+        serde_json::to_value(&after_jobs).unwrap(),
+        "failed replace must leave store untouched (old job survives, no new job)"
+    );
+    let same_name: Vec<_> = after_jobs
+        .iter()
+        .filter(|j| j.name == "board-ap:16")
+        .collect();
+    assert_eq!(same_name.len(), 1);
+    assert_eq!(same_name[0].payload.message, "old");
+}
+
+// 并发同名挂载恒单份：摘除+登记合并进单锁临界区后，交错线程的「收集」
+// 不可再落在他人「摘除后、登记前」的窗口（旧三锁段形态的双挂路径）。
+// 无钩子循环交错：绿向由临界区结构确定性保证；红向（旧形态 collect/
+// remove/add 三段分离）在本机交错下高概率双挂。
+#[test]
+fn test_bug_20261124_016_concurrent_same_name_arm_yields_single_job() {
+    let (_dir, path) = tmp_store_path("cron-016-race.json");
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    svc.add_job_internal(
+        "board-ap:17",
+        every_schedule(60000),
+        "seed",
+        false,
+        None,
+        None,
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+
+    for round in 0..40 {
+        let mut handles = Vec::new();
+        for i in 0..2 {
+            let svc = std::sync::Arc::clone(&svc);
+            handles.push(std::thread::spawn(move || {
+                svc.add_job_internal(
+                    "board-ap:17",
+                    every_schedule(60000),
+                    &format!("r{round}-t{i}"),
+                    false,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                )
+                .unwrap()
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let n = svc
+            .list_jobs(true)
+            .iter()
+            .filter(|j| j.name == "board-ap:17")
+            .count();
+        assert_eq!(
+            n, 1,
+            "round {round}: concurrent same-name arm must yield exactly one job, got {n}"
+        );
+    }
+}
