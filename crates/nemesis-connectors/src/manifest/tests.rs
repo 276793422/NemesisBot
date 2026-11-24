@@ -677,6 +677,70 @@ fn rejects_undo_empty_op_or_arg() {
     assert!(err.contains("不能为空"), "got: {err}");
 }
 
+#[test]
+fn rejects_undo_arg_not_in_target_properties() {
+    // BUG-20261124-044：目标 op 声明了 properties 而 undo.arg 打错字——
+    // 旧校验放行，运行期回填值被当多余字段忽略、绑定按声明名取值取不到
+    // （占位符缺实参类错误，离根因远）。加载期 loud 拒。
+    let target = r#"[[op]]
+id = "cancel_order"
+risk = "medium"
+class = "write"
+action = "builtin.paper_cancel"
+args_schema = { type = "object", properties = { order_id = { type = "string" } } }
+"#;
+    let err = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"cancel_order\", arg = \"ordr_id\" }",
+        target,
+    ))
+    .expect_err("undo.arg 不在目标 properties");
+    assert!(err.contains("未在目标 op"), "got: {err}");
+    assert!(err.contains("args_schema.properties"), "got: {err}");
+}
+
+#[test]
+fn rejects_undo_target_required_beyond_undo_arg() {
+    // BUG-20261124-044：目标 op required 含 undo.arg 之外的键——撤销路径
+    // 只回填一个 arg，经 connector_tools 单点 validate 必然每次「缺少必填
+    // 参数」失败。加载期 loud 拒，错误点名超额必填键。
+    let target = r#"[[op]]
+id = "cancel_order"
+risk = "medium"
+class = "write"
+action = "builtin.paper_cancel"
+args_schema = { type = "object", required = ["order_id", "reason"], properties = { order_id = { type = "string" }, reason = { type = "string" } } }
+"#;
+    let err = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"cancel_order\", arg = \"order_id\" }",
+        target,
+    ))
+    .expect_err("required 超出 undo.arg");
+    assert!(err.contains("required 含"), "got: {err}");
+    assert!(err.contains("`reason`"), "got: {err}");
+    assert!(err.contains("缺少必填参数"), "got: {err}");
+}
+
+#[test]
+fn undo_target_schema_aligned_parses() {
+    // 正向锁：目标 op schema 与 undo 对齐（properties 含 undo.arg 且
+    // required ⊆ {undo.arg}）→ 合法。目标 op 无 schema 的合法形态由
+    // undo_declaration_parses_with_forward_reference（CANCEL_OP_PLAIN 无
+    // args_schema）覆盖——新闸只在目标声明了 schema 时生效。
+    let target = r#"[[op]]
+id = "cancel_order"
+risk = "medium"
+class = "write"
+action = "builtin.paper_cancel"
+args_schema = { type = "object", required = ["order_id"], properties = { order_id = { type = "string" } } }
+"#;
+    let c = parse_connector_manifest(&undo_manifest(
+        "undo = { op = \"cancel_order\", arg = \"order_id\" }",
+        target,
+    ))
+    .expect("aligned undo manifest parses");
+    assert!(c.ops.iter().any(|o| o.id == "cancel_order"));
+}
+
 // ---- script 声明式绑定 ----
 
 const SCRIPT_VALID: &str = r#"

@@ -698,6 +698,42 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
                 meta.id, v.id
             ));
         }
+        // 目标 op schema 对位闸（BUG-20261124-044）：撤销执行路径只回填
+        // 一个 arg——`{undo.arg: 凭条主键值}` 经 connector_tools 单点强制
+        // 的 coerce/validate 过**目标 op** 的 args_schema。目标 op 声明了
+        // schema 而 undo 对不上位 = 加载期可检出的死配置：required 含
+        // undo.arg 之外的键 → 每次撤销运行期必然「缺少必填参数」失败；
+        // arg 未在 properties 声明 → 回填值被当多余字段忽略、绑定按声明
+        // 名取值取不到（占位符缺实参类错误，离根因远）。引用完整性校验
+        // 必须在加载期兜住（「装得进去 ≠ 校验得住」，BUG-20261118-158
+        // 同族）。目标 op 未声明 args_schema 不在此闸内：无 schema = 无
+        // 必填闸，运行期放行任意 args——是既有测试/E3 全链机制依赖的
+        // 合法形态（撤销只留账不取值）。
+        if let Some(schema) = target.args_schema.as_ref() {
+            if let Some(props) = schema.get("properties").and_then(|p| p.as_object())
+                && !props.contains_key(u.arg.as_str())
+            {
+                return Err(format!(
+                    "connector `{}` op `{}`: undo.arg `{}` 未在目标 op `{}` 的 \
+                     args_schema.properties 声明（撤销只回填该键——未声明的键运行期\
+                     被当作多余字段忽略，绑定按声明名取值取不到）",
+                    meta.id, v.id, u.arg, u.op
+                ));
+            }
+            if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
+                for k in required {
+                    let Some(name) = k.as_str() else { continue };
+                    if name != u.arg {
+                        return Err(format!(
+                            "connector `{}` op `{}`: 目标 op `{}` 的 required 含 \
+                             `{name}`，撤销路径只能回填 undo.arg `{}` 一个实参——\
+                             该撤销声明每次执行必然「缺少必填参数」失败",
+                            meta.id, v.id, u.op, u.arg
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     Ok(ValidatedConnector {
