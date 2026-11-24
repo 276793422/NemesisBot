@@ -15,6 +15,26 @@ use crate::models::{
 };
 use crate::pricing_store::PricingStore;
 
+/// 本地时区当前自然月 1 日 00:00 的 unix 秒（BUG-20261125-002）。
+///
+/// usage **月预算窗口起点**的单一真相源——两个消费方必须同口径：
+/// 预算闸（agent crate `window_aggs` 查明细表的窗口下界）与 retention
+/// sweep 的窗口豁免（gateway 调用方传 [`DataStore::retention_sweep`]）。
+/// 各自本地重算会在口径漂移时「sweep 删了预算窗内行」或反向「永不清理」。
+///
+/// DST 间隙（该时刻在本地时区不存在，极罕见）= `None`：预算侧按窗口
+/// 不可判定放行、sweep 侧不豁免（两侧一致地诚实降级）。Ambiguous
+/// （回拨夜）取早臂——窗口从紧方向。
+pub fn month_start_unix_secs(now: chrono::DateTime<chrono::Local>) -> Option<i64> {
+    use chrono::{Datelike, TimeZone};
+    let ndt = now.date_naive().with_day(1)?.and_hms_opt(0, 0, 0)?;
+    match chrono::Local.from_local_datetime(&ndt) {
+        chrono::LocalResult::Single(dt) => Some(dt.timestamp()),
+        chrono::LocalResult::Ambiguous(dt, _) => Some(dt.timestamp()),
+        chrono::LocalResult::None => None,
+    }
+}
+
 /// Thread-safe SQLite data store.
 ///
 /// usage-store 关：空账本 stub——同型 API（写入 no-op、查询恒空、价目层
@@ -920,6 +940,15 @@ impl DataStore {
     /// **先聚合再删**——旧形态直接删，保留窗内的行从未进 daily_rollups
     /// 也永远不会进，永久史账少记）。返回删除的总行数。
     ///
+    /// `min_keep_since`（BUG-20261125-002）：usage 预算窗口起点保护下界
+    /// （epoch 秒）——月预算闸（`aggregate_usage_since` 只查明细表）的
+    /// 窗口可长达 31 天，而 retention 默认 30 天、max_rows 裁剪随时可删：
+    /// 窗口内明细被 sweep 后预算只看得到 daily_rollups 的 UTC 日汇总，
+    /// 保险丝漏计 = fail-open。传当月 1 日 00:00 本地时（单一真相源
+    /// [`month_start_unix_secs`]），按天分支 cutoff 与裁剪分支均豁免
+    /// 该时刻之后的行（明细多留 = 保险丝从紧；rollup 聚合范围 =
+    /// 删除范围不变量保持，不产生双计）。`None` = 不豁免（旧行为）。
+    ///
     /// 挂载点在 gateway 周期任务（启动时 + 每 6h）；此前 `rollup_old_logs`
     /// 从未被生产调用（只有测试），本次一并接上。
     ///
@@ -929,6 +958,7 @@ impl DataStore {
         &self,
         _retention_days: Option<i64>,
         _max_rows: Option<i64>,
+        _min_keep_since: Option<i64>,
     ) -> Result<u64, String> {
         Ok(0)
     }
@@ -938,6 +968,7 @@ impl DataStore {
         &self,
         retention_days: Option<i64>,
         max_rows: Option<i64>,
+        min_keep_since: Option<i64>,
     ) -> Result<u64, String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut deleted_total: u64 = 0;
@@ -955,12 +986,19 @@ impl DataStore {
             // 对齐不再是正确性必需（聚合改加法合并 + 事务原子，同日多批
             // 贡献累加、crash 重放不可能），保留对齐只为批次边界整齐、
             // 与 2026-10-24 的回归锁语义连续。
-            let cutoff = (chrono::Local::now().timestamp() - days * 86400) / 86400 * 86400;
+            let mut cutoff = (chrono::Local::now().timestamp() - days * 86400) / 86400 * 86400;
+            // BUG-20261125-002：预算窗口保护——cutoff 不早于月窗起点
+            // （max 取保护；窗口起点比 retention 更旧时 retention 语义
+            // 照旧生效，不放大保留面）。
+            if let Some(keep) = min_keep_since {
+                cutoff = cutoff.max(keep);
+            }
             deleted_total += sweep_step(
                 &mut conn,
                 "created_at < ?1",
                 "DELETE FROM request_logs WHERE created_at < ?1",
                 cutoff,
+                None,
             )?;
         }
 
@@ -970,7 +1008,10 @@ impl DataStore {
         // cutoff 对齐设计要防的「永久史账系统性少记」形态）。裁剪集 =
         // `ORDER BY created_at DESC, id DESC` 落在最新 cap 行之后的全部行
         // （id 决胜平 tie 确定性）；rollup 与 DELETE 用同一子查询、同一
-        // 事务，聚合集合 = 删除集合恒等。
+        // 事务，聚合集合 = 删除集合恒等。min_keep_since 给定时裁剪豁免
+        // 保护下界之后的行（BUG-20261125-002：裁掉月窗内行 = 月保险丝
+        // 漏计；防膨胀在预算正确性冲突时让位——膨胀仍受 retention 主
+        // 策略收敛，明细上限至多一个月窗 + 保留窗）。
         if let Some(cap) = max_rows.filter(|c| *c > 0) {
             const TRIM_WHERE: &str = "id IN (SELECT id FROM request_logs \
                  ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?1)";
@@ -979,6 +1020,7 @@ impl DataStore {
                 TRIM_WHERE,
                 &format!("DELETE FROM request_logs WHERE {TRIM_WHERE}"),
                 cap,
+                min_keep_since,
             )?;
         }
 
@@ -1046,17 +1088,30 @@ fn sweep_step(
     rollup_where: &str,
     delete_sql: &str,
     param: i64,
+    floor: Option<i64>,
 ) -> Result<u64, String> {
     let tx = conn
         .transaction()
         .map_err(|e| format!("retention sweep tx: {e}"))?;
-    tx.execute(
-        &format!("{ROLLUP_SQL_HEAD}{rollup_where}{ROLLUP_UPSERT_TAIL}"),
-        params![param],
-    )
-    .map_err(|e| format!("rollup upsert: {e}"))?;
+    // floor（BUG-20261125-002 预算窗口保护）：裁剪候选追加
+    // `AND created_at < floor`——只裁保护窗**之外**的行（窗内豁免），
+    // 聚合范围 = 删除范围不变量保持（不会出现「删了没聚合」或反向）。
+    let (rollup_sql, delete_final, bind): (String, String, Vec<i64>) = match floor {
+        Some(f) => (
+            format!("{ROLLUP_SQL_HEAD}{rollup_where} AND created_at < ?2{ROLLUP_UPSERT_TAIL}"),
+            format!("{delete_sql} AND created_at < ?2"),
+            vec![param, f],
+        ),
+        None => (
+            format!("{ROLLUP_SQL_HEAD}{rollup_where}{ROLLUP_UPSERT_TAIL}"),
+            delete_sql.to_string(),
+            vec![param],
+        ),
+    };
+    tx.execute(&rollup_sql, rusqlite::params_from_iter(bind.iter()))
+        .map_err(|e| format!("rollup upsert: {e}"))?;
     let deleted = tx
-        .execute(delete_sql, params![param])
+        .execute(&delete_final, rusqlite::params_from_iter(bind.iter()))
         .map_err(|e| format!("sweep delete: {e}"))?;
     tx.commit()
         .map_err(|e| format!("retention sweep commit: {e}"))?;

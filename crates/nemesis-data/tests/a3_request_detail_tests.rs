@@ -282,7 +282,7 @@ fn retention_sweep_days_and_max_rows() {
 
     // 按天 30 天：40 天前那行删掉 + rollup（rollup 查询直接开裸连接验证，
     // 不为测试加生产方法）。
-    let deleted = store.retention_sweep(Some(30), None).unwrap();
+    let deleted = store.retention_sweep(Some(30), None, None).unwrap();
     assert_eq!(deleted, 1);
     let (_, total) = store
         .query_logs(0, now + 86400, 1, 100, &LogFilter::default())
@@ -302,7 +302,7 @@ fn retention_sweep_days_and_max_rows() {
     );
 
     // 条数裁到 2：今天 3 行中最旧的「new-2」被裁。
-    let deleted = store.retention_sweep(None, Some(2)).unwrap();
+    let deleted = store.retention_sweep(None, Some(2), None).unwrap();
     assert_eq!(deleted, 1);
     let (remaining, total) = store
         .query_logs(0, now + 86400, 1, 100, &LogFilter::default())

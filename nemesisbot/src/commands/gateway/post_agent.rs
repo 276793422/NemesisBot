@@ -1721,9 +1721,15 @@ pub(crate) async fn init_post_agent(
                     break;
                 }
                 let max_rows = (usage_cfg.max_rows > 0).then_some(usage_cfg.max_rows);
+                // BUG-20261125-002：月预算窗口保护——月保险丝只查明细表，
+                // sweep 删窗内明细 = 漏计 fail-open。每次 tick 重算月窗起点
+                // （长驻进程跨月正确）；DST 间隙 = None = 不豁免（与预算闸
+                // 窗口不可判定放行两侧一致地诚实降级）。
+                let min_keep = nemesis_data::month_start_unix_secs(chrono::Local::now());
                 if let Err(e) = ds_for_sweep.retention_sweep(
                     (usage_cfg.retention_days > 0).then_some(usage_cfg.retention_days),
                     max_rows,
+                    min_keep,
                 ) {
                     warn!("[Gateway] usage retention sweep failed: {e}");
                 }
