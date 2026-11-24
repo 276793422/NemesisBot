@@ -892,6 +892,14 @@ pub struct UserProfileConfig {
     /// 反思通道触发间隔（每 N 次扫描一次，缺省 20）。
     #[serde(default)]
     pub reflect_every_sweeps: Option<u32>,
+    /// 反思通道触发：距上次反思的**新增用户消息数**闸（Forge 化重构 G1
+    /// 主触发；缺省 25——活跃用户两天即可攒够，不必等 20 个小时 tick）。
+    #[serde(default)]
+    pub reflect_min_new_messages: Option<u32>,
+    /// WSAPI/UI 行为遥测写闸（缺省 true）：关 = `wsapi_usage.jsonl` 不落盘
+    /// （存储即隐私闸，不止不挖掘）。
+    #[serde(default)]
+    pub ui_telemetry: Option<bool>,
 }
 
 impl UserProfileConfig {
@@ -918,6 +926,17 @@ impl UserProfileConfig {
         self.reflect_every_sweeps
             .filter(|n| *n > 0)
             .unwrap_or(default)
+    }
+    /// 反思新增消息数闸（缺省 25；0 = 回落缺省——0 意味着恒触发，不是
+    /// 合法语义）。
+    pub fn reflect_min_new_messages_or(&self, default: u32) -> u32 {
+        self.reflect_min_new_messages
+            .filter(|n| *n > 0)
+            .unwrap_or(default)
+    }
+    /// UI 遥测开关（缺省 true；None = 未配置走缺省）。
+    pub fn ui_telemetry_enabled_or(&self, default: bool) -> bool {
+        self.ui_telemetry.unwrap_or(default)
     }
 }
 

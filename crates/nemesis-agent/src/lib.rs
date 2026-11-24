@@ -128,7 +128,6 @@ pub mod turn_guard;
 /// （重评估）：工具调用三态 WAL（崩溃恢复续轮）。
 pub mod turn_wal;
 pub mod types;
-pub mod user_profile;
 /// wip 侧车（批二 A，2026-11-22）：turn 内执行现场逐事件落盘
 /// `logs/wip/<session_key>.jsonl`，重启打断后下一轮一次性注入「中断现场
 /// 恢复」节；正常收尾折叠。范围=主 loop 注册会话（detached/集群 worker

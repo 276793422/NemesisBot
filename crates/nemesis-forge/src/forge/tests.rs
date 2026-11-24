@@ -1305,7 +1305,7 @@ fn test_reflector_with_llm_failure() {
         make_collected_experience("file_read", true, 100),
         make_collected_experience("shell_exec", false, 200),
     ];
-    let report = reflector.reflect(&experiences, &[], None, "today", "all");
+    let report = reflector.reflect(&experiences, &[], None, "today", "all", &[], &[]);
     // Should have stats even without LLM
     assert!(!report.date.is_empty());
     assert!(report.stats.total_records > 0);

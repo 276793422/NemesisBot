@@ -92,6 +92,13 @@ pub struct ChatLogMeta<'a> {
     /// 优先）。`None` 不写——真人消息/旧条目缺字段 = 用户气泡，逐字节
     /// 旧行为。
     pub system_notice: Option<&'a str>,
+    /// 用户行为学习采集（2026-11-24 批 C ⑥）：`"channel"` 字段——本行**
+    /// 真人来源通道**（`InboundMessage.channel`：web/telegram/feishu/...）。
+    /// userprofile 的 DialogueRow 据此做通道来源标记（IM vs Dashboard 分流
+    /// 统计与风格读法）。admission 两处真人 user 行落盘点写入；assistant/
+    /// system/委派行不写（`None` 不写键——缺字段 = 未知通道，读侧宽容，
+    /// 旧条目照常解析）。
+    pub channel: Option<&'a str>,
 }
 
 /// D3：全字段追加入口（`ChatLogMeta` 携带全部可选元数据）。
@@ -110,6 +117,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.source_node,
         meta.steer,
         meta.work,
+        meta.channel,
         None,
         meta.system_notice,
     );
@@ -218,6 +226,7 @@ pub fn append_chat_log_with_model_and_node(
         None,
         None,
         None,
+        None,
     );
 }
 
@@ -248,6 +257,7 @@ pub fn append_chat_log_full(
         None,
         None,
         false,
+        None,
         None,
         None,
         None,
@@ -285,6 +295,7 @@ pub fn append_chat_log_full_with_images(
         None,
         None,
         None,
+        None,
     );
 }
 
@@ -306,6 +317,7 @@ pub fn append_compaction_note(session_key: &str, content: &str) {
         None,
         None,
         false,
+        None,
         None,
         Some("compaction"),
         None,
@@ -335,6 +347,7 @@ pub fn append_steer_inject_note(session_key: &str, content: &str) {
         None,
         false,
         None,
+        None,
         Some("steer_inject"),
         None,
     );
@@ -362,6 +375,7 @@ pub fn append_bg_notice_note(session_key: &str, content: &str) {
         None,
         false,
         None,
+        None,
         Some("bg_notice"),
         None,
     );
@@ -380,6 +394,8 @@ pub fn append_bg_notice_note(session_key: &str, content: &str) {
 /// `system_notice` Some → extra `"system_notice"` 字段（2026-11-16 系统通知
 /// 标记——前端据此把 role=user 的系统注入行渲染成通知条而非用户气泡，
 /// 缺省不写键=旧条目照常解析）.
+/// `channel` Some → extra `"channel"` 字段（2026-11-24 批 C ⑥真人来源通道
+/// 标记——admission 真人 user 行落盘点写入，缺省不写键=未知通道）.
 #[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
     session_key: &str,
@@ -395,6 +411,7 @@ fn write_chat_entry(
     source_node: Option<&str>,
     steer: bool,
     work: Option<&WorkTimeline>,
+    channel: Option<&str>,
     note_kind: Option<&str>,
     system_notice: Option<&str>,
 ) {
@@ -476,6 +493,12 @@ fn write_chat_entry(
     // 旧行为（与 model/cron/note_kind 同一宽容读契约）。
     if let Some(kind) = system_notice {
         entry["system_notice"] = serde_json::Value::String(kind.to_string());
+    }
+    // 批 C ⑥（2026-11-24 用户行为学习采集增强）：真人来源通道标记——
+    // admission 真人 user 行落盘点写入；缺键 = 未知通道/assistant 行/旧条目，
+    // 读侧宽容（与 model/cron 同一宽容读契约）。
+    if let Some(ch) = channel {
+        entry["channel"] = serde_json::Value::String(ch.to_string());
     }
     // R100（BUG-20261025-25）：整行（含换行）先序列化成 String 再**单次**
     // write_all。此前 `writeln!(file, "{}", entry)` 对 Value 走 Display 的

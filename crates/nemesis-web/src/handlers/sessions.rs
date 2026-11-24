@@ -779,6 +779,23 @@ impl ModuleHandler for SessionsHandler {
                         return Err(format!("未知 mode: {other}（支持 turn | before）"));
                     }
                 };
+                // 负样本事件面（Forge 化重构 G7）：回退 = 用户对近期 agent
+                // 行为的否定投票，落 `forge/userprofile/events.jsonl` 供反思
+                // 通道当「不要再提同类结论」的注记素材。fire-and-forget，
+                // 不影响回退主路径。
+                #[cfg(feature = "forge")]
+                if let Some(ws) = ctx.workspace.as_deref() {
+                    nemesis_forge::userprofile::collection::append_event(
+                        std::path::Path::new(ws),
+                        &serde_json::json!({
+                            "kind": "rewind",
+                            "session_key": session_key,
+                            "mode": mode,
+                            "message_index": message_index,
+                            "ts_ms": chrono::Utc::now().timestamp_millis(),
+                        }),
+                    );
+                }
                 // 回执带上调用方的裸 session_id（前端用它回显）。
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))

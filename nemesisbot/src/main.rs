@@ -621,6 +621,7 @@ enum Commands {
         action: commands::forge::ForgeAction,
     },
     /// Manage user habit profile (自进化 B 线)
+    #[cfg(feature = "forge")]
     Profile {
         #[command(subcommand)]
         action: commands::profile::ProfileAction,
@@ -1304,6 +1305,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::forge::run(action, cli.local)?;
         }
+        #[cfg(feature = "forge")]
         Commands::Profile { action } => {
             common::ensure_default_logger();
             commands::profile::run(action, cli.local)?;

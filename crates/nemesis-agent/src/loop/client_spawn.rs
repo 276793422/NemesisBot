@@ -254,6 +254,7 @@ impl AgentLoop {
 
                     source_node: None,
                     system_notice: None, // LLM 发起的委派任务原文，正常用户气泡
+                    channel: None,       // agent 内部委派，非真人通道消息
                 },
             );
             if !log_existed {
@@ -347,6 +348,7 @@ impl AgentLoop {
 
                             source_node: None,
                             system_notice: None,
+                            channel: None,
                         },
                     );
                     if let Some(ref store) = self.session_store {

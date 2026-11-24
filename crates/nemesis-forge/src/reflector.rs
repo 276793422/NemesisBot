@@ -98,6 +98,13 @@ pub struct ReflectionReport {
     /// 学习闭环开关状态（A5：Some = 报告头部渲染「学习闭环」行；
     /// None = 调用方未注入（如纯测试构造）不渲染）。
     pub learning_enabled: Option<bool>,
+    /// 用户会话教训（批 D：userprofile 反思分流的 lesson 队列经 Forge
+    /// 消费——主语=助手/LLM 的教训，**永不进用户画像注入面**；此处只
+    /// 进反思报告留痕 + 语义分析提示词）。空 = 本轮无消费。
+    pub user_lessons: Vec<String>,
+    /// 用户否决/遗忘的归纳摘要（批 D veto 回传：userprofile events.jsonl
+    /// veto/forget 行——语义分析的负样本注记，勿重提同类结论）。空 = 无。
+    pub veto_notes: Vec<String>,
 }
 
 /// Statistical analysis results from experience data.
@@ -527,6 +534,8 @@ impl Reflector {
         learning_cycle: Option<&nemesis_types::forge::LearningCycle>,
         period: &str,
         focus: &str,
+        user_lessons: &[String],
+        negative_notes: &[String],
     ) -> ReflectionReport {
         // Stage 1: Statistical analysis
         let stats = self.statistical_analysis(experiences);
@@ -554,6 +563,8 @@ impl Reflector {
             trace_stats,
             learning_cycle: learning_cycle.cloned(),
             learning_enabled: None,
+            user_lessons: user_lessons.to_vec(),
+            veto_notes: negative_notes.to_vec(),
         }
     }
 
@@ -575,8 +586,18 @@ impl Reflector {
         period: &str,
         focus: &str,
         max_tokens: Option<i64>,
+        user_lessons: &[String],
+        negative_notes: &[String],
     ) -> ReflectionReport {
-        let mut report = self.reflect(experiences, traces, learning_cycle, period, focus);
+        let mut report = self.reflect(
+            experiences,
+            traces,
+            learning_cycle,
+            period,
+            focus,
+            user_lessons,
+            negative_notes,
+        );
 
         // Stage 4 LLM: Semantic analysis (if provider available).
         // Clone the Arc inside the lock and drop the guard before awaiting —
@@ -590,6 +611,8 @@ impl Reflector {
                 report.trace_stats.as_ref(),
                 report.learning_cycle.as_ref(),
                 max_tokens,
+                user_lessons,
+                negative_notes,
             )
             .await
             {
@@ -1212,6 +1235,16 @@ impl Reflector {
             md.push_str("\n## LLM Insights\n\n");
             md.push_str(insights);
             md.push('\n');
+        }
+
+        // 批 D：用户会话教训节（Forge 消费留痕——内容同时进了语义分析
+        // 提示词；veto 注记只进提示词不进报告节，避免报告被否决条目刷屏）。
+        if !report.user_lessons.is_empty() {
+            md.push_str("\n## 用户会话教训\n\n");
+            md.push_str("以下教训来自用户会话反思分流（主语=助手/LLM，永不进用户画像注入面），已作为本轮语义分析输入：\n\n");
+            for l in &report.user_lessons {
+                md.push_str(&format!("- {l}\n"));
+            }
         }
 
         md

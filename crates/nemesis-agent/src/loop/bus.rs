@@ -302,6 +302,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_gen: parking_lot::RwLock::new(None),
+            #[cfg(feature = "forge")]
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),

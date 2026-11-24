@@ -135,7 +135,7 @@ fn test_build_analysis_prompt() {
 #[test]
 fn test_build_full_analysis_prompt_basic() {
     let stats = make_reflection_stats();
-    let prompt = build_full_analysis_prompt(&stats, &[], None, None);
+    let prompt = build_full_analysis_prompt(&stats, &[], None, None, &[], &[]);
     assert!(prompt.contains("200"));
     assert!(prompt.contains("15"));
     assert!(prompt.contains("85.0%"));
@@ -164,7 +164,7 @@ fn test_build_full_analysis_prompt_with_artifacts() {
         created_at: chrono::Local::now().to_rfc3339(),
         updated_at: chrono::Local::now().to_rfc3339(),
     }];
-    let prompt = build_full_analysis_prompt(&stats, &artifacts, None, None);
+    let prompt = build_full_analysis_prompt(&stats, &artifacts, None, None, &[], &[]);
     assert!(prompt.contains("test-skill"));
     assert!(prompt.contains("Skill"));
     assert!(prompt.contains("1.0"));
@@ -174,7 +174,7 @@ fn test_build_full_analysis_prompt_with_artifacts() {
 fn test_build_full_analysis_prompt_with_trace_stats() {
     let stats = make_reflection_stats();
     let trace = make_trace_stats();
-    let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None);
+    let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None, &[], &[]);
     assert!(prompt.contains("会话级轨迹洞察"));
     assert!(prompt.contains("50"));
     assert!(prompt.contains("3.5"));
@@ -196,7 +196,7 @@ fn test_build_full_analysis_prompt_insufficient_round_data() {
     trace.traces_with_rounds = 0;
     trace.avg_rounds = 0.0;
     trace.avg_tool_calls_per_round = 0.0;
-    let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None);
+    let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None, &[], &[]);
     assert!(prompt.contains("轮数数据不足"));
     // 差值注记：3 条轨迹全部无轮次数据
     assert!(prompt.contains("0/3"));
@@ -215,7 +215,7 @@ fn test_build_full_analysis_prompt_with_learning_cycle() {
         actions_taken: 3,
         status: nemesis_types::forge::CycleStatus::Completed,
     };
-    let prompt = build_full_analysis_prompt(&stats, &[], None, Some(&cycle));
+    let prompt = build_full_analysis_prompt(&stats, &[], None, Some(&cycle), &[], &[]);
     assert!(prompt.contains("闭环学习状态"));
     assert!(prompt.contains("5"));
     assert!(prompt.contains("3"));
@@ -225,7 +225,7 @@ fn test_build_full_analysis_prompt_with_learning_cycle() {
 async fn test_semantic_analysis_success() {
     let caller = MockLLMCaller;
     let stats = make_reflection_stats();
-    let result = semantic_analysis(&caller, &stats, &[], None, None, Some(500)).await;
+    let result = semantic_analysis(&caller, &stats, &[], None, None, Some(500), &[], &[]).await;
     assert!(result.is_ok());
     let response = result.unwrap();
     assert!(response.contains("Mock LLM response"));
@@ -235,7 +235,7 @@ async fn test_semantic_analysis_success() {
 async fn test_semantic_analysis_with_insights() {
     let caller = InsightMockLLMCaller;
     let stats = make_reflection_stats();
-    let result = semantic_analysis(&caller, &stats, &[], None, None, None).await;
+    let result = semantic_analysis(&caller, &stats, &[], None, None, None, &[], &[]).await;
     let response = result.unwrap();
     let insights = parse_insights(&response);
     assert_eq!(insights.len(), 3);
@@ -246,7 +246,7 @@ async fn test_semantic_analysis_with_insights() {
 async fn test_semantic_analysis_error() {
     let caller = ErrorMockLLMCaller;
     let stats = make_reflection_stats();
-    let result = semantic_analysis(&caller, &stats, &[], None, None, None).await;
+    let result = semantic_analysis(&caller, &stats, &[], None, None, None, &[], &[]).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("unavailable"));
 }
@@ -264,8 +264,17 @@ async fn test_semantic_analysis_with_all_contexts() {
         actions_taken: 1,
         status: nemesis_types::forge::CycleStatus::Running,
     };
-    let result =
-        semantic_analysis(&caller, &stats, &[], Some(&trace), Some(&cycle), Some(1000)).await;
+    let result = semantic_analysis(
+        &caller,
+        &stats,
+        &[],
+        Some(&trace),
+        Some(&cycle),
+        Some(1000),
+        &[],
+        &[],
+    )
+    .await;
     assert!(result.is_ok());
 }
 
@@ -391,7 +400,7 @@ fn test_build_analysis_prompt_multiple_tools() {
 #[test]
 fn test_build_full_analysis_prompt_empty_artifacts() {
     let stats = make_reflection_stats();
-    let prompt = build_full_analysis_prompt(&stats, &[], None, None);
+    let prompt = build_full_analysis_prompt(&stats, &[], None, None, &[], &[]);
     assert!(prompt.contains("现有 Forge 产物"));
 }
 
@@ -405,7 +414,7 @@ fn test_build_full_analysis_prompt_no_low_success() {
         low_success: vec![],
         tool_frequency: HashMap::new(),
     };
-    let prompt = build_full_analysis_prompt(&stats, &[], None, None);
+    let prompt = build_full_analysis_prompt(&stats, &[], None, None, &[], &[]);
     // Should still contain the section header but no entries
     assert!(prompt.contains("100"));
 }
@@ -444,7 +453,7 @@ fn test_build_full_analysis_prompt_trace_signals() {
     trace.total_traces = 10;
     trace.signal_summary.insert("retry".to_string(), 5);
     trace.signal_summary.insert("backtrack".to_string(), 2);
-    let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None);
+    let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None, &[], &[]);
     assert!(prompt.contains("retry"));
     assert!(prompt.contains("backtrack"));
 }
@@ -463,7 +472,7 @@ fn test_build_full_analysis_prompt_caps_top_patterns_at_five() {
         })
         .collect();
 
-    let prompt = build_full_analysis_prompt(&stats, &[], None, None);
+    let prompt = build_full_analysis_prompt(&stats, &[], None, None, &[], &[]);
     assert!(prompt.contains("tp5"), "5th pattern must be included");
     assert!(!prompt.contains("tp6"), "6th pattern must be excluded");
     assert!(!prompt.contains("tp7"), "7th pattern must be excluded");

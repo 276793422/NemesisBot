@@ -72,6 +72,8 @@ pub fn build_full_analysis_prompt(
     artifacts: &[Artifact],
     trace_stats: Option<&TraceStats>,
     cycle: Option<&nemesis_types::forge::LearningCycle>,
+    user_lessons: &[String],
+    negative_notes: &[String],
 ) -> String {
     let mut sb = String::new();
     sb.push_str("分析以下来自智能代理系统的工具使用数据，并给出洞察：\n\n");
@@ -188,6 +190,25 @@ pub fn build_full_analysis_prompt(
         sb.push_str(&format!("- 已执行动作数：{}\n", cycle.actions_taken));
     }
 
+    // 批 D（用户行为学习扩展）：用户会话教训 + veto 负样本注记——Forge
+    // 反思语义分析的 cross-pollination 输入（userprofile 反思分流的 lesson
+    // 队列 + 用户否决的归纳）。空 = 不渲染段（零假设：无数据不造上下文）。
+    if !user_lessons.is_empty() {
+        sb.push_str("\n## 用户会话教训\n\n");
+        sb.push_str(
+            "以下教训来自用户会话反思分流（助手自身的失误/低效/系统性问题归纳），请在洞察与改进建议中吸收：\n",
+        );
+        for l in user_lessons {
+            sb.push_str(&format!("- {l}\n"));
+        }
+    }
+    if !negative_notes.is_empty() {
+        sb.push_str("\n## 用户否决的归纳（勿重提同类）\n\n");
+        for n in negative_notes {
+            sb.push_str(&format!("- {n}\n"));
+        }
+    }
+
     sb.push_str("\n请给出：\n");
     sb.push_str("1. 可沉淀为可复用技能或脚本的关键模式\n");
     sb.push_str("2. 工具使用有待改进之处\n");
@@ -207,8 +228,17 @@ pub async fn semantic_analysis(
     trace_stats: Option<&TraceStats>,
     cycle: Option<&nemesis_types::forge::LearningCycle>,
     max_tokens: Option<i64>,
+    user_lessons: &[String],
+    negative_notes: &[String],
 ) -> Result<String, String> {
-    let user_prompt = build_full_analysis_prompt(stats, artifacts, trace_stats, cycle);
+    let user_prompt = build_full_analysis_prompt(
+        stats,
+        artifacts,
+        trace_stats,
+        cycle,
+        user_lessons,
+        negative_notes,
+    );
 
     // 提示词单一真相源在 nemesis-prompts（集中化）。
     let system_prompt = nemesis_prompts::forge::SEMANTIC_ANALYSIS_SYSTEM_PROMPT;

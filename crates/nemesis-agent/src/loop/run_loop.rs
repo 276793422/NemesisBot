@@ -1269,6 +1269,9 @@ impl AgentLoop {
                     "user",
                     &format!("[steer] {}", content),
                     &crate::chat_log::ChatLogMeta {
+                        // 批 C ⑥：steer 行也是真人消息（busy 中插话），
+                        // 同样带来源通道标记。
+                        channel: Some(m.msg.channel.as_str()),
                         images: &attach.ref_strings(),
                         steer: true,
                         ..Default::default()

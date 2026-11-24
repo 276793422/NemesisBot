@@ -113,6 +113,9 @@ pub mod ziwei;
 pub mod outbox;
 pub mod persona;
 pub mod plugins;
+// 用户习惯画像（Forge 化重构后 API 面迁 nemesis-forge::userprofile；
+// 无 forge feature = 画像子系统整体裁掉，profile.* 命令消失）。
+#[cfg(feature = "forge")]
 pub mod profile;
 // WASM 插件管理面（`plugins.wasm.*` 命令实现在此，由
 // plugins 模块代理分发；宿主运行时整槽静态注入，槽空诚实报错）。
@@ -350,7 +353,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(resources::ResourcesHandler));
     // 凭据索要卡响应端点（dashboard 凭据卡 → WebCredentialBroker）。
     router.register(Arc::new(credential::CredentialHandler));
-    // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
+    // 自进化 B 线：用户习惯画像（后门动作 + 开关 + 路由/遥测面）。
+    #[cfg(feature = "forge")]
     router.register(Arc::new(profile::ProfileHandler::new()));
     // 行动代理：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
     #[cfg(feature = "connectors")]

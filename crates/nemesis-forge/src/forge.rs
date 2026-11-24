@@ -355,6 +355,54 @@ impl Forge {
             None => Vec::new(),
         };
 
+        // Step 1.6（批 D，用户行为学习扩展）：用户会话教训 + veto 负样本
+        // 消费——userprofile 反思分流（批 A 接口一）落 outbound_lessons
+        // pending 队列的助手教训，Forge 侧消费形态 = **反思输入 + 报告
+        // 留痕 + 消费确认**：lesson 内容进语义分析提示词（洞察吸收）、
+        // 进报告「用户会话教训」节（人读留痕）、报告落盘成功后 ack
+        // （at-least-once：写报告失败 = 留 pending 下轮再来）。veto 回传
+        // （批 A 挂账项）= events.jsonl veto/forget 行作语义分析负样本
+        // 注记（「勿重提同类」）。**lessons 永不进用户画像注入面**（主语
+        // = 助手，userprofile upsert 硬拒双保险）。队列缺失/损坏 = 空
+        // Vec 诚实降级，不炸反思循环。消费面唯一 = 本周期循环；Dashboard
+        // 手动反思 / CLI reflect 只做只读展示，不 ack（避免 UI 点一下就
+        // 消费掉队列）。
+        let (user_lessons, lesson_ids, veto_notes) = match self.forge_dir.parent() {
+            Some(ws) => {
+                let lessons = crate::userprofile::bridge::read_pending_lessons(ws, 20);
+                let notes: Vec<String> = crate::userprofile::collection::read_recent_events(ws, 50)
+                    .into_iter()
+                    .filter(|ev| {
+                        matches!(
+                            ev.get("kind").and_then(|k| k.as_str()),
+                            Some("veto") | Some("forget")
+                        )
+                    })
+                    .filter_map(|ev| {
+                        let content = ev
+                            .get("content")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let kind = ev.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
+                        (!content.is_empty()).then(|| format!("[{kind}] {content}"))
+                    })
+                    .take(10)
+                    .collect();
+                let ids: Vec<String> = lessons.iter().map(|l| l.id.clone()).collect();
+                let contents: Vec<String> = lessons.iter().map(|l| l.content.clone()).collect();
+                (contents, ids, notes)
+            }
+            None => (Vec::new(), Vec::new(), Vec::new()),
+        };
+        if !user_lessons.is_empty() {
+            tracing::info!(
+                count = user_lessons.len(),
+                "[Forge] consuming pending user-session lessons"
+            );
+        }
+
         // Step 2: Reflect（统计 + use_llm 时 LLM 语义分析）。语义反思带：全量 artifacts
         // （旧调用面只传统计不传产物——LLM 看不到已部署技能会重复提名）、
         // 本轮 learning_cycle、真轨迹、统一杂务预算（thinking 系防烧穿）。
@@ -377,6 +425,8 @@ impl Forge {
                     &period,
                     "all",
                     Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                    &user_lessons,
+                    &veto_notes,
                 )
                 .await
         } else {
@@ -386,6 +436,8 @@ impl Forge {
                 learning_cycle.as_ref(),
                 &period,
                 "all",
+                &user_lessons,
+                &veto_notes,
             )
         };
 
@@ -398,6 +450,22 @@ impl Forge {
         // Step 3: Write report
         if let Ok(path) = reflector.write_report(&report) {
             tracing::info!(path = %path.display(), "[Forge] reflection report written");
+
+            // Step 3.5（批 D）：教训消费确认——报告落盘成功后 ack（失败
+            // 留 pending，下轮反思重新消费，at-least-once）。ack 按精确
+            // id 确认（bridge 纪律），失败 loud warn 不炸循环。
+            if !lesson_ids.is_empty()
+                && let Some(ws) = self.forge_dir.parent()
+            {
+                match crate::userprofile::bridge::ack_lessons(ws, &lesson_ids) {
+                    Ok(n) => {
+                        tracing::info!(acked = n, "[Forge] user-session lessons acked");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[Forge] lesson ack failed (stay pending)")
+                    }
+                }
+            }
 
             // Step 4: Cluster share
             if let Some(ref syncer) = self.syncer

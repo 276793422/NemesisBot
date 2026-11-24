@@ -1040,7 +1040,8 @@ fn pro_mode_heartbeat_skip_bootstrap_keeps_segments() {
 // 动态注入迁移：画像/档位两段从 ContextBuilder（build 时冻结、
 // classic-only）迁到 loop::messages 的 merged snapshot 每轮重渲染。这里
 // retarget 为自由函数级测试（段模板字节契约 + from_tier 映射）；snapshot
-// 路径的注入行为回归锁在 loop/messages 测试与 user_profile/tests.rs。
+// 路径的注入行为回归锁在 loop/messages 测试与 nemesis-forge
+// userprofile::store 测试（Forge 化重构后存储随迁）。
 
 #[test]
 fn prompt_profile_standard_is_zero_byte() {
@@ -1087,7 +1088,7 @@ fn prompt_profile_from_tier_mapping() {
 
 #[test]
 fn user_profile_section_renders_after_persona_before_tools() {
-    // 画像段模板契约（user_profile::render_section 产物的包装形态）：
+    // 画像段模板契约（forge userprofile store::render_section 产物的包装形态）：
     // 标题行 + 空行 + 渲染正文 + 尾注（同 loop::messages:user_profile_section_now
     // 的包装模板——两处字节由各自断言钉住，防漂移）。
     let rendered = "- [style] 用户偏好简洁回复";
@@ -1096,8 +1097,10 @@ fn user_profile_section_renders_after_persona_before_tools() {
     );
     assert!(section.starts_with("# 用户画像（自动学习，Dashboard 可管理）\n\n"));
     assert!(section.contains("- [style] 用户偏好简洁回复"));
-    // 空渲染 = 零字节（调用方空检查的前提）。
-    assert!(crate::user_profile::render_section(&Default::default()).is_empty());
+    // 空渲染 = 零字节（调用方空检查的前提；渲染器随 Forge 化重构迁
+    // nemesis-forge，无 forge feature = 注入面恒空段，本断言失义）。
+    #[cfg(feature = "forge")]
+    assert!(nemesis_forge::userprofile::store::render_section(&Default::default()).is_empty());
 }
 
 // ---------------------------------------------------------------------------

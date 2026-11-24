@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
+import { useWSAPI } from '../composables/useWSAPI'
 
 // 旧 /loops 深链 redirect（独立常量拿 RouteRecordRaw 上下文类型——条目
 // 落在条件 spread 里会丢失上下文推断，redirect 回调参数变隐式 any）。
@@ -147,4 +148,19 @@ const routes: RouteRecordRaw[] = [
 export const router = createRouter({
   history: createWebHashHistory(),
   routes,
+})
+
+// 页面路由遥测（Forge 化重构批三，2026-11-24）：每次导航上报
+// profile.route → 后端落 wsapi_usage.jsonl（用户画像挖掘器的页面足迹
+// 信号——「使用集群前先去诊断页」这类 UI 习惯的数据源）。前端恒发：
+// 发送是零成本旁路；后端按 forge feature / user_profile.enabled /
+// ui_telemetry 门控落盘（存储即隐私闸）。fire-and-forget：失败静默，
+// 绝不影响导航。
+router.afterEach((to) => {
+  try {
+    const { request } = useWSAPI()
+    request('profile', 'route', { path: to.path }, 5000).catch(() => {})
+  } catch {
+    // WS 未初始化等场景静默（遥测绝不影响导航）。
+  }
 })

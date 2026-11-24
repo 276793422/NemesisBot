@@ -55,6 +55,7 @@ fn append_meta_writes_all_optional_fields() {
 
         source_node: None,
         system_notice: Some("system"),
+        channel: Some("web"),
     };
     append_chat_log_meta(&key, "assistant", "done", &meta);
 

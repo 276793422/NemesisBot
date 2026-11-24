@@ -222,6 +222,8 @@ impl AgentLoop {
 
                 source_node: None,
                 system_notice: None, // 用户派发的编码任务原文，正常用户气泡
+                // 批 C ⑥：真人来源通道标记（同 admission 真人 user 行）。
+                channel: Some(&msg.channel),
             },
         );
         if !log_existed {
