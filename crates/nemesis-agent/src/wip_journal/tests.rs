@@ -396,6 +396,58 @@ fn test_wip_event_serde_round_trip() {
     assert!(s.contains(r#""t":"text""#));
 }
 
+/// BUG-20261124-045：fold/register/压缩三处文件删除走 fsutil 韧性包装——
+/// 裸单发 remove_file 被 AV/索引器瞬时句柄击败时静默残留**完整已完成
+/// turn 现场**，下一轮 consume_previous 把它误当中断现场注入（正常收尾
+/// 被报成「turn 中途被打断」）。本锁确定性构造瞬时句柄：主线程先持有
+/// 文件句柄（share_mode 只给 FILE_SHARE_READ，不给 DELETE → remove_file
+/// Sharing violation 必败），200ms 后释放——窗口落进韧性包装的退避重试
+/// 窗（80ms 递增 ×10，总窗 ~4.4s），fold 必须在窗口内删掉文件。裸单发
+/// 形态（修复前）第一次失败后不重试，文件必残留 → 测试红。
+#[cfg(windows)]
+#[test]
+fn test_fold_deletion_survives_transient_handle() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let j = WipJournal::default();
+    j.register(root, "h-lock");
+    j.append(
+        "h-lock",
+        WipEvent::Text {
+            ts: 0,
+            text: "已完成现场".into(),
+        },
+    );
+    let path = root.join("logs").join("wip").join("h-lock.jsonl");
+    assert!(path.exists());
+
+    // 先锁住再 fold（确定性）：FILE_SHARE_READ(1) 不含 WRITE(2)/DELETE(4)，
+    // remove_file 拿不到 DELETE access → ERROR_SHARING_VIOLATION（fsutil
+    // 注释列举的 32 号形态）。
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&path)
+        .unwrap();
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(lock);
+    });
+
+    // fold 语义不变：摘注册表 + 清 pending + 返回 true（删除是附属动作，
+    // 韧性包装在内部重试 + 耗尽 warn 留痕，不反向影响 fold 契约）。
+    assert!(j.fold("h-lock"), "fold 语义不受删除重试影响");
+    assert!(
+        !path.exists(),
+        "瞬时句柄窗口（200ms < 4.4s 重试窗）内必须重试删除成功——裸单发必残留旧现场"
+    );
+    assert_eq!(j.live_count(), 0);
+    assert!(j.pending_for("h-lock").is_none());
+    releaser.join().unwrap();
+}
+
 #[test]
 fn test_render_injection_section_contract() {
     let text = render_injection_section("[12:00:00] 调用工具 exec，参数：ls");
