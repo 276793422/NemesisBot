@@ -527,3 +527,236 @@ fn forbidden_403_matching_requires_word_boundary() {
         Some(LlmErrorClass::Forbidden)
     );
 }
+
+// ==========================================================================
+// 黑名单架构语料库（2026-11-24 C1/C2/C3）
+// ------------------------------------------------------------------
+// 现网事故串 "Upstream response stream was interrupted"（codex 中转礼貌
+// 报错的应用层事件）与既有词表 "stream interrupted" 一词之差漏网——
+// 本组钉死 C1 前缀短路 + C2 瞬态措辞族 + 误报防护。
+// ==========================================================================
+
+#[test]
+fn stream_failure_prefix_short_circuit_returns_timeout() {
+    // C1：classify_stream_error_payload ③None/④ 前缀化 Unknown 的
+    // Display 展平形态（前段 "unknown error from provider X: "，
+    // contains 锚自产前缀）。短路先于一切词表——前缀内携带的上游
+    // 原文/excerpt（auth 词、429 数字、401 码）不得改判。
+    let cases = [
+        "unknown error from provider codex: stream failure (model m): Upstream response stream was interrupted",
+        "unknown error from provider codex: stream failure (model m): totally novel hiccup",
+        "unknown error from provider codex: stream failure (model m): {\"reason\":\"expired token\"}",
+        "unknown error from provider codex: stream failure (model m): {\"remaining\":429}",
+    ];
+    for msg in cases {
+        assert_eq!(
+            classify_llm_error(msg),
+            Some(LlmErrorClass::Timeout),
+            "流内失败前缀必须短路归 Timeout：{msg}"
+        );
+    }
+}
+
+#[test]
+fn transient_stream_wording_corpus_maps_timeout() {
+    // C2 瞬态措辞族语料库（openclaw TRANSIENT_RETRY_EVIDENCE_RE /
+    // message-patterns + gemini-cli RETRYABLE_NETWORK_CODES + 真机事故串）。
+    let positives = [
+        // 真实事故串（was 之差——与既有 "stream interrupted" 是不同子串）：
+        "Upstream response stream was interrupted",
+        // 既有同族（loop 瞬态词表对称补齐）：
+        "request failed: stream interrupted mid-response",
+        // openclaw message-patterns 断流措辞：
+        "stream terminated before completion",
+        "stream ended without a final response",
+        "other side closed connection",
+        "socket hang up (ECONNRESET)",
+        // openclaw 传输断连措辞：
+        "connection lost to upstream",
+        "connection reset by peer",
+        // 服务端明示可重试：
+        "capacity reached, you can retry your request",
+        // 真机实证（GLM 文案兜底臂）：
+        "网络错误，请稍后重试",
+        // gemini-cli RETRYABLE_NETWORK_CODES（errno 码形态）：
+        "fetch failed: ECONNRESET",
+        "request failed: ETIMEDOUT after 30s",
+        "upstream ECONNREFUSED",
+        "tunnel aborted ECONNABORTED",
+        "write EPIPE",
+    ];
+    for msg in positives {
+        assert_eq!(
+            classify_llm_error(msg),
+            Some(LlmErrorClass::Timeout),
+            "瞬态措辞族应归 Timeout：{msg}"
+        );
+    }
+}
+
+#[test]
+fn transient_stream_wording_false_positive_guards() {
+    // 误报防护（openclaw 锚定纪律同门）：刻意不加的裸词/裸数字不得因
+    // 新词族被误判瞬态。
+    // 裸 "interrupted" 不收录——取消语义不是传输瞬态（重试无意义）。
+    assert_eq!(classify_llm_error("request interrupted by user"), None);
+    // 裸 "terminated" 不收录——进程终局非传输断连。
+    assert_eq!(
+        classify_llm_error("process terminated with exit code 1"),
+        None
+    );
+    // 裸 5xx 数字误报防护（openclaw "exited with 503 lines" 教训，
+    // 词边界数字锚既有纪律不因新词族松动）。
+    assert_eq!(classify_llm_error("grep exited with 503 lines"), None);
+    // 终态类不被新词族劫持：含 "ended"/"lost" 字样的认证/计费文案。
+    assert_eq!(
+        classify_llm_error("session ended: invalid api key"),
+        Some(LlmErrorClass::Auth)
+    );
+    assert_eq!(
+        classify_llm_error("subscription lost, credit balance exhausted"),
+        Some(LlmErrorClass::Billing)
+    );
+    // 分类不出仍 None（兜底语义上移到 providers 侧黑名单前缀，
+    // 纯文本分类器本体不产「默认可重试」结论）。
+    assert_eq!(classify_llm_error("totally novel failure mode"), None);
+}
+
+// ==========================================================================
+// class_by_code 错误码单一真相源（2026-11-24 错误码补全批）
+// ------------------------------------------------------------------
+// 三方调查合并表：codex parse_terminal_provider_error 终态黑名单 +
+// openclaw FAILOVER_CODE_REASONS/FAILOVER_ERROR_TYPE_REASONS + openai
+// 官方 type + anthropic 官方六枚举。归一后精确匹配。
+// ==========================================================================
+
+#[test]
+fn class_by_code_terminal_families() {
+    use LlmErrorClass as C;
+    // —— Billing：三方一致的核心码（openai 官方 429 type 语义=配额耗尽）——
+    assert_eq!(class_by_code("insufficient_quota"), Some(C::Billing));
+    assert_eq!(class_by_code("credit_balance_exhausted"), Some(C::Billing));
+    assert_eq!(class_by_code("usage_not_included"), Some(C::Billing));
+    assert_eq!(class_by_code("budget_reached"), Some(C::Billing));
+    assert_eq!(class_by_code("insufficient_balance"), Some(C::Billing));
+    // codex spend limit 三变体（后缀族一条）：
+    assert_eq!(
+        class_by_code("api_key_spend_limit_exceeded"),
+        Some(C::Billing)
+    );
+    assert_eq!(
+        class_by_code("project_spend_limit_exceeded"),
+        Some(C::Billing)
+    );
+    assert_eq!(
+        class_by_code("organization_spend_limit_exceeded"),
+        Some(C::Billing)
+    );
+    // —— Auth ——
+    assert_eq!(class_by_code("invalid_api_key"), Some(C::Auth));
+    assert_eq!(class_by_code("authentication_error"), Some(C::Auth));
+    // —— Forbidden ——
+    assert_eq!(class_by_code("permission_error"), Some(C::Forbidden));
+    assert_eq!(class_by_code("permission_denied"), Some(C::Forbidden));
+    assert_eq!(class_by_code("inference_hook_denied"), Some(C::Forbidden));
+    assert_eq!(class_by_code("cyber_policy"), Some(C::Forbidden));
+    assert_eq!(class_by_code("bio_policy"), Some(C::Forbidden));
+    // codex policy violation 后缀族（content/misalignment 两代表）：
+    assert_eq!(
+        class_by_code("content_policy_violation"),
+        Some(C::Forbidden)
+    );
+    assert_eq!(
+        class_by_code("misalignment_policy_violation"),
+        Some(C::Forbidden)
+    );
+    // —— Format（终态）——
+    assert_eq!(class_by_code("invalid_request_error"), Some(C::Format));
+    assert_eq!(class_by_code("invalid_prompt"), Some(C::Format));
+    assert_eq!(class_by_code("unknown_parameter"), Some(C::Format));
+    assert_eq!(class_by_code("model_not_found"), Some(C::Format));
+    assert_eq!(class_by_code("access_program_not_enabled"), Some(C::Format));
+    assert_eq!(class_by_code("invalid_access_program"), Some(C::Format));
+    assert_eq!(class_by_code("unsupported_access_program"), Some(C::Format));
+    assert_eq!(class_by_code("invalid_audio_data"), Some(C::Format));
+    assert_eq!(class_by_code("missing_audio_sample_rate"), Some(C::Format));
+    // —— ContextOverflow（loop 压缩环路由归宿，比三方更聪明的桶）——
+    assert_eq!(
+        class_by_code("context_length_exceeded"),
+        Some(C::ContextOverflow)
+    );
+}
+
+#[test]
+fn class_by_code_transient_families() {
+    use LlmErrorClass as C;
+    // —— RateLimit：openclaw 码表 + anthropic 枚举 + 文案词表同判 ——
+    assert_eq!(class_by_code("rate_limit"), Some(C::RateLimit));
+    assert_eq!(class_by_code("rate_limited"), Some(C::RateLimit));
+    assert_eq!(class_by_code("rate_limit_exceeded"), Some(C::RateLimit));
+    assert_eq!(class_by_code("rate_limit_error"), Some(C::RateLimit));
+    assert_eq!(class_by_code("billing_error"), Some(C::Billing));
+    assert_eq!(class_by_code("quota_exceeded"), Some(C::RateLimit));
+    assert_eq!(class_by_code("too_many_requests"), Some(C::RateLimit));
+    // AWS throttling 族（四形态）：
+    assert_eq!(class_by_code("throttled"), Some(C::RateLimit));
+    assert_eq!(class_by_code("throttling"), Some(C::RateLimit));
+    assert_eq!(class_by_code("throttling_exception"), Some(C::RateLimit));
+    assert_eq!(class_by_code("throttlingexception"), Some(C::RateLimit));
+    assert_eq!(class_by_code("resource_exhausted"), Some(C::RateLimit));
+    assert_eq!(class_by_code("model_cooldown"), Some(C::RateLimit));
+    assert_eq!(class_by_code("slow_down"), Some(C::RateLimit));
+    assert_eq!(class_by_code("flex_unavailable"), Some(C::RateLimit));
+    // —— Overloaded ——
+    assert_eq!(class_by_code("overloaded"), Some(C::Overloaded));
+    assert_eq!(class_by_code("overloaded_error"), Some(C::Overloaded));
+    assert_eq!(class_by_code("api_error"), Some(C::Overloaded));
+    assert_eq!(class_by_code("server_error"), Some(C::Overloaded));
+    assert_eq!(class_by_code("upstream_error"), Some(C::Overloaded));
+    assert_eq!(
+        class_by_code("policy_capacity_unavailable"),
+        Some(C::Overloaded)
+    );
+    // —— Timeout ——
+    assert_eq!(class_by_code("timeout_error"), Some(C::Timeout));
+    assert_eq!(class_by_code("ehostdown"), Some(C::Timeout));
+    assert_eq!(class_by_code("enetreset"), Some(C::Timeout));
+    assert_eq!(
+        class_by_code("err_stream_premature_close"),
+        Some(C::Timeout)
+    );
+}
+
+#[test]
+fn class_by_code_normalization_tolerance() {
+    use LlmErrorClass as C;
+    // 大小写宽容（上游码大小写不统一是常态——AWS THROTTLING / Go 系大写）：
+    assert_eq!(class_by_code("Insufficient_Quota"), Some(C::Billing));
+    assert_eq!(class_by_code("RATE_LIMIT_EXCEEDED"), Some(C::RateLimit));
+    assert_eq!(class_by_code("OVERLOADED_ERROR"), Some(C::Overloaded));
+    // 连字符宽容（部分网关转 kebab-case）：
+    assert_eq!(class_by_code("rate-limit-exceeded"), Some(C::RateLimit));
+    assert_eq!(class_by_code("invalid-request-error"), Some(C::Format));
+    // 前后空白宽容：
+    assert_eq!(class_by_code("  insufficient_quota  "), Some(C::Billing));
+}
+
+#[test]
+fn class_by_code_unlisted_and_contamination_guards() {
+    // 未收录码 → None（诚实不上报类别，消费方走既有链）：
+    assert_eq!(class_by_code("totally_unknown_code"), None);
+    assert_eq!(class_by_code("internal_boom"), None);
+    // 数字串不是语义码（HTTP 码归 class_by_status，码表不收——防双表
+    // 漂移；"429" 不在码表）：
+    assert_eq!(class_by_code("429"), None);
+    assert_eq!(class_by_code("500"), None);
+    // 精确匹配不 contains：自由文本里嵌码字样不得命中。
+    assert_eq!(class_by_code("not_rate_limit_related"), None);
+    assert_eq!(class_by_code("xxinvalid_api_keyxx"), None);
+    assert_eq!(class_by_code("prefix_insufficient_quota_suffix"), None);
+    // 后缀族不吞自由文本（spend_limit_exceeded 结尾校验）：
+    assert_eq!(class_by_code("spend_limit_exceeded_was_waived"), None);
+    // 空串 / 纯空白：
+    assert_eq!(class_by_code(""), None);
+    assert_eq!(class_by_code("   "), None);
+}

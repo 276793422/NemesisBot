@@ -565,6 +565,64 @@ async fn stream_interrupted_display_enters_transient_ring_not_rate_limit_or_comp
     );
 }
 
+// -- ⑧b 黑名单前缀 Unknown → transient 环（2026-11-24 C1）------------------
+
+#[tokio::test(start_paused = true)]
+async fn stream_failure_prefix_unknown_enters_transient_ring_not_rate_limit_or_compression() {
+    // 黑名单架构（2026-11-24 C1）：流内失败事件未收录文案/无 message →
+    // "stream failure (model X):" 前缀化 Unknown（failover 侧翻转），
+    // Display 展平 = "unknown error from provider codex: stream failure
+    // (model m): <上游原文>"。三面同判进 transient 环：
+    // - recovery is_stream_interrupted contains 锚（context/限流环排除）；
+    // - classify_llm_error C1 contains 短路 → Timeout（classified 联合）；
+    // - loop 瞬态词表 "stream failure" contains（独立命中）。
+    // 上游 excerpt 携带污染面（429 数字 / "tokens" / "expired"）不得误入
+    // 限流环（进度通知）或压缩环（calls==3）。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "unknown error from provider codex: stream failure (model gpt-5.6-sol): \
+                   totally novel upstream hiccup {\"remaining\":429,\"tokens\":999999,\"reason\":\"expired\"}"
+            .to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m.ends_with("Recovered!"))),
+        "黑名单前缀 Unknown 必须进 transient 环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "首败 + transient 环重试成功 = 恰好 2 次调用（压缩环路由 = 3 次）"
+    );
+    let mut saw_rate_limit_progress = false;
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            saw_rate_limit_progress = true;
+        }
+    }
+    assert!(
+        !saw_rate_limit_progress,
+        "excerpt 的 429 数字是污染，不得误入限流环"
+    );
+}
+
 // -- ⑨ 终局 history 瘦身（头行进 history / 全文出站）----------------------
 
 #[tokio::test(start_paused = true)]

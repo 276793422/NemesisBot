@@ -284,8 +284,15 @@ impl AgentLoop {
                 // contains 匹配都会被内容污染误路由（对抗用例 /，设计
                 // 文档）。用 starts_with 头行前缀锚——头行只含 provider
                 // /model/reason 字段，不可被 partial 内容伪造。
-                let is_stream_interrupted =
-                    err_lower.starts_with("stream interrupted from provider");
+                let is_stream_interrupted = err_lower.starts_with("stream interrupted from provider")
+                        // 黑名单架构前缀（2026-11-24 C1）：流内失败事件未
+                        // 收录文案/无 message → "stream failure (model X):"
+                        // 前缀化 Unknown（failover 侧翻转）。Display 前段
+                        // 是 "unknown error from provider X: " → contains
+                        // 锚定自产前缀。排除语义同门：这类错误的尾段同样
+                        // 可能携带上游原文/JSON excerpt 数字（如
+                        // "remaining":429），不得误入 context/限流环。
+                        || err_lower.contains("stream failure (model ");
                 let is_transport_connect_error = err_lower.contains("connect error");
                 // B29（2026-11-06 设计 §1.2 D2）：触发条件 = 分类器
                 // ContextOverflow ∪ 收窄后词表（token/context/length）。
@@ -389,6 +396,14 @@ impl AgentLoop {
                         // 不依赖 classify_llm_error 的入口短路也能独立命中
                         // transient 环。
                         "stream interrupted",
+                        // 黑名单架构（2026-11-24 C1）同族双保险：
+                        // "stream failure (model X):" 前缀化 Unknown
+                        // （流内失败事件未收录文案/无 message 的翻转形态）
+                        // 与上游原文 "stream was interrupted"（与本词表
+                        // 既有 "stream interrupted" 一词之差，现网事故串
+                        // 实证）——contains 匹配对 Display 中段照常命中。
+                        "stream failure",
+                        "stream was interrupted",
                     ]
                     .iter()
                     .any(|k| keyword_hit(&err_lower, k));

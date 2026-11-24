@@ -433,18 +433,23 @@ fn test_parse_response_is_error_rate_limit_classified() {
     }
 }
 
-/// 分类不出的 is_error → Unknown 保留全文（带前缀），兜底语义不变。
+/// 分类不出的 is_error → "stream failure" 前缀化 Unknown 可重试
+/// （2026-11-24 黑名单架构 C1：未识别默认可重试，全文随前缀保留）。
 #[test]
 fn test_parse_response_is_error_unmatched_stays_unknown_with_prefix() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":true,"result":"额度用尽","usage":{}}"#;
     let err = provider.parse_response(output, &[], "m").unwrap_err();
-    match err {
+    match &err {
         FailoverError::Unknown { message, .. } => {
-            assert_eq!(message, "claude cli error: 额度用尽");
+            assert_eq!(
+                message,
+                "stream failure (model m): claude cli error: 额度用尽"
+            );
         }
         other => panic!("预期 Unknown，得到 {other:?}"),
     }
+    assert!(err.is_retriable(), "黑名单翻转：未收录文案默认可重试");
 }
 
 // ============================================================

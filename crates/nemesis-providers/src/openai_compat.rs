@@ -355,7 +355,7 @@ impl LLMProvider for OpenAICompatProvider {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
             let text = nemesis_utils::http_cap::read_error_body(resp).await;
-            return Err(FailoverError::from_status(
+            return Err(FailoverError::classify_http_error_body(
                 &self.config.name,
                 model,
                 status,

@@ -901,7 +901,7 @@ impl LLMProvider for CodexProvider {
                 if status2 >= 400 {
                     let retry_after2 = crate::failover::retry_after_from_headers(resp2.headers());
                     let text2 = nemesis_utils::http_cap::read_error_body(resp2).await;
-                    return Err(FailoverError::from_status(
+                    return Err(FailoverError::classify_http_error_body(
                         "codex",
                         &resolved_model,
                         status2,
@@ -911,7 +911,7 @@ impl LLMProvider for CodexProvider {
                 }
                 return decode_codex_response(resp2, &resolved_model).await;
             }
-            return Err(FailoverError::from_status(
+            return Err(FailoverError::classify_http_error_body(
                 "codex",
                 &resolved_model,
                 status,
