@@ -331,10 +331,15 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>) -> Result<(),
         let Some(rel_str) = rel.to_str() else {
             return Err(format!("非 UTF-8 路径：{}", path.display()));
         };
-        // 围栏自检：收集器自身产物也必须过围栏（畸形路径宁可不传）。
+        // 围栏自检：收集器自身产物也必须过围栏。拒绝 = **诚实失败**（与本
+        // 函数 read_dir/UTF-8/哈希失败同哲学）而非静默跳过——静默会让文件
+        // 从管线双向蒸发且零感知（BUG-20261124-031：Linux master 基线树合
+        // 法含 `CON` 等保留名 → staging 静默丢入基线 → worker sidecar 缺
+        // 该文件 → worker 对它的改动也静默不进变更集；严格 Err 让基线下发
+        // 诚实弃派，现场可见可修）。
         let normalized = rel_str.replace('\\', "/");
-        if safe_relative_path(&normalized).is_err() {
-            continue;
+        if let Err(e) = safe_relative_path(&normalized) {
+            return Err(format!("路径围栏拒绝 {normalized}：{e}"));
         }
         let meta = match std::fs::symlink_metadata(&path) {
             Ok(m) => m,

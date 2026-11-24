@@ -436,8 +436,13 @@ fn diff_walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>, skipped:
             continue;
         };
         let normalized = rel_str.replace('\\', "/");
-        // 围栏自检：收集器自身产物也必须过围栏（畸形路径宁可不传）。
-        if crate::transfer::safe_relative_path(&normalized).is_err() {
+        // 围栏自检：收集器自身产物也必须过围栏。拒绝 = 进 skipped 申报
+        // （与本收集器「单文件失败跳过+申报」哲学一致；BUG-20261124-031：
+        // 静默 continue 会让 Linux 合法名文件如 `CON` 从变更集蒸发且
+        // master 零感知——BUG-20261124-030 扩大围栏拒绝面后该路径真实
+        // 可触发）。目录被拒时本臂即其子树的唯一申报。
+        if let Err(e) = crate::transfer::safe_relative_path(&normalized) {
+            skipped.push(format!("{normalized}（围栏拒绝: {e}）"));
             continue;
         }
         let meta = match std::fs::symlink_metadata(&path) {

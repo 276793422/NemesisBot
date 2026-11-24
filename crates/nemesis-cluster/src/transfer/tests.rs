@@ -920,6 +920,23 @@ fn collect_dir_files_is_sorted_deterministic_and_fenced() {
 }
 
 #[test]
+fn bug20261124_031_collect_fenced_path_fails_loud_not_silent() {
+    // BUG-20261124-031：围栏拒绝的文件此前静默 continue——Linux 合法名
+    // （`CON` 等保留名 / 8.3 形态名）从基线/载荷双向蒸发且零感知。现
+    // 严格 Err（与同函数 read_dir/UTF-8/哈希失败同哲学），基线下发诚实
+    // 弃派可见可修。夹具用 8.3 形态长名 `abcdef~1.txt`（is_short_name
+    // 命中；Windows 盘上可创建——裸 `CON` 在 Win32 不可创建，无法作夹具）。
+    let root = temp_root("collect_fenced");
+    let src = root.join("src");
+    make_source(&src, &[("keep.md", b"k"), ("abcdef~1.txt", b"fenced")]);
+    let err = collect_dir_files(&src).unwrap_err();
+    assert!(
+        err.contains("路径围栏拒绝") && err.contains("abcdef~1.txt"),
+        "围栏拒绝必须诚实失败且指名文件: {err}"
+    );
+}
+
+#[test]
 fn collect_dir_files_excludes_vcs_internal_dirs() {
     // VCS 内部目录（任意层级的 .git）不进收集产物——混入变更集会让 master
     // 三方合并 upsert 保留路径失败（2026-09-16 showcase 实证）。
