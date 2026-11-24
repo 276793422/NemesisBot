@@ -68,6 +68,11 @@ pub struct ImportReport {
     /// Aliases that already existed with a DIFFERENT value; a `__N`-suffixed
     /// alias was used instead: (requested, used).
     pub conflicts: Vec<(String, String)>,
+    /// 真实往 keys 账本**插入**的别名数（新别名 / 冲突后缀落账都计）；
+    /// reuse（同值复用，含 `__N` 后缀同值复用）不插入、不计——凭据文件
+    /// 是否需要回写的权威信号（`creds_file_dirty`），vault 同族
+    /// `VaultMigrateReport.creds_changed` 只在真实增删时置位的同一记账纪律。
+    pub inserted: usize,
 }
 
 impl ImportReport {
@@ -366,6 +371,7 @@ pub fn migrate_inline_keys_to_yaml(
                 }
                 if !creds.keys.contains_key(&candidate) {
                     creds.keys.insert(candidate.clone(), literal);
+                    report.inserted += 1;
                 }
                 report
                     .conflicts
@@ -374,6 +380,7 @@ pub fn migrate_inline_keys_to_yaml(
             }
         } else {
             creds.keys.insert(base_alias.clone(), literal);
+            report.inserted += 1;
             base_alias
         };
 
@@ -386,12 +393,14 @@ pub fn migrate_inline_keys_to_yaml(
     report
 }
 
-/// `credentials.yaml` 持盘判定：migrated/conflicts 非空才真正往别名账本里
-/// 插过条目（reused 只复用不插入）。config 是否需要回写由 migrated 判定。
-/// CLI（run_import）与 WSAPI（models.migrate_keys target=yaml）共用同一
-/// 判定——统一定义。
+/// `credentials.yaml` 持盘判定：**真实插入过条目**（`inserted`，新别名 /
+/// 冲突后缀落账）才回写凭据文件。reuse（同值复用，含 `__N` 后缀同值复用）
+/// 不改账本、不回写——文件保持字节不动（文档承诺的 file-untouched 幂等面）。
+/// config 是否需要回写由 `migrated` 判定（reuse 也改写 config 的
+/// `api_key` 字段）。CLI（run_import）与 WSAPI（models.migrate_keys
+/// target=yaml）共用同一判定——统一定义。
 pub fn creds_file_dirty(report: &ImportReport) -> bool {
-    !report.migrated.is_empty() || !report.conflicts.is_empty()
+    report.inserted > 0
 }
 
 /// Migrate inline plaintext api_keys from config.json's model_list into
