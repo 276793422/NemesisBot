@@ -36,59 +36,82 @@ pub fn run(local: bool) -> Result<()> {
     // Model info
     if cfg_path.exists() {
         let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
-        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-            // Default model
-            if let Some(model) = cfg.get("default_model").and_then(|v| v.as_str()) {
-                println!("  Default model: {}", model);
-            }
-
-            // Count models
-            if let Some(models) = cfg.get("model_list").and_then(|v| v.as_array())
-                && !models.is_empty()
-            {
+        // 坏配置必须 loud 显示而不是静默省略（BUG-20261125-009）：此处是只读
+        // 诊断命令，不拒绝运行，但 gateway load_config 对同一文件 fail-fast
+        // 拒绝启动（形状闸 ensure_object，BUG-20261120-030 家族）——status
+        // 若静默跳过整段，用户看到的是「全部默认」假象，与真实运行态矛盾。
+        // 形状文案单一真相源 = nemesis_utils::json_shape（与 gateway 同源）。
+        match serde_json::from_str::<serde_json::Value>(&data) {
+            Err(e) => {
                 println!();
-                println!("  Configured Models:");
-                // BTreeMap（非 HashMap）：provider 分组聚合按字典序输出——
-                // user-visible listings must be deterministic（BUG-20261114-050，
-                // 与 AuthStore list_providers 排序约定同源；HashMap 迭代序
-                // 逐进程漂移，同机两次 status 输出顺序不同）。聚合逻辑
-                // 单一真相源 = aggregate_provider_stats。
-                for (provider, (count, has_key)) in &aggregate_provider_stats(models) {
+                println!(
+                    "  Warning: config failed to parse as JSON ({}). Gateway will refuse to start with this config; model/security/forge sections omitted.",
+                    e
+                );
+            }
+            Ok(cfg) => match nemesis_utils::json_shape::ensure_object(&cfg, "config") {
+                Err(e) => {
+                    println!();
                     println!(
-                        "    {}: {} model(s), API key: {}",
-                        provider,
-                        count,
-                        if *has_key { "configured" } else { "not set" }
+                        "  Warning: {} (gateway will refuse to start with this config); model/security/forge sections omitted.",
+                        e
                     );
                 }
-            }
+                Ok(()) => {
+                    // Default model
+                    if let Some(model) = cfg.get("default_model").and_then(|v| v.as_str()) {
+                        println!("  Default model: {}", model);
+                    }
 
-            // Security
-            let security_enabled = cfg
-                .get("security")
-                .and_then(|s| s.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            println!();
-            println!(
-                "  Security: {}",
-                if security_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
+                    // Count models
+                    if let Some(models) = cfg.get("model_list").and_then(|v| v.as_array())
+                        && !models.is_empty()
+                    {
+                        println!();
+                        println!("  Configured Models:");
+                        // BTreeMap（非 HashMap）：provider 分组聚合按字典序输出——
+                        // user-visible listings must be deterministic（BUG-20261114-050，
+                        // 与 AuthStore list_providers 排序约定同源；HashMap 迭代序
+                        // 逐进程漂移，同机两次 status 输出顺序不同）。聚合逻辑
+                        // 单一真相源 = aggregate_provider_stats。
+                        for (provider, (count, has_key)) in &aggregate_provider_stats(models) {
+                            println!(
+                                "    {}: {} model(s), API key: {}",
+                                provider,
+                                count,
+                                if *has_key { "configured" } else { "not set" }
+                            );
+                        }
+                    }
+
+                    // Security
+                    let security_enabled = cfg
+                        .get("security")
+                        .and_then(|s| s.get("enabled"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    println!();
+                    println!(
+                        "  Security: {}",
+                        if security_enabled {
+                            "enabled"
+                        } else {
+                            "disabled"
+                        }
+                    );
+
+                    // Forge
+                    let forge_enabled = cfg
+                        .get("forge")
+                        .and_then(|f| f.get("enabled"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    println!(
+                        "  Forge: {}",
+                        if forge_enabled { "enabled" } else { "disabled" }
+                    );
                 }
-            );
-
-            // Forge
-            let forge_enabled = cfg
-                .get("forge")
-                .and_then(|f| f.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            println!(
-                "  Forge: {}",
-                if forge_enabled { "enabled" } else { "disabled" }
-            );
+            },
         }
     }
 

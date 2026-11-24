@@ -216,3 +216,160 @@ fn load_proxy_keys_file_still_accepts_object_document() {
     assert_eq!(cfg.keys.len(), 1, "判别字段确从文档消费");
     assert_eq!(cfg.keys[0].name, "a");
 }
+
+// ---- BUG-20261125-008：家族横扫补位（config 树用户配置 loader 第三批）----
+//
+// load_commands_config / plugin_wasm 开关文件 / plugins_native 开关文件
+// （load 读侧 + set 写侧读底）四处 loader 同洞漏网：struct 全字段
+// `#[serde(default)]` 无 flatten，`[]` 走 serde visit_seq 零元素臂 = 「全
+// 默认」合法值零诊断——commands 命令表静默清空、wasm 开关全关（无 WARN）、
+// native 开关全启（已停用插件静默复活）。修复 = ensure_object 前置，违形
+// 进各站点既有 WARN 降级臂（签名不动：load_commands_config 是 HotLoadFn
+// 契约——必须容忍缺失文件、错误不外泄）。断言 WARN 需捕获 subscriber
+// （自制最小 Subscriber 收事件文本进共享缓冲，形态抄 nemesis-agent
+// test_support::capture_logs_to_buf；不引 tracing-subscriber dev-dep）。
+
+mod warn_capture {
+    use std::sync::{Arc, Mutex};
+
+    struct EventText(Arc<Mutex<Vec<String>>>);
+
+    struct MsgVisitor(String);
+    impl tracing::field::Visit for MsgVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                if !self.0.is_empty() {
+                    self.0.push(' ');
+                }
+                self.0.push_str(&format!("{value:?}"));
+            } else {
+                self.0.push_str(&format!(" {}={value:?}", field.name()));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for EventText {
+        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut v = MsgVisitor(String::new());
+            event.record(&mut v);
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("[{}] {}", event.metadata().level(), v.0));
+        }
+        fn enter(&self, _span: &tracing::Id) {}
+        fn exit(&self, _span: &tracing::Id) {}
+    }
+
+    /// thread-local 装捕获 subscriber；返回 (guard, 缓冲)，guard 持有至断言完。
+    pub fn capture() -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<String>>>) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let guard = tracing::subscriber::set_default(EventText(buf.clone()));
+        (guard, buf)
+    }
+}
+
+#[test]
+fn load_commands_config_array_document_warns_and_falls_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_named(&dir, "config.commands.json", "[]");
+    let (_guard, buf) = warn_capture::capture();
+    let cfg = nemesis_config::load_commands_config(&path);
+    assert!(cfg.commands.is_empty(), "`[]` 零条目 → 空表");
+    let logs = buf.lock().unwrap().join("\n");
+    assert!(
+        logs.contains("must be a JSON object"),
+        "违形必须 WARN：logs={logs}"
+    );
+    assert!(logs.contains("array"), "形状必须可见：logs={logs}");
+    assert!(
+        logs.contains("config.commands.json"),
+        "路径必须可见：logs={logs}"
+    );
+}
+
+#[test]
+fn load_commands_config_still_accepts_object_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_named(
+        &dir,
+        "config.commands.json",
+        r#"{"commands":[{"name":"greet","prompt":"hi $ARGUMENTS"}]}"#,
+    );
+    let cfg = nemesis_config::load_commands_config(&path);
+    assert_eq!(cfg.commands.len(), 1, "判别字段确从文档消费");
+    assert_eq!(cfg.commands[0].name, "greet");
+}
+
+#[test]
+fn wasm_switch_file_array_document_warns_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    write_named(&dir, "config.plugin.wasm.json", "[]");
+    let (_guard, buf) = warn_capture::capture();
+    let switches = nemesis_config::plugin_wasm::load_switches(dir.path());
+    assert!(switches.is_empty(), "`[]` 零条目 → 空 map（fail-closed）");
+    let logs = buf.lock().unwrap().join("\n");
+    assert!(
+        logs.contains("must be a JSON object"),
+        "违形必须 WARN（此前零诊断）：logs={logs}"
+    );
+    assert!(logs.contains("array"), "形状必须可见：logs={logs}");
+}
+
+#[test]
+fn wasm_switch_file_still_accepts_object_document() {
+    let dir = tempfile::tempdir().unwrap();
+    write_named(
+        &dir,
+        "config.plugin.wasm.json",
+        r#"{"plugins":{"demo":{"enabled":true,"config":{"k":"v"}}}}"#,
+    );
+    let switches = nemesis_config::plugin_wasm::load_switches(dir.path());
+    assert_eq!(switches.len(), 1, "判别字段确从文档消费");
+    assert!(switches["demo"].enabled);
+    assert_eq!(
+        switches["demo"].config.get("k").and_then(|v| v.as_str()),
+        Some("v")
+    );
+}
+
+#[test]
+fn native_switch_file_array_document_warns_fail_open() {
+    let dir = tempfile::tempdir().unwrap();
+    write_named(&dir, "config.plugin.native.json", "[]");
+    let (_guard, buf) = warn_capture::capture();
+    let on = nemesis_config::plugins_native::load_enabled(
+        dir.path(),
+        nemesis_config::plugins_native::NativePluginId::PluginUi,
+    );
+    assert!(on, "`[]` 零条目 → 缺省启用（fail-open）");
+    let logs = buf.lock().unwrap().join("\n");
+    assert!(
+        logs.contains("must be a JSON object"),
+        "违形必须 WARN（此前零诊断）：logs={logs}"
+    );
+    assert!(logs.contains("array"), "形状必须可见：logs={logs}");
+}
+
+#[test]
+fn native_switch_file_still_accepts_object_document() {
+    let dir = tempfile::tempdir().unwrap();
+    write_named(
+        &dir,
+        "config.plugin.native.json",
+        r#"{"plugins":{"plugin_ui":{"enabled":false}}}"#,
+    );
+    let on = nemesis_config::plugins_native::load_enabled(
+        dir.path(),
+        nemesis_config::plugins_native::NativePluginId::PluginUi,
+    );
+    assert!(!on, "判别字段确从文档消费（disabled 生效）");
+}

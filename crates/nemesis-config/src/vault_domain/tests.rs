@@ -72,6 +72,24 @@ fn load_at_empty_object_yields_empty_bindings() {
     );
 }
 
+// BUG-20261125-008：`[]` 文档曾从 serde visit_seq 零元素臂溜过 = 静默
+// Ok(Some(空))——绕开文档化「损坏 → Err → 调用方 WARN + fail-secure」路径
+// （配置的免卡松弛全部静默失效，零诊断）。ensure_object 前置后数组/标量
+// 文档 loud Err；空 object `{}` 仍合法（上一测试钉住，不误伤）。
+#[test]
+fn load_at_rejects_array_document_loud() {
+    let dir = tempdir();
+    let path = dir.join("config.vault.json");
+    std::fs::write(&path, "[]").unwrap();
+    let err = VaultDomainConfig::load_at(&path).expect_err("`[]` 必须 loud Err（fail-secure）");
+    assert!(err.contains("must be a JSON object"), "err={err}");
+    assert!(err.contains("array"), "形状必须可见：err={err}");
+    // 标量文档同闸。
+    std::fs::write(&path, "42").unwrap();
+    let err = VaultDomainConfig::load_at(&path).expect_err("标量必须 loud Err");
+    assert!(err.contains("must be a JSON object"), "err={err}");
+}
+
 // BUG-20261120-005：Windows 记事本 utf8BOM 保存形态（用户可手编资产 +
 // 记事本是 Windows 现实编辑器）。裸 read_to_string 不剥 BOM → serde_json
 // 解析失败 → Err → dispatch 闸调用方按无绑定兜底 → 用户配置的域绑定全部

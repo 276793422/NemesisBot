@@ -214,3 +214,77 @@ fn bom_prefixed_sidecar_still_applies_policy() {
         "BOM 前缀 sidecar 的停用位不得静默回落基线"
     );
 }
+
+// BUG-20261125-008 回归锁：`[]` 文档曾从 serde visit_seq 零元素臂溜过 =
+// 静默 Default（停用位/例外表清空，与坏 JSON 降级同向但**零诊断**——文件
+// 明明在场却完全不可见地丢失意志）。修复 = ensure_object 前置，违形进既
+// 有「解析失败按空表降级」WARN 臂。WARN 捕获（自制最小 Subscriber；不引
+// tracing-subscriber dev-dep）。set_default 是 thread-local，并行互不污染。
+mod warn_capture {
+    use std::sync::{Arc, Mutex};
+
+    struct EventText(Arc<Mutex<Vec<String>>>);
+
+    struct MsgVisitor(String);
+    impl tracing::field::Visit for MsgVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                if !self.0.is_empty() {
+                    self.0.push(' ');
+                }
+                self.0.push_str(&format!("{value:?}"));
+            } else {
+                self.0.push_str(&format!(" {}={value:?}", field.name()));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for EventText {
+        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut v = MsgVisitor(String::new());
+            event.record(&mut v);
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("[{}] {}", event.metadata().level(), v.0));
+        }
+        fn enter(&self, _span: &tracing::Id) {}
+        fn exit(&self, _span: &tracing::Id) {}
+    }
+
+    /// thread-local 装捕获 subscriber；返回 (guard, 缓冲)，guard 持有至断言完。
+    pub fn capture() -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<String>>>) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let guard = tracing::subscriber::set_default(EventText(buf.clone()));
+        (guard, buf)
+    }
+}
+
+#[test]
+fn array_document_sidecar_warns_and_falls_back_baseline() {
+    let ws = tmpws();
+    let dir = state_dir(ws.path());
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("conn-arr.json"), "[]").expect("write");
+    let (_guard, buf) = warn_capture::capture();
+    let state = load_tool_state(ws.path(), "conn-arr");
+    assert_eq!(
+        tool_policy(&state, "mcp_s__t1"),
+        ToolPolicy::Default,
+        "`[]` 零条目 → 基线（读路径永不报错语义保持）"
+    );
+    let logs = buf.lock().unwrap().join("\n");
+    assert!(
+        logs.contains("must be a JSON object"),
+        "违形必须 WARN（此前零诊断）：logs={logs}"
+    );
+    assert!(logs.contains("array"), "形状必须可见：logs={logs}");
+}
