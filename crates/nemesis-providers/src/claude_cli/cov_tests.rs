@@ -154,7 +154,8 @@ async fn chat_success_via_fake_batch() {
 }
 
 /// is_error = true → 交真相源分类（BUG-20261114-052：瞬态文案可轮转），
-/// 分类不出维持 Unknown 透传 result 文本（带 `claude cli error: ` 前缀）。
+/// 分类不出 → "stream failure" 前缀化 Unknown 可重试（2026-11-24 黑名单
+/// 架构 C1：未识别默认可重试；原文案随前缀保留）。
 #[test]
 fn parse_response_is_error_returns_unknown() {
     let provider = provider_with("claude");
@@ -165,10 +166,14 @@ fn parse_response_is_error_returns_unknown() {
             "",
         )
         .unwrap_err();
-    match err {
+    match &err {
         FailoverError::Unknown { message, .. } => {
-            assert_eq!(message, "claude cli error: 额度用尽")
+            assert_eq!(
+                message,
+                "stream failure (model ): claude cli error: 额度用尽"
+            )
         }
         other => panic!("预期 Unknown，得到 {other:?}"),
     }
+    assert!(err.is_retriable(), "黑名单翻转：未收录文案默认可重试");
 }

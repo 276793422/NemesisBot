@@ -462,7 +462,12 @@ fn test_extract_http_status_http11() {
 
 #[test]
 fn test_classify_reason_all_unknown() {
-    assert_eq!(classify_reason("connection reset by peer"), None);
+    // "connection reset by peer"：2026-11-24 C2 瞬态措辞族收录 → Timeout
+    //（此前分类不出——loop 侧词表早有同词，providers 分类器补齐同口径）。
+    assert_eq!(
+        classify_reason("connection reset by peer"),
+        Some(FailoverReason::Timeout)
+    );
     assert_eq!(classify_reason("unexpected EOF"), None);
 }
 

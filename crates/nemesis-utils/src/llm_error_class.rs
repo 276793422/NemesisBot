@@ -52,6 +52,21 @@ pub fn classify_llm_error(error_msg: &str) -> Option<LlmErrorClass> {
         return Some(LlmErrorClass::Timeout);
     }
 
+    // 流内失败事件黑名单前缀短路（2026-11-24 C1）：classify_stream_error_payload
+    // ③ 未收录文案 / ④ 连 message 都没有 → 包 "stream failure (model X):"
+    // 前缀落 Unknown 可重试（failover 侧 is_retriable 前缀门同门）。
+    // 用 contains 不用 starts_with——这类错误经 FailoverError::Unknown
+    // Display 展平后前段是 "unknown error from provider X: "，starts_with
+    // 锚不住；"(model " 锚形只由本仓 ③None/④ 构造路径生产，外部文本
+    // 无法预知该形态；StreamInterrupted Display 尾段携带的模型任意文本
+    // （partial 全文）已被上一条 starts_with 短路更早拦截，污染不到这里。
+    // 短路先于一切后续词表——前缀内的上游原文/excerpt 不参与分类
+    // （黑名单语义：未识别默认可重试，"quota: 429" 数字excerpt 不得
+    // 误入限流桶）。
+    if msg.contains("stream failure (model ") {
+        return Some(LlmErrorClass::Timeout);
+    }
+
     // B29/D1（2026-11-06）上下文溢出文案族：高特异性短语，先于 image 维度
     // 与状态码判定——400+overflow body 由 from_status 包成
     // Unknown{message: "status 400: <body 前 200 字>"}，body 在 message 里，
@@ -99,6 +114,134 @@ pub fn class_by_status(status: u16) -> Option<LlmErrorClass> {
     }
 }
 
+/// 错误码/错误 type → 类别映射的**单一真相源**（字符串语义码，与
+/// [`class_by_status`] 并列）。
+///
+/// 三方权威调查合并表（2026-11-24 错误码补全批）：codex
+/// `parse_terminal_provider_error` 终态黑名单 + openclaw
+/// `FAILOVER_CODE_REASONS`/`FAILOVER_ERROR_TYPE_REASONS` + openai 官方
+/// type 值 + anthropic 官方六枚举。归一（trim + 小写 + `'-'`→`'_'`）后
+/// **精确匹配**——码是枚举值不是自由文本，contains 会把
+/// `"not_rate_limit_related"` 之类自由文本误吸；仅两条受控后缀族用
+/// `ends_with`（codex 同构码变体收敛成一条）。
+///
+/// 消费方（providers failover）语义约定：
+/// - 流内错误事件：数字码探测之后、message 文案**之前**——码的特异性
+///   高于自由文案，`insufficient_quota` 的 openai 文案
+///   "You exceeded your current quota" 不得被限流词表错吸进瞬态桶；
+/// - HTTP 错误体：**码给出的终态恒覆盖状态码粗粒度默认**（openclaw
+///   `classifyFailoverClassificationFromHttpStatus` 同纪律——429 +
+///   insufficient_quota = 配额耗尽终态，不是限流可重试）；码给出的
+///   瞬态不推翻状态码的终态默认（401 + rate_limit 荒谬形态保 Auth，
+///   保守单向闸由消费方实现，本表只供给类别）。
+pub fn class_by_code(code: &str) -> Option<LlmErrorClass> {
+    let normalized = code.trim().to_lowercase().replace('-', "_");
+    const TABLE: &[(&str, LlmErrorClass)] = &[
+        // —— 终态：计费/配额（三方交叉实证，黑名单制）——
+        // openai 官方 429 type（官方语义=配额耗尽重试无意义）+ codex
+        // 终态黑名单 + openclaw billing 正则 `/insufficient[_ ]quota/i`
+        // 三方一致：
+        ("insufficient_quota", LlmErrorClass::Billing),
+        ("credit_balance_exhausted", LlmErrorClass::Billing),
+        ("usage_not_included", LlmErrorClass::Billing),
+        ("budget_reached", LlmErrorClass::Billing),
+        // DeepSeek 403 实测 + openclaw billing 表 `/insufficient[_ ]balance/i`：
+        ("insufficient_balance", LlmErrorClass::Billing),
+        // codex api_key/project/organization_spend_limit_exceeded 三变体
+        // 一条受控后缀：
+        // —— 终态：认证 ——
+        ("invalid_api_key", LlmErrorClass::Auth),
+        ("authentication_error", LlmErrorClass::Auth),
+        // —— 终态：拒绝访问（anthropic ② 并入 + Google/通用）——
+        ("permission_error", LlmErrorClass::Forbidden),
+        ("permission_denied", LlmErrorClass::Forbidden),
+        // codex：workspace 推理钩子拦截 + 裸 policy 码（cyber/bio 不带
+        // _violation 后缀，须精确条目）：
+        ("inference_hook_denied", LlmErrorClass::Forbidden),
+        ("cyber_policy", LlmErrorClass::Forbidden),
+        ("bio_policy", LlmErrorClass::Forbidden),
+        // —— 终态：请求格式/协议不兼容 ——
+        // openai 官方 type + openclaw FAILOVER_ERROR_TYPE_REASONS：
+        ("invalid_request_error", LlmErrorClass::Format),
+        ("invalid_prompt", LlmErrorClass::Format),
+        // openclaw UNKNOWN_PARAMETER：
+        ("unknown_parameter", LlmErrorClass::Format),
+        // codex + openclaw：终态处置同门（不轮转同模型）——
+        // 我们无独立 model_not_found 类，归 Format（终态 Unknown）。
+        ("model_not_found", LlmErrorClass::Format),
+        // codex access program 族 + audio 输入校验族（精确匹配零误报，
+        // 出现即终态正确）：
+        ("access_program_not_enabled", LlmErrorClass::Format),
+        ("invalid_access_program", LlmErrorClass::Format),
+        ("unsupported_access_program", LlmErrorClass::Format),
+        ("audio_too_large", LlmErrorClass::Format),
+        ("audio_too_short", LlmErrorClass::Format),
+        ("invalid_audio", LlmErrorClass::Format),
+        ("invalid_audio_data", LlmErrorClass::Format),
+        ("invalid_audio_format", LlmErrorClass::Format),
+        ("missing_audio_sample_rate", LlmErrorClass::Format),
+        // —— 终态：上下文溢出（codex 码形态；loop 侧据此路由响应式
+        // 压缩环——比三方更聪明的归宿，openclaw/codex 只当 format）——
+        ("context_length_exceeded", LlmErrorClass::ContextOverflow),
+        // —— 瞬态：限流 ——
+        // openclaw FAILOVER_CODE_REASONS（RATE_LIMIT/RATE_LIMITED/
+        // RATE_LIMIT_EXCEEDED/TOO_MANY_REQUESTS/THROTTLING*）+ 文案词表
+        // "quota exceeded" 同判（码形态跟随词表，不分裂）：
+        ("rate_limit", LlmErrorClass::RateLimit),
+        ("rate_limited", LlmErrorClass::RateLimit),
+        ("rate_limit_exceeded", LlmErrorClass::RateLimit),
+        // anthropic 官方枚举（流内 ② 并入面）：
+        ("rate_limit_error", LlmErrorClass::RateLimit),
+        ("billing_error", LlmErrorClass::Billing),
+        ("quota_exceeded", LlmErrorClass::RateLimit),
+        ("too_many_requests", LlmErrorClass::RateLimit),
+        ("throttled", LlmErrorClass::RateLimit),
+        ("throttling", LlmErrorClass::RateLimit),
+        ("throttling_exception", LlmErrorClass::RateLimit),
+        ("throttlingexception", LlmErrorClass::RateLimit),
+        // Google/vertex（openclaw RESOURCE_EXHAUSTED 同款）：
+        ("resource_exhausted", LlmErrorClass::RateLimit),
+        // openclaw：
+        ("model_cooldown", LlmErrorClass::RateLimit),
+        // codex 流内（slow_down + flex 模式不可用，429 守卫暗示限流语义）：
+        ("slow_down", LlmErrorClass::RateLimit),
+        ("flex_unavailable", LlmErrorClass::RateLimit),
+        // —— 瞬态：过载 ——
+        // anthropic ② 并入（overloaded_error/api_error）+ openclaw
+        // OVERLOADED：
+        ("overloaded", LlmErrorClass::Overloaded),
+        ("overloaded_error", LlmErrorClass::Overloaded),
+        ("api_error", LlmErrorClass::Overloaded),
+        // openclaw FAILOVER_ERROR_TYPE_REASONS：
+        ("server_error", LlmErrorClass::Overloaded),
+        ("upstream_error", LlmErrorClass::Overloaded),
+        // codex 流内：
+        ("policy_capacity_unavailable", LlmErrorClass::Overloaded),
+        // —— 瞬态：超时 ——
+        ("timeout_error", LlmErrorClass::Timeout),
+        // openclaw FAILOVER_CODE_REASONS 传输 errno 族：
+        ("ehostdown", LlmErrorClass::Timeout),
+        ("enetreset", LlmErrorClass::Timeout),
+        ("err_stream_premature_close", LlmErrorClass::Timeout),
+    ];
+    for (key, class) in TABLE {
+        if normalized == *key {
+            return Some(*class);
+        }
+    }
+    // 受控后缀族（归一后判定）：codex 同构码变体收敛——
+    // api_key/project/organization_spend_limit_exceeded 三变体一条；
+    // content/misalignment_policy_violation 等 `_policy_violation` 结尾族
+    // （cyber_policy/bio_policy 裸码不带后缀，已在上方精确表）。
+    if normalized.ends_with("spend_limit_exceeded") {
+        return Some(LlmErrorClass::Billing);
+    }
+    if normalized.ends_with("_policy_violation") {
+        return Some(LlmErrorClass::Forbidden);
+    }
+    None
+}
+
 /// Classify by message pattern matching.
 fn class_by_message(msg: &str) -> Option<LlmErrorClass> {
     // 传输层连接失败（诚实化配套）：`failover::transport_error`
@@ -133,7 +276,57 @@ fn class_by_message(msg: &str) -> Option<LlmErrorClass> {
     if matches_format(msg) {
         return Some(LlmErrorClass::Format);
     }
+    // —— 瞬态流断/传输断连措辞族（2026-11-24 黑名单架构 C2）**置于全部
+    // 终态词之后**晚判：terminal specificity wins（三方调查同纪律）——
+    // 混合文案（如 "stream interrupted: invalid request format"）终态词
+    // 优先，避免把终态错误错当瞬态反复重试烧预算；纯传输措辞（前序全
+    // 不命中）落到此处归 Timeout。本族只服务「归对桶」（瞬态快速重试
+    // vs 限流退避梯子的分流），不再决定「能否自愈」（那归 C1 黑名单
+    // 前缀短路，入口层先于一切）。
+    if matches_transient_stream_wording(msg) {
+        return Some(LlmErrorClass::Timeout);
+    }
     None
+}
+
+/// 瞬态流断/传输断连措辞族（openclaw TRANSIENT_RETRY_EVIDENCE_RE /
+/// message-patterns + gemini-cli RETRYABLE_NETWORK_CODES + 本仓现网事故串）。
+/// 全部为高特异性短语，contains 匹配安全。**刻意不加**（防误报，openclaw
+/// 锚定纪律）：裸 `interrupted`（取消语义 "request interrupted by user"
+/// 误伤）；裸 `terminated`（openclaw 只收 ^terminated$ 锚定形态，
+/// "process terminated with exit 1" 是进程终局非传输瞬态）；裸 5xx 数字
+/// （词边界锚既有纪律）。
+fn matches_transient_stream_wording(msg: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        // 真实事故串（codex 中转礼貌报错的应用层事件形态）——与下一条
+        // 是不同子串（was 之差），两条都要：
+        "stream was interrupted",
+        // 本仓 StreamInterrupted 同族措辞（loop 瞬态词表对称补齐）：
+        "stream interrupted",
+        // openclaw message-patterns 断流措辞：
+        "stream terminated",
+        "stream ended without",
+        "other side closed",
+        "socket hang up",
+        // openclaw 传输断连措辞（loop 瞬态词表既有词，本表对称补齐）：
+        "connection lost",
+        "connection reset",
+        "reset by peer",
+        "broken pipe",
+        // 服务端明示可重试（openclaw 瞬态证据措辞）：
+        "you can retry your request",
+        // 真机实证（GLM anthropic lane 间歇 500 原文「网络错误，请稍后
+        // 重试」的文案兜底臂——状态码缺失形态）：
+        "请稍后重试",
+        // gemini-cli RETRYABLE_NETWORK_CODES（node 系代理透传的 errno 码，
+        // classify_llm_error 入口已 to_lowercase）：
+        "econnreset",
+        "etimedout",
+        "econnrefused",
+        "econnaborted",
+        "epipe",
+    ];
+    contains_any(msg, PATTERNS)
 }
 
 fn matches_rate_limit(msg: &str) -> bool {

@@ -220,6 +220,12 @@ export const useChatStore = defineStore('chat', () => {
   // /build slash 或 chat.set_mode）实时刷新。注意后端模式是 loop 级全局态
   // （非 per-session），徽标只做呈现。
   const agentMode = ref<'build' | 'plan'>('build')
+  // 发送三态（2026-11-24 发送方式三键迁移资源窗）：'now'=立即（默认）/
+  // 'steer'=插队（发送补 `!` 前缀）/'queue'=排队（剥 `!` 标记，本轮结束后
+  // 执行）。状态真值从 ChatPanel 本地 ref 迁入 store——资源窗「发送方式」
+  // 卡与输入框旁小徽标共享同一份（任一侧切换即时互见）。跨会话粘滞用户
+  // 偏好，**不被 reset() 清**（会话切换保持，与迁移前本地 ref 存活期一致）。
+  const sendMode = ref<'now' | 'steer' | 'queue'>('now')
 
   // B2（2026-09-22 聊天切会话竞态）：在飞 turn 登记——**不被 reset() 清掉**
   // （跨会话切换存活）。发送时 set，assistant/error 帧 / sync 拉到回复 /
@@ -856,6 +862,7 @@ export const useChatStore = defineStore('chat', () => {
     liveThinking,
     workRestoring,
     agentMode,
+    sendMode,
     commandDraft,
     inflightTurns,
     addMessage,

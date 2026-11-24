@@ -644,18 +644,40 @@ fn forbidden_display_reflattens_to_forbidden_via_both_anchors() {
 
 #[test]
 fn test_classify_message_error_unclassifiable_falls_back_unknown() {
-    // 分类不出维持 Unknown（不可重试兜底语义不变；原文案随 message 保留）。
+    // 黑名单架构（2026-11-24 C1）：未收录文案 → "stream failure (model X):"
+    // 前缀化 Unknown **可重试**（codex 官方 parse_failed_response 同语义
+    // ——未识别默认可重试；白名单「未识别=不可重试」永远有词表漏网）。
     let msg = "totally novel failure mode";
     let e = super::classify_message_error("codex-cli", "m", msg);
-    match e {
-        FailoverError::Unknown { ref message, .. } => assert_eq!(message, msg),
-        other => panic!("未收录文案应维持 Unknown，实际 {other:?}"),
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(
+                message, "stream failure (model m): totally novel failure mode",
+                "未收录文案必须带流内失败前缀: {message:?}"
+            );
+        }
+        other => panic!("未收录文案应落前缀化 Unknown，实际 {other:?}"),
+    }
+    assert!(e.is_retriable(), "黑名单翻转：未识别默认可重试");
+
+    // 真实事故串形态（一词之差漏网实证）：现网
+    // "Upstream response stream was interrupted" 同样落前缀化可重试。
+    let e = super::classify_message_error(
+        "codex",
+        "gpt-5.6-sol",
+        "Upstream response stream was interrupted",
+    );
+    assert!(e.is_retriable(), "事故串必须可自愈: {e:?}");
+
+    // Format 类文案 = 已识别终态，维持无前缀不可重试（不翻转）。
+    let e = super::classify_message_error("claude-cli", "m", "invalid request format: x");
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(message, "invalid request format: x", "终态不前缀");
+        }
+        other => panic!("Format 文案应维持无前缀 Unknown，实际 {other:?}"),
     }
     assert!(!e.is_retriable());
-
-    // Format 类文案同兜底（与流内 lane 行为一致）。
-    let e = super::classify_message_error("claude-cli", "m", "invalid request format: x");
-    assert!(matches!(e, FailoverError::Unknown { .. }), "{e:?}");
 }
 
 // B29/D1（2026-11-06）回归锁：上下文溢出归 Unknown 携带原文（不新增
@@ -857,12 +879,363 @@ fn stream_error_payload_bare_event_whole_payload_probe() {
 
 #[test]
 fn stream_error_payload_unrecognized_falls_back_to_unknown() {
-    // 全无（无码/无收录 type/无 message）→ Unknown 携调用方现场描述。
+    // 黑名单架构（2026-11-24 C1）：全无（无码/无收录 type/无 message）→
+    // 前缀化 Unknown **可重试**，调用方现场描述随前缀保留。
     let payload = serde_json::json!({"error": {"whatever": 1}});
     let err = classify_stream_error_payload(&payload, "p", "m", "fb fallback".into());
     match &err {
-        FailoverError::Unknown { message, .. } => assert_eq!(message, "fb fallback"),
-        other => panic!("全无探测命中应落 Unknown 兜底，实际 {other:?}"),
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(
+                message, "stream failure (model m): fb fallback",
+                "④ 必须带流内失败前缀: {message:?}"
+            );
+        }
+        other => panic!("全无探测命中应落前缀化 Unknown 兜底，实际 {other:?}"),
     }
-    assert!(!err.is_retriable(), "Unknown 兜底不可重试（语义不变）");
+    assert!(err.is_retriable(), "黑名单翻转：未识别默认可重试");
+}
+
+// ==========================================================================
+// 黑名单架构语料库（2026-11-24 C1/C2/C3）
+// ------------------------------------------------------------------
+// 现网事故："Upstream response stream was interrupted"（codex 中转礼貌
+// 报错的应用层事件形态）——与 loop 瞬态词表 "stream interrupted" 一词
+// 之差漏网，Unknown 不可重试直接终局中断会话。本组钉死三面同判与终态
+// 保护。
+// ==========================================================================
+
+#[test]
+fn stream_failure_incident_string_end_to_end() {
+    // 真实事故串流内事件形态：C2 措辞族收录后 ③ 文案兜底直接归
+    // Timeout 变体（比前缀化 Unknown 更进一步——连 Unknown 都不落，
+    // 轮转/退避/观测三面同 HTTP 超时同判）。
+    let payload =
+        serde_json::json!({"error": {"message": "Upstream response stream was interrupted"}});
+    let err = classify_stream_error_payload(&payload, "codex", "gpt-5.6-sol", "fb".into());
+    match &err {
+        FailoverError::Timeout { provider, model } => {
+            assert_eq!(provider, "codex");
+            assert_eq!(model, "gpt-5.6-sol");
+        }
+        other => panic!("事故串应归 Timeout 变体，实际 {other:?}"),
+    }
+    assert!(err.is_retriable(), "事故串必须可自愈");
+    // Display 展平回灌 loop 侧分类器（string 通路）必须同判 Timeout。
+    assert_eq!(
+        nemesis_utils::llm_error_class::classify_llm_error(&err.to_string()),
+        Some(nemesis_utils::llm_error_class::LlmErrorClass::Timeout),
+        "Display 展平回灌必须仍判 Timeout: {}",
+        err
+    );
+}
+
+#[test]
+fn stream_failure_novel_wording_prefixed_unknown_retriable_via_display() {
+    // 全新未收录文案（词表永远可能漏网的形态）→ 前缀化 Unknown 可重试；
+    // Display 展平回灌 classify_llm_error 必须 hit C1 入口短路归 Timeout
+    // （三面同判：is_retriable / 入口短路 / loop 瞬态词表）。
+    let e = super::classify_message_error("codex", "m", "brand new upstream hiccup XYZ-42");
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(
+                message,
+                "stream failure (model m): brand new upstream hiccup XYZ-42"
+            );
+        }
+        other => panic!("未收录文案应落前缀化 Unknown，实际 {other:?}"),
+    }
+    assert!(e.is_retriable());
+    assert_eq!(
+        nemesis_utils::llm_error_class::classify_llm_error(&e.to_string()),
+        Some(nemesis_utils::llm_error_class::LlmErrorClass::Timeout),
+        "前缀化 Unknown Display 展平必须 hit 入口短路: {}",
+        e
+    );
+    // ④ 全无形态同判（fallback 文本随前缀保留）。
+    let payload = serde_json::json!({"error": {"details": {"code": "XX"}}});
+    let err = classify_stream_error_payload(&payload, "p", "m", "upstream SSE failed event".into());
+    assert!(err.is_retriable(), "④ 全无必须可重试: {err:?}");
+    assert_eq!(
+        nemesis_utils::llm_error_class::classify_llm_error(&err.to_string()),
+        Some(nemesis_utils::llm_error_class::LlmErrorClass::Timeout),
+    );
+}
+
+#[test]
+fn stream_failure_terminal_classes_stay_terminal() {
+    // 终态保护：已识别终态类一律不前缀、不可重试（黑名单只翻转未识别）。
+    // Auth 文案：CLI lane / 流内 ③ 同判。
+    let e = super::classify_message_error("codex-cli", "m", "invalid api key provided");
+    assert!(matches!(e, FailoverError::Auth { .. }), "{e:?}");
+    assert!(!e.is_retriable());
+    // 流内 ② anthropic type：authentication_error → Auth{status:0} 不变
+    // （Auth Display 不携带 message，原文案只进日志不进错误值——② 命中
+    // 即 return，④ 兜底收不到）。
+    let payload =
+        serde_json::json!({"error": {"type": "authentication_error", "message": "bad key"}});
+    let err = classify_stream_error_payload(&payload, "anthropic", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::Auth { status: 0, .. }),
+        "② 终态映射不前缀不翻面: {err:?}"
+    );
+    assert!(!err.is_retriable());
+    // ContextOverflow：Unknown 原样（原文案保留，loop 靠分类结果路由
+    // 响应式压缩——前缀会破坏 classify_llm_error 对原文案的命中）。
+    let e = super::classify_message_error(
+        "anthropic",
+        "m",
+        "prompt is too long: 250000 tokens > 200000 maximum",
+    );
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert!(
+                !message.starts_with("stream failure"),
+                "溢出终态不得带流内失败前缀: {message:?}"
+            );
+            assert!(message.contains("prompt is too long"), "原文案保留");
+        }
+        other => panic!("溢出应维持无前缀 Unknown，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
+}
+
+#[test]
+fn stream_failure_prefix_short_circuit_beats_excerpt_pollution() {
+    // 污染防御：④ fallback excerpt 携带上游 JSON 字段（可能含 auth/
+    // 限流措辞或数字），C1 入口短路必须先于一切词表——前缀内文本
+    // 不参与分类（黑名单语义：未识别默认可重试，单一归宿 Timeout）。
+    for excerpt in [
+        "upstream SSE failed event: {\"details\":{\"reason\":\"expired token\"}}",
+        "upstream SSE failed event: {\"remaining\":429,\"plan\":\"free\"}",
+        "upstream SSE failed event: {\"status_code\":401}",
+    ] {
+        let e = FailoverError::Unknown {
+            provider: "codex".to_string(),
+            message: format!("stream failure (model m): {excerpt}"),
+        };
+        assert_eq!(
+            nemesis_utils::llm_error_class::classify_llm_error(&e.to_string()),
+            Some(nemesis_utils::llm_error_class::LlmErrorClass::Timeout),
+            "excerpt 污染不得改判: {}",
+            e
+        );
+    }
+    // 对照：无前缀的同类 excerpt 文本照常被词表捕获（Auth/RateLimit）——
+    // 短路只锚自产前缀，不吞其他错误的正常分类。
+    assert_eq!(
+        nemesis_utils::llm_error_class::classify_llm_error(
+            "unknown error from provider codex: {\"reason\":\"expired token\"}"
+        ),
+        Some(nemesis_utils::llm_error_class::LlmErrorClass::Auth),
+    );
+}
+
+// ==========================================================================
+// 错误码处理一次性补全（2026-11-24）：class_by_code 流内 ①b / HTTP
+// classify_http_error_body 码感知。三方调查合并语义（codex 终态黑名单 /
+// openclaw 429 先查 billing / openai 官方 type）。
+// ==========================================================================
+
+/// 流内 ②：字符串语义码 / type 探测（原 anthropic 私有枚举并入码表）。
+#[test]
+fn stream_payload_string_code_probe() {
+    // message 缺失只剩码——旧路径落 ④ 前缀化可重试（终态错误进瞬态桶
+    // 烧预算），现码直判 Billing 终态：
+    let payload = serde_json::json!({"error": {"code": "insufficient_quota"}});
+    let e = classify_stream_error_payload(&payload, "openai", "gpt-x", "fb".into());
+    match &e {
+        FailoverError::Billing { .. } => {}
+        other => panic!("insufficient_quota 码应归 Billing，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable(), "配额耗尽终态不可重试");
+
+    // openai 家族 type（openclaw FAILOVER_ERROR_TYPE_REASONS 同判）：
+    let payload = serde_json::json!({"error": {
+        "type": "invalid_request_error", "message": "missing required param"
+    }});
+    let e = classify_stream_error_payload(&payload, "openai", "gpt-x", "fb".into());
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(
+                message, "missing required param",
+                "Format 归宿 Unknown 携原文案"
+            );
+        }
+        other => panic!("invalid_request_error 应归 Unknown 终态，实际 {other:?}"),
+    }
+    assert!(
+        !e.is_retriable(),
+        "请求格式终态不可重试（旧路径词表 miss 落 ④ 可重试）"
+    );
+
+    // openai server_error → Overloaded 可重试（流内无状态码 → status 0）：
+    let payload = serde_json::json!({"error": {"type": "server_error", "message": "boom"}});
+    let e = classify_stream_error_payload(&payload, "openai", "gpt-x", "fb".into());
+    match e {
+        FailoverError::Overloaded { status, .. } => {
+            assert_eq!(status, 0, "SSE error 事件无 HTTP 状态码 → 0");
+        }
+        other => panic!("server_error 应归 Overloaded{{status:0}}，实际 {other:?}"),
+    }
+
+    // codex 流内码（parse_failed_response 同族）：
+    let payload =
+        serde_json::json!({"error": {"code": "rate_limit_exceeded", "message": "slow down"}});
+    let e = classify_stream_error_payload(&payload, "codex", "m", "fb".into());
+    assert!(matches!(e, FailoverError::RateLimit { .. }), "{e:?}");
+
+    // ContextOverflow 码 → Unknown 终态 + 分类器回灌压缩环路由：
+    let payload = serde_json::json!({"error": {"code": "context_length_exceeded"}});
+    let e = classify_stream_error_payload(&payload, "openai", "m", "fb".into());
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(
+                nemesis_utils::llm_error_class::classify_llm_error(message),
+                Some(nemesis_utils::llm_error_class::LlmErrorClass::ContextOverflow),
+                "码形态 message 应命中 B29 文案族 → loop 压缩环: {message:?}"
+            );
+        }
+        other => panic!("context_length_exceeded 应归 Unknown，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
+}
+
+/// 码先于文案：`insufficient_quota` 的 openai 官方文案被限流词表
+/// "exceeded your current quota" 覆盖——码探测在前，不得被吸进 RateLimit。
+#[test]
+fn stream_payload_code_beats_rate_limit_wording() {
+    let payload = serde_json::json!({"error": {
+        "code": "insufficient_quota",
+        "type": "insufficient_quota",
+        "message": "You exceeded your current quota, please check your plan and billing details."
+    }});
+    let e = classify_stream_error_payload(&payload, "openai", "gpt-x", "fb".into());
+    match e {
+        FailoverError::Billing { .. } => {}
+        other => panic!("码语义必须先于文案词表（Billing 非 RateLimit），实际 {other:?}"),
+    }
+}
+
+/// HTTP 码感知：核心事故场景——OpenAI quota 错误 = HTTP 429 +
+/// `error.type="insufficient_quota"`（官方语义=配额耗尽重试无意义）。
+/// 旧路径 429 臂归 RateLimit 可重试，终态错误在状态码掩护下无限重试。
+#[test]
+fn http_body_429_with_insufficient_quota_maps_billing_terminal() {
+    let body = r#"{"error": {"message": "You exceeded your current quota, please check your plan and billing details.", "type": "insufficient_quota", "code": "insufficient_quota"}}"#;
+    let e = FailoverError::classify_http_error_body("openai", "gpt-x", 429, body, None);
+    match e {
+        FailoverError::Billing { .. } => {}
+        other => panic!("429+insufficient_quota 应归 Billing 终态，实际 {other:?}"),
+    }
+}
+
+/// HTTP 码感知：400 + context_length_exceeded → Unknown "status 400: "
+/// 形态（loop is_context_error 词表消费面）+ 分类器 ContextOverflow。
+#[test]
+fn http_body_400_context_length_maps_overflow_with_status_prefix() {
+    let body = r#"{"error": {"code": "context_length_exceeded", "message": "maximum context length is 8192 tokens"}}"#;
+    let e = FailoverError::classify_http_error_body("openai", "m", 400, body, None);
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.starts_with("status 400: "), "{message:?}");
+            assert_eq!(
+                nemesis_utils::llm_error_class::classify_llm_error(message),
+                Some(nemesis_utils::llm_error_class::LlmErrorClass::ContextOverflow),
+            );
+        }
+        other => panic!("400+context_length_exceeded 应归 Unknown 带 status 前缀，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
+}
+
+/// HTTP 码感知：403 + insufficient_balance（DeepSeek 实测形态）→
+/// Billing（终态归因修正——旧路径归 Forbidden，处置同门但归因失真）。
+#[test]
+fn http_body_403_insufficient_balance_maps_billing() {
+    let body = r#"{"error": {"code": "insufficient_balance", "message": "Insufficient Balance"}}"#;
+    let e = FailoverError::classify_http_error_body("deepseek", "m", 403, body, None);
+    match e {
+        FailoverError::Billing { .. } => {}
+        other => panic!("403+insufficient_balance 应归 Billing，实际 {other:?}"),
+    }
+}
+
+/// HTTP 码感知零回退：无码 body 走 from_status 现状；非 JSON body 同。
+#[test]
+fn http_body_without_code_falls_back_from_status() {
+    // 无字符串码（message 文案形态）→ from_status：429 → RateLimit 可重试。
+    let body = r#"{"error": {"message": "too many requests, slow down"}}"#;
+    let e = FailoverError::classify_http_error_body("openai", "m", 429, body, Some(30));
+    match e {
+        FailoverError::RateLimit { retry_after, .. } => {
+            assert_eq!(retry_after, Some(30), "retry_after 头语义保持");
+        }
+        other => panic!("429 无码应维持 RateLimit，实际 {other:?}"),
+    }
+    // 非 JSON body → from_status 现状（Overloaded 臂）。
+    let e = FailoverError::classify_http_error_body(
+        "openai",
+        "m",
+        502,
+        "<html>bad gateway</html>",
+        None,
+    );
+    match &e {
+        FailoverError::Overloaded { status, .. } => assert_eq!(*status, 502),
+        other => panic!("502 非 JSON body 应维持 Overloaded，实际 {other:?}"),
+    }
+    // 418 未收录状态码 + 未收录码 → from_status None 臂 Unknown。
+    let e = FailoverError::classify_http_error_body("openai", "m", 418, "i am a teapot", None);
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.starts_with("status 418: "), "{message:?}");
+        }
+        other => panic!("418 应维持 Unknown，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
+}
+
+/// 保守单向闸：码给出的瞬态不推翻状态码的异类终态默认——
+/// 401 + "rate_limit_exceeded" 荒谬载荷保 Auth（终态判定不被可疑
+/// 载荷翻转）；状态码未收录时码瞬态照常采用。
+#[test]
+fn http_body_transient_code_never_overrides_terminal_status() {
+    let body = r#"{"error": {"code": "rate_limit_exceeded", "message": "throttled"}}"#;
+    // 401 Auth 终态默认不被瞬态码推翻：
+    let e = FailoverError::classify_http_error_body("openai", "m", 401, body, None);
+    assert!(matches!(e, FailoverError::Auth { .. }), "{e:?}");
+    // 400 Format 终态默认不被瞬态码推翻（400+rate_limit 码形态优先保
+    // Format——400 本身就是请求被拒，码疑似错标）：
+    let e = FailoverError::classify_http_error_body("openai", "m", 400, body, None);
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.starts_with("status 400: "), "{message:?}");
+        }
+        other => panic!("400+瞬态码应维持 Format 归宿 Unknown，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
+    // 418 未收录 → 码瞬态采用（状态码默认缺席，码是唯一信号）：
+    let e = FailoverError::classify_http_error_body("openai", "m", 418, body, None);
+    assert!(matches!(e, FailoverError::RateLimit { .. }), "{e:?}");
+    // 429 同类（RateLimit==RateLimit）→ 码采用无行为差（retry_after 传递）：
+    let e = FailoverError::classify_http_error_body("openai", "m", 429, body, Some(7));
+    match e {
+        FailoverError::RateLimit { retry_after, .. } => assert_eq!(retry_after, Some(7)),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// HTTP 码感知：404 + model_not_found → Unknown 终态（Format 归宿，
+/// codex/openclaw 处置同门——不轮转同模型）。
+#[test]
+fn http_body_404_model_not_found_maps_terminal_unknown() {
+    let body = r#"{"error": {"code": "model_not_found", "message": "The model 'gpt-obsolete' does not exist"}}"#;
+    let e = FailoverError::classify_http_error_body("openai", "gpt-obsolete", 404, body, None);
+    match &e {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.contains("does not exist"), "{message:?}");
+        }
+        other => panic!("404+model_not_found 应归 Unknown 终态，实际 {other:?}"),
+    }
+    assert!(!e.is_retriable());
 }

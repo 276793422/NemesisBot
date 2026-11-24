@@ -15,6 +15,26 @@ use std::sync::Arc;
 /// （tracing 兜底，急停动作本身不受影响——审计是记录面不是执行闸）。
 pub type EstopAuditHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
+/// 用户行为学习采集（2026-11-24 批 C ⑤）：estop 触发/释放落
+/// signals.jsonl 交互强信号行（`{"ts_ms","kind":"estop","action"}`）。
+/// **只加观测行，急停语义零改动**；estop 是比审批更强的负向交互信号，
+/// wsapi/cli 两入口各落一行。forge feature 关闭 / workspace 未配置 =
+/// 不落（旁路面诚实降级）。失败静默（append_signal 侧同纪律）。
+#[cfg(feature = "forge")]
+fn record_estop_signal(workspace: Option<&str>, action: &str) {
+    let Some(ws) = workspace else {
+        return;
+    };
+    nemesis_forge::userprofile::collection::append_signal(
+        std::path::Path::new(ws),
+        &serde_json::json!({
+            "ts_ms": chrono::Utc::now().timestamp_millis(),
+            "kind": "estop",
+            "action": action,
+        }),
+    );
+}
+
 pub struct EstopHandler;
 
 #[async_trait::async_trait]
@@ -40,6 +60,8 @@ impl ModuleHandler for EstopHandler {
                 if let Some(hook) = ctx.state.estop_audit.as_ref() {
                     hook("engage", "dashboard");
                 }
+                #[cfg(feature = "forge")]
+                record_estop_signal(ctx.state.workspace.as_deref(), "engage");
                 tracing::info!("[Web/WSAPI] E-stop engaged");
                 Ok(Some(serde_json::json!({ "engaged": true })))
             }
@@ -49,6 +71,8 @@ impl ModuleHandler for EstopHandler {
                 if let Some(hook) = ctx.state.estop_audit.as_ref() {
                     hook("release", "dashboard");
                 }
+                #[cfg(feature = "forge")]
+                record_estop_signal(ctx.state.workspace.as_deref(), "release");
                 tracing::info!("[Web/WSAPI] E-stop released");
                 Ok(Some(serde_json::json!({ "engaged": false })))
             }

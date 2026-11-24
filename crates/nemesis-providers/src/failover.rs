@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use nemesis_utils::llm_error_class::LlmErrorClass;
+
 /// StreamInterrupted Display 的 partial 分隔符
 /// ——Display 字面量引用本常量（thiserror format 内联展开）。⚠ 分层约束：
 /// `nemesis-providers` 只是 agent 的 dev-dependency，agent 侧解析器持**同文
@@ -114,12 +116,22 @@ impl FailoverError {
             // 诚实化若不补这条，主端点连不上就不再故障转移 = 回归）。
             // 同门：成功体超帽（BUG-20261115-024，`body_cap`）落 Unknown
             // 但带 "response body exceeds limit" 前缀——端点失控/恶意是
-            // 端点问题，换下一家。其余 Unknown（400/404 等应用层错误）
-            // 维持不可重试——500 过载族自 起由 `from_status` 直接归
+            // 端点问题，换下一家。
+            // 黑名单架构（2026-11-24 C1）：流内失败事件未收录文案 /
+            // 连 message 都没有 → 前缀化 Unknown（`classify_message_error`
+            // None 臂 / `classify_stream_error_payload` ④）——未识别默认
+            // 可重试（codex 官方 parse_failed_response 同语义）。白名单
+            // 架构（未识别=不可重试）永远有词表漏网：现网事故
+            // "Upstream response stream was interrupted" 与词表
+            // "stream interrupted" 一词之差（was），礼貌报错的应用层事件
+            // 反而比粗暴断连处置更差（终局中断 vs 瞬态自愈）。
+            // 其余 Unknown（400/404 等应用层错误、Format/ContextOverflow
+            // 终态）维持不可重试——500 过载族自 起由 `from_status` 直接归
             // Overloaded，不再落 Unknown。
             FailoverError::Unknown { message, .. } => {
                 message.starts_with("connect error")
                     || message.starts_with("response body exceeds limit")
+                    || message.starts_with("stream failure")
             }
             _ => false,
         }
@@ -200,59 +212,161 @@ impl FailoverError {
         retry_after: Option<u64>,
     ) -> Self {
         use nemesis_utils::llm_error_class::{LlmErrorClass, class_by_status};
-        match class_by_status(status) {
-            Some(LlmErrorClass::Auth) => FailoverError::Auth {
+        let Some(class) = class_by_status(status) else {
+            // 未收录状态码：保持 Unknown 原文案形态（不可重试），
+            // "status N: {body}" 是 loop 侧 is_context_error 词表的消费面。
+            return FailoverError::Unknown {
+                provider: provider.to_string(),
+                message: format!(
+                    "status {}: {}",
+                    status,
+                    body.chars().take(200).collect::<String>()
+                ),
+            };
+        };
+        // message 按类预构造（既有约定：Forbidden 600——用户终局文案里唯一
+        // 的真实拒绝原因，Daybreak flag 原文实测超 200；Format/
+        // ContextOverflow 带 "status N: " 前缀 + 200 摘要——前缀是 loop 侧
+        // is_context_error 词表的消费面形态，不能丢）。
+        let message = match class {
+            LlmErrorClass::Forbidden => body.chars().take(600).collect::<String>(),
+            LlmErrorClass::Format | LlmErrorClass::ContextOverflow => format!(
+                "status {}: {}",
+                status,
+                body.chars().take(200).collect::<String>()
+            ),
+            _ => String::new(),
+        };
+        Self::from_class(provider, model, class, status, &message, retry_after)
+    }
+
+    /// [`LlmErrorClass`] → 变体构造**单一转换点**（错误码补全批 2026-11-24）：
+    /// `from_status` / `classify_http_error_body` / 流内
+    /// `classify_stream_error_payload` ② 三路共用。
+    ///
+    /// `message`：Forbidden / Unknown 形态（Format·ContextOverflow）携带的
+    /// 上游原文——**截断由调用方按类负责**（Forbidden 600 / Unknown 200 是
+    /// `from_status` 既有约定；流内 ② 传原文案不截）。
+    /// Format / ContextOverflow → `Unknown`（不新增变体，B29 同约定：
+    /// 换 provider 大概率同问题不轮转；ContextOverflow 由 loop 侧按文案族
+    /// 路由响应式压缩）。Overloaded 带真实上游状态码（502/503 归因盲点
+    /// 修复的既有语义；Display "(status: NNN)" 形态可被
+    /// `llm_error_class::extract_http_status` 还原）。
+    fn from_class(
+        provider: &str,
+        model: &str,
+        class: LlmErrorClass,
+        status: u16,
+        message: &str,
+        retry_after: Option<u64>,
+    ) -> Self {
+        match class {
+            LlmErrorClass::Auth => FailoverError::Auth {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 status,
             },
-            // 403（BUG-20261123-012）：Forbidden 富化，body 摘要 600 字符
-            // （其他臂维持 200——400 Format body 只服务词表匹配，403 body
-            // 是用户终局文案里唯一的真实拒绝原因，Daybreak flag 原文实测
-            // 超 200 字符）。
-            Some(LlmErrorClass::Forbidden) => FailoverError::Forbidden {
+            LlmErrorClass::Forbidden => FailoverError::Forbidden {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 status,
-                message: body.chars().take(600).collect::<String>(),
+                message: message.to_string(),
             },
-            Some(LlmErrorClass::RateLimit) => FailoverError::RateLimit {
+            LlmErrorClass::RateLimit => FailoverError::RateLimit {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 retry_after,
             },
-            Some(LlmErrorClass::Billing) => FailoverError::Billing {
+            LlmErrorClass::Billing => FailoverError::Billing {
                 provider: provider.to_string(),
             },
-            Some(LlmErrorClass::Timeout) => FailoverError::Timeout {
+            LlmErrorClass::Timeout => FailoverError::Timeout {
                 provider: provider.to_string(),
                 model: model.to_string(),
             },
-            Some(LlmErrorClass::Overloaded) => FailoverError::Overloaded {
+            LlmErrorClass::Overloaded => FailoverError::Overloaded {
                 provider: provider.to_string(),
-                // 真实上游状态码随错误携带：此前只带 provider，
-                // 502（中转转发失败）与 503 分不清，归因盲点。Display 的
-                // "(status: NNN)" 形态可被 llm_error_class::extract_http_status
-                // 还原——展平文本回灌分类器时不丢状态码。
                 status,
             },
-            // 400（真相源归 Format）与未收录状态码：保持 Unknown 原文案
-            // 形态——两类均不可重试（无行为差异），"status N: {body}" 是
-            // loop 侧 is_context_error 词表的消费面，不做无行为收益的
-            // 变体迁移。ContextOverflow 同臂（真相源状态表恒不产出，编译
-            // 期穷尽要求在场；若未来状态表收录 overflow 码，body 仍随
-            // message 保留，B29 文案族对 message 匹配照常命中，两条路同判）。
-            Some(LlmErrorClass::Format | LlmErrorClass::ContextOverflow) | None => {
-                FailoverError::Unknown {
-                    provider: provider.to_string(),
-                    message: format!(
-                        "status {}: {}",
-                        status,
-                        body.chars().take(200).collect::<String>()
-                    ),
-                }
-            }
+            LlmErrorClass::Format | LlmErrorClass::ContextOverflow => FailoverError::Unknown {
+                provider: provider.to_string(),
+                message: message.to_string(),
+            },
         }
+    }
+
+    /// HTTP 非 stream 错误体 → `FailoverError`（**码感知**版，错误码补全批
+    /// 2026-11-24）。全 lane 的 `status >= 400` 路径统一入口。
+    ///
+    /// 探测序：
+    /// ① body JSON 解析失败 / 无字符串码或 type → [`FailoverError::from_status`]
+    ///    现状（状态码定类，零回退）。
+    /// ② error 子对象（`/error` 对象，否则整体）的 `code` / `type` /
+    ///    `status_code` 字符串值 → [`nemesis_utils::llm_error_class::class_by_code`]
+    ///    命中 → **保守单向闸**后采纳：
+    ///    - 码给出的**终态**（Auth/Forbidden/Billing/Format/ContextOverflow）
+    ///      恒覆盖状态码粗粒度默认——openclaw
+    ///      `classifyFailoverClassificationFromHttpStatus` 同纪律。核心
+    ///      事故场景：OpenAI quota 错误 = HTTP 429 +
+    ///      `error.type="insufficient_quota"`（官方语义=配额耗尽，重试
+    ///      无意义）——旧路径 429 臂归 RateLimit 可重试，终态错误在状态码
+    ///      掩护下无限重试烧预算。
+    ///    - 码给出的**瞬态**（RateLimit/Overloaded/Timeout）不推翻状态码
+    ///      的异类终态默认（401 + `"rate_limit_exceeded"` 荒谬形态保
+    ///      Auth——终态判定不被可疑载荷翻转）；仅当状态码默认同类或未收录
+    ///      时采用。
+    pub fn classify_http_error_body(
+        provider: &str,
+        model: &str,
+        status: u16,
+        body: &str,
+        retry_after: Option<u64>,
+    ) -> Self {
+        use nemesis_utils::llm_error_class::{LlmErrorClass, class_by_code, class_by_status};
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+            return Self::from_status(provider, model, status, body, retry_after);
+        };
+        // error 子对象定位：openai 家族 /error；网关直透形态整体即错误对象。
+        let err_obj = data.get("error").filter(|v| v.is_object()).unwrap_or(&data);
+        let Some(code_class) = ["code", "type", "status_code"].iter().find_map(|key| {
+            err_obj
+                .get(*key)
+                .and_then(|v| v.as_str())
+                .and_then(class_by_code)
+        }) else {
+            return Self::from_status(provider, model, status, body, retry_after);
+        };
+        let status_class = class_by_status(status);
+        let code_terminal = matches!(
+            code_class,
+            LlmErrorClass::Auth
+                | LlmErrorClass::Forbidden
+                | LlmErrorClass::Billing
+                | LlmErrorClass::Format
+                | LlmErrorClass::ContextOverflow
+        );
+        let adopt = code_terminal || !matches!(status_class, Some(sc) if sc != code_class);
+        if !adopt {
+            return Self::from_status(provider, model, status, body, retry_after);
+        }
+        // message：与 from_status 同形态约定——Forbidden 600；Format/
+        // ContextOverflow 带 "status N: " 前缀（loop 词表消费面形态）+
+        // 200 摘要；err_obj.message 优先（openai body 的 message 是人读
+        // 文案），缺失回落整体 body。
+        let raw = err_obj
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or(body);
+        let message = match code_class {
+            LlmErrorClass::Forbidden => raw.chars().take(600).collect::<String>(),
+            LlmErrorClass::Format | LlmErrorClass::ContextOverflow => format!(
+                "status {}: {}",
+                status,
+                raw.chars().take(200).collect::<String>()
+            ),
+            _ => String::new(),
+        };
+        Self::from_class(provider, model, code_class, status, &message, retry_after)
     }
 }
 
@@ -331,8 +445,11 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 /// 的 stderr/事件文案此前恒落 `Unknown`（不带 "connect error" 前缀 = 不可
 /// 重试）——上游显式瞬态文案（"quota exceeded"/"overloaded"）反而放弃
 /// fallback 轮转，比断流（Timeout 可重试）处置更差。
-/// 分类命中 → 对应变体（轮转语义与同类 HTTP 状态码同判）；Format / 未收录
-/// → `Unknown`（原文案随 message 保留，不可重试兜底语义不变）。
+/// 分类命中 → 对应变体（轮转语义与同类 HTTP 状态码同判）；Format →
+/// `Unknown` 终态（原文案随 message 保留）；**未收录文案 → "stream
+/// failure (model X):" 前缀 Unknown 可重试**（黑名单架构 2026-11-24 C1：
+/// 未识别默认可重试，codex 官方 parse_failed_response 同语义——白名单
+/// 永远有词表漏网，一词之差即终局中断会话）。
 pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> FailoverError {
     use nemesis_utils::llm_error_class::{LlmErrorClass, classify_llm_error};
     match classify_llm_error(msg) {
@@ -371,9 +488,24 @@ pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> Failove
             provider: provider.to_string(),
             message: msg.to_string(),
         },
-        Some(LlmErrorClass::Format) | None => FailoverError::Unknown {
+        // Format = 终态（协议/请求格式不兼容，重试无意义）——原文案随
+        // message 保留，不带前缀（黑名单语义：已识别终态类不翻转）。
+        Some(LlmErrorClass::Format) => FailoverError::Unknown {
             provider: provider.to_string(),
             message: msg.to_string(),
+        },
+        // 黑名单架构（2026-11-24 C1）：未收录文案 = 流内失败默认可重试
+        // （codex 官方 parse_failed_response 同语义——未识别 code 默认
+        // ApiError::Retryable）。包 "stream failure (model X):" 前缀落
+        // Unknown：is_retriable 前缀门放行 fallback 轮转 +
+        // classify_llm_error 入口短路归 Timeout 类 + loop 瞬态词表
+        // 三面同判。词表此后只服务「更快归对桶」（退避策略精细度），
+        // 不再决定「能否自愈」。现网事故串
+        // "Upstream response stream was interrupted"（与词表
+        // "stream interrupted" 一词之差）由此整体翻转可自愈。
+        None => FailoverError::Unknown {
+            provider: provider.to_string(),
+            message: format!("stream failure (model {model}): {msg}"),
         },
     }
 }
@@ -386,18 +518,23 @@ pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> Failove
 /// anthropic lane 私有 type 映射表；codex lane `SseOutcome::Failed` 只携文案。
 /// 本函数单点收敛，探测序：
 ///
-/// ① **码探测**（治本核心）：error 子对象（openai 家族 `/error`、codex
+/// ① **数字码探测**（治本核心）：error 子对象（openai 家族 `/error`、codex
 ///    `response.failed` 的 `/response/error`；两者皆无则整个 payload——
 ///    codex 裸 `error` 事件形态）上的 `code` / `status` / `status_code`
-///    三键，数字或纯数字字符串；0 / 非法 / 真相源不收录的码跳过（字符串
-///    语义码如 `"insufficient_quota"` 不是码——语义在 message 里，落 ③）。
+///    三键，数字或纯数字字符串；0 / 非法 / 真相源不收录的码跳过。
 ///    命中 → [`FailoverError::from_status`]（`class_by_status` 单一真相源）。
-/// ② **anthropic 官方错误 type 枚举**：原 anthropic lane 私有表并入单点。
-///    未收录 type **不判 Format**——openai 家族也带 type 字段（如
-///    `"invalid_request_error"`），同一探测序两家族共用，语义交 ③ 定夺。
+/// ② **字符串语义码 / type 探测**（错误码补全批 2026-11-24，原 anthropic
+///    lane 私有六枚举表并入 [`nemesis_utils::llm_error_class::class_by_code`]
+///    单一真相源）：同三键的字符串值（openai `"insufficient_quota"` /
+///    `"invalid_request_error"`、codex 终态黑名单族、openclaw 跨 provider
+///    码表、anthropic 枚举）→ [`Self::from_class`]。**先于 ③ 文案**——码的
+///    特异性高于自由文案，`insufficient_quota` 的官方文案
+///    "You exceeded your current quota" 不得被限流词表错吸进瞬态桶；
+///    message 缺失只剩码的形态不再落 ④ 可重试。
 /// ③ **message 文案**：[`classify_message_error`]（`llm_error_class` 同判）；
 ///    `error` 本身是字符串的形态（部分网关）同样收录。
-/// ④ 全无 → `Unknown{fallback_msg}`（调用方给的现场描述）。
+/// ④ 全无 → `Unknown{"stream failure (model X): " + fallback_msg}`（黑名单
+/// 架构 C1：未识别默认可重试，调用方现场描述随前缀保留）。
 pub fn classify_stream_error_payload(
     event: &serde_json::Value,
     provider: &str,
@@ -433,51 +570,33 @@ pub fn classify_stream_error_payload(
         }
     }
 
-    // ② anthropic 官方错误 type 枚举（原 lane 私有表并入单点）。
-    if let Some(etype) = err_obj.get("type").and_then(|t| t.as_str()) {
-        let mapped = match etype {
-            "overloaded_error" | "api_error" => Some(FailoverError::Overloaded {
-                provider: provider.to_string(),
-                // SSE error 事件无 HTTP 状态码（流已在 200 里）→ 0（未
-                // 携带），与 Auth 纯文案形态同约定。
-                status: 0,
-            }),
-            "rate_limit_error" => Some(FailoverError::RateLimit {
-                provider: provider.to_string(),
-                model: model.to_string(),
-                retry_after: None,
-            }),
-            // authentication 与 permission 分家（BUG-20261123-012）：流内
-            // SSE error 事件无 HTTP 状态码 → status 0（纯文案形态，Auth
-            // 同约定）；message 携带 err_obj 原文案（④ 兜底收不到——
-            // ② 命中即 return）。
-            "authentication_error" => Some(FailoverError::Auth {
-                provider: provider.to_string(),
-                model: model.to_string(),
-                status: 0,
-            }),
-            "permission_error" => Some(FailoverError::Forbidden {
-                provider: provider.to_string(),
-                model: model.to_string(),
-                status: 0,
-                message: err_obj
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            }),
-            "billing_error" => Some(FailoverError::Billing {
-                provider: provider.to_string(),
-            }),
-            "timeout_error" => Some(FailoverError::Timeout {
-                provider: provider.to_string(),
-                model: model.to_string(),
-            }),
-            _ => None,
-        };
-        if let Some(err) = mapped {
-            return err;
-        }
+    // ② 字符串语义码 / type 探测（错误码补全批 2026-11-24，原 anthropic
+    // 私有六枚举表并入 `class_by_code` 单一真相源——overloaded_error/
+    // api_error/rate_limit_error/authentication_error/permission_error/
+    // billing_error/timeout_error 全部在码表，零回退；新增 openai 家族
+    // type（invalid_request_error/server_error/insufficient_quota）与
+    // codex/openclaw 语义码全表）。此前字符串码显式跳过（假设「语义在
+    // message 里」被三方调查推翻）——message 缺失/文案词表 miss 时
+    // quota 类字符串码落 ④ 前缀化可重试，终态错误进瞬态桶烧预算；
+    // openai `insufficient_quota` 的官方文案 "You exceeded your current
+    // quota" 更会被限流词表错吸——码先于文案定桶。
+    // 流内 SSE error 事件无 HTTP 状态码 → status 0（纯文案形态，Auth
+    // 同约定）；message 携带 err_obj 原文案（④ 兜底收不到——② 命中即
+    // return）。
+    if let Some((code_class, code_raw)) = ["code", "type", "status_code"].iter().find_map(|key| {
+        let raw = err_obj.get(*key).and_then(|v| v.as_str())?;
+        nemesis_utils::llm_error_class::class_by_code(raw).map(|c| (c, raw))
+    }) {
+        // message 缺失/空白 → 码原文兜底：码字面自身常是文案族成员
+        // （"context_length_exceeded" 命中 B29 文案族 → loop 压缩环路由
+        // 不丢；"invalid_request_error" 等终态码无词表消费需求，携带码
+        // 原文即可观测）。
+        let msg_text = err_obj
+            .get("message")
+            .and_then(|m| m.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(code_raw);
+        return FailoverError::from_class(provider, model, code_class, 0, msg_text, None);
     }
 
     // ③ message 文案兜底：error 子对象 message 优先；`error` 本身是字符串
@@ -490,10 +609,13 @@ pub fn classify_stream_error_payload(
         return classify_message_error(provider, model, msg);
     }
 
-    // ④ 全无 → Unknown（调用方现场描述）。
+    // ④ 全无 → 前缀化 Unknown（黑名单架构 2026-11-24 C1）：连 message
+    // 都没有的流内失败事件默认可重试（codex 官方同语义），调用方现场
+    // 描述随前缀保留（excerpt 里的 JSON 字段/数字不参与分类——入口
+    // 短路先于一切词表，污染免疫）。
     FailoverError::Unknown {
         provider: provider.to_string(),
-        message: fallback_msg,
+        message: format!("stream failure (model {model}): {fallback_msg}"),
     }
 }
 

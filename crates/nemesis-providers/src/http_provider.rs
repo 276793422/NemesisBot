@@ -499,7 +499,7 @@ impl HttpProvider {
                         "[Provider] Streaming request failed with HTTP error"
                     );
                     let _ = tx
-                        .send(Err(FailoverError::from_status(
+                        .send(Err(FailoverError::classify_http_error_body(
                             &provider_name,
                             &model,
                             status,
@@ -1324,7 +1324,7 @@ impl LLMProvider for HttpProvider {
                 response = %text.chars().take(200).collect::<String>(),
                 "[Provider] Request failed with HTTP error"
             );
-            return Err(FailoverError::from_status(
+            return Err(FailoverError::classify_http_error_body(
                 &self.config.name,
                 model,
                 status,

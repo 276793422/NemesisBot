@@ -34,6 +34,7 @@ pub mod test_runner;
 pub mod trace;
 pub mod trace_store;
 pub mod types;
+pub mod userprofile;
 pub mod validator;
 
 #[cfg(test)]

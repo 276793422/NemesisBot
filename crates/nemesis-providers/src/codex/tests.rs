@@ -1011,16 +1011,24 @@ fn test_parse_sse_text_failed_event_classified_by_truth_source() {
         Err(FailoverError::Auth { .. })
     ));
 
-    // 分类不出的未知文案 → 维持 Unknown（不可重试兜底语义不变）。
+    // 分类不出的未知文案 → "stream failure" 前缀化 Unknown 可重试
+    //（2026-11-24 黑名单架构 C1：未识别默认可重试，原文案随前缀保留）。
     let text = concat!(
         "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
         "\"error\":{\"message\":\"totally novel failure mode\"}}}\n\n",
     );
-    match parse_sse_text(text, "gpt-4o") {
-        Err(FailoverError::Unknown { message, .. }) => {
-            assert_eq!(message, "totally novel failure mode");
+    let err = match parse_sse_text(text, "gpt-4o") {
+        Err(e) => e,
+        Ok(r) => panic!("应分类为错误，实际 {r:?}"),
+    };
+    match &err {
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(
+                message,
+                "stream failure (model gpt-4o): totally novel failure mode"
+            );
         }
-        other => panic!("未收录文案应维持 Unknown，实际 {other:?}"),
+        other => panic!("未收录文案应落前缀化 Unknown，实际 {other:?}"),
     }
 }
 

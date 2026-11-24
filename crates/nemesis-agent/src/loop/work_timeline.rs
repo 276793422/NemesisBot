@@ -7,6 +7,10 @@
 //! panic/abort 展开路径同样减账，与 InFlightTurnGuard 同纪律），工具
 //! dispatch 前后经 [`AgentLoop` 方法] 更新当前工具名。
 //!
+//! 计时锚续传（2026-11-24）：hook prompt 回灌轮以上一轮起点起步
+//! （acquire 带 anchor）——钩子链在执行态卡 ⏱ 上表现为一段连续时间，
+//! 而不是每轮清零重走。仅 hook_prompt 链启用（bus.rs timeline_anchor_ms）。
+//!
 //! 纯内存态、零持久化；会话切换/重启即丢——盘点是运行态快照，不是历史。
 
 use parking_lot::Mutex;
@@ -40,11 +44,24 @@ pub(crate) struct TurnTimelineGuard {
 }
 
 impl TurnTimelineGuard {
-    pub(crate) fn acquire(map: &WorkTimelineMap, session_key: &str) -> Self {
+    /// `anchor_ms = Some(ts)` → 条目起点取锚（hook prompt 回灌链计时锚续传，
+    /// 2026-11-24：armed 必然在上一 turn 任务体内，回灌轮以上一轮起点起步，
+    /// 执行态卡 ⏱ 跨轮连续）；`None` → 取 now（旧行为）。锚在未来视为无效
+    /// 落回 now（防 metadata 异常值把计时显示成天文数字）。
+    pub(crate) fn acquire(
+        map: &WorkTimelineMap,
+        session_key: &str,
+        anchor_ms: Option<u64>,
+    ) -> Self {
+        let now = now_ms();
+        let started = match anchor_ms {
+            Some(a) if a <= now => a,
+            _ => now,
+        };
         map.lock().insert(
             session_key.to_string(),
             WorkTimelineEntry {
-                turn_started_ms: now_ms(),
+                turn_started_ms: started,
                 current_tool: None,
             },
         );

@@ -577,7 +577,7 @@ impl AnthropicProvider {
                 let retry_after = crate::failover::retry_after_from_headers(resp.headers());
                 let text = nemesis_utils::http_cap::read_error_body(resp).await;
                 let _ = tx
-                    .send(Err(FailoverError::from_status(
+                    .send(Err(FailoverError::classify_http_error_body(
                         "anthropic",
                         &model,
                         status,
@@ -1430,7 +1430,7 @@ impl LLMProvider for AnthropicProvider {
                 if retry_status >= 400 {
                     let retry_after = crate::failover::retry_after_from_headers(resp.headers());
                     let retry_text = nemesis_utils::http_cap::read_error_body(resp).await;
-                    return Err(FailoverError::from_status(
+                    return Err(FailoverError::classify_http_error_body(
                         "anthropic",
                         model,
                         retry_status,
@@ -1439,7 +1439,7 @@ impl LLMProvider for AnthropicProvider {
                     ));
                 }
             } else {
-                return Err(FailoverError::from_status(
+                return Err(FailoverError::classify_http_error_body(
                     "anthropic",
                     model,
                     status,

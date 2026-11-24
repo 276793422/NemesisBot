@@ -983,12 +983,36 @@ pub async fn handle_api_internal(
                     if let Some(hook) = state.estop_audit.as_ref() {
                         hook("engage", "cli");
                     }
+                    // 批 C ⑤：estop 强信号观测行（CLI 入口；学习侧旁路）。
+                    #[cfg(feature = "forge")]
+                    if let Some(ws) = state.workspace.as_deref() {
+                        nemesis_forge::userprofile::collection::append_signal(
+                            std::path::Path::new(ws),
+                            &serde_json::json!({
+                                "ts_ms": chrono::Utc::now().timestamp_millis(),
+                                "kind": "estop",
+                                "action": "engage",
+                            }),
+                        );
+                    }
                     tracing::info!("[Web] E-stop engaged via /api/internal");
                 }
                 "estop_release" => {
                     estop.release();
                     if let Some(hook) = state.estop_audit.as_ref() {
                         hook("release", "cli");
+                    }
+                    // 批 C ⑤：estop 强信号观测行（CLI 入口；学习侧旁路）。
+                    #[cfg(feature = "forge")]
+                    if let Some(ws) = state.workspace.as_deref() {
+                        nemesis_forge::userprofile::collection::append_signal(
+                            std::path::Path::new(ws),
+                            &serde_json::json!({
+                                "ts_ms": chrono::Utc::now().timestamp_millis(),
+                                "kind": "estop",
+                                "action": "release",
+                            }),
+                        );
                     }
                     tracing::info!("[Web] E-stop released via /api/internal");
                 }

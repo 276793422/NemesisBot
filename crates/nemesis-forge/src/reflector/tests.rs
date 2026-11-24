@@ -205,7 +205,7 @@ fn test_reflect_full_cycle() {
     ];
 
     let traces = vec![make_conversation_trace(1, &[("tool_a", true, 100)])];
-    let report = reflector.reflect(&experiences, &traces, None, "today", "all");
+    let report = reflector.reflect(&experiences, &traces, None, "today", "all", &[], &[]);
     assert_eq!(report.period, "today");
     assert_eq!(report.focus, "all");
     assert!(report.stats.total_records > 0);
@@ -215,7 +215,7 @@ fn test_reflect_full_cycle() {
 #[test]
 fn test_reflect_empty() {
     let reflector = Reflector::new();
-    let report = reflector.reflect(&[], &[], None, "week", "skill");
+    let report = reflector.reflect(&[], &[], None, "week", "skill", &[], &[]);
     assert_eq!(report.stats.total_records, 0);
     assert!(report.trace_stats.is_none());
 }
@@ -282,6 +282,8 @@ fn test_write_report() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
 
     let path = reflector.write_report(&report).unwrap();
@@ -311,6 +313,8 @@ fn test_write_report_no_dir_configured() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let result = reflector.write_report(&report);
     assert!(result.is_err());
@@ -568,7 +572,7 @@ fn test_reflect_with_learning_cycle() {
         actions_taken: 2,
         status: nemesis_types::forge::CycleStatus::Completed,
     };
-    let report = reflector.reflect(&experiences, &[], Some(&cycle), "today", "all");
+    let report = reflector.reflect(&experiences, &[], Some(&cycle), "today", "all", &[], &[]);
     assert!(report.learning_cycle.is_some());
     assert_eq!(report.learning_cycle.unwrap().patterns_found, 5);
 }
@@ -581,7 +585,7 @@ fn test_reflect_with_trace_stats() {
         make_collected("tool_b", "input", true, 200),
     ];
     let traces = vec![make_conversation_trace(2, &[("tool_a", true, 100)])];
-    let report = reflector.reflect(&experiences, &traces, None, "week", "all");
+    let report = reflector.reflect(&experiences, &traces, None, "week", "all", &[], &[]);
     assert!(report.trace_stats.is_some());
     let ts = report.trace_stats.unwrap();
     assert!(ts.total_traces > 0);
@@ -593,7 +597,7 @@ fn test_reflect_with_trace_stats() {
 fn test_reflect_report_structure() {
     let reflector = Reflector::new();
     let experiences = vec![make_collected("tool", "input", true, 100)];
-    let report = reflector.reflect(&experiences, &[], None, "today", "all");
+    let report = reflector.reflect(&experiences, &[], None, "today", "all", &[], &[]);
     assert!(!report.date.is_empty());
     assert_eq!(report.period, "today");
     assert_eq!(report.focus, "all");
@@ -656,6 +660,8 @@ fn test_write_report_with_llm_insights() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -685,6 +691,8 @@ fn test_write_report_with_trace_stats() {
         }),
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -963,7 +971,7 @@ fn test_set_reflections_dir() {
 #[test]
 fn test_with_cluster_and_dir() {
     let reflector = Reflector::with_cluster_and_dir(PathBuf::from("/tmp/test"));
-    let report = reflector.reflect(&[], &[], None, "today", "all");
+    let report = reflector.reflect(&[], &[], None, "today", "all", &[], &[]);
     assert_eq!(report.period, "today");
 }
 
@@ -1111,6 +1119,8 @@ fn test_write_report_with_low_success_patterns() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -1144,6 +1154,8 @@ fn test_write_report_with_top_patterns() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -1336,6 +1348,8 @@ fn test_write_report_with_tool_frequency() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -1426,7 +1440,7 @@ async fn test_reflect_with_llm_ok_provider_sets_insights() {
         make_collected("file_read", "b.txt", false, 150),
     ];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None, &[], &[])
         .await;
 
     let insights = report.llm_insights.expect("insights must be set on Ok");
@@ -1441,7 +1455,7 @@ async fn test_reflect_with_llm_error_provider_keeps_none() {
 
     let experiences = vec![make_collected("exec", "ls", true, 20)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None, &[], &[])
         .await;
 
     assert!(
@@ -1458,7 +1472,7 @@ async fn test_reflect_with_llm_no_provider_none() {
 
     let experiences = vec![make_collected("grep", "pattern", true, 10)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None, &[], &[])
         .await;
 
     assert!(report.llm_insights.is_none());
@@ -1485,7 +1499,7 @@ async fn test_s8_reflect_with_llm_ok_evaluates_tracing_fields() {
     reflector.set_provider(std::sync::Arc::new(ReflectorOkLLM));
     let experiences = vec![make_collected("file_read", "a.txt", true, 50)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None, &[], &[])
         .await;
     assert!(report.llm_insights.is_some());
 }
@@ -1520,6 +1534,8 @@ async fn test_reflect_with_llm_passes_max_tokens_to_caller() {
             "today",
             "all",
             Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
+            &[],
+            &[],
         )
         .await;
     assert!(report.llm_insights.is_some());

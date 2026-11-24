@@ -2043,6 +2043,7 @@ pub(crate) async fn init_post_agent(
         put_loop(&mut registry, rp::CheckpointProvider);
         put_loop(&mut registry, rp::ContextProvider);
         put_loop(&mut registry, rp::ExecutionProvider);
+        put_loop(&mut registry, rp::WaitingQueueProvider);
         put(
             &mut registry,
             nemesis_cron::resources::CronResourceProvider::new(Some(cron_service.clone())),

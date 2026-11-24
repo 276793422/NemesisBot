@@ -77,6 +77,7 @@ async fn in_flight_gauge_tracks_spawned_turn_and_guard_releases() {
             let _ = rx.await;
         },
         "agent:main:session:w6a",
+        None,
     );
     picked_rx.await.unwrap();
     assert_eq!(al.in_flight_turns(), 1, "任务体开始即计 1");
@@ -202,6 +203,7 @@ async fn wait_loops_drained_requires_all_loops_idle() {
             let _ = release_rx.await;
         },
         "agent:main:session:w6b",
+        None,
     );
     picked_rx.await.unwrap();
     assert_eq!(b.in_flight_turns(), 1);

@@ -167,6 +167,21 @@ impl WsRouter {
             None => Err(format!("unknown module: {}", msg.module)),
         };
 
+        // UI 行为遥测（Forge 化重构 G6）：dispatch 流落盘
+        // `<ws>/logs/wsapi_usage.jsonl`（用户画像挖掘器的例 2 数据源——
+        // 此前 WSAPI 调用零持久化，「使用集群前先去诊断页点一遍」这类
+        // UI 行为完全学不到）。fire-and-forget：内部全静默，绝不影响
+        // dispatch 主路径；30s 去重压缩 Dashboard 轮询；config
+        // `user_profile.ui_telemetry` 门控（存储即隐私闸）。
+        #[cfg(feature = "forge")]
+        nemesis_forge::userprofile::telemetry::record_wsapi_call(
+            ctx.workspace.as_deref(),
+            ctx.home.as_deref(),
+            &msg.module,
+            &msg.cmd,
+            result.is_ok(),
+        );
+
         let response = match result {
             Ok(data) => ProtocolMessage::response_ok(&msg.module, &msg.cmd, req_id, data),
             Err(e) => ProtocolMessage::response_err(&msg.module, &msg.cmd, req_id, &e),

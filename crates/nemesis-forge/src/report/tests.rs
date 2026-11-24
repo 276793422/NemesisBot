@@ -106,6 +106,8 @@ fn test_format_report_from_report() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
 
     let output = format_report_from_report(&report);
@@ -289,6 +291,8 @@ fn test_format_report_from_report_no_llm() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let output = format_report_from_report(&report);
     assert!(output.contains("# Forge Reflection Report"));
@@ -306,6 +310,8 @@ fn test_format_report_from_report_empty_llm() {
         trace_stats: None,
         learning_cycle: None,
         learning_enabled: None,
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let output = format_report_from_report(&report);
     assert!(!output.contains("LLM Deep Analysis"));
@@ -449,6 +455,8 @@ fn test_format_report_from_report_with_trace() {
         }),
         learning_cycle: None,
         learning_enabled: Some(true),
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let output = format_report_from_report(&report);
     assert!(output.contains("Trace Insights"));
@@ -473,6 +481,8 @@ fn test_format_report_from_report_with_learning_cycle() {
             status: nemesis_types::forge::CycleStatus::Completed,
         }),
         learning_enabled: Some(false),
+        user_lessons: Vec::new(),
+        veto_notes: Vec::new(),
     };
     let output = format_report_from_report(&report);
     assert!(output.contains("Learning Cycle"));

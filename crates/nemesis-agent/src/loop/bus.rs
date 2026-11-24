@@ -285,6 +285,7 @@ impl AgentLoop {
             workspace_root: parking_lot::RwLock::new(None),
             vault_domain_config_path: parking_lot::RwLock::new(None),
             session_home_root: parking_lot::RwLock::new(None),
+            profile_root: parking_lot::RwLock::new(None),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -302,6 +303,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_gen: parking_lot::RwLock::new(None),
+            #[cfg(feature = "forge")]
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
@@ -1430,7 +1432,21 @@ impl AgentLoop {
         }
     }
 
-    pub(crate) fn spawn_turn_task<F>(&self, fut: F, session_key: &str)
+    /// hook prompt 回灌链的计时锚解析（2026-11-24）：仅认 `hook_prompt`
+    /// 章（system 构造器专章，外部通道消息不可伪造——计时锚不可注入）+
+    /// 可 parse 的 `timeline_anchor_ms`；其余消息恒 None（= 旧行为从
+    /// now 起步）。parse 失败同样 None（异常值不炸链路）。pub(crate) 仅
+    /// 因回归测试（work_timeline_tests）直测伪造防御面。
+    pub(crate) fn timeline_anchor_ms(msg: &nemesis_types::channel::InboundMessage) -> Option<u64> {
+        if msg.metadata.get("hook_prompt").map(String::as_str) != Some("1") {
+            return None;
+        }
+        msg.metadata
+            .get("timeline_anchor_ms")
+            .and_then(|v| v.parse::<u64>().ok())
+    }
+
+    pub(crate) fn spawn_turn_task<F>(&self, fut: F, session_key: &str, anchor_ms: Option<u64>)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
@@ -1449,11 +1465,17 @@ impl AgentLoop {
             let _gauge = InFlightTurnGuard::acquire(&gauge);
             // 资源看板 execution 类目（2026-11-17）：turn 任务体全程持
             // 运行态条目（Drop 清理，panic/abort 展开同样减账）。空键不插
-            // （无会话身份的内部 turn 无盘点意义）。
+            // （无会话身份的内部 turn 无盘点意义）。anchor：hook prompt 回灌
+            // 链的计时锚续传（2026-11-24）——回灌轮以上一轮起点起步，非
+            // hook 消息 None = 旧行为从 now 起。
             let _timeline = if timeline_key.is_empty() {
                 None
             } else {
-                Some(TurnTimelineGuard::acquire(&timeline, &timeline_key))
+                Some(TurnTimelineGuard::acquire(
+                    &timeline,
+                    &timeline_key,
+                    anchor_ms,
+                ))
             };
             fut.await;
         });
@@ -1518,6 +1540,11 @@ impl AgentLoop {
     /// **Continuation 保持与泵串行**（内联 await），其余臂 spawn tracked
     /// task——跨会话并发、同会话保序不变量原样保留。
     async fn pump_dispatch(self: &Arc<Self>, msg: &mut nemesis_types::channel::InboundMessage) {
+        // hook prompt 回灌链的计时锚续传（2026-11-24）：armed 时本轮起点
+        // 已烧进 metadata（run_loop.rs enqueue 处），回灌轮以此起步 → 执行
+        // 态卡 ⏱ 跨轮连续。仅认 hook_prompt 章（system 构造器专章，外部
+        // 消息不可伪造）；非 hook 消息恒 None = 旧行为。
+        let timeline_anchor = Self::timeline_anchor_ms(msg);
         // W6 优雅停机 drain：关入口闸——draining 置位后拒绝新 turn（在途
         // 照常收尾；与 estop「冻结 agent 活动」正交）。内部通道静默丢
         // （日志留痕，防系统通道被回执刷屏）；外部通道发诚实回执。零处理
@@ -1560,13 +1587,15 @@ impl AgentLoop {
                 // W6：inline continuation 也是在途 turn——gauge 与 spawn 臂同源。
                 let _gauge = InFlightTurnGuard::acquire(&self.in_flight_turns);
                 // 资源看板 execution 类目（2026-11-17）：continuation 轮次
-                // 同样进运行态快照（spawn 臂同语义；空键不插）。
+                // 同样进运行态快照（spawn 臂同语义；空键不插）。continuation
+                // 消息无 hook_prompt 章 → anchor 恒 None = 旧行为。
                 let _timeline = if msg.session_key.is_empty() {
                     None
                 } else {
                     Some(TurnTimelineGuard::acquire(
                         &self.work_timeline,
                         &msg.session_key,
+                        timeline_anchor,
                     ))
                 };
                 self.dispatch_continuation(task_id, msg).await;
@@ -1668,6 +1697,7 @@ impl AgentLoop {
                             .await;
                     },
                     &sk,
+                    timeline_anchor,
                 );
             }
             GateOutcome::UserDispatch {
@@ -1688,6 +1718,7 @@ impl AgentLoop {
                             .await;
                     },
                     &sk,
+                    timeline_anchor,
                 );
             }
             GateOutcome::Ungated => {
@@ -1702,6 +1733,7 @@ impl AgentLoop {
                             .await;
                     },
                     &sk,
+                    timeline_anchor,
                 );
             }
             GateOutcome::Admitted(admission) => {
@@ -1716,6 +1748,7 @@ impl AgentLoop {
                             .await;
                     },
                     &sk,
+                    timeline_anchor,
                 );
             }
         }

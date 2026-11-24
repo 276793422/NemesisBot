@@ -116,3 +116,52 @@ async fn profile_section_reflects_enabled_flip_without_profile_file_change() {
         "re-enable must restore injection, got: {back:?}"
     );
 }
+
+/// 项目会话画像注入缺口修复回归锁（2026-11-24）：项目 loop 的
+/// workspace_root 是项目目录，画像资产在主 workspace——不注入 profile_root
+/// 时画像段恒空（读项目目录下永不存在的 user_profile.json）。修复后
+/// set_profile_root(主workspace) 显式注入优先。
+#[tokio::test]
+async fn profile_root_override_reads_main_workspace_profile_for_project_loops() {
+    let dir = tempfile::tempdir().unwrap();
+    let main_ws = dir.path().join("main-ws");
+    let project_dir = dir.path().join("my-app");
+    std::fs::create_dir_all(&main_ws).unwrap();
+    std::fs::create_dir_all(&project_dir).unwrap();
+    // 画像只在主 workspace；项目目录下无画像文件。
+    write_profile(&main_ws);
+    let cfg_path = main_ws.join("config").join("config.json");
+    write_config(&cfg_path, true);
+
+    // 未注入 profile_root（旧行为）：workspace_root=项目目录 → 画像读
+    // 项目目录 → 恒空段（= 修复前的缺口形态）。
+    let bare = cov_mock_loop();
+    bare.set_workspace_root(project_dir.clone());
+    bare.set_config_path(cfg_path.clone());
+    assert!(
+        bare.user_profile_section_now().is_empty(),
+        "workspace_root=project dir without override must NOT inject (pre-fix gap shape)"
+    );
+
+    // 注入 profile_root=主 workspace：画像段照常注入（修复形态）。
+    let fixed = cov_mock_loop();
+    fixed.set_workspace_root(project_dir.clone());
+    fixed.set_profile_root(main_ws.clone());
+    fixed.set_config_path(cfg_path.clone());
+    let section = fixed.user_profile_section_now();
+    assert!(
+        section.contains("用户消息简短直接"),
+        "profile_root override must read main workspace profile, got: {section:?}"
+    );
+
+    // 主/集群 loop 回落形态：只设 workspace_root（=画像根）行为不变。
+    let main_loop = cov_mock_loop();
+    main_loop.set_workspace_root(main_ws.clone());
+    main_loop.set_config_path(cfg_path.clone());
+    assert!(
+        main_loop
+            .user_profile_section_now()
+            .contains("用户消息简短直接"),
+        "no override = fallback to workspace_root (main/cluster loops unchanged)"
+    );
+}

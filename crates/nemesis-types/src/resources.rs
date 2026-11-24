@@ -182,6 +182,13 @@ pub trait SessionLoopApi {
     /// loop 运行态快照（B1 新建）：当前轮次在跑什么工具、何时开始。
     /// None = 该会话当前无在跑轮次（空闲）。
     fn work_timeline(&self, session_key: &str) -> Option<Value>;
+    /// 等待队列只读快照（2026-11-24 资源看板「等待队列」气泡）：
+    /// `{steer: [...], follow_up: [...], capacity}`——每条
+    /// `{content, sender_id, timestamp, priority}`，content 单条 8000 字
+    /// 上限截断（上限住在 agent inbox 侧，本 trait 只传形状）。开放 Value
+    /// 形状与 context_status 同先例（types 层不依赖 agent inbox 类型）。
+    /// None = 查询面缺席。
+    fn queue_peek(&self, session_key: &str) -> Option<Value>;
     /// 投影扩展产物（CheckpointMeta 加 session 字段，serde default 加法，
     /// rewind/redo/file_diff 既有消费方零影响）。只返回**本会话**的条目。
     fn checkpoint_summary(&self, session_key: &str) -> Vec<CheckpointSummary>;

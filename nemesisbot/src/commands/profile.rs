@@ -1,13 +1,16 @@
-//! 用户习惯画像 CLI（自进化升级 B 线，2026-10-14）。
+//! 用户习惯画像 CLI（Forge 化重构，2026-11-24：API 面迁
+//! `nemesis-forge::userprofile`）。
 //!
 //! `nemesisbot profile <action>`：list / enable / disable / veto / forget /
-//! pin。与 WSAPI `profile.*` 同源（nemesis-agent::user_profile）——CLI 直读
-//! 直写盘上真相；运行中 gateway 的 sweep 下轮 tick 感知。
+//! pin。与 WSAPI `profile.*` 同源（nemesis-forge::userprofile::{store,
+//! surface}）——CLI 直读直写盘上真相；运行中 gateway 的 sweep 下轮 tick
+//! 感知。
 
 use anyhow::Result;
 use clap::Subcommand;
 
 use crate::common;
+use nemesis_forge::userprofile::{store, surface};
 
 #[derive(Debug, Subcommand)]
 pub enum ProfileAction {
@@ -42,12 +45,11 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
     let workspace = common::workspace_path(&home);
     match action {
         ProfileAction::List => {
-            let profile = nemesis_agent::user_profile::load_profile(&workspace);
-            let enabled = nemesis_config::load_config(&common::config_path(&home))
+            let profile = surface::list(&workspace);
+            let cfg = nemesis_config::load_config(&common::config_path(&home))
                 .ok()
-                .and_then(|cfg| cfg.user_profile)
-                .map(|u| u.enabled)
-                .unwrap_or(false);
+                .and_then(|cfg| cfg.user_profile);
+            let enabled = cfg.as_ref().map(|u| u.enabled).unwrap_or(false);
             println!(
                 "enabled: {} (enabled_at: {})",
                 enabled,
@@ -56,29 +58,34 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             println!("habits ({}):", profile.habits.len());
             for h in &profile.habits {
                 println!(
-                    "  - [{}] {} (confidence {:.2}, hits {}, status {}, {})",
+                    "  - [{}] {} (confidence {:.2}, hits {}, status {}, {}, {})",
                     h.category,
                     h.content,
                     h.confidence,
                     h.hits,
                     h.status,
-                    if h.pinned { "pinned" } else { "unpinned" }
+                    if h.pinned { "pinned" } else { "unpinned" },
+                    if h.auto { "auto" } else { "manual" },
                 );
+                for (i, s) in h.steps.iter().enumerate() {
+                    println!("      {}. {}", i + 1, s);
+                }
+                if !h.evidence.is_empty() {
+                    println!("      溯源: {}", h.evidence.join(", "));
+                }
             }
         }
         ProfileAction::Enable => {
-            // 开关先落 config（写锁在 set_config_value 内），锚点后置——
+            // 开关先落 config（写锁在 save_config 内），锚点后置——
             // 失败顺序安全：开关失败 = 锚点不动；锚点成功后开关必已开。
             set_config_enabled(&home, true)?;
-            // 截断上限与 sweep 同源：config 现读 max_entries（
-            // 此前硬编码 10，max_entries>10 的存量习惯在重跑 enable 时被截）。
+            // 截断上限与 sweep 同源：config 现读 max_entries。
             let max_entries = nemesis_config::load_config(&common::config_path(&home))
                 .ok()
                 .and_then(|cfg| cfg.user_profile)
-                .map(|u| u.max_entries_or(nemesis_agent::user_profile::MAX_ENTRIES))
-                .unwrap_or(nemesis_agent::user_profile::MAX_ENTRIES);
-            let profile = nemesis_agent::user_profile::enable_profile(&workspace, max_entries)
-                .map_err(anyhow::Error::msg)?;
+                .map(|u| u.max_entries_or(store::MAX_ENTRIES))
+                .unwrap_or(store::MAX_ENTRIES);
+            let profile = surface::enable(&workspace, max_entries).map_err(anyhow::Error::msg)?;
             println!(
                 "✓ profile enabled (enabled_at: {})",
                 profile.enabled_at.as_deref().unwrap_or("(now)")
@@ -89,8 +96,7 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             println!("✓ profile disabled (config user_profile.enabled=false)");
         }
         ProfileAction::Veto { content } => {
-            let hit = nemesis_agent::user_profile::veto_habit(&workspace, &content)
-                .map_err(anyhow::Error::msg)?;
+            let hit = surface::veto(&workspace, &content).map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {
@@ -101,8 +107,7 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             );
         }
         ProfileAction::Forget { content } => {
-            let hit = nemesis_agent::user_profile::forget_habit(&workspace, &content)
-                .map_err(anyhow::Error::msg)?;
+            let hit = surface::forget(&workspace, &content).map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {
@@ -113,8 +118,7 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             );
         }
         ProfileAction::Pin { content, unpin } => {
-            let hit = nemesis_agent::user_profile::set_pinned(&workspace, &content, !unpin)
-                .map_err(anyhow::Error::msg)?;
+            let hit = surface::pin(&workspace, &content, !unpin).map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {

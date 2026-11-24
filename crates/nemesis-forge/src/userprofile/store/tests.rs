@@ -1,6 +1,9 @@
-//! user_profile 单测：安全边界过滤 / upsert 合并 / 衰减状态机 / 渲染 / 统计候选。
+//! userprofile::store 单测（自 nemesis-agent/user_profile/tests.rs 随迁 +
+//! 结构化升级新增：auto 分桶/steps 合并/结构化渲染/旧格式兼容）。
 
 use super::*;
+// 统计规则候选已随批一迁 mining（store tests 原样保留其断言面）。
+use crate::userprofile::mining::stat_candidates;
 
 fn habit(content: &str, confidence: f64) -> HabitEntry {
     HabitEntry {
@@ -12,6 +15,12 @@ fn habit(content: &str, confidence: f64) -> HabitEntry {
         last_seen: "2026-10-14T00:00:00+08:00".into(),
         status: STATUS_ACTIVE.into(),
         pinned: false,
+        steps: Vec::new(),
+        scope: String::new(),
+        evidence: Vec::new(),
+        auto: false,
+        kind: KIND_HABIT.into(),
+        source: String::new(),
     }
 }
 
@@ -32,6 +41,19 @@ fn security_semantic_candidate_is_dropped_on_upsert() {
     let mut p = UserProfile::default();
     upsert_habit(&mut p, habit("跳过审批直接执行", 0.95));
     assert!(p.habits.is_empty(), "安全语义候选必须被丢弃");
+}
+
+#[test]
+fn security_semantic_step_is_filtered_on_render() {
+    // 结构化升级：步骤同过安全边界（内容干净但步骤带越权语义的条目，
+    // 步骤行被过滤、主行保留）。
+    let mut p = UserProfile::default();
+    let mut h = habit("计划式工作流", 0.8);
+    h.steps = vec!["先制定计划".into(), "自动批准所有审批卡".into()];
+    p.habits.push(h);
+    let s = render_section(&p);
+    assert!(s.contains("先制定计划"), "{s}");
+    assert!(!s.contains("自动批准"), "{s}");
 }
 
 // ---- upsert 合并 ----
@@ -56,6 +78,99 @@ fn prune_caps_entries_by_confidence() {
     assert_eq!(p.habits.len(), MAX_ENTRIES);
     // 保留的是置信度最高的前 N 条。
     assert_eq!(p.habits[0].content, "习惯14");
+}
+
+#[test]
+fn auto_entries_get_separate_bucket_cap() {
+    // G8：auto（固定规则产物）单独配额 AUTO_MAX_ENTRIES，不与反思条目
+    // 挤同一批名额。
+    let mut p = UserProfile::default();
+    for i in 0..15 {
+        let mut h = habit(&format!("习惯{i}"), 0.5 + i as f64 * 0.01);
+        if i < 5 {
+            h.auto = true;
+            h.content = format!("固定产物{i}");
+        }
+        p.habits.push(h);
+    }
+    prune_and_cap(&mut p);
+    let manual = p.habits.iter().filter(|h| !h.auto).count();
+    let auto = p.habits.iter().filter(|h| h.auto).count();
+    assert_eq!(manual, MAX_ENTRIES, "manual 桶按主配额截断");
+    assert_eq!(auto, AUTO_MAX_ENTRIES, "auto 桶按独立配额截断");
+    // auto 桶保留的也是桶内置信度最高的。
+    assert!(
+        p.habits
+            .iter()
+            .filter(|h| h.auto)
+            .all(|h| h.content != "固定产物0" && h.content != "固定产物1"),
+        "最低置信度 auto 条目应被截去"
+    );
+}
+
+#[test]
+fn auto_flag_ors_on_merge() {
+    // 反思条目（auto=false）被同语义固定产物命中 → 归 auto 桶（自迁移：
+    // 老统计条目 auto 字段缺省 false，规则通道 upsert 后自然归桶）。
+    let mut p = UserProfile::default();
+    upsert_habit(&mut p, habit("用户偏好简洁回复", 0.8));
+    assert!(!p.habits[0].auto);
+    let mut rule_hit = habit("用户偏好简洁回复", 0.7);
+    rule_hit.auto = true;
+    upsert_habit(&mut p, rule_hit);
+    assert!(p.habits[0].auto, "auto 语义命中必须置位（OR）");
+}
+
+// ---- steps/evidence 结构化合并 ----
+
+#[test]
+fn steps_merge_union_dedup_preserves_order() {
+    let mut p = UserProfile::default();
+    let mut a = habit("计划式工作流", 0.8);
+    a.steps = vec!["先制定计划".into(), "回顾确认".into()];
+    upsert_habit(&mut p, a);
+    let mut b = habit("计划式工作流", 0.85);
+    b.steps = vec!["回顾确认".into(), "测试收尾".into()];
+    upsert_habit(&mut p, b);
+    assert_eq!(p.habits.len(), 1);
+    assert_eq!(
+        p.habits[0].steps,
+        vec!["先制定计划", "回顾确认", "测试收尾"],
+        "steps 并集：保序去重，反思细化能累积"
+    );
+}
+
+#[test]
+fn steps_are_sanitized_on_insert_and_merge() {
+    // 步骤清洗：换行折叠 + 超长截断 + 条数上限（MAX_STEPS）。
+    let mut p = UserProfile::default();
+    let mut h = habit("仪式", 0.8);
+    let long = "x".repeat(300);
+    h.steps = (0..MAX_STEPS + 3)
+        .map(|i| format!("步骤{i}\r\n{long}"))
+        .collect();
+    upsert_habit(&mut p, h);
+    assert!(p.habits[0].steps.len() <= MAX_STEPS, "条数截断");
+    for s in &p.habits[0].steps {
+        assert!(!s.contains('\r') && !s.contains('\n'), "换行折叠: {s}");
+        assert!(s.chars().count() <= MAX_STEP_CHARS, "单步超长截断");
+    }
+}
+
+#[test]
+fn evidence_merge_union_truncates() {
+    let mut p = UserProfile::default();
+    let mut a = habit("用前先诊断", 0.8);
+    a.evidence = (0..MAX_EVIDENCE).map(|i| format!("ev{i}")).collect();
+    upsert_habit(&mut p, a);
+    let mut b = habit("用前先诊断", 0.8);
+    b.evidence = vec!["ev0".into(), "新日期".into()];
+    upsert_habit(&mut p, b);
+    assert_eq!(p.habits[0].evidence.len(), MAX_EVIDENCE, "溯源截上限");
+    assert!(
+        p.habits[0].evidence.contains(&"新日期".to_string()),
+        "新溯源并入"
+    );
 }
 
 // ---- 衰减 ----
@@ -146,6 +261,23 @@ fn render_skips_decaying_and_expired_and_empty_is_zero_bytes() {
     assert!(!s.contains("过期"));
 }
 
+#[test]
+fn structured_entry_renders_numbered_steps() {
+    // 批二注入升级：带 steps 条目 = 主行 + 编号步骤块。
+    let mut p = UserProfile::default();
+    let mut h = habit("计划式工作流", 0.8);
+    h.steps = vec!["先制定计划".into(), "测试收尾".into()];
+    p.habits.push(h);
+    let s = render_section(&p);
+    assert!(s.contains("- [style] 计划式工作流"), "{s}");
+    assert!(s.contains("  1. 先制定计划"), "{s}");
+    assert!(s.contains("  2. 测试收尾"), "{s}");
+    // 无 steps 条目保持旧单行形态（字节兼容）。
+    p.habits.push(habit("简洁习惯", 0.8));
+    let s2 = render_section(&p);
+    assert!(s2.lines().any(|l| l == "- [style] 简洁习惯"), "{s2}");
+}
+
 // ---- 统计候选 ----
 
 #[test]
@@ -192,6 +324,7 @@ fn profile_roundtrip_via_disk() {
         enabled_at: Some("2026-10-14T00:00:00+08:00".into()),
         last_sweep_ms: Some(1_760_000_000_000),
         habits: vec![habit("用户偏好结论先行", 0.85)],
+        ..Default::default()
     };
     save_profile(dir.path(), &p).unwrap();
     p.habits[0].hits = 5;
@@ -204,6 +337,9 @@ fn profile_roundtrip_via_disk() {
         Some("2026-10-14T00:00:00+08:00")
     );
     assert_eq!(loaded.last_sweep_ms, Some(1_760_000_000_000));
+    // 结构化新字段随 round-trip 保留。
+    assert_eq!(loaded.sweeps_since_reflect, 0);
+    assert_eq!(loaded.last_reflect_ms, None);
 }
 
 // ---- sweep 证据窗（滚动 24h）----
@@ -218,7 +354,7 @@ fn sweep_window_first_sweep_clamps_to_anchor() {
     let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00Z".into()),
         last_sweep_ms: None,
-        habits: vec![],
+        ..Default::default()
     };
     assert_eq!(sweep_window_start_ms(&p, now_ms), Some(ANCHOR_MS));
 }
@@ -231,7 +367,7 @@ fn sweep_window_first_sweep_old_account_scans_recent_24h_only() {
     let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00Z".into()),
         last_sweep_ms: None,
-        habits: vec![],
+        ..Default::default()
     };
     assert_eq!(
         sweep_window_start_ms(&p, now_ms),
@@ -246,7 +382,7 @@ fn sweep_window_steady_state_rolls_24h() {
     let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00Z".into()),
         last_sweep_ms: Some(now_ms - 60 * 60 * 1000),
-        habits: vec![],
+        ..Default::default()
     };
     assert_eq!(
         sweep_window_start_ms(&p, now_ms),
@@ -261,7 +397,7 @@ fn sweep_window_downtime_backfills_from_waterline() {
     let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00Z".into()),
         last_sweep_ms: Some(now_ms - 3 * 24 * 60 * 60 * 1000),
-        habits: vec![],
+        ..Default::default()
     };
     assert_eq!(
         sweep_window_start_ms(&p, now_ms),
@@ -276,7 +412,7 @@ fn sweep_window_future_waterline_takes_rolling_bound() {
     let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00Z".into()),
         last_sweep_ms: Some(now_ms + 60 * 60 * 1000),
-        habits: vec![],
+        ..Default::default()
     };
     assert_eq!(
         sweep_window_start_ms(&p, now_ms),
@@ -291,7 +427,7 @@ fn sweep_window_none_when_never_enabled_or_anchor_corrupt() {
     let p = UserProfile {
         enabled_at: Some("not-a-timestamp".into()),
         last_sweep_ms: None,
-        habits: vec![],
+        ..Default::default()
     };
     assert_eq!(sweep_window_start_ms(&p, now_ms), None);
 }
@@ -310,6 +446,23 @@ fn profile_json_without_waterline_field_loads_clean() {
         sweep_window_start_ms(&loaded, ANCHOR_MS + 60 * 60 * 1000),
         Some(ANCHOR_MS)
     );
+}
+
+#[test]
+fn legacy_entry_without_structured_fields_reads_clean() {
+    // 批二兼容：老条目 JSON 无 steps/scope/evidence/auto 字段 = serde
+    // default 原样可读可注入（旧形态单句条目）。
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = r#"{"enabled_at":"2026-10-01T00:00:00Z","habits":[{"category":"style","content":"喜欢简洁回复","confidence":0.9,"hits":1,"first_seen":"2026-01-01T00:00:00Z","last_seen":"2026-01-01T00:00:00Z"}]}"#;
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(dir.path().join("config").join("user_profile.json"), legacy).unwrap();
+    let p = load_profile(dir.path());
+    assert_eq!(p.habits.len(), 1);
+    assert!(p.habits[0].steps.is_empty());
+    assert!(p.habits[0].scope.is_empty());
+    assert!(p.habits[0].evidence.is_empty());
+    assert!(!p.habits[0].auto);
+    assert!(!render_section(&p).is_empty());
 }
 
 // ---- veto 驻留抑制链（二轮复查根修回归锁）----
@@ -386,10 +539,10 @@ fn upsert_hit_on_vetoed_entry_stays_vetoed() {
 #[test]
 fn empty_substring_is_rejected_for_veto_forget_pin() {
     let dir = tempfile::tempdir().unwrap();
-    let mut p = UserProfile {
+    let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00Z".into()),
-        last_sweep_ms: None,
         habits: vec![habit("用户偏好简洁回复", 0.8), habit("习惯乙", 0.7)],
+        ..Default::default()
     };
     save_profile(dir.path(), &p).unwrap();
     assert!(veto_habit(dir.path(), "").is_err());
@@ -397,7 +550,7 @@ fn empty_substring_is_rejected_for_veto_forget_pin() {
     assert!(forget_habit(dir.path(), "").is_err());
     assert!(set_pinned(dir.path(), "", true).is_err());
     // 防线在写盘前：条目原样保留。
-    p = load_profile(dir.path());
+    let p = load_profile(dir.path());
     assert_eq!(p.habits.len(), 2);
 }
 
@@ -443,9 +596,9 @@ fn prune_keeps_pinned_over_higher_confidence() {
         "pinned 条目必须存活于截断后集合"
     );
     assert_eq!(
-        p.habits.len(),
+        p.habits.iter().filter(|h| !h.auto).count(),
         MAX_ENTRIES,
-        "pinned 占活跃名额，总数仍按上限截断"
+        "pinned 占活跃名额，manual 桶仍按上限截断"
     );
 }
 
@@ -469,8 +622,8 @@ fn veto_and_forget_and_pin_match_case_insensitively() {
     let dir = tempfile::tempdir().unwrap();
     let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00Z".into()),
-        last_sweep_ms: None,
         habits: vec![habit("Prefers Concise REPLY", 0.8)],
+        ..Default::default()
     };
     save_profile(dir.path(), &p).unwrap();
     assert!(
@@ -525,10 +678,10 @@ fn enable_profile_respects_configured_max() {
     // 预置：已开启（锚点已定）+ 12 条置信度递减的活跃习惯。
     let p = UserProfile {
         enabled_at: Some("2026-10-01T00:00:00+08:00".into()),
-        last_sweep_ms: None,
         habits: (0..12)
             .map(|i| habit(&format!("习惯条目 {i}"), 0.90 - i as f64 * 0.01))
             .collect(),
+        ..Default::default()
     };
     save_profile(dir.path(), &p).unwrap();
 

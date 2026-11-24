@@ -733,6 +733,8 @@ impl AgentLoop {
 
                 source_node: None,
                 system_notice: system_notice_of(msg),
+                // 批 C ⑥：真人来源通道（busy 回绝的 user 行同款标记）。
+                channel: Some(&msg.channel),
             },
         );
         crate::chat_log::append_chat_log_meta(
@@ -752,6 +754,7 @@ impl AgentLoop {
 
                 source_node: None,
                 system_notice: None, // assistant 回实行正常气泡展示，无标记
+                channel: None,
             },
         );
         if !log_existed {
@@ -1605,6 +1608,9 @@ impl AgentLoop {
 
                     source_node: None,
                     system_notice: system_notice_of(&msg),
+                    // 批 C ⑥：真人来源通道标记（IM vs Dashboard 分流统计
+                    // 与风格读法的数据源；None = 未知通道不写键）。
+                    channel: Some(&msg.channel),
                 },
             );
             if !log_existed {
@@ -2145,6 +2151,13 @@ impl AgentLoop {
                 ConcurrentMode::Steer => "steer",
             },
         }
+    }
+
+    /// 等待队列只读快照访问器（2026-11-24 资源看板「等待队列」气泡）：
+    /// 委托 `Inbox::peek`，字段私有（resource_providers 跨模块消费所需）。
+    /// 只读——消费链 claim/transfer/clear 语义零变化。
+    pub(crate) fn inbox_peek(&self, session_key: &str) -> crate::inbox::QueuePeek {
+        self.inbox.peek(session_key)
     }
 
     /// 测试支撑：共享 inbox 句柄——跨 crate（nemesis-web）

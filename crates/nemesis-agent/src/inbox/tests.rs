@@ -507,3 +507,92 @@ fn test_frame_merged_notices_framing() {
     assert!(framed.contains("[系统通告]"));
     assert!(framed.contains("Background job #1 finished"));
 }
+
+// ---- peek 只读快照（2026-11-24 资源看板「等待队列」气泡数据源）----
+
+#[test]
+fn test_peek_returns_both_queues_in_fifo_order() {
+    let inbox = Inbox::new(8);
+    inbox.enqueue("s", msg("turn A"));
+    inbox.enqueue("s", msg("!steer 1"));
+    inbox.enqueue("s", msg("!steer 2"));
+    let _ = inbox.enqueue_for_mode(
+        "s",
+        msg_with_meta("turn B", vec![("priority", "high")]),
+        true,
+    );
+    let peek = inbox.peek("s");
+    // 插队组在上（next_step）、排队组在下（next_turn），组内按队列序。
+    assert_eq!(peek.steer.len(), 2);
+    assert_eq!(peek.steer[0].content, "!steer 1");
+    assert_eq!(peek.steer[1].content, "!steer 2");
+    assert_eq!(peek.follow_up.len(), 2);
+    // High 优先级插到 next_turn 队首（第一个 Normal 之前——文档化插入序），
+    // peek 诚实反映真实执行顺序。
+    assert_eq!(peek.follow_up[0].content, "turn B");
+    assert_eq!(peek.follow_up[1].content, "turn A");
+    assert_eq!(peek.follow_up[0].priority, "high");
+    assert_eq!(peek.follow_up[1].priority, "normal");
+    assert_eq!(peek.capacity, 8);
+    // sender/timestamp 字段非空（与 QueuedMessage 同源）。
+    assert_eq!(peek.steer[0].timestamp, "2026-08-22T00:00:00Z");
+}
+
+#[test]
+fn test_peek_is_read_only() {
+    let inbox = Inbox::new(8);
+    inbox.enqueue("s", msg("turn A"));
+    inbox.enqueue("s", msg("!steer 1"));
+    // peek 前后计数不变（绝不动队列）。
+    let _ = inbox.peek("s");
+    assert_eq!(inbox.pending("s"), (1, 1));
+    let _ = inbox.peek("s");
+    assert_eq!(inbox.pending("s"), (1, 1));
+    // peek 后消费链照常（peek 不产生任何副作用）。
+    let stepped = inbox.claim_next_step("s");
+    assert_eq!(stepped.len(), 1);
+    assert_eq!(stepped[0].msg.content, "!steer 1");
+    let head = inbox.claim_next_turn_head("s").unwrap();
+    assert_eq!(head.msg.content, "turn A");
+}
+
+#[test]
+fn test_peek_unknown_session_is_empty_snapshot() {
+    let inbox = Inbox::new(4);
+    let peek = inbox.peek("nope");
+    assert!(peek.steer.is_empty());
+    assert!(peek.follow_up.is_empty());
+    assert_eq!(peek.capacity, 4);
+}
+
+#[test]
+fn test_peek_truncates_overlong_content_with_note() {
+    let long = "x".repeat(9000);
+    let inbox = Inbox::new(8);
+    inbox.enqueue("s", msg(&long));
+    let peek = inbox.peek("s");
+    let c = &peek.follow_up[0].content;
+    // 头 8000 字保留 + 截断注记含真实总字数。
+    assert_eq!(
+        c.chars().count(),
+        8000 + "…（已截断，共 9000 字）".chars().count()
+    );
+    assert!(c.starts_with(&"x".repeat(8000)));
+    assert!(c.contains("已截断，共 9000 字）"));
+    // 上限内原样返回（无注记）。
+    let inbox2 = Inbox::new(8);
+    inbox2.enqueue("s", msg("short"));
+    assert_eq!(inbox2.peek("s").follow_up[0].content, "short");
+}
+
+#[test]
+fn test_peek_truncation_is_char_boundary_safe() {
+    // 多字节 CJK 逐字填到跨界长度——chars().take 按字符切，不 panic 不切半字。
+    let cjk: String = "汉".repeat(8500);
+    let inbox = Inbox::new(8);
+    inbox.enqueue("s", msg(&cjk));
+    let peek = inbox.peek("s");
+    let c = &peek.follow_up[0].content;
+    assert!(c.starts_with(&"汉".repeat(8000)));
+    assert!(c.contains("已截断，共 8500 字）"));
+}

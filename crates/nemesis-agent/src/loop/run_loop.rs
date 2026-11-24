@@ -511,6 +511,21 @@ impl AgentLoop {
                     context.session_key
                 );
             } else {
+                // 计时锚续传（2026-11-24）：armed 必然在 turn 任务体内
+                // （TurnTimelineGuard 活着），读出本轮起点烧进回灌消息——
+                // 回灌轮以此起步，执行态卡 ⏱ 跨轮连续。条目不在（极端
+                // 交错）= 不塞 = 旧行为。bus.rs 侧仅认 hook_prompt 章，
+                // 外部消息无法伪造此锚。
+                let timeline_anchor = self
+                    .work_timeline_snapshot(&context.session_key)
+                    .map(|e| e.turn_started_ms.to_string());
+                let mut metadata: std::collections::HashMap<String, String> =
+                    [("hook_prompt".to_string(), "1".to_string())]
+                        .into_iter()
+                        .collect();
+                if let Some(anchor) = timeline_anchor {
+                    metadata.insert("timeline_anchor_ms".to_string(), anchor);
+                }
                 let msg = nemesis_types::channel::InboundMessage {
                     channel: if context.channel.is_empty() {
                         "web".to_string()
@@ -523,9 +538,7 @@ impl AgentLoop {
                     media: Vec::new(),
                     session_key: context.session_key.clone(),
                     correlation_id: String::new(),
-                    metadata: [("hook_prompt".to_string(), "1".to_string())]
-                        .into_iter()
-                        .collect(),
+                    metadata,
                     voice_playback: None,
                     // 直塞门（拍板永久不动）：hook_prompt 走 enqueue_for_mode
                     // 绕过 busy gate，落点即 inbox 队列本体——msg_class 必须
@@ -1269,6 +1282,9 @@ impl AgentLoop {
                     "user",
                     &format!("[steer] {}", content),
                     &crate::chat_log::ChatLogMeta {
+                        // 批 C ⑥：steer 行也是真人消息（busy 中插话），
+                        // 同样带来源通道标记。
+                        channel: Some(m.msg.channel.as_str()),
                         images: &attach.ref_strings(),
                         steer: true,
                         ..Default::default()

@@ -269,7 +269,12 @@ describe('九键全迁 · 构建/计划与插队', () => {
     const store = useChatStore()
     const w = mountPanel('s1')
     await flushPromises()
-    const steer = () => w.findAll('.srp-tool-btn').filter((b) => b.text().includes('插队'))
+    // 2026-11-24 发送方式三键迁入后，面板有两个含「插队」的 .srp-tool-btn
+    //（会话工具卡的一键前缀 + 发送方式卡的 ⚡插队路由键）——本用例锚定
+    // 会话工具卡那颗（prefixSteer 语义），按卡标题过滤。
+    const toolsCard = () =>
+      w.findAll('.srp-card').find((c) => c.find('.srp-card-title').text() === '会话工具')!
+    const steer = () => toolsCard().findAll('.srp-tool-btn').filter((b) => b.text().includes('插队'))
     expect(steer().length).toBe(1)
     // 无前缀 → 加；已有半角/全角前缀 → 不动（单前缀，不叠加）。
     store.input = '修复登录 bug'
