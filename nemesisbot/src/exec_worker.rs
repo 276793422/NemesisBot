@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tracing::debug;
 
 use nemesis_agent::context::RequestContext;
@@ -301,16 +301,24 @@ async fn run_loop(workspace: &str) -> Result<()> {
     let mut journal = journal::Journal::open(Path::new(workspace));
 
     // Transport: named pipe if the gateway gave us one, else stdio (Layer 1).
+    // 两路共用同一传输循环（BUG-20261124-039 收敛）：错误语义单点——EOF=
+    // 干净退出、读错误/写失败=Err 上抛（修复前 stdio 分支静默吞错，与
+    // pipe 分支 loud 语义漂移）。
     #[cfg(windows)]
     if let Ok(pipe_name) = std::env::var("NEMESISBOT_EXECUTOR_PIPE") {
         let stream = nemesis_agent::executor_pipe::connect_client(&pipe_name)
             .await
             .context("connect executor pipe")?;
         debug!("[executor] connected to pipe {pipe_name}");
-        return pipe_loop(stream, &tools, &mut journal).await;
+        return transport_loop(stream, &tools, &mut journal).await;
     }
 
-    stdio_loop(&tools, &mut journal).await
+    transport_loop(
+        JoinRw(tokio::io::stdin(), tokio::io::stdout()),
+        &tools,
+        &mut journal,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -624,10 +632,59 @@ mod sandbox_denial {
     }
 }
 
-/// Named-pipe transport loop (sandbox mode).
-#[cfg(windows)]
-async fn pipe_loop(
-    stream: nemesis_agent::executor_pipe::NamedPipeClient,
+/// 读+写合一适配器：stdio 是两个独立对象（Stdin/Stdout），统一传输循环
+/// 需要「一个同时实现 AsyncRead+AsyncWrite 的东西」（pipe 流天然两者
+/// 兼备）。委托全部走 `get_mut`（Self: Unpin 由两个泛型参数的 Unpin
+/// bound 保证），零 unsafe 投影。
+struct JoinRw<R, W>(R, W);
+
+impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for JoinRw<R, W> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        std::pin::Pin::new(&mut this.0).poll_read(cx, buf)
+    }
+}
+
+impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for JoinRw<R, W> {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().1).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().1).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().1).poll_shutdown(cx)
+    }
+}
+
+/// 统一传输循环（pipe 与 stdio 两路共用，BUG-20261124-039 收敛）：错误
+/// 语义单点——EOF（对端关流）= 干净退出；读错误 = Err 上抛；写失败 =
+/// Err 上抛。修复前 stdio 分支把读错误静默吞成干净退出（`while let Ok`）、
+/// 写失败 `let _` 丢弃，而 pipe 分支一直 loud——同一进程两种传输两种
+/// 语义，模块头部「two transports, zero implementation drift」自述被
+/// 打破。执行体异常死亡（读错误/写失败）时非零退出 + stderr 线索随
+/// gateway 侧「executor child exited without a response (exit=…)」诊断
+/// 出境；静默吞掉时 gateway 只看到「无响应 + exit 0」。进程边界 IO
+/// 静默死亡家族（BUG-20261124-038）残面：038 横向排查只扫了「子进程
+/// stdout → 我们读」方向，这里是「gateway stdin → 子进程读」的另一半。
+async fn transport_loop<R: AsyncRead + AsyncWrite + Unpin>(
+    stream: R,
     tools: &HashMap<String, Box<dyn Tool>>,
     journal: &mut journal::Journal,
 ) -> Result<()> {
@@ -639,9 +696,9 @@ async fn pipe_loop(
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line).await {
-            Ok(0) => return Ok(()), // gateway closed → exit cleanly
+            Ok(0) => return Ok(()), // peer closed → exit cleanly
             Ok(_) => {}
-            Err(e) => return Err(anyhow::anyhow!("pipe read: {e}")),
+            Err(e) => return Err(anyhow::anyhow!("transport read: {e}")),
         };
         let line = line.trim_end_matches(['\n', '\r']).to_string();
         let resp_line = serve_line(&line, tools, journal).await;
@@ -649,29 +706,13 @@ async fn pipe_loop(
         stream
             .write_all(resp_line.as_bytes())
             .await
-            .context("pipe write")?;
-        stream.flush().await.context("pipe flush")?;
+            .context("transport write")?;
+        stream.flush().await.context("transport flush")?;
     }
 }
 
-/// stdio transport loop (Layer 1).
-async fn stdio_loop(
-    tools: &HashMap<String, Box<dyn Tool>>,
-    journal: &mut journal::Journal,
-) -> Result<()> {
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin).lines();
-
-    while let Ok(Some(line)) = reader.next_line().await {
-        let resp_line = serve_line(&line, tools, journal).await;
-        let _ = stdout.write_all(resp_line.as_bytes()).await;
-        let _ = stdout.flush().await;
-    }
-    Ok(())
-}
-
-/// 服务一行请求（两个传输循环共用的协议主体）：解析 → journal replay 命中
+/// 服务一行请求（pipe/stdio 两个传输调用点共用 transport_loop 的协议主体）：
+/// 解析 → journal replay 命中
 /// 回缓存行 → 未决意图分类（两相账）→ dispatch → （v2 请求）intent
 /// 记账 → journal 记账 → 序列化响应行。返回值恒带换行。
 async fn serve_line(

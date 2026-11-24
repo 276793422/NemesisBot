@@ -317,34 +317,20 @@ fn test_print_gateway_banner_long_token() {
 
 // -------------------------------------------------------------------------
 // load_security_rules parse_rules helper tests
+// （BUG-20261124-039：三则测试旧形态内联复制解析逻辑而非调用真函数——
+// 改真函数副本测试照过的漂移温床。现全部调用 `parse_rules` 真身；
+// 新增混合畸形断言钉「丢弃条目 WARN + 合法兄弟存活」。）
 // -------------------------------------------------------------------------
 
 #[test]
 fn test_parse_security_rules_from_json() {
-    use nemesis_security::types::SecurityRule;
-
-    let rules_json = serde_json::json!([
-        {"pattern": "*.exe", "action": "deny", "comment": "block executables"},
-        {"pattern": "/tmp/**", "action": "allow", "comment": ""}
-    ]);
-    let rules: Vec<SecurityRule> = rules_json
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    Some(SecurityRule {
-                        pattern: item.get("pattern")?.as_str()?.to_string(),
-                        action: item.get("action")?.as_str()?.to_string(),
-                        comment: item
-                            .get("comment")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let rules = crate::security_setup::parse_rules(
+        "file_rules.read",
+        &serde_json::json!([
+            {"pattern": "*.exe", "action": "deny", "comment": "block executables"},
+            {"pattern": "/tmp/**", "action": "allow", "comment": ""}
+        ]),
+    );
     assert_eq!(rules.len(), 2);
     assert_eq!(rules[0].pattern, "*.exe");
     assert_eq!(rules[0].action, "deny");
@@ -355,58 +341,56 @@ fn test_parse_security_rules_from_json() {
 
 #[test]
 fn test_parse_security_rules_empty_array() {
-    use nemesis_security::types::SecurityRule;
-
-    let rules_json = serde_json::json!([]);
-    let rules: Vec<SecurityRule> = rules_json
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    Some(SecurityRule {
-                        pattern: item.get("pattern")?.as_str()?.to_string(),
-                        action: item.get("action")?.as_str()?.to_string(),
-                        comment: item
-                            .get("comment")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    assert!(rules.is_empty());
+    // 空数组 = 空规则集；非数组值（含调用点的 Null 占位）同样落空集。
+    assert!(
+        crate::security_setup::parse_rules("file_rules.read", &serde_json::json!([])).is_empty()
+    );
+    assert!(
+        crate::security_setup::parse_rules("file_rules.delete", &serde_json::Value::Null)
+            .is_empty()
+    );
+    assert!(
+        crate::security_setup::parse_rules(
+            "file_rules.delete",
+            &serde_json::json!({"pattern": "not-an-array"})
+        )
+        .is_empty()
+    );
 }
 
 #[test]
 fn test_parse_security_rules_missing_fields() {
-    use nemesis_security::types::SecurityRule;
-
-    let rules_json = serde_json::json!([
-        {"pattern": "*.log"},
-        {"action": "allow"},
-        {}
-    ]);
-    let rules: Vec<SecurityRule> = rules_json
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    Some(SecurityRule {
-                        pattern: item.get("pattern")?.as_str()?.to_string(),
-                        action: item.get("action")?.as_str()?.to_string(),
-                        comment: item
-                            .get("comment")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // 畸形条目（缺 pattern/action）全部丢弃——修复后丢弃伴随 WARN（段名+
+    // 下标），断言面不变（Both fields required）。
+    let rules = crate::security_setup::parse_rules(
+        "file_rules.read",
+        &serde_json::json!([
+            {"pattern": "*.log"},
+            {"action": "allow"},
+            {}
+        ]),
+    );
     assert!(rules.is_empty()); // Both fields required
+}
+
+#[test]
+fn test_parse_security_rules_malformed_entries_warn_and_skip_valid_siblings() {
+    // BUG-20261124-039 回归锁：畸形条目（非字符串 pattern/action）逐条
+    // WARN 后跳过，合法兄弟条目照常存活——deny 规则不因一个坏条目整段
+    // 失明，也不再零信号。
+    let rules = crate::security_setup::parse_rules(
+        "file_rules.write",
+        &serde_json::json!([
+            {"pattern": "*.exe", "action": "deny"},
+            {"pattern": 123, "action": "deny"},
+            {"pattern": "/tmp/**", "action": 7},
+            {"action": "allow"},
+            {"pattern": "/var/**"}
+        ]),
+    );
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].pattern, "*.exe");
+    assert_eq!(rules[0].action, "deny");
 }
 
 // -------------------------------------------------------------------------
