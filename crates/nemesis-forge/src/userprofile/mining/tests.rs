@@ -927,6 +927,11 @@ fn terminal_command_candidates_gates() {
     assert_eq!(out[0].category, "tool_preference");
     assert!(out[0].content.contains("cargo"), "{}", out[0].content);
     assert!(
+        out[0].confidence >= 0.7,
+        "置信度基线钉在阈值 0.7（复查 2026-11-24），实际 {}",
+        out[0].confidence
+    );
+    assert!(
         !out.iter().any(|e| e.content.contains("release")),
         "参数不采集：条目内容只提命令名"
     );

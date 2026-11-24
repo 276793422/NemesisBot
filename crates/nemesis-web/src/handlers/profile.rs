@@ -263,7 +263,10 @@ impl ProfileHandler {
             return Err("older_than_days must be >= 1".to_string());
         }
         let ws = self.workspace(ctx)?;
-        let cutoff = chrono::Utc::now().timestamp_millis() - days * 24 * 60 * 60 * 1000;
+        // 饱和算术（复查 2026-11-24，配置面 i64 纪律）：极端大天数不 panic
+        // ——乘法饱和到 i64::MAX、减法饱和到 i64::MIN，cutoff 退化为极早时
+        // 间 = 什么都不清（诚实降级，不崩 handler）。
+        let cutoff = prune_cutoff_ms(days);
         let pruned_lessons =
             nemesis_forge::userprofile::bridge::prune_lessons_older_than(&ws, cutoff)?;
         let pruned_observations =
@@ -282,6 +285,16 @@ fn content_sub(data: Option<&Value>) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "missing or empty 'content'".to_string())
+}
+
+/// `profile.prune_queue` 的 cutoff 计算（复查 2026-11-24 抽出纯函数便于单
+/// 测）：`now − days×86400×1000`，两级饱和——乘法饱和到 i64::MAX、减法饱
+/// 和到 i64::MIN，极端大天数不 panic，cutoff 退化为极早时间 = 什么都不清
+///（诚实降级；配置面 i64 算术纪律同 decay_sweep/stale 安全网族）。
+pub(crate) fn prune_cutoff_ms(days: i64) -> i64 {
+    chrono::Utc::now()
+        .timestamp_millis()
+        .saturating_sub(days.saturating_mul(24 * 60 * 60 * 1000))
 }
 
 #[async_trait::async_trait]
@@ -332,3 +345,6 @@ impl ModuleHandler for ProfileHandler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

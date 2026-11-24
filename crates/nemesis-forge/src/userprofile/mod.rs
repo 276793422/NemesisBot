@@ -135,6 +135,9 @@ pub fn sweep_once(
     // ≥ min_new 触发；反思输入 = last_reflect_ms 之后的行（fallback 全窗）。
     // 失败/跳过**不清计数器**（计数器只表达「距上次成功反思的 sweep 数」
     // ——失败重置会让永不成功的反思通道永远够不到 20-sweep 闸）。
+    // 置信度阈值统一取口（复查 2026-11-24）：反思通道内部分档与下方收口
+    // 闸共用同一值——用户配置覆盖两处同源生效。
+    let confidence_threshold = up_cfg.confidence_threshold_or(store::CONFIDENCE_THRESHOLD);
     let reflect_window_start = snapshot.last_reflect_ms.unwrap_or(i64::MIN);
     let reflect_rows: Vec<DialogueRow> = rows
         .iter()
@@ -160,7 +163,7 @@ pub fn sweep_once(
             &priors,
             &events,
             rt,
-            up_cfg.confidence_threshold_or(store::CONFIDENCE_THRESHOLD),
+            confidence_threshold,
         ) {
             // 批 A 主语分型路由：habit → 画像 upsert；lesson（助手/LLM
             // 教训）→ bridge 队列落盘（Forge 未来消费，**不丢弃**也不入
@@ -203,6 +206,12 @@ pub fn sweep_once(
 
     // ---- 短临界区（锁内）：fresh load 消灭读改写窗口；同一次原子写落盘，
     //      中途失败水线不推进，下轮重扫本轮消息——at-least-once 语义。----
+    // 置信度收口闸（复查 2026-11-24）：全部候选（确定性挖掘 + 反思 habit）
+    // 统一 ≥阈值才进画像——挖掘器公式自身应达标（terminal_command 已改基
+    // 线 0.7），此闸是结构性防线：今后任何挖掘器公式调整低于阈值都不会静
+    // 默入画像；反思 habit 内部已按阈值分档，双闸无害（>= 语义与 v3.1
+    // 「置信度 ≥0.7 免确认自动生效」一致）。
+    candidates.retain(|c| c.confidence >= confidence_threshold);
     let _serial = nemesis_config::config_write_lock();
     let mut profile = store::try_load_profile(workspace)?;
     for c in candidates {

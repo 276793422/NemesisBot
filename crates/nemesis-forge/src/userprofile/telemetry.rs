@@ -8,8 +8,9 @@
 //! 成本纪律：
 //! - 全程 fire-and-forget（任何失败静默——遥测是学习侧旁路数据，绝不炸
 //!   dispatch 主路径）；
-//! - 同 (module, cmd) 30s 窗口去重（Dashboard 2-3s 轮询压缩成 30s 一条，
-//!   8MB 上限 + 单代轮转 `.old`）；
+//! - 同 (module, cmd, ok) 30s 窗口去重（Dashboard 2-3s 轮询压缩成 30s 一
+//!   条；**ok 分键**——失败后 30s 内重试成功的「失败→成功」对两条都落，
+//!   retry_candidates 挖掘器依赖该对子，8MB 上限 + 单代轮转 `.old`）；
 //! - 写闸 = config `user_profile.ui_telemetry`（缺省 true；mtime 缓存，
 //!   配置翻开关不重启生效）。关 = 不落盘（隐私面：存储即闸，不止不挖掘）。
 
@@ -17,15 +18,18 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// 同命令去重窗口（毫秒）。
+/// 同 (命令, 结果) 去重窗口（毫秒）。
 const DEDUP_WINDOW_MS: i64 = 30_000;
 /// 单文件轮转阈值（字节）。
 const ROTATE_BYTES: u64 = 8 * 1024 * 1024;
-/// 去重表容量上限（防 (module,cmd) 组合无界增长）。
+/// 去重表容量上限（防 (module,cmd,ok) 组合无界增长）。
 const DEDUP_CAP: usize = 512;
 
-/// (module, cmd) → 上次落盘 ts_ms（HashMap::new 非 const → LazyLock 包裹）。
-static DEDUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<(String, String), i64>>> =
+/// (module, cmd, ok) → 上次落盘 ts_ms（HashMap::new 非 const → LazyLock 包
+/// 裹）。**ok 是键的一部分**（复查 2026-11-24）：按 (module,cmd) 去重会把
+/// 「失败后 30s 内重试成功」的成功行吞掉，retry_candidates 恰恰依赖该
+/// 失败→成功对；同结果轮询仍压缩为一条。
+static DEDUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<(String, String, bool), i64>>> =
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 /// 写串行（多连接并发 dispatch 的 append 交错防线）。
 static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
@@ -51,11 +55,12 @@ pub fn record_wsapi_call(
     if !telemetry_enabled(home) {
         return;
     }
-    // 去重：同命令 30s 窗口一条（轮询压缩；真实重复点击 >30s 间隔照记）。
+    // 去重：同 (命令,结果) 30s 窗口一条（轮询压缩；真实重复点击 >30s 间隔
+    // 照记；失败→成功对不被去重吞掉——ok 分键）。
     let now_ms = chrono::Utc::now().timestamp_millis();
     {
         let mut dedup = DEDUP.lock();
-        let key = (module.to_string(), cmd.to_string());
+        let key = (module.to_string(), cmd.to_string(), ok);
         if let Some(last) = dedup.get(&key)
             && now_ms - *last < DEDUP_WINDOW_MS
         {
