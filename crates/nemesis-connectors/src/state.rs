@@ -79,16 +79,32 @@ pub fn load_tool_state(workspace: &Path, connector_id: &str) -> ToolPolicyState 
     // BOM 前缀会让 parse 失败走下方空表降级臂 = 意志静默丢失（本函数注释
     // 点名的「意志丢失风险」被 BOM 直接触发，且降级臂只 WARN 一声）。
     match nemesis_utils::fsutil::read_config_string(&path) {
-        Ok(text) => match serde_json::from_str::<ToolPolicyState>(&text) {
-            Ok(state) => state,
-            Err(e) => {
-                tracing::warn!(
-                    "[Connector] sidecar `{}` 存在但解析失败（按空表降级，停用位/例外状态回落基线）: {e}",
-                    path.display()
-                );
-                ToolPolicyState::default()
+        Ok(text) => {
+            // 形状闸前置（`ensure_object`，BUG-20261125-008）：
+            // ToolPolicyState 全字段 default 无 flatten，`[]` 曾走 serde
+            // visit_seq 零元素臂 = 静默 Default 零诊断（文件在场却无声丢失
+            // 停用位/例外意志）；object 闸后违形进既有 WARN 降级臂。
+            let parsed = serde_json::from_str::<serde_json::Value>(&text)
+                .map_err(|e| e.to_string())
+                .and_then(|v| {
+                    nemesis_utils::json_shape::ensure_object(&v, "connector sidecar")
+                        .map(|_| v)
+                        .map_err(|e| e.to_string())
+                })
+                .and_then(|v| {
+                    serde_json::from_value::<ToolPolicyState>(v).map_err(|e| e.to_string())
+                });
+            match parsed {
+                Ok(state) => state,
+                Err(e) => {
+                    tracing::warn!(
+                        "[Connector] sidecar `{}` 存在但解析失败/形状非法（按空表降级，停用位/例外状态回落基线）: {e}",
+                        path.display()
+                    );
+                    ToolPolicyState::default()
+                }
             }
-        },
+        }
         Err(_) => ToolPolicyState::default(),
     }
 }

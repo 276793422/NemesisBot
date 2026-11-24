@@ -202,19 +202,30 @@ pub fn remove(config_dir: &Path, slug: &str) -> Result<(), String> {
     write_switch_file(config_dir, &file)
 }
 
-/// 读开关文件；缺席/损坏 = 空 + WARN（fail-closed）。
+/// 读开关文件；缺席/损坏 = 空 + WARN（fail-closed）。形状闸前置
+/// （`ensure_object`，BUG-20261125-008）：SwitchFile 全字段 default 无
+/// flatten，`[]` 曾走 serde visit_seq 零元素臂 = 静默「全空」零诊断
+/// （wasm 全停方向无害但无可见性）；object 闸后违形进同臂 WARN。
 fn read_switch_file(config_dir: &Path) -> SwitchFile {
     let path = plugin_wasm_config_path(config_dir);
     let Ok(content) = nemesis_utils::fsutil::read_config_string(&path) else {
         return SwitchFile::default();
     };
-    match serde_json::from_str::<SwitchFile>(&content) {
+    let parsed = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|e| e.to_string())
+        .and_then(|v| {
+            nemesis_utils::json_shape::ensure_object(&v, "config.plugin.wasm.json")
+                .map(|_| v)
+                .map_err(|e| e.to_string())
+        })
+        .and_then(|v| serde_json::from_value::<SwitchFile>(v).map_err(|e| e.to_string()));
+    match parsed {
         Ok(f) => f,
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
-                "[WasmPlugin] 开关文件解析失败，全部按未启用处理（fail-closed）"
+                "[WasmPlugin] 开关文件解析失败/形状非法，全部按未启用处理（fail-closed）"
             );
             SwitchFile::default()
         }
