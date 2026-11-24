@@ -635,6 +635,9 @@ fn test_config_default_max_tool_iterations_matches_typed_default() {
     // serde default fn / Default impl / default_config() / 两处单测 / CLAUDE.md
     // 口径全部 100，唯独模板 0；onboard 用户 config.json 被显式写 0 =
     // 轮次治理「不限」，文档口径「默认 100（0=不限）」对其失效）。
+    // 2026-11-23 拍板把缺省整体翻向「不限」（typed 100→0，commit 5e2ed24e），
+    // 该轮漏同步模板与 CLAUDE.md 口径行（BUG-20261124-019：模板 100/typed 0
+    // 再漂移，本锁按契约红）——现模板 100→0、文档口径行同步，两侧再回同源。
     // 断言模板显式值 == typed 缺省（同源对齐：任一侧单独改都会红，逼同步）。
     let cfg: serde_json::Value = serde_json::from_str(CONFIG_DEFAULT).unwrap();
     let template = cfg["agents"]["defaults"]["max_tool_iterations"]
