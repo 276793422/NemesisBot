@@ -657,3 +657,65 @@ fn agent_credential_resolution_roundtrip_via_real_vault() {
         unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
     }
 }
+
+#[test]
+fn project_mirror_sync_refreshes_drifted_paths() {
+    // 部署搬家自愈（BUG-20261124-003）：exec_root/home_path 是创建时刻的
+    // 绝对路径快照——workspace/项目目录挪位后镜像记录陈旧，项目会话出站
+    // 恒报「项目当前不可用」。sync 必须刷新在场镜像的漂移字段（而非只造
+    // 缺失的），且目录当前不可用时诚实跳过保留现值。
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = setup(dir.path());
+    let ws = dir.path().join("workspace");
+    let proj_old = dir.path().join("proj-old");
+    std::fs::create_dir_all(&proj_old).unwrap();
+    let entries_old = vec![("p1".to_string(), "代码项目".to_string(), proj_old.clone())];
+    let created = mgr.sync_project_agents(&entries_old).unwrap();
+    assert_eq!(created.len(), 1);
+    let agent_id = created[0].clone();
+
+    // 部署搬家：项目目录换址 + 镜像记录整体变陈旧（模拟旧部署时代的
+    // 快照：exec_root 指向已删除的旧地址，home_path 同样漂移）。
+    std::fs::remove_dir_all(&proj_old).unwrap();
+    let proj_new = dir.path().join("proj-new");
+    std::fs::create_dir_all(&proj_new).unwrap();
+    let db = TaskDb::open(&nemesis_path::resolve_tasks_db_path_in_workspace(&ws)).unwrap();
+    let raw = nemesis_taskstore::SqliteAgentsStore::from_db(db);
+    let mut rec = raw.get(&agent_id).unwrap().unwrap();
+    rec.exec_root = proj_old.to_string_lossy().to_string();
+    rec.home_path = dir
+        .path()
+        .join("gone-home")
+        .join(&agent_id)
+        .to_string_lossy()
+        .to_string();
+    raw.upsert(&rec).unwrap();
+
+    // sync 到新地址 → 走刷新臂（created 空，agent_id 稳定）。
+    let entries_new = vec![("p1".to_string(), "代码项目".to_string(), proj_new.clone())];
+    let created2 = mgr.sync_project_agents(&entries_new).unwrap();
+    assert!(created2.is_empty(), "在场镜像走刷新臂，不得新建");
+    let after = mgr.get(&agent_id).unwrap().unwrap();
+    assert_eq!(after.exec_root, proj_new.to_string_lossy().to_string());
+    assert_eq!(
+        after.home_path,
+        resolve_agent_home_in_workspace(&ws, &agent_id)
+            .to_string_lossy()
+            .to_string(),
+        "home_path 对齐现 workspace 派生"
+    );
+
+    // 幂等：无漂移的二次同步零动作。
+    mgr.sync_project_agents(&entries_new).unwrap();
+    let after_same = mgr.get(&agent_id).unwrap().unwrap();
+    assert_eq!(after_same.exec_root, after.exec_root);
+
+    // 新地址消失（目录被删）→ 刷新诚实跳过，保留现值不写坏。
+    std::fs::remove_dir_all(&proj_new).unwrap();
+    mgr.sync_project_agents(&entries_new).unwrap();
+    let after2 = mgr.get(&agent_id).unwrap().unwrap();
+    assert_eq!(
+        after2.exec_root, after.exec_root,
+        "目录不可用时的刷新必须跳过（保留现值）"
+    );
+}

@@ -2159,12 +2159,11 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
     })
     // P20 冲突拒绝 = 零副作用：不重发、不重同步。M4 对称补全
     // （2026-11-12）：后端波及面默认拒绝有两个清单——conflicts（checkpoint
-    // 后被外部修改）与 other_session_paths（回退窗口内其他会话声明过的
-    // 路径，语义分列见 checkpoint.rs）。此前前端只数 conflicts：被拦原因
-    // 是其他会话波及时 toast 显示「0 个文件被外部修改」（误导），且 rewind
-    // 无 force 通道（redo 有确认流，不对称），用户被拦后无解。现分列展示 +
-    // window.confirm 确认后带 force 重试（B3 前工具栏重做按钮已移除，
-    // 确认流形态沿用 rewind 自身）。
+    // 后被外部修改）与 other_session_paths（回退窗口内其他会话的改动）。
+    // 确认卡文案 = 诚实化（BUG-20261124-001 复查）：旧「回退将覆盖以下改
+    // 动」在撞号误报时代会列出与本次回退无关的文件；后端收窄后清单已是
+    // 回退的真实波及面，文案按清单语义直说（每文件带下场注记），不再虚
+    // 指「回退窗口」范围。
     // blocked ≠ 只有 conflict（复查 2026-11-12 收窄回归修复）：restore_failed
     // /commit_failed（rewind.rs 文件恢复/日志写回失败，同样零改动、可处理后
     // 重试）必须诚实报错终止，不能穿透 rewindToastSummary 假成功——旧代码
@@ -2176,13 +2175,14 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
       }
       const conflicts: { path?: string }[] = resp?.conflicts ?? []
       const others: string[] = resp?.other_session_paths ?? []
+      const total = conflicts.length + others.length
       const lines = [
-        ...conflicts.map((c) => `${c.path ?? '?'}（checkpoint 后被外部修改）`),
-        ...others.map((p) => `${p}（其他会话的改动）`),
+        ...conflicts.map((c) => `${c.path ?? '?'}（外部修改过，将被回退覆盖）`),
+        ...others.map((p) => `${p}（其他会话的改动，将被回退覆盖）`),
       ].join('\n')
       if (
         !window.confirm(
-          `回退窗口内检出文件变更，回退将覆盖以下改动：\n${lines}\n\n确认覆盖并回退？`,
+          `本次回退将覆盖以下 ${total} 个文件：\n${lines}\n\n列表即回退的实际波及面；确认覆盖并回退？`,
         )
       )
         return null

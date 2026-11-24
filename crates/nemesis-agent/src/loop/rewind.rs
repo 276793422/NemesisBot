@@ -240,6 +240,17 @@ impl AgentLoop {
     /// snapshots the file's pre-edit content before execution, so a rewind can
     /// restore it.
     pub fn set_checkpoint_store(&self, store: Arc<crate::checkpoint::CheckpointStore>) {
+        // BUG-20261124-001 根修（turn 撞号自举）：turn 序号是本 loop 的内存
+        // 计数（重启归零），而 checkpoint 索引持久化跨 loop 世代存活——
+        // attach 存量索引后必须把计数器顶到存量之上，否则本世代新 mint 的
+        // turn 与盘上旧条目撞号，scoped 回退窗口的时序闸（begin 时刻）虽然
+        // 能兜住误报，撞号本身仍是时序闸降级路径（时刻不可解析）的隐患源。
+        // fetch_max：并发 mint 安全；max+1（turn 取 fetch_add 的**前值**，
+        // 0 起始）。
+        let max = store.max_turn();
+        if let Some(m) = max {
+            self.turn_counter.fetch_max(m + 1, Ordering::Relaxed);
+        }
         *self.security.checkpoint_store.write() = Some(store);
     }
 
@@ -704,7 +715,10 @@ impl AgentLoop {
         let mut written: Vec<String> = Vec::new();
         let mut deleted: Vec<String> = Vec::new();
         if let (Some(t), Some(cp)) = (restore_turn, self.attached_checkpoint()) {
-            let report = cp.restore_code(t).await;
+            // 会话收窄恢复（BUG-20261124-001/002）：目标树与窗口只认本会话、
+            // begin 不早于回退锚的条目——绝不撞进跨 loop 世代/其他会话的旧
+            // 树。上层冲突预检（conflict_scan_scoped）同源同闸。
+            let report = cp.restore_code_scoped(t, Some(session_key)).await;
             if report.ok() {
                 written = report.written;
                 deleted = report.deleted;

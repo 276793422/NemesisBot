@@ -1872,3 +1872,9 @@ mod l22_snooze_gate_tests;
 // 存活回归（jsonl 有行 = 生产不变量）→ 正常续行。
 #[cfg(test)]
 mod continuation_drop_gate_tests;
+
+// BUG-20261124-001 根修回归锁：set_checkpoint_store 的 turn 计数器自举
+// （fetch_max(max_turn+1)）——重启后新世代 mint 不与盘上存量条目撞号。
+// git 形态（存量条目落盘需要 tree）。
+#[cfg(all(test, feature = "checkpoint-git"))]
+mod bug24_tests;

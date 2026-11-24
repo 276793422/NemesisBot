@@ -398,7 +398,58 @@ fn persisted_checkpoint_belongs_to_other_session(
     }
 }
 
+/// 条目 begin 时刻解析（RFC3339，时区感知）。None = 解析失败（坏数据），
+/// 时序闸对该条目降级放行——不可解析不惩罚（与 `is_other_session` 的
+/// 「不可归属不惩罚」同纪律）。
+///
+/// BUG-20261124-001：turn 序号是 loop 内存计数（`turn_counter`，重启归零），
+/// 而索引持久化跨 loop 世代存活——撞号世代之间 turn 序不可比，begin 时刻
+/// 才是跨世代的唯一时序真相源。
+fn checkpoint_begin_time(c: &Checkpoint) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(&c.time).ok()
+}
+
+/// 回退锚条目（scoped 消费面的单一真相源）：本会话（scope 判定同
+/// [`is_other_session`]）、`turn <= from_turn` 且带影子 tree 的条目中，
+/// **begin 时刻最新**的一条。树面消费方（restore 目标树 / conflict 预检
+/// target_meta / git 补充的 diff 基准）全部从这里取树，口径单一。
+///
+/// 为什么按时刻不按 turn 序：turn 序撞号（见 [`checkpoint_begin_time`]）
+/// 时按 turn 序 `next_back` 会撞进上一个 loop 世代的旧树——把回退目标
+/// 选成别的世代的状态（BUG-20261124-002 的危险面）。begin 时刻最新 =
+/// 本次回退真锚。
+///
+/// None = 无同会话带 tree 条目（纯 JSON 形态 / 树全写失败）——时序闸
+/// 无从建立，消费方降级为仅会话归属过滤（不惩罚）。
+fn rewind_anchor_entry(
+    all: &[&Checkpoint],
+    from_turn: usize,
+    rewind_session: Option<&str>,
+) -> Option<Checkpoint> {
+    all.iter()
+        .filter(|c| c.turn <= from_turn && !is_other_session(&c.session, rewind_session))
+        .filter(|c| c.tree.is_some())
+        .max_by_key(|c| checkpoint_begin_time(c))
+        .map(|c| (*c).clone())
+}
+
 impl CheckpointStore {
+    /// 索引内最高 turn（None = 索引空，含内存与盘上载入的存量条目）。
+    ///
+    /// loop 侧 turn 计数器自举用（`AgentLoop::set_checkpoint_store`）：
+    /// turn 序号是 loop 内存计数，重启归零——attach 存量索引后必须把计数
+    /// 器顶到存量之上，否则本次世代新 mint 的 turn 与盘上旧条目撞号
+    /// （BUG-20261124-001 根床）。
+    pub fn max_turn(&self) -> Option<usize> {
+        let guard = self.inner.lock();
+        guard
+            .done
+            .iter()
+            .map(|c| c.turn)
+            .chain(guard.cur.values().map(|c| c.turn))
+            .max()
+    }
+
     /// Create a store for the given checkpoint dir and workspace root, loading
     /// any checkpoints already persisted under `dir`. `dir = None` disables
     /// persistence (in-memory only for the session).
@@ -1537,20 +1588,32 @@ impl CheckpointStore {
         self.conflict_scan_scoped(from_turn, None)
     }
 
-    /// 会话收窄版冲突预检。`rewind_session = Some(回退发起会话)` 时，
-    /// 回退区间内**其他会话**（条目归属 ≠ 发起会话）声明过变更的路径进
-    /// `other_session_paths`（默认拒绝，force 显式强过）——它们会被 restore
-    /// 的全树恢复碾掉但不属于本次回退意图。None = 不收窄（旧全局语义）。
-    /// 不可归属条目（session=None）按「同会话」处理：走既有指纹比对语义，
-    /// 单会话与存量数据行为逐字节不变。其他会话路径不做指纹比对（封印态
-    /// 通常=现盘态，冲突语义是「波及」而非「外部修改」；若其文件确被外部
-    /// 改动，仍默认拒绝，只是标签归入波及面）。
+    /// 会话收窄版冲突预检。`rewind_session = Some(回退发起会话)` 时按
+    /// 「会话归属 + begin 时序」双闸收窄回退窗口（BUG-20261124-001）：
+    /// turn 序号是 loop 内存计数、重启归零，与盘上跨重启存量的旧条目撞号
+    /// ——纯 turn 序窗口会把上一个 loop 世代其他会话的旧条目错当「窗口
+    /// 内」，声明面洪泛误报（用户实测：删一轮弹出 18 个无关文件）。
     ///
-    /// BUG-20261120-044 补闸：git 全树面的回退窗口内**未声明**偏离（exec
-    /// 副作用等不经 snapshot 声明的写）同样可能是其他会话产生的——按
-    /// begin-tree 窗口归因（`attribute_window_change`）落到其他会话 turn
-    /// 窗口的，补进 `other_session_paths` 同待遇（默认拒绝）；归因不出 /
-    /// 本会话 / 老数据（session=None）= 维持既有 silent 语义（回退本意）。
+    /// 收窄后的波及面判定：
+    /// - 本会话窗口条目照旧走指纹比对（conflicts / unchecked）；
+    /// - 其他会话**树面可见**的写入改由 tree-diff 归因收集（真实波及面
+    ///   ——只报它真正动过的文件），其已封印条目的声明路径不再按 turn 序
+    ///   全量收集；
+    /// - 其他会话**归因盲区**（begin 之后无更晚窗口树吸收其写入——
+    ///   in-flight turn / 尾部无后继 begin tree）的声明路径仍单列进
+    ///   `other_session_paths`（默认拒绝，force 显式强过）。
+    ///
+    /// None = 不收窄（旧全局语义逐字节不变）。不可归属条目（session=None）
+    /// 按「同会话」处理：走既有指纹比对语义，不可归属不惩罚。其他会话路径
+    /// 不做指纹比对（封印态通常=现盘态，冲突语义是「波及」而非「外部修
+    /// 改」；若其文件确被外部改动，仍默认拒绝，只是标签归入波及面）。
+    ///
+    /// BUG-20261120-044 补闸保持：git 全树面的回退窗口内**未声明**偏离
+    /// （exec 副作用等不经 snapshot 声明的写）同样可能是其他会话产生的——
+    /// 按 begin-tree 窗口归因（`attribute_window_change`）落到其他会话
+    /// turn 窗口的，补进 `other_session_paths` 同待遇（默认拒绝）；归因
+    /// 不出 / 本会话 / 老数据（session=None）= 维持既有 silent 语义（回
+    /// 退本意）。
     pub fn conflict_scan_scoped(
         &self,
         from_turn: usize,
@@ -1570,17 +1633,21 @@ impl CheckpointStore {
         // 重复出现两条）。
         let mut other_paths: Vec<String> = Vec::new();
         let mut other_seen: HashSet<String> = HashSet::new();
-        // restore 同款守卫：from_turn 后无 checkpoint → no-op（锁内一次性赋值）。
+        // restore 同款守卫：窗口内（收窄后）无本会话条目 → has_post=false
+        // （锁内一次性赋值）。
         let has_post;
+        // 回退锚（scoped）：树面消费的单一真相源——diff 基准树与归属会话
+        // 都从这里取（与 restore_code_scoped 的 target 同源，R137 审计
+        // 「同选树口径」契约）。
+        let anchor: Option<Checkpoint>;
         // （BUG-20261120-044）回退窗口内各 turn 的 (turn, session, tree) 三元组
         // （tree Some 才有归因价值）。git 全树面的 in-window 未声明偏离此前被
         // 一律归为「回退本意」零闸碾过——多会话共享索引时产生者可以是**其他
         // 会话**（其 exec 副作用不经 snapshot 声明，other_session_paths 的声明
         // 面收集不到），须按窗口归属补闸。
         let window_trees: Vec<(usize, Option<String>, String)>;
-        // BUG-20261120-044：target 树条目（最新 tree ≤ from_turn）的归属
-        // 会话——首对差异（target → 首棵窗口树）归属 target 条目所属 turn
-        // 的执行窗口（即回退锚 turn 本身）。
+        // target 树条目的归属会话——首对差异（target → 首棵窗口树）归属
+        // target 条目所属 turn 的执行窗口（即回退锚 turn 本身）。
         let target_meta: Option<(Option<String>, String)>;
         {
             let guard = self.inner.lock();
@@ -1588,25 +1655,42 @@ impl CheckpointStore {
             // cur 桶化——所有会话的进行中 turn 都参与全量收集。
             all.extend(guard.cur.values());
             all.sort_by_key(|c| c.turn);
-            has_post = all.iter().any(|c| c.turn >= from_turn);
-            for c in all.iter().filter(|c| c.turn >= from_turn) {
-                let paths: Vec<String> = if c.paths.is_empty() {
+
+            let scoped = rewind_session.is_some();
+            anchor = if scoped {
+                rewind_anchor_entry(&all, from_turn, rewind_session)
+            } else {
+                None
+            };
+            let anchor_time = anchor.as_ref().and_then(checkpoint_begin_time);
+            // 时序闸：条目 begin 不早于回退锚（含锚自身）。锚/条目任一时刻
+            // 不可解析 = 降级放行（不可解析不惩罚；锚 None 同理整体降级为
+            // 仅会话归属过滤）。
+            let temporally_in_window = |c: &Checkpoint| -> bool {
+                match (anchor_time, checkpoint_begin_time(c)) {
+                    (Some(at), Some(ct)) => ct >= at,
+                    _ => true,
+                }
+            };
+            let declared_paths = |c: &Checkpoint| -> Vec<String> {
+                if c.paths.is_empty() {
                     c.files.iter().map(|f| f.path.clone()).collect()
                 } else {
                     c.paths.clone()
-                };
-                // 其他会话的 turn——单列进 other_session_paths，不进
-                // last_declared（不重复出现在 unchecked/git-form 补充里）。
-                if is_other_session(&c.session, rewind_session) {
-                    for p in paths {
-                        if !other_seen.insert(self.comparable_path_form(&p)) {
-                            continue;
-                        }
-                        other_paths.push(p);
-                    }
-                    continue;
                 }
-                for p in paths {
+            };
+            has_post = all.iter().any(|c| {
+                c.turn >= from_turn
+                    && !is_other_session(&c.session, rewind_session)
+                    && temporally_in_window(c)
+            });
+            // 本会话窗口条目 → 指纹比对面（封印指纹 vs 现盘）。
+            for c in all.iter().filter(|c| {
+                c.turn >= from_turn
+                    && !is_other_session(&c.session, rewind_session)
+                    && temporally_in_window(c)
+            }) {
+                for p in declared_paths(c) {
                     let fp = c
                         .after
                         .iter()
@@ -1621,17 +1705,53 @@ impl CheckpointStore {
                     }
                 }
             }
+            // 归因窗口树（先算——盲区判定要以「有更晚窗口树吸收写入」为
+            // 基准）。scoped：时序闸（严格晚于锚 begin）——跨 loop 世代撞
+            // 号旧树的 begin 早于锚，被淘汰；本世代真窗口树（含
+            // (锚, from_turn] 段）保留，归因覆盖比旧 turn 序口径更完整。
+            // 归因窗口不分会话（其他会话的树正是归属证据）。
+            // None = 旧全局语义（不收窄）：维持 turn 序窗口逐字节不变。
             window_trees = all
                 .iter()
-                .filter(|c| c.turn > from_turn)
+                .filter(|c| c.tree.is_some())
+                .filter(|c| match anchor_time {
+                    Some(at) => checkpoint_begin_time(c).is_some_and(|ct| ct > at),
+                    None => c.turn > from_turn,
+                })
                 .filter_map(|c| c.tree.clone().map(|t| (c.turn, c.session.clone(), t)))
                 .collect();
-            target_meta = all
-                .iter()
-                .filter(|c| c.turn <= from_turn)
-                .rev()
-                .find(|c| c.tree.is_some())
-                .map(|c| (c.session.clone(), c.tree.clone().unwrap()));
+            // 其他会话条目：已封印条目的写入归因树面可见（封印后必有更晚
+            // begin tree 吸收其写入），改由下方 tree-diff 归因收集真实波及
+            // 面；声明面只保留**归因盲区**——begin 之后无更晚窗口树吸收其
+            // 写入（in-flight / 尾部无后继树）的条目，其声明路径单列拦截
+            // （rewind 的全树检出会碾掉它们而树面看不见）。
+            if scoped {
+                let max_window_tree_turn = window_trees.iter().map(|(t, _, _)| *t).max();
+                for c in all.iter().filter(|c| {
+                    c.turn >= from_turn
+                        && is_other_session(&c.session, rewind_session)
+                        && temporally_in_window(c)
+                        && max_window_tree_turn.is_none_or(|mt| c.turn >= mt)
+                }) {
+                    for p in declared_paths(c) {
+                        if !other_seen.insert(self.comparable_path_form(&p)) {
+                            continue;
+                        }
+                        other_paths.push(p);
+                    }
+                }
+            }
+            target_meta = if scoped {
+                anchor
+                    .as_ref()
+                    .map(|a| (a.session.clone(), a.tree.clone().expect("anchor 恒带 tree")))
+            } else {
+                all.iter()
+                    .filter(|c| c.turn <= from_turn)
+                    .rev()
+                    .find(|c| c.tree.is_some())
+                    .map(|c| (c.session.clone(), c.tree.clone().unwrap()))
+            };
         }
         report.other_session_paths = other_paths;
         let declared: std::collections::HashSet<String> =
@@ -1666,13 +1786,19 @@ impl CheckpointStore {
         // 常态是绝对路径，原样 contains 恒 miss → 声明过的路径全量漏进
         // unchecked 假警告）；归一 None（界外/不可定）= 不会出现在 tree
         // delta 里，丢弃。
+        // BUG-20261124-002：scoped 时 diff 基准 = 回退锚树（rewind_anchor_
+        // entry，与 restore_code_scoped 的 target 同一真相源）；旧全局语义
+        // 维持 turn 序取树逐字节不变。
+        let scan_target_hex = if rewind_session.is_some() {
+            anchor.as_ref().and_then(|a| a.tree.clone())
+        } else {
+            self.tree_hex_at_or_before(from_turn)
+        };
         #[cfg(feature = "checkpoint-git")]
         if has_post
             && let Some(gb) = self.git.as_ref()
-            && let (Some(target_hex), Some(reference_hex)) = (
-                self.tree_hex_at_or_before(from_turn),
-                self.latest_tree_hex(),
-            )
+            && let (Some(target_hex), Some(reference_hex)) =
+                (scan_target_hex, self.latest_tree_hex())
         {
             let mut excluded: std::collections::HashSet<String> = declared
                 .iter()
@@ -1748,7 +1874,13 @@ impl CheckpointStore {
         }
         // checkpoint-git 关：全树 diff 段不编译，has_post 消费面消失。
         #[cfg(not(feature = "checkpoint-git"))]
-        let _ = (has_post, declared, window_trees, target_meta);
+        let _ = (
+            has_post,
+            declared,
+            window_trees,
+            target_meta,
+            scan_target_hex,
+        );
         report
     }
 
@@ -1881,15 +2013,40 @@ impl CheckpointStore {
     /// (written, deleted) 两 vec 把失败静默吞掉，rewind 侧无条件盖
     /// 「applied」戳并摧毁 checkpoint，失败后无法重试）。
     ///
+    /// 全局旧语义入口（无会话语境的调用方用这个）；会话级回退
+    /// （rewind_from_cut）走 [`Self::restore_code_scoped`]。
+    ///
     /// git 模式：target = 最新 `turn <= from_turn` 的影子 tree；对 target..现状
     /// 的真实 diff 逐文件恢复/删除——覆盖 shell 副作用（preview 声明之外的
     /// 文件）。工作区外的 hybrid 内容快照（files 里 content Some 的）在 tree
     /// 恢复后按 JSON 语义补写。
     pub async fn restore_code(&self, from_turn: usize) -> RestoreReport {
+        self.restore_code_scoped(from_turn, None).await
+    }
+
+    /// [`Self::restore_code`] 的会话收窄版（BUG-20261124-001/002）：会话
+    /// 归属 + begin 时序双闸——turn 序号是 loop 内存计数、重启归零，与盘上
+    /// 跨重启存量的旧条目撞号；纯 turn 序判定会把别的世代/别的会话的旧树
+    /// 选成回退目标（跨会话全树检出 = 碾掉兄弟会话工作区的危险面）、把别
+    /// 的世代的 hybrid 快照当成本次回退窗口。收窄后：
+    /// - 目标树 = 回退锚树（`rewind_anchor_entry` 单一真相源，与
+    ///   `conflict_scan_scoped` 的 diff 基准同源）；
+    /// - hybrid 收集与零条目判定只认「本会话、begin 不早于锚」的条目；
+    /// - 其他会话的 hybrid 快照绝不回放（回放 = 碾兄弟会话工作区外文件）。
+    ///
+    /// 其余语义（git 全树 diff 恢复 / 失败分明 / 零条目诚实信号）与全局版
+    /// 一致；`rewind_session = None` 时逐字节等于旧 `restore_code`。
+    pub async fn restore_code_scoped(
+        &self,
+        from_turn: usize,
+        rewind_session: Option<&str>,
+    ) -> RestoreReport {
         // ----：inner 锁内定 target tree + hybrid 集合，随即放锁 ----
         // 第三元 = 零条目信号（见 [`RestoreReport::no_checkpoint_from_turn`]）
-        // ：from_turn 之后索引里没有任何条目 = tree/hybrid 双双无源、本次
-        // 调用什么都没做，回执必须诚实反映（不得谎称「applied」）。
+        // ：收窄后的窗口里没有任何条目 = tree/hybrid 双双无源、本次调用什
+        // 么都没做，回执必须诚实反映（不得谎称「applied」）。scoped 下其他
+        // 会话的条目不再掩蔽本会话的零条目信号（BUG-20261112-110 语义的
+        // 会话精确化）。
         let (target_hex, hybrid, capture_failures, no_entries) = {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
@@ -1897,15 +2054,36 @@ impl CheckpointStore {
             all.extend(guard.cur.values());
             all.sort_by_key(|c| c.turn);
 
-            // 与 JSON 模式同款语义守卫：from_turn 之后没有任何 checkpoint → no-op。
-            if !all.iter().any(|c| c.turn >= from_turn) {
+            let scoped = rewind_session.is_some();
+            let anchor = if scoped {
+                rewind_anchor_entry(&all, from_turn, rewind_session)
+            } else {
+                None
+            };
+            let anchor_time = anchor.as_ref().and_then(checkpoint_begin_time);
+            // 回退窗口成员 = 本会话、turn >= from_turn、begin 不早于锚
+            // （含锚自身；时序不可解析降级放行）。
+            let window_member = |c: &Checkpoint| -> bool {
+                c.turn >= from_turn
+                    && !is_other_session(&c.session, rewind_session)
+                    && match (anchor_time, checkpoint_begin_time(c)) {
+                        (Some(at), Some(ct)) => ct >= at,
+                        _ => true,
+                    }
+            };
+
+            // 窗口收窄后无任何条目 → no-op。
+            if !all.iter().any(|c| window_member(c)) {
                 (None, Vec::new(), Vec::new(), true)
             } else {
-                let target = all
-                    .iter()
-                    .filter(|c| c.turn <= from_turn)
-                    .filter_map(|c| c.tree.clone())
-                    .next_back();
+                let target = if scoped {
+                    anchor.as_ref().and_then(|a| a.tree.clone())
+                } else {
+                    all.iter()
+                        .filter(|c| c.turn <= from_turn)
+                        .filter_map(|c| c.tree.clone())
+                        .next_back()
+                };
                 // hybrid：工作区外的内容快照（git 模式才可能产生；earliest wins
                 // 同 JSON 模式）。in-root None = 「tree 负责」的跳过条件有两个
                 // 触发面：**当前是 git 模式**（tree 恢复接手），或**该记录本身
@@ -1926,7 +2104,7 @@ impl CheckpointStore {
                 // 侧 seen 同款归一）——形态变体不归一会漏去重，mid-turn 内
                 // 容覆盖 turn-start 基线。
                 let mut hybrid_seen: HashSet<String> = HashSet::new();
-                for c in all.iter().filter(|c| c.turn >= from_turn) {
+                for c in all.iter().filter(|c| window_member(c)) {
                     for f in &c.files {
                         if (git_mode || c.tree.is_some())
                             && f.content.is_none()
@@ -2564,3 +2742,10 @@ mod pack_lock_tests;
 // 阻塞探测 + gc 重建全程持锁 + 并发 begin 无 index.lock 竞态败者。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod op_lock_tests;
+
+// BUG-20261124-001/002 回归锁：跨世代 turn 撞号——重载盘上存量索引后
+// 撞号 turn 的时间窗不得把旧世代其他会话条目泛洪进波及面；restore 靶树
+// 锚定本会话最新 begin 的 tree（不再取全局最高 turn 的树）；max_turn
+// 覆盖 done+cur 双桶（loop 自举依据）。全 git 形态。
+#[cfg(all(test, feature = "checkpoint-git"))]
+mod bug24_tests;

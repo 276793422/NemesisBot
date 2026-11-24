@@ -449,23 +449,56 @@ impl AgentManager {
     }
 
     /// 项目 agent 镜像同步（boot-time 幂等）：projects.json 条目 → agents
-    /// 表。已存在（按 project_id 匹配）跳过；不存在则创建（exec_root=
-    /// 项目目录）。项目移除后表记录保留（与 projects.json「注册不拥有」
-    /// 同语义；孤儿由 `owner_of` 链路自然降级）。
+    /// 表。已存在（按 project_id 匹配）做**漂移自愈**（BUG-20261124-003：
+    /// exec_root/home_path 是创建时刻的绝对路径快照——项目目录搬迁或整包
+    /// workspace 换址后存量记录指旧址，spec 装配 `validate_exec_root` 失败
+    /// =「项目当前不可用」假象）；无漂移跳过；新 exec_root 校验失败则
+    /// WARN 保留现值（不把能跑的镜像改坏）；不存在则创建（exec_root=项目
+    /// 目录）。项目移除后表记录保留（与 projects.json「注册不拥有」同语
+    /// 义；孤儿由 `owner_of` 链路自然降级）。
     pub fn sync_project_agents(
         &self,
         entries: &[(String, String, PathBuf)],
     ) -> Result<Vec<String>, String> {
         let mut created = Vec::new();
-        let known: Vec<String> = self
+        let mut refreshed = 0usize;
+        let existing: Vec<AgentRecord> = self
             .store
             .list_all()?
             .into_iter()
             .filter(|r| r.kind == agent_kind::PROJECT)
-            .filter_map(|r| r.project_id)
+            .filter(|r| r.project_id.is_some())
             .collect();
         for (project_id, name, path) in entries {
-            if known.contains(project_id) {
+            // 已有镜像 → 漂移自愈。
+            if let Some(record) = existing
+                .iter()
+                .find(|r| r.project_id.as_deref() == Some(project_id.as_str()))
+            {
+                let new_exec = match validate_exec_root(path) {
+                    Ok(p) => p.to_string_lossy().to_string(),
+                    Err(e) => {
+                        tracing::warn!(
+                            "[Agents] 项目 {project_id} 镜像刷新跳过（项目目录当前不可用，保留现值 {}）: {e}",
+                            record.exec_root
+                        );
+                        continue;
+                    }
+                };
+                // agent_id 稳定 → home 派生路径只随 workspace 换址变化。
+                let new_home = home_path_str(&self.workspace, &record.agent_id);
+                if record.exec_root == new_exec && record.home_path == new_home {
+                    continue;
+                }
+                let mut updated = record.clone();
+                updated.exec_root = new_exec;
+                updated.home_path = new_home;
+                // 项目改名联动：镜像 name 同步注册表现值（seed 时刻的快照
+                // 同样会陈旧）。
+                updated.name = name.clone();
+                self.store.upsert(&updated)?;
+                materialize_home(&self.workspace, &record.agent_id)?;
+                refreshed += 1;
                 continue;
             }
             let exec_root = validate_exec_root(path).map_err(|e| {
@@ -486,6 +519,11 @@ impl AgentManager {
                 agent_status::ACTIVE,
             )?;
             created.push(agent_id);
+        }
+        if refreshed > 0 {
+            tracing::info!(
+                "[Agents] 项目镜像自愈刷新: {refreshed} 条（exec_root/home_path 对齐现部署）"
+            );
         }
         Ok(created)
     }
