@@ -719,6 +719,10 @@ fn begin_rejects_invalid_paths_in_manifest() {
         "a\\b.md",
         "X:/drive.md",
         "dir~1/name.md",
+        // Windows 保留设备名 wire 级闸（BUG-20261124-030）：size=0 的 NUL
+        // 形态曾是静默完整性破坏（组装写进设备→空核验恒过→ACK ok 但落地
+        // 缺文件）。
+        "NUL",
         "",
     ] {
         let reply = sink.begin(&mk(bad));
@@ -741,6 +745,16 @@ fn safe_relative_path_unit_matrix() {
         "colon:name.md",
         "short~1.md",
         "dir/name~9.txt",
+        // Windows 保留设备名（BUG-20261124-030）：裸名/带扩展/大小写/嵌套
+        // 全拒；Linux worker 交付树可合法含这些名（意外触发面）。
+        "CON",
+        "con.txt",
+        "NUL",
+        "nul",
+        "COM1",
+        "lpt9",
+        "AUX.log",
+        "sub/CON/data.md",
         "",
         "   ",
     ] {
@@ -752,6 +766,10 @@ fn safe_relative_path_unit_matrix() {
         "中文 目录/文件.md",
         "a..b.md",
         "x~.md",
+        // 仅前缀重合的普通名不误伤（全词匹配）。
+        "CONST.md",
+        "console.log",
+        "sub/NULLIFY.md",
     ] {
         assert!(safe_relative_path(ok).is_ok(), "{ok:?} 应放行");
     }

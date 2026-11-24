@@ -122,7 +122,8 @@ fn is_short_name(comp: &str) -> bool {
 /// 路径围栏：manifest 声明的相对路径单点校验（语义复用 anchor
 /// `resolve_anchor_path`，代码独立——nemesis-cluster 不依赖 nemesis-board）。
 /// 拒绝：空串、绝对路径、盘符、反斜杠、`..`/`.` 组件、8.3 短名组件、
-/// 非 UTF-8。返回以 `/` 为分隔的相对 PathBuf（落地时 join 到接收目录）。
+/// Windows 保留设备名组件、非 UTF-8。返回以 `/` 为分隔的相对 PathBuf
+/// （落地时 join 到接收目录）。
 pub fn safe_relative_path(rel: &str) -> Result<PathBuf, String> {
     let t = rel.trim();
     if t.is_empty() {
@@ -149,6 +150,17 @@ pub fn safe_relative_path(rel: &str) -> Result<PathBuf, String> {
                 }
                 if is_short_name(s) {
                     return Err(format!("拒绝 8.3 短名组件：{t}"));
+                }
+                // BUG-20261124-030：Win32 对路径中保留设备名组件（CON/NUL/
+                // COM1-9 等 22 名，带扩展同拒）映射到设备而非文件，`\\?\`
+                // 才逃逸——size=0 条目组装 `fs::write` 写进设备（磁盘无文件）
+                // → 空文件核验恒过 → end ACK ok 但落地档案缺文件（静默完整
+                // 性破坏）；非空条目 = 组装写失败诚实卡死。Linux worker 交付
+                // 树可合法含这些名（意外触发），认证对端可恶意构造（SAN-03/05
+                // 同档威胁模型）。名单单一真相源 nemesis-utils::sanitize
+                // （BUG-20261112-087 同源；`CONST` 等仅前缀重合的普通名不误伤）。
+                if nemesis_utils::sanitize::is_windows_reserved_device_base(s) {
+                    return Err(format!("拒绝 Windows 保留设备名组件：{t}"));
                 }
             }
             _ => return Err(format!("拒绝非普通路径组件：{t}")),
