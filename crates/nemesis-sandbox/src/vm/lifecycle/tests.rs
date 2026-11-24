@@ -310,6 +310,42 @@ async fn start_rejects_comma_path_before_spawn() {
     );
 }
 
+/// BUG-20261125-016 回归锁：run_dir 含逗号必须在 spawn 前诚实拒绝。
+/// serial.log（`-serial file:`）与睡眠 vm.state（`sleep_via_qmp` 的
+/// migrate file: URI）都以 `file:<路径>` 形态嵌进 QEMU 单 argv——与
+/// `-incoming file:,offset=` 同族的子选项分隔面，但逃出了
+/// validate_launch_spec 的既有校验面（它只查 overlay/shared_host/
+/// incoming/token）。run_dir 由 workspace 派生 = 用户可含逗号路径类
+/// （闸 rationale 原文「项目路径用户任意、可含逗号」）。这里 overlay
+/// 刻意干净——错误必须来自 run_dir 闸而非既有闸（若闸序/闸面错位会
+/// 落到「spawn 失败」）。拒绝先于 create_dir_all——零副作用断言。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_rejects_comma_run_dir_before_spawn() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let run_dir = tmp.path().join("run,dir");
+    let params = VmStartParams {
+        id: "test-1".into(),
+        run_dir: run_dir.clone(),
+        qemu_bin: tmp.path().join("no-such-qemu-system-x86_64"),
+        accel: QemuAccel::Kvm,
+        arch: GuestArch::X86_64,
+        vcpu: 1,
+        ram_mb: 256,
+        overlay_path: tmp.path().join("o.qcow2"),
+        token: generate_token(),
+        shared_host_path: None,
+        loadvm_tag: None,
+        incoming_file: None,
+        display_vnc_port: None,
+    };
+    let err = VmInstance::start(params).await.unwrap_err();
+    assert!(
+        matches!(&err, VmError::Launch(m) if m.contains("逗号") && m.contains("run_dir")),
+        "{err:?}"
+    );
+    assert!(!run_dir.exists(), "拒绝必须先于 create_dir_all（零副作用）");
+}
+
 // ---------------------------------------------------------------------------
 // 首帧鉴权 + 工具调用：进程内 guest 全链回归（真实 TCP，无 QEMU）
 // ---------------------------------------------------------------------------
