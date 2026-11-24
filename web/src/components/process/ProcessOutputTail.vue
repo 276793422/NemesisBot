@@ -217,6 +217,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms))
 }
 
+// --- 折叠态（compact 专用，2026-11-24 用户拍板改版）：默认收起成一行
+// （状态行即全部），点状态行展开输出窗、再点收起。full 态（执行单元页
+// 详情模态）初值即 true 且无切换入口，行为与改版前完全一致。运行中也
+// 默认收起——呼吸点闪烁 + 时长走表表达「活着」（不做「运行中默认展开、
+// 结束自动收起」：用户明确否决）。轮询逻辑零改动：收起期间照常追帧，
+// 展开瞬间内容已在手。
+const expanded = ref(!props.compact)
+
+function toggleExpanded() {
+  if (!props.compact) return
+  expanded.value = !expanded.value
+  if (expanded.value) {
+    // 展开瞬间贴底：新挂载的 tail 从顶部开始，最新输出应进视口
+    // （与跟随语义一致；用户上滚暂停的 followPaused 检查同轮询路径）。
+    nextTick(() => {
+      if (!followPaused.value) scrollToBottom()
+    })
+  }
+}
+
 watch(
   () => props.jobId,
   () => {
@@ -275,9 +295,11 @@ function excerptCmd(cmd: string, n = 40): string {
 </script>
 
 <template>
-  <div class="pot" :class="{ compact }">
-    <!-- 状态行：id · 命令 · 时长 · 字节（compact 同款单行） -->
-    <div class="pot-status">
+  <div class="pot" :class="{ compact, collapsed: compact && !expanded }">
+    <!-- 状态行：id · 命令 · 时长 · 字节（compact 同款单行）。compact 态
+         整行点击 = 展开/收起（2026-11-24 改版）；full 态无点击行为。 -->
+    <div class="pot-status" :class="{ 'is-toggle': compact }" @click="toggleExpanded">
+      <span v-if="compact" class="pot-caret">{{ expanded ? '▾' : '▸' }}</span>
       <span class="pot-dot" :class="phase === 'live' && meta?.running ? 'is-run' : meta?.running ? 'is-run' : 'is-end'"></span>
       <span class="pot-id">#{{ jobId }}</span>
       <span class="pot-cmd" :title="meta?.command">{{ meta ? excerptCmd(meta.command) : '…' }}</span>
@@ -288,34 +310,40 @@ function excerptCmd(cmd: string, n = 40): string {
       </span>
       <span style="flex: 1"></span>
       <button v-if="!compact" class="btn btn-sm pot-stop" :disabled="!meta?.running" @click="stopJob">停止进程</button>
-      <button v-if="compact" class="pot-link" @click="openFull">完整输出 →</button>
+      <!-- 深链只在展开态（收起态整行点击语义归展开/收起）；stop 防误触
+           发行切换。 -->
+      <button v-if="compact && expanded" class="pot-link" @click.stop="openFull">完整输出 →</button>
     </div>
 
-    <!-- 丢弃徽标：环形缓冲头部被淘汰（超出 256KB 上限） -->
-    <div v-if="droppedSeen > 0" class="pot-dropped">
-      已丢弃开头 {{ formatBytes(droppedSeen) }}（超出输出缓冲上限，早期内容不可回看）
-    </div>
+    <!-- 展开控制区（compact 默认收起；full 恒展开）：丢弃徽标 / 三态提示 /
+         tail 窗 / steer 注入面全部收进——收起 = 纯状态行。 -->
+    <template v-if="expanded">
+      <!-- 丢弃徽标：环形缓冲头部被淘汰（超出 256KB 上限） -->
+      <div v-if="droppedSeen > 0" class="pot-dropped">
+        已丢弃开头 {{ formatBytes(droppedSeen) }}（超出输出缓冲上限，早期内容不可回看）
+      </div>
 
-    <!-- 主体 -->
-    <div v-if="phase === 'idle'" class="pot-empty">连接中…</div>
-    <div v-else-if="phase === 'expired'" class="pot-empty">输出已过期（任务已被逐出注册表）</div>
-    <div v-else-if="phase === 'error'" class="pot-empty">{{ errMsg }}</div>
-    <div v-else class="pot-tail-wrap">
-      <div ref="tailEl" class="pot-tail" :class="{ 'is-paused': followPaused }" @scroll="onScroll"><pre>{{ text || '（暂无输出，等待进程产出…）' }}</pre></div>
-      <button v-if="followPaused" class="pot-follow" @click="resumeFollow">↓ 跟随最新</button>
-    </div>
+      <!-- 主体 -->
+      <div v-if="phase === 'idle'" class="pot-empty">连接中…</div>
+      <div v-else-if="phase === 'expired'" class="pot-empty">输出已过期（任务已被逐出注册表）</div>
+      <div v-else-if="phase === 'error'" class="pot-empty">{{ errMsg }}</div>
+      <div v-else class="pot-tail-wrap">
+        <div ref="tailEl" class="pot-tail" :class="{ 'is-paused': followPaused }" @scroll="onScroll"><pre>{{ text || '（暂无输出，等待进程产出…）' }}</pre></div>
+        <button v-if="followPaused" class="pot-follow" @click="resumeFollow">↓ 跟随最新</button>
+      </div>
 
-    <!-- steer 注入（full 态 + steerable + 运行中；非 steerable 进程 stdin
-         是 null 管道，注入框不渲染——不给必败操作摆入口） -->
-    <div v-if="!compact && meta?.running && meta?.steerable" class="pot-steer">
-      <input
-        v-model="steerText"
-        class="form-input"
-        placeholder="注入 stdin（回车发送，内容作为一行写入进程标准输入）"
-        @keydown.enter="sendSteer"
-      />
-      <button class="btn btn-sm" :disabled="!steerText.trim() || steering" @click="sendSteer">注入</button>
-    </div>
+      <!-- steer 注入（full 态 + steerable + 运行中；非 steerable 进程 stdin
+           是 null 管道，注入框不渲染——不给必败操作摆入口） -->
+      <div v-if="!compact && meta?.running && meta?.steerable" class="pot-steer">
+        <input
+          v-model="steerText"
+          class="form-input"
+          placeholder="注入 stdin（回车发送，内容作为一行写入进程标准输入）"
+          @keydown.enter="sendSteer"
+        />
+        <button class="btn btn-sm" :disabled="!steerText.trim() || steering" @click="sendSteer">注入</button>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -330,6 +358,10 @@ function excerptCmd(cmd: string, n = 40): string {
 .pot.compact {
   margin-top: var(--space-2);
 }
+/* 收起态 = 纯状态行：去掉主体分隔线（卡片自带边框，不再叠一条底线）。 */
+.pot.collapsed .pot-status {
+  border-bottom: none;
+}
 .pot-status {
   display: flex;
   align-items: center;
@@ -338,6 +370,20 @@ function excerptCmd(cmd: string, n = 40): string {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   min-width: 0;
+}
+/* compact 折叠态（2026-11-24 改版）：整行点击 = 展开/收起。 */
+.pot-status.is-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.pot-caret {
+  flex: none;
+  width: 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.pot-status.is-toggle:hover .pot-caret {
+  color: var(--accent, #3b82f6);
 }
 .pot-dot {
   flex: none;

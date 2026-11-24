@@ -98,7 +98,8 @@ test('后台进程五态截图：空态/聊天tail/深链详情steer/列表运�
     .toBeGreaterThanOrEqual(1)
   const jobId = (await bgJobs(page)).find((j) => j.running)!.id
 
-  // —— 状态 2：聊天内嵌迷你 tail（落地块默认折叠 → 展开）——
+  // —— 状态 2：聊天内嵌迷你 tail（落地块默认折叠 → 点开工作块；卡片
+  // 2026-11-24 折叠改版：默认收起成一行，点状态行展开输出窗）——
   await waitAssistantReply(page, 'E2E_MOCK_TEXT_REPLY', 30_000)
   const header = page.locator('.wt-header').last()
   await expect(header).toBeVisible()
@@ -109,14 +110,24 @@ test('后台进程五态截图：空态/聊天tail/深链详情steer/列表运�
   const compactTail = page.locator('.pot.compact').last()
   await expect(compactTail).toBeVisible({ timeout: 15_000 })
   await expect(compactTail.locator('.pot-id')).toContainText(`#${jobId}`)
-  // tail live：流式输出器首行到达（纯 ASCII，无 GBK 乱码。2026-11-06 起
-  // mock 载荷弃用 ping：本机回环 ICMP 回应被拦，ping 每请求 4s 超时才吐
-  // 一行「请求超时」，不是实时输出载荷——实测 100% 丢包）。
+  // 收起态：状态行在场（运行点闪烁 = 「活着」），输出窗与过期注记不渲染。
+  await expect(compactTail.locator('.pot-tail')).toHaveCount(0)
+  await expect(compactTail.locator('.pot-empty')).toHaveCount(0)
+  await expect(compactTail.locator('.pot-dot').first()).toHaveClass(/is-run/)
+  await shot(page, 'state2-chat-embedded-collapsed.png')
+  // 点状态行展开：BGSTREAM 实时输出可见（收起期间轮询照常追帧，展开即见）。
+  await compactTail.locator('.pot-status').click()
+  await expect(compactTail.locator('.pot-caret')).toHaveText('▾')
   await expect(compactTail.locator('.pot-tail pre')).toContainText('BGSTREAM', {
     timeout: 20_000,
   })
-  await expect(compactTail.locator('.pot-dot').first()).toHaveClass(/is-run/)
-  await shot(page, 'state2-chat-embedded-tail.png')
+  await shot(page, 'state2-chat-embedded-expanded.png')
+  // 再点同一行 = 收起（往返回归）。
+  await compactTail.locator('.pot-status').click()
+  await expect(compactTail.locator('.pot-tail')).toHaveCount(0)
+  // 深链在展开态——重新展开供状态 3 使用。
+  await compactTail.locator('.pot-status').click()
+  await expect(compactTail.locator('.pot-link')).toBeVisible({ timeout: 5_000 })
 
   // —— 状态 3：完整输出深链 → /executors?tab=processes&focus=<id> 详情模态 + steer ——
   // pushState 捕获：消费端 openFromQuery 剥掉 focus 参（URL 清理），落地
@@ -208,6 +219,8 @@ test('后台进程五态截图：空态/聊天tail/深链详情steer/列表运�
   await header2.click()
   const staleTail = page.locator('.pot.compact').last()
   await expect(staleTail).toBeVisible({ timeout: 15_000 })
+  // 折叠改版（2026-11-24）：收起态只有状态行；展开后才见诚实过期注记。
+  await staleTail.locator('.pot-status').click()
   await expect(staleTail).toContainText('输出已过期', { timeout: 20_000 })
   await shot(page, 'state5-history-expired.png')
 })
