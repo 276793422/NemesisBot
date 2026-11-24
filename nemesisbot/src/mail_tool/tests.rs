@@ -129,6 +129,13 @@ fn parse_list_defaults_and_bounds() {
     // limit 越界（0 / >100）→ 诚实报错。
     assert!(parse_mail_args(r#"{"action":"list","limit":0}"#).is_err());
     assert!(parse_mail_args(r#"{"action":"list","limit":101}"#).is_err());
+    // BUG-20261124-015：offset 越域（> u32::MAX）→ loud 报错而非裸 `as u32`
+    // 截断（2^32 截成 0、2^32+9 截成 9 = 分页偏移静默错页）。
+    let err = parse_mail_args(r#"{"action":"list","offset":4294967296}"#).unwrap_err();
+    assert!(err.contains("offset"), "{err}");
+    assert!(parse_mail_args(r#"{"action":"list","offset":9000000000}"#).is_err());
+    // u32::MAX 边界内合法（透传）。
+    assert!(parse_mail_args(r#"{"action":"list","offset":4294967295}"#).is_ok());
 }
 
 #[test]

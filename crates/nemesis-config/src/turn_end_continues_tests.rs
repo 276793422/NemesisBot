@@ -84,6 +84,31 @@ fn turn_end_continues_raw_json_resolver_matches_typed_surface() {
         }))),
         2
     );
+    // BUG-20261124-015：越域值（> u32::MAX，i64 正数域）按「未设」落缺省
+    // 2——裸 `as u32` 会把 2^32 截成 0 恰好命中「不限」哨兵（注释明文
+    // 「垃圾输入不得被晋升成不限」；BUG-20261117-085 同族惯例）。
+    assert_eq!(
+        resolve_turn_end_continues(Some(&serde_json::json!({
+            "agents": {"turn_end_continues": 4_294_967_296i64}
+        }))),
+        2,
+        "2^32 截断不得晋升成 0=不限"
+    );
+    assert_eq!(
+        resolve_turn_end_continues(Some(&serde_json::json!({
+            "agents": {"turn_end_continues": 9_000_000_000i64}
+        }))),
+        2,
+        "越域大值按未设落缺省"
+    );
+    // u32::MAX 边界内是合法值（透传，有限帽语义）。
+    assert_eq!(
+        resolve_turn_end_continues(Some(&serde_json::json!({
+            "agents": {"turn_end_continues": 4_294_967_295i64}
+        }))),
+        4_294_967_295u32,
+        "边界内 u32::MAX 透传"
+    );
     // 类型怪（字符串）→ 缺省（2 = 旧常量行为），不炸。
     assert_eq!(
         resolve_turn_end_continues(Some(&serde_json::json!({

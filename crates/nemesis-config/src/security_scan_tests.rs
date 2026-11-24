@@ -172,6 +172,32 @@ fn w1_rate_limit_resolver_clamps_zero() {
     assert_eq!(s.max_concurrent_streams, 0);
 }
 
+#[test]
+fn w1_rate_limit_resolver_rejects_out_of_range() {
+    // BUG-20261124-015：越域值（> u32::MAX）按「未设」落缺省，拒绝裸
+    // `as u32` 截断——qps/burst 截小值 = 流控静默收紧；并发截 0 = 晋升
+    // 「不限并发」哨兵（语义反转）。u32::MAX 边界内合法值透传。
+    let s = resolve_rate_limit(Some(&serde_json::json!({
+        "security": {"rate_limit": {
+            "qps": 4_294_967_296u64,
+            "burst": 9_000_000_000u64,
+            "max_concurrent_streams": 4_294_967_296u64
+        }}
+    })));
+    assert_eq!(s.qps, DEFAULT_RATE_LIMIT_QPS, "越域 qps 按未设落缺省");
+    assert_eq!(s.burst, DEFAULT_RATE_LIMIT_BURST, "越域 burst 按未设落缺省");
+    assert_eq!(
+        s.max_concurrent_streams, DEFAULT_RATE_LIMIT_MAX_CONCURRENT_STREAMS,
+        "越域并发不得截成 0 晋升「不限」"
+    );
+    // 边界内 u32::MAX 是合法值（透传；qps 后续被 settings() 钳制，
+    // max_concurrent_streams 保留）。
+    let s2 = resolve_rate_limit(Some(&serde_json::json!({
+        "security": {"rate_limit": {"qps": 4_294_967_295u64, "max_concurrent_streams": 4_294_967_295u64}}
+    })));
+    assert_eq!(s2.max_concurrent_streams, u32::MAX, "边界内 u32::MAX 透传");
+}
+
 // ---------------------------------------------------------------------------
 // #30 usage.budget
 // ---------------------------------------------------------------------------

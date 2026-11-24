@@ -900,6 +900,11 @@ impl AcpServerCore {
                 let client_version = params
                     .get("protocolVersion")
                     .and_then(|v| v.as_u64())
+                    // BUG-20261124-015：越域值按「未报版本」落缺省，拒绝裸
+                    // `as u16` 截断——截断值恰好等于 PROTOCOL_VERSION 时，
+                    // 本应走协商回退臂的未知版本被误判为「匹配」（协商面
+                    // 语义反转）。
+                    .filter(|v| *v <= u16::MAX as u64)
                     .unwrap_or(PROTOCOL_VERSION as u64) as u16;
                 if let Some(id) = id {
                     self.send(make_result(id, self.initialize_result(client_version)))

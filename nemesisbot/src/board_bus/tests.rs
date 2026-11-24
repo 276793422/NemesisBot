@@ -541,6 +541,43 @@ fn test_worker_wake_post_validation_errors() {
 }
 
 #[tokio::test]
+async fn test_worker_wake_post_max_turns_left_out_of_range() {
+    // BUG-20261124-015：reply_hint.max_turns_left 越域（> u32::MAX）按
+    // 「未设」落 u32::MAX（=不限哨兵）——裸 `as u32` 截断会把 2^32 截成
+    // 0 =「无剩余轮次」（对端上报巨大上限反而被判立即耗尽，调度语义反转）。
+    let (deps, inbox) = make_worker_deps("node-b");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    inbox.set_sender(tx);
+
+    let mut payload = wake_payload("issue", 9, 1, "@node-b 越域", "node-master");
+    payload["body"]["reply_hint"]["max_turns_left"] = serde_json::json!(4_294_967_296u64);
+    let reply = handle_worker_nb_bus(&deps, payload);
+    let v = reply.expect("handler never errs");
+    assert!(v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false));
+    let event = rx.recv().await.expect("event delivered");
+    assert_eq!(
+        event.max_turns_left,
+        u32::MAX,
+        "越域值按未设落不限哨兵，不得截成 0"
+    );
+
+    // u32::MAX 边界内合法值透传。
+    let mut payload = wake_payload("issue", 9, 2, "@node-b 边界", "node-master");
+    payload["body"]["reply_hint"]["max_turns_left"] = serde_json::json!(4_294_967_295u64);
+    let reply = handle_worker_nb_bus(&deps, payload);
+    assert!(
+        reply
+            .expect("handler never errs")
+            .get("ok")
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+    let event = rx.recv().await.expect("event delivered");
+    assert_eq!(event.max_turns_left, u32::MAX, "边界内 u32::MAX 透传");
+}
+
+#[tokio::test]
 async fn test_worker_wake_post_send_failure_not_committed() {
     let (deps, inbox) = make_worker_deps("node-b");
     // 无活跃 loop（cluster 停了）→ send 失败 → UNAVAILABLE，且**不记账**

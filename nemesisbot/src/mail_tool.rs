@@ -160,7 +160,13 @@ pub(crate) fn parse_mail_args(args: &str) -> Result<MailCommand, String> {
             let offset = match v.get("offset") {
                 None | Some(serde_json::Value::Null) => 0,
                 Some(n) => {
-                    let n = n.as_u64().ok_or("offset must be a non-negative integer")?;
+                    let n = n
+                        .as_u64()
+                        // BUG-20261124-015：越域值 loud 拒绝（对齐上方
+                        // limit 的 ok_or 风格），拒绝裸 `as u32` 截断——
+                        // 2^32 截成 0、2^32+9 截成 9，分页偏移静默错页。
+                        .filter(|n| *n <= u32::MAX as u64)
+                        .ok_or("offset must be a non-negative integer within u32 range")?;
                     n as u32
                 }
             };

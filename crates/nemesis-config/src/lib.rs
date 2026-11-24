@@ -699,8 +699,14 @@ pub fn resolve_turn_end_continues(cfg: Option<&serde_json::Value>) -> u32 {
         None => DEFAULT_TURN_END_CONTINUES,
         // 显式值：0 = 不限（opt-in）、N>0 = 有限帽；负数/类型怪无语义
         // → 缺省（0 在本键是「不限」哨兵，垃圾输入不得被晋升成不限）。
+        // BUG-20261124-015：上界 `u32::MAX` 闸（消费侧字段 u32）——越域值
+        // 按「未设」（缺省 2）处理，拒绝裸 `as u32`。截断是语义反转：
+        // 2^32 → 0 → 命中本键「不限」哨兵（用户设巨大上限反而得到真不限，
+        // 与注释明文「垃圾输入不得被晋升成不限」直接冲突）。同族惯例先例：
+        // BUG-20261117-085（max_tool_iterations 同形态）、
+        // BUG-20261114-055（model_size_b 越域按 None）。
         Some(v) => match v.as_i64() {
-            Some(n) if n >= 0 => n as u32,
+            Some(n) if (0..=u32::MAX as i64).contains(&n) => n as u32,
             _ => DEFAULT_TURN_END_CONTINUES,
         },
     }
@@ -1041,9 +1047,14 @@ pub fn resolve_rate_limit(cfg: Option<&serde_json::Value>) -> RateLimitSettings 
     let rl = cfg
         .and_then(|v| v.get("security"))
         .and_then(|v| v.get("rate_limit"));
+    // BUG-20261124-015：越域值（> u32::MAX）按「未设」落缺省，拒绝裸
+    // `as u32` 截断——qps/burst 截成小值 = 流控被静默收紧（语义反转），
+    // max_concurrent_streams 截成 0 = 晋升「不限并发」哨兵（与
+    // resolve_turn_end_continues 同根因，BUG-20261117-085 同族惯例）。
     let num = |key: &str, default: u32| -> u32 {
         rl.and_then(|v| v.get(key))
             .and_then(|x| x.as_u64())
+            .filter(|n| *n <= u32::MAX as u64)
             .map(|n| n as u32)
             .unwrap_or(default)
     };

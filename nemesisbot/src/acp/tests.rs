@@ -389,6 +389,23 @@ async fn initialize_handshake_shape() {
 }
 
 #[tokio::test]
+async fn initialize_negotiates_out_of_range_protocol_version() {
+    // BUG-20261124-015：越域 protocolVersion（> u16::MAX）按「未报版本」
+    // 处理，协商结果恒为 PROTOCOL_VERSION——裸 `as u16` 截断会让截断值
+    // 恰好撞成受支持版本、误判「匹配」（越域输入不得静默变形）。
+    let (mut c, _, _) = start_server(vec![]).await;
+    c.send(&json!({"jsonrpc": "2.0", "id": 7, "method": "initialize",
+           "params": {"protocolVersion": 4_294_967_296u64, "clientCapabilities": {}}}))
+        .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 7);
+    assert_eq!(
+        frame["result"]["protocolVersion"], PROTOCOL_VERSION,
+        "越域版本走协商回退臂，恒回受支持版本"
+    );
+}
+
+#[tokio::test]
 async fn session_new_rejects_bad_cwd() {
     let (mut c, _, _) = start_server(vec![]).await;
     c.send(&init_request(0)).await;

@@ -2017,6 +2017,11 @@ fn parse_wake_body(env: &Envelope, from_node: &str) -> Result<DiscussionEvent, S
         max_turns_left: body
             .pointer("/reply_hint/max_turns_left")
             .and_then(|v| v.as_u64())
+            // BUG-20261124-015：越域值按「未设」落 u32::MAX（=不限哨兵，
+            // 与 :2184 缺省构造同语义），拒绝裸 `as u32` 截断——2^32 截成
+            // 0 = 「无剩余轮次」（对端上报巨大上限反而被判立即耗尽，
+            // 调度语义反转）。
+            .filter(|v| *v <= u32::MAX as u64)
             .unwrap_or(u32::MAX as u64) as u32,
         thread_kind,
         thread_id,
