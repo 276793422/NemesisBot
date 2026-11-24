@@ -2407,48 +2407,55 @@ pub(crate) async fn run_loop_driver(
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let estop = estop.is_engaged();
-        let mut states = nemesis_loop::list_loops(&loops_dir);
-        for st in states.iter_mut() {
-            // token 维喂入：仅显式配了 max_tokens 的 loop 查台账
-            // （其他 loop 零查询成本）。
-            if st.budget.max_tokens > 0
-                && let Some(ref ds) = data_store
-                && let Ok(agg) = ds.aggregate_session_usage(&st.session_key)
-            {
-                let total = (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
-                st.spent.tokens = total.saturating_sub(st.tokens_base);
-            }
-            match nemesis_loop::sweep_loop(st, now, estop) {
-                Some(nemesis_loop::SweepOutcome::Wake { message }) => {
-                    if loop_inject(&st.session_key, &message) {
-                        st.push_progress(now, format!("[wake] 第 {} 次唤醒", st.spent.turns));
-                        info!(
-                            "[LoopDriver] loop {} woke session {} (turn {})",
-                            st.id, st.session_key, st.spent.turns
-                        );
-                    } else {
-                        // 目标会话缺席（已删除）→ 诚实停车，不静默。
-                        st.status = nemesis_loop::LoopStatus::Parked;
-                        st.next_wake_ms = None;
-                        st.cron = None;
-                        st.push_progress(
-                            now,
-                            "[parked] 目标会话不存在（可能已删除）——人工处理后可 resume",
-                        );
-                        warn!("[LoopDriver] loop {} target session missing, parked", st.id);
-                    }
-                    if let Err(e) = nemesis_loop::save_loop(&loops_dir, st) {
-                        warn!("[LoopDriver] save loop {} failed: {e}", st.id);
-                    }
+        // 逐 loop 锁内 RMW（BUG-20261125-003）：list 只当 id 清单（读侧
+        // 无竞态），每条的「token 喂入 → sweep → 落盘」收进 update_loop
+        // 临界区——否则人 pause/agent finish 与驱动器旧快照交错 = 状态
+        // 静默回退（paused/done 被复活）。sweep 未命中（None）不落盘，
+        // 省写语义与旧形态一致。
+        let states = nemesis_loop::list_loops(&loops_dir);
+        for snap in states {
+            let lid = snap.id.clone();
+            let res = nemesis_loop::update_loop(&loops_dir, &lid, |st| {
+                // token 维喂入：仅显式配了 max_tokens 的 loop 查台账
+                // （其他 loop 零查询成本）。
+                if st.budget.max_tokens > 0
+                    && let Some(ref ds) = data_store
+                    && let Ok(agg) = ds.aggregate_session_usage(&st.session_key)
+                {
+                    let total = (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
+                    st.spent.tokens = total.saturating_sub(st.tokens_base);
                 }
-                Some(nemesis_loop::SweepOutcome::Park { dim }) => {
-                    if let Err(e) = nemesis_loop::save_loop(&loops_dir, st) {
-                        warn!("[LoopDriver] save loop {} failed: {e}", st.id);
-                    } else {
+                match nemesis_loop::sweep_loop(st, now, estop) {
+                    Some(nemesis_loop::SweepOutcome::Wake { message }) => {
+                        if loop_inject(&st.session_key, &message) {
+                            st.push_progress(now, format!("[wake] 第 {} 次唤醒", st.spent.turns));
+                            info!(
+                                "[LoopDriver] loop {} woke session {} (turn {})",
+                                st.id, st.session_key, st.spent.turns
+                            );
+                        } else {
+                            // 目标会话缺席（已删除）→ 诚实停车，不静默。
+                            st.status = nemesis_loop::LoopStatus::Parked;
+                            st.next_wake_ms = None;
+                            st.cron = None;
+                            st.push_progress(
+                                now,
+                                "[parked] 目标会话不存在（可能已删除）——人工处理后可 resume"
+                                    .to_string(),
+                            );
+                            warn!("[LoopDriver] loop {} target session missing, parked", st.id);
+                        }
+                        Ok(true)
+                    }
+                    Some(nemesis_loop::SweepOutcome::Park { dim }) => {
                         warn!("[LoopDriver] loop {} parked (budget: {dim})", st.id);
+                        Ok(true)
                     }
+                    None => Ok(false),
                 }
-                None => {}
+            });
+            if let Err(e) = res {
+                warn!("[LoopDriver] loop {lid} tick failed: {e}");
             }
         }
     }

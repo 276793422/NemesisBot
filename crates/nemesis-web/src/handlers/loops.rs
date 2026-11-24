@@ -19,7 +19,7 @@
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_loop::{
-    LoopBudget, LoopState, LoopStatus, list_loops, load_loop, loops_dir, save_loop,
+    LoopBudget, LoopState, LoopStatus, list_loops, load_loop, loops_dir, update_loop,
 };
 
 pub struct LoopsHandler;
@@ -221,27 +221,37 @@ impl ModuleHandler for LoopsHandler {
                     .get("id")
                     .and_then(|v| v.as_str())
                     .ok_or("missing id")?;
-                let mut st = load_loop(&dir, id)?.ok_or_else(|| format!("loop {id} 不存在"))?;
-                let mut changed = false;
-                if let Some(goal) = data
+                // 字段提取与空检放锁外（提前失败不进临界区）；裁决与落盘
+                // 在锁内以盘上最新状态重做（BUG-20261125-003 RMW 串行化——
+                // 快照预检只作优化，并发下驱动器/agent 工具可能已改状态）。
+                let new_goal = data
                     .get("goal")
                     .and_then(|v| v.as_str())
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                {
-                    st.goal = goal.to_string();
-                    changed = true;
-                }
-                if data.get("budget").is_some() {
-                    st.budget = parse_budget(&data)?;
-                    changed = true;
-                }
-                if !changed {
-                    return Err("无可更新字段（goal / budget）".to_string());
-                }
-                st.updated_at_ms = now_ms();
-                save_loop(&dir, &st)?;
-                Ok(Some(serde_json::json!({ "updated": true, "id": id })))
+                    .map(String::from);
+                let new_budget = if data.get("budget").is_some() {
+                    Some(parse_budget(&data)?)
+                } else {
+                    None
+                };
+                let ts = now_ms();
+                let st = update_loop(&dir, id, |st| {
+                    // 存在性由 update_loop 的 load 先裁决（不存在 = Err）；
+                    // 字段空检在其后（契约：不存在优先于无可更新字段）。
+                    if new_goal.is_none() && new_budget.is_none() {
+                        return Err("无可更新字段（goal / budget）".to_string());
+                    }
+                    if let Some(g) = &new_goal {
+                        st.goal = g.clone();
+                    }
+                    if let Some(b) = new_budget {
+                        st.budget = b;
+                    }
+                    st.updated_at_ms = ts;
+                    Ok(true)
+                })?;
+                Ok(Some(serde_json::json!({ "updated": true, "id": st.id })))
             }
             "pause" | "resume" => {
                 let data = data.ok_or("missing data")?;
@@ -249,31 +259,35 @@ impl ModuleHandler for LoopsHandler {
                     .get("id")
                     .and_then(|v| v.as_str())
                     .ok_or("missing id")?;
-                let mut st = load_loop(&dir, id)?.ok_or_else(|| format!("loop {id} 不存在"))?;
                 let ts = now_ms();
-                if cmd == "pause" {
-                    if st.status != LoopStatus::Active {
-                        return Err(format!(
-                            "loop {id} 当前状态 {}，仅 active 可暂停",
-                            st.status.as_str()
-                        ));
+                let st = update_loop(&dir, id, |st| {
+                    // 状态机校验用锁内最新状态（预检快照可能与盘上漂移）。
+                    if cmd == "pause" {
+                        if st.status != LoopStatus::Active {
+                            return Err(format!(
+                                "loop {} 当前状态 {}，仅 active 可暂停",
+                                st.id,
+                                st.status.as_str()
+                            ));
+                        }
+                        st.status = LoopStatus::Paused;
+                        st.push_progress(ts, "[paused] 人经 WSAPI 暂停".to_string());
+                    } else {
+                        if st.status != LoopStatus::Paused && st.status != LoopStatus::Parked {
+                            return Err(format!(
+                                "loop {} 当前状态 {}，仅 paused/parked 可恢复",
+                                st.id,
+                                st.status.as_str()
+                            ));
+                        }
+                        st.status = LoopStatus::Active;
+                        st.push_progress(ts, "[resumed] 人经 WSAPI 恢复".to_string());
                     }
-                    st.status = LoopStatus::Paused;
-                    st.push_progress(ts, "[paused] 人经 WSAPI 暂停".to_string());
-                } else {
-                    if st.status != LoopStatus::Paused && st.status != LoopStatus::Parked {
-                        return Err(format!(
-                            "loop {id} 当前状态 {}，仅 paused/parked 可恢复",
-                            st.status.as_str()
-                        ));
-                    }
-                    st.status = LoopStatus::Active;
-                    st.push_progress(ts, "[resumed] 人经 WSAPI 恢复".to_string());
-                }
-                st.updated_at_ms = ts;
-                save_loop(&dir, &st)?;
+                    st.updated_at_ms = ts;
+                    Ok(true)
+                })?;
                 Ok(Some(
-                    serde_json::json!({ cmd: true, "id": id, "status": st.status.as_str() }),
+                    serde_json::json!({ cmd: true, "id": st.id, "status": st.status.as_str() }),
                 ))
             }
             "remove" => {
