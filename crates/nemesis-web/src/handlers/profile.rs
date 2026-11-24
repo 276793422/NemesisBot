@@ -263,7 +263,7 @@ impl ProfileHandler {
             return Err("older_than_days must be >= 1".to_string());
         }
         let ws = self.workspace(ctx)?;
-        let cutoff = chrono::Utc::now().timestamp_millis() - days * 24 * 60 * 60 * 1000;
+        let cutoff = prune_cutoff_ms(days);
         let pruned_lessons =
             nemesis_forge::userprofile::bridge::prune_lessons_older_than(&ws, cutoff)?;
         let pruned_observations =
@@ -282,6 +282,16 @@ fn content_sub(data: Option<&Value>) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "missing or empty 'content'".to_string())
+}
+
+/// 清理 cutoff 计算（纯函数可单测）：days 饱和乘法（BUG-20261125-006；
+/// 同族纪律 BUG-20261107-025 decay_sweep——入参来源 i64 裸乘溢出在
+/// debug panic / release 环绕；饱和语义 = 荒谬大天数 → cutoff 探到纪元前
+/// → 清理等于不删，诚实极端值行为）。
+fn prune_cutoff_ms(days: i64) -> i64 {
+    chrono::Utc::now()
+        .timestamp_millis()
+        .saturating_sub(days.saturating_mul(24 * 60 * 60 * 1000))
 }
 
 #[async_trait::async_trait]
@@ -332,3 +342,6 @@ impl ModuleHandler for ProfileHandler {
         }
     }
 }
+
+#[cfg(all(test, feature = "forge"))]
+mod tests;
