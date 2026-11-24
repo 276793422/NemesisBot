@@ -161,6 +161,17 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// hex 解码 64 字节（P-256 r||s 签文）。
 fn hex_decode_64(hex: &str) -> Result<[u8; 64]> {
     let hex = hex.trim();
+    if !hex.is_ascii() {
+        // BUG-20261125-012：非 ASCII 输入会让下方 `hex[i*2..i*2+2]` 切片
+        // 落在多字节字符中间直接 panic（byte len==128 门只数字节，拦不住）。
+        // 本函数是 hex_util 非 ASCII 门「全仓横扫」的漏网本地复制体（注释
+        // 「本地实现，避免引 hex crate」）；攻击面 = verify_response 的
+        // `signed.sig` 字段——反序列化自网络 JSON（CRL 走 plain HTTP，
+        // 分发点/中间人可控），crafted sig 使验证进程崩溃退出（exit 101），
+        // 替代 revocation 文档承诺的 soft-fail 韧性语义（拉取失败→Unknown）。
+        // 同款门见 hex_util::hex_decode_32 / hex_decode_vec。
+        return Err(anyhow!("non-ascii hex"));
+    }
     if hex.len() != 128 {
         return Err(anyhow!(
             "expected 128 hex chars (64 bytes), got {}",

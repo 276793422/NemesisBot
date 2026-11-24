@@ -131,6 +131,38 @@ fn hex_decode_64_accepts_uppercase_and_trims() {
     assert!(!verify_response::<Crl>(&via_resp, &vk).unwrap());
 }
 
+#[test]
+fn hex_decode_64_rejects_non_ascii_without_panic() {
+    // BUG-20261125-012 回归锁：字节长 128 但含多字节 UTF-8 字符（三字节
+    // 「中」骑在偶数切片边界中间）→ 修复前 `hex[i*2..i*2+2]` 切片 panic
+    // （byte len 门只数字节拦不住；实证 release -O 同炸，exit 101）。
+    // 修复后必须诚实 Err 而非 panic——网络侧 CRL JSON 的 sig 字段可控
+    // （plain HTTP 分发点），soft-fail 韧性语义不得被进程崩溃替代。
+    let mut crafted = String::from("0");
+    crafted.push('中'); // 字节 1..4：切片 [0..2] 终点 2 落在字符中间
+    while crafted.len() < 128 {
+        crafted.push('a');
+    }
+    assert_eq!(crafted.len(), 128);
+
+    // 直测私有 helper（tests.rs 是 lib.rs 子模块）
+    let err = super::hex_decode_64(&crafted).unwrap_err();
+    assert!(format!("{err:#}").contains("non-ascii"), "{err:#}");
+
+    // 经 verify_response 透出（攻击面同构：反序列化自网络 JSON）
+    let (_, vk) = root_key(2);
+    let via_resp = SignedResponse {
+        payload: Crl {
+            version: 1,
+            valid_until: 1,
+            entries: vec![],
+        },
+        sig: crafted,
+    };
+    let err = verify_response::<Crl>(&via_resp, &vk).unwrap_err();
+    assert!(format!("{err:#}").contains("non-ascii"), "{err:#}");
+}
+
 // ---------------------------------------------------------------------------
 // 根锚注入三臂（resolve_root_anchors 纯函数 + fail-closed 语义）。
 // 纯函数不触 env，无需 GLOBAL_STATE_LOCK。
