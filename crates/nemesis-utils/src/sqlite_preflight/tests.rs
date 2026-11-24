@@ -146,6 +146,47 @@ fn wal_lenient_read_only_conn_no_panic() {
     assert_ne!(mode, "wal", "只读连接不应进入 WAL");
 }
 
+#[test]
+fn wal_lenient_memory_db_silent_fallback_no_panic() {
+    // BUG-20261124-020 阳性对照：`:memory:` 库不支持 WAL，SQLite **静默**
+    // 返回旧模式行（"memory"）而非报错——旧实现裸 pragma_update 的 Err
+    // 臂在该形态不可达（rusqlite execute_batch 显式容忍 PRAGMA 返回行），
+    // 回落零日志。修复后经 pragma_update_and_check 读回模式，非 wal 走
+    // warn 臂；函数不崩、库照常可用。
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    set_wal_lenient(&conn, "test-wal-memory");
+    let mode: String = conn
+        .pragma_query_value(None, "journal_mode", |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        mode.to_ascii_lowercase(),
+        "memory",
+        "内存库 WAL 切换必须是静默回落（返回旧模式行）而非报错——本断言钉住回落的可读回性"
+    );
+    conn.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1);")
+        .unwrap();
+}
+
+#[test]
+fn pragma_update_and_check_reads_back_actual_mode() {
+    // 底层机制钉：pragma_update_and_check 能读到静默回落形态的实际模式
+    //（:memory: → "memory"；可写文件库 → "wal"）——set_wal_lenient 的
+    // warn 判定建立在「读回可见」之上，rusqlite/SQLite 行为变化时此处先红。
+    let mem = rusqlite::Connection::open_in_memory().unwrap();
+    let mode: String = mem
+        .pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode.to_ascii_lowercase(), "memory");
+
+    let dir = tempfile::tempdir().unwrap();
+    let p = temp_db(dir.path(), "wal_readback");
+    let file = rusqlite::Connection::open(&p).unwrap();
+    let mode: String = file
+        .pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode.to_ascii_lowercase(), "wal");
+}
+
 // ------------------------------------------------------------- 门面
 
 /// 门面测试用最小两步迁移链（真实迁移链归属各存储 crate，这里只验装配序）。
