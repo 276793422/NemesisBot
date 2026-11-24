@@ -1727,6 +1727,31 @@ fn test_stop_idempotent() {
 }
 
 #[test]
+fn test_stop_clears_roaming_announce_fields() {
+    // BUG-20261124-027 回归锁：stop() 对漫游 announce 身份字段对称清空。
+    // 旧行为：roaming_started 复位、rendezvous_params 清空，但
+    // roaming_id / roaming_dialable / rendezvous_status 滞留——同实例
+    // stop→start 且 setup_roaming 未重开（roaming 转关/装配臂被跳过）时
+    // announce 继续携带已停端点的 iroh 身份，对端把不可达候选加进拨号池。
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    *cluster.roaming_id.write() = Some("abc123def".to_string());
+    *cluster.roaming_dialable.write() = vec!["iroh:abc123def@https://relay.example".to_string()];
+    *cluster.rendezvous_status.write() = Some(crate::roaming::rendezvous::RendezvousClientState {
+        registry_url: "https://registry.example".to_string(),
+        last_sync_ok: true,
+        last_sync_ms: 1,
+        member_count: 3,
+        last_error: String::new(),
+    });
+    cluster.stop();
+    assert!(cluster.roaming_id.read().is_none());
+    assert!(cluster.roaming_dialable.read().is_empty());
+    assert!(cluster.rendezvous_status.read().is_none());
+    assert!(!cluster.roaming_active());
+}
+
+#[test]
 fn test_handle_task_complete_no_bus_set() {
     let cluster = Cluster::new(make_config());
     cluster.start();
