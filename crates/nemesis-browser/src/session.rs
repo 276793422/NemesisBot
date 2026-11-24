@@ -292,19 +292,36 @@ impl BrowserSession {
                 break pp;
             }
             if raw_exited.load(Ordering::Acquire) {
-                // 进程已退出：终裁一次端口文件（wait 返回与浏览器 flush 端
-                // 口文件存在竞态——文件可能刚写出而本轮检查落在置位之前）。
-                // 文件在 = relaunch 接力成功，break 走装配路径（wait_for_
-                // endpoint 确认活性后按收养形态装配）；文件不在 = 真失败快
-                // 速报错。
-                if let Some(pp) = cdp::read_devtools_active_port(&profile_dir).and_then(fresh_port)
-                {
-                    break pp;
-                }
-                fail!(format!(
-                    "浏览器进程提前退出（pid {pid}）。{}",
-                    stderr_tail_context(&profile_dir.join("browser-stderr.log"), spawn_wall_start)
-                ));
+                // 进程已退出：relaunch 接力宽限窗（F56，2026-11-24 测试机
+                // 实证根修）。原始进程转发参数给接力进程后退出，接力进程
+                // 冷启动写 DevToolsActivePort 有秒级延迟——此前零等待一次
+                // 终裁读不到尚未写出的文件 → 误判真失败 → fail! 的
+                // kill_profile_tree 把正在开屏的接力进程杀掉（窗口闪退，
+                // stderr 零新写入）。给 RELAUNCH_GRACE_SECS 短窗轮询：窗内
+                // 读到 fresh 端口文件 = 接力成功，break 走收养装配；窗口
+                // 耗尽 = 接力确实没起来，树杀收尸此时才是正确动作。
+                let grace_deadline =
+                    std::time::Instant::now() + Duration::from_secs(cdp::RELAUNCH_GRACE_SECS);
+                let adopted_port = loop {
+                    if let Some(pp) =
+                        cdp::read_devtools_active_port(&profile_dir).and_then(fresh_port)
+                    {
+                        break Some(pp);
+                    }
+                    if std::time::Instant::now() >= grace_deadline {
+                        fail!(format!(
+                            "浏览器进程提前退出（pid {pid}，接力窗口 {}s 内未出现端口文件）。{}",
+                            cdp::RELAUNCH_GRACE_SECS,
+                            stderr_tail_context(
+                                &profile_dir.join("browser-stderr.log"),
+                                spawn_wall_start
+                            )
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(PORT_POLL_MS)).await;
+                };
+                // fail! 只 return 不落值：走到这里必是接力成功形态。
+                break adopted_port.unwrap();
             }
             if std::time::Instant::now() >= deadline {
                 fail!(format!(

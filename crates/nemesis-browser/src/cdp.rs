@@ -32,6 +32,11 @@ pub const DEVTOOLS_PORT_FILE: &str = "DevToolsActivePort";
 
 /// spawn 后等待 DevToolsActivePort 出现的墙钟上限（秒）。
 pub const SPAWN_READY_SECS: u64 = 120;
+/// relaunch 接力宽限窗（F56，2026-11-24 测试机实证）：原始进程退出后，
+/// 等接力进程写 DevToolsActivePort 的秒数。接力冷启动写盘通常 2-5s，
+/// 10s 覆盖慢机；真失败（无接力形态，如企业策略关 CDP）场景报错相应
+/// 延后等量时间——换确定性，可接受。
+pub const RELAUNCH_GRACE_SECS: u64 = 10;
 /// 端口文件出现后等 HTTP 端点就绪的上限（秒）。
 pub const ENDPOINT_READY_SECS: u64 = 30;
 /// 单条 CDP 命令默认超时。
