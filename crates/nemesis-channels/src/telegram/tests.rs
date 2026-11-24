@@ -1565,3 +1565,114 @@ fn test_markdown_code_and_link_mixed() {
     );
     assert!(!result.contains("<i>"), "受保护区不得触发斜体: {result}");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261125-001 回归锁：editMessageText 被平台拒收不得谎报成功
+// ---------------------------------------------------------------------------
+
+/// 场景：用户在 bot 回复前删掉 "Thinking..." 占位消息 → Telegram 拒收
+/// editMessageText（HTTP 400 + `{ok:false, description:...}`）。
+/// 修复前：edit 把拒收吞成 `Ok(())` → send() 的 placeholder 路径
+/// `is_ok()` 误判编辑成功 → skip(1) 只发剩余块（单块消息 = 零投递）→
+/// 首块/整条回复静默丢失且 send 整体返回 Ok。
+/// 修复后：edit 上抛 Err → fall-through 全量 sendMessage 补发，send
+/// 返回 Ok，首块内容完整送达。
+#[tokio::test]
+async fn send_placeholder_edit_rejected_falls_through_to_full_send() {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // mock Telegram Bot API 按 path 分派：editMessageText → 400 拒收；
+    // sendMessage → 200 成功。连接数不定（拒收后 fall-through 补发），
+    // 每连接独立线程。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    let addr = listener.local_addr().unwrap();
+    let edit_hits = Arc::new(AtomicUsize::new(0));
+    let send_hits = Arc::new(AtomicUsize::new(0));
+    let sent_texts: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let (edit_srv, send_srv, texts_srv) =
+        (edit_hits.clone(), send_hits.clone(), sent_texts.clone());
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let edit_srv = edit_srv.clone();
+            let send_srv = send_srv.clone();
+            let texts_srv = texts_srv.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 16384];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                let (status, resp_body) = if path.ends_with("/editMessageText") {
+                    edit_srv.fetch_add(1, Ordering::Relaxed);
+                    (
+                        "HTTP/1.1 400 Bad Request",
+                        br#"{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}"#.to_vec(),
+                    )
+                } else if path.ends_with("/sendMessage") {
+                    send_srv.fetch_add(1, Ordering::Relaxed);
+                    // 记录补发的 text 字段值（'回复正文' 纯 ASCII 代形避开
+                    // JSON 转义解析——断言只看完整性）。
+                    if let Some(start) = body.find(r#""text":""#) {
+                        let rest = &body[start + r#""text":""#.len()..];
+                        if let Some(end) = rest.find(r#"","parse_mode""#) {
+                            texts_srv.lock().unwrap().push(rest[..end].to_string());
+                        }
+                    }
+                    (
+                        "HTTP/1.1 200 OK",
+                        br#"{"ok":true,"result":{"message_id":7,"chat":{"id":123,"type":"private"},"text":"ok"}}"#.to_vec(),
+                    )
+                } else {
+                    ("HTTP/1.1 200 OK", br#"{"ok":false}"#.to_vec())
+                };
+                let resp = format!(
+                    "{status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    resp_body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(&resp_body);
+            });
+        }
+    });
+
+    let config = TelegramConfig {
+        api_base: format!("http://{addr}"),
+        token: "test-token".to_string(),
+        ..Default::default()
+    };
+    let (bus_tx, _bus_rx) = tokio::sync::broadcast::channel(16);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let channel = TelegramChannel::new_with_client(config, bus_tx, http).unwrap();
+    *channel.running.write() = true;
+    // 预置占位消息（用户视角：bot 刚发过 "Thinking..."，message_id=42）。
+    channel.placeholders.write().insert("123".to_string(), 42);
+
+    let msg = OutboundMessage::new("telegram", "123", "REPLY-BODY-XYZ");
+    Channel::send(&channel, msg)
+        .await
+        .expect("修复后 send 必须成功（edit 拒收 fall-through 补发）");
+
+    assert_eq!(
+        edit_hits.load(Ordering::Relaxed),
+        1,
+        "editMessageText 必须恰好被调用一次"
+    );
+    assert_eq!(
+        send_hits.load(Ordering::Relaxed),
+        1,
+        "拒收后必须 fall-through 用 sendMessage 全量补发首块（修复前 skip(1) 零补发）"
+    );
+    let texts = sent_texts.lock().unwrap().clone();
+    assert_eq!(texts.len(), 1, "恰好一条补发消息");
+    assert!(
+        texts[0].contains("REPLY-BODY-XYZ"),
+        "补发内容必须完整含首块正文（修复前首块静默丢失）: {:?}",
+        texts[0]
+    );
+    // 占位映射已消费：后续 send 不再走 edit 路径。
+    assert!(
+        channel.placeholders.read().get("123").is_none(),
+        "占位映射必须已被消费移除"
+    );
+}
