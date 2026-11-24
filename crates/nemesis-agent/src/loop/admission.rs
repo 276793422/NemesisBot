@@ -733,6 +733,8 @@ impl AgentLoop {
 
                 source_node: None,
                 system_notice: system_notice_of(msg),
+                // 批 C ⑥：真人来源通道（busy 回绝的 user 行同款标记）。
+                channel: Some(&msg.channel),
             },
         );
         crate::chat_log::append_chat_log_meta(
@@ -752,6 +754,7 @@ impl AgentLoop {
 
                 source_node: None,
                 system_notice: None, // assistant 回实行正常气泡展示，无标记
+                channel: None,
             },
         );
         if !log_existed {
@@ -1605,6 +1608,9 @@ impl AgentLoop {
 
                     source_node: None,
                     system_notice: system_notice_of(&msg),
+                    // 批 C ⑥：真人来源通道标记（IM vs Dashboard 分流统计
+                    // 与风格读法的数据源；None = 未知通道不写键）。
+                    channel: Some(&msg.channel),
                 },
             );
             if !log_existed {

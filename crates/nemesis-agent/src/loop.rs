@@ -797,6 +797,14 @@ pub struct AgentLoop {
     /// （2026-11-16 污染修复；vault_domain_config_path 同族先例：项目 loop
     /// 不可从 workspace_root 推导的根一律显式注入）。
     session_home_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// 用户画像存储根（`<主workspace>/config/user_profile.json` 所在
+    /// workspace）。`None` = 回落 workspace_root（主/集群/headless loop 的
+    /// workspace_root 就是画像根，行为不变）；项目 loop 构造时注入主
+    /// workspace——项目 loop 的 workspace_root 是项目目录（用户真实工作
+    /// 树），画像资产在主 workspace（vault_domain_config_path/
+    /// session_home_root 同族先例：项目 loop 不可从 workspace_root 推导的
+    /// 根一律显式注入；2026-11-24 项目会话画像注入缺口修复）。
+    profile_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// VM 档执行环境注记 resolver（审计收口）。`Some` 时每轮
     /// build_messages 调用一次，非空返回值作为一行追加进 # Environment
     /// 快照（bot 侧安装：档位 per-call 现读，vm 档返回 guest 路径语义行，
@@ -883,6 +891,9 @@ pub struct AgentLoop {
     /// 走缓存（零磁盘 IO、字节稳定）。mtime 读取失败（文件不存在）缓存
     /// `None`。config 侧 `user_profile.enabled` 开关每次门控未命中时现读
     /// （config.json mtime 已有独立检测，开关热生效路径经它兜底）。
+    /// forge 裁剪：读写点全在 forge 门控块内，字段随门（否则关 forge
+    /// 组合下「field never read」假警告）。
+    #[cfg(feature = "forge")]
     user_profile_cache: parking_lot::RwLock<((Option<u128>, Option<u128>), String)>,
     /// （cache-warmer）：会话 → 最近一次成功 LLM 请求的字节级快照（warm
     /// 重放候选）。仅 `agents.cache_warmer.enabled=true` 时被写入（默认关 =
@@ -1108,6 +1119,7 @@ impl AgentLoop {
             workspace_root: parking_lot::RwLock::new(None),
             vault_domain_config_path: parking_lot::RwLock::new(None),
             session_home_root: parking_lot::RwLock::new(None),
+            profile_root: parking_lot::RwLock::new(None),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -1125,6 +1137,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_gen: parking_lot::RwLock::new(None),
+            #[cfg(feature = "forge")]
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
@@ -1828,7 +1841,9 @@ mod ws9_lineage_tests;
 
 // 画像注入缓存键含 config.json mtime（enabled 翻转
 // 只动 config 不动画像文件，单键时代 disable 进程生命周期内不生效）。
-#[cfg(test)]
+// 画像子系统随 forge feature 裁掉（Forge 化重构后存储在 nemesis-forge），
+// 无 forge = 注入面恒空段，本回归锁失义。
+#[cfg(all(test, feature = "forge"))]
 mod r36_profile_cache_tests;
 
 // bypass_llm.rs 覆盖率补充（aux 杂务三层治理）：重试原语 +

@@ -1,0 +1,4 @@
+interface:
+  display_name: "软件开发架构专家"
+  short_description: "依据 PRD 比较架构路线，前置设计测试边界与 UT／IT／ST，生成可核验实施方案"
+  default_prompt: "请使用 $prd-to-implementation，根据我的 PRD 比较有依据的架构与技术选项，前置设计可测试边界、UT/IT/ST 和开发自测，由我选定后生成含逐步操作、衡量标准、输出物、测试策略与最终验收的软件实施方案。"

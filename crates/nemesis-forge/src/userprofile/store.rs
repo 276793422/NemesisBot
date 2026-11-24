@@ -1,9 +1,10 @@
-//! 用户习惯画像（自进化升级 B 线，2026-10-14）。
+//! 用户习惯画像存储（自 nemesis-agent/user_profile.rs 迁入 + 结构化升级，
+//! 2026-11-24 Forge 化重构批一/批二）。
 //!
 //! 存储：`<workspace>/config/user_profile.json`（**独立于 persona 文件**——
 //! persona 激活会整文件覆盖 USER.md，习惯绝不能放 USER.md）。
 //!
-//! 纪律（v3.1 计划裁决）：
+//! 纪律（v3.1 计划裁决，原样保留）：
 //! - 生成**免确认**自动生效（置信度 ≥0.7）；Dashboard 展示 + veto/forget/pin 后门；
 //! - **硬边界**：习惯只调整风格与流程姿态，绝不触碰权限与安全语义——
 //!   渲染层过滤含「自动批准/放行/降档」语义的条目（防御性双保险，生成侧
@@ -11,6 +12,14 @@
 //! - **仅向前不回溯**：记录 `enabled_at`，只分析其后的会话数据；
 //! - 默认关：`user_profile.enabled`（config）；衰减：30 天无重现 decaying、
 //!   再 30 天 expired；条目上限 10（按置信度截断）。
+//!
+//! 结构化升级（批二，G4/G8）：
+//! - 条目增 `steps`（仪式步骤数组）/`scope`（global/project）/`evidence`
+//!   （溯源）/`auto`（固定规则产物标记）——serde default 向后兼容，老
+//!   条目缺字段 = 旧形态单句条目原样可读；
+//! - `auto=true` 条目（统计规则/确定性挖掘器固定产物）单独配额
+//!   [`AUTO_MAX_ENTRIES`]，不再与反思通道细粒度习惯挤同一批名额（G8）；
+//! - 渲染升级：带 steps 条目 = 步骤清单块（步骤同样过安全边界 + 单行折叠）。
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -23,15 +32,31 @@ pub const STATUS_VETOED: &str = "vetoed";
 
 /// 置信度过线阈值（config 可调，缺省 0.7）。
 pub const CONFIDENCE_THRESHOLD: f64 = 0.7;
-/// 注入条目上限。
+/// 注入条目上限（非 auto 桶）。
 pub const MAX_ENTRIES: usize = 10;
+/// auto 条目（统计规则/挖掘器固定产物）单独配额（G8 名额挤压根修）。
+pub const AUTO_MAX_ENTRIES: usize = 3;
 /// 衰减天数（active→decaying；decaying→expired 同值再段）。
 pub const DECAY_DAYS: i64 = 30;
+/// 单条目 steps 上限（仪式步骤数组）。
+pub const MAX_STEPS: usize = 12;
+/// 单个 step 字符上限。
+pub const MAX_STEP_CHARS: usize = 120;
+/// evidence 溯源条目上限。
+pub const MAX_EVIDENCE: usize = 8;
+/// 条目 content 字符上限（单行纪律）。
+pub const MAX_CONTENT_CHARS: usize = 200;
+
+/// 条目主语分型（批 A 双向接口）：`habit` = 用户习惯（主语=用户，注入面
+/// 唯一合法值）；`lesson` = 助手/LLM 教训（主语=agent——**永不入画像**，
+/// 反思解析层分流到 [`super::bridge`]，upsert 入口硬拒双保险）。
+pub const KIND_HABIT: &str = "habit";
+pub const KIND_LESSON: &str = "lesson";
 
 /// 习惯条目。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HabitEntry {
-    /// 类别：workflow | correction | tool_preference | style
+    /// 类别：workflow | correction | tool_preference | style | environment | quality_bar
     pub category: String,
     /// 习惯陈述（注入 system prompt 的原文）。
     pub content: String,
@@ -49,10 +74,82 @@ pub struct HabitEntry {
     /// pin = 用户钉住：衰减 sweep 跳过，渲染置顶。
     #[serde(default)]
     pub pinned: bool,
+    /// 仪式步骤数组（结构化升级批二；缺字段 = 旧形态单句条目）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+    /// 作用域（空串 = 全局；预留 `project:<id>` 形态）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
+    /// 溯源（支撑会话 / todo 文件 / 遥测日期）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+    /// 固定产物标记：true = 统计规则/确定性挖掘器每轮稳定再生成的条目
+    /// （单独配额 [`AUTO_MAX_ENTRIES`]，不与反思条目挤名额——G8）。
+    #[serde(default)]
+    pub auto: bool,
+    /// 主语分型（批 A）：`"habit"`（缺省，serde default——老条目/旧反思
+    /// 响应零迁移）/ `"lesson"`（助手教训——upsert 硬拒，见
+    /// [`upsert_habit`]）。
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// 来源标记（批 A 接口二）：空 = 自产（本系统挖掘/反思）；非空 =
+    /// 外部抛入（Forge 经验，经 [`ingest_external_entry`] 强制标记）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
 }
 
 fn default_status() -> String {
     STATUS_ACTIVE.to_string()
+}
+
+fn default_kind() -> String {
+    KIND_HABIT.to_string()
+}
+
+impl HabitEntry {
+    /// 挖掘器/规则通道便捷构造（auto=true，status=active，无 steps）。
+    pub fn auto_entry(
+        category: &str,
+        content: &str,
+        confidence: f64,
+        hits: u32,
+        now: &str,
+    ) -> Self {
+        Self {
+            category: category.to_string(),
+            content: content.to_string(),
+            confidence,
+            hits,
+            first_seen: now.to_string(),
+            last_seen: now.to_string(),
+            status: STATUS_ACTIVE.into(),
+            pinned: false,
+            steps: Vec::new(),
+            scope: String::new(),
+            evidence: Vec::new(),
+            auto: true,
+            kind: KIND_HABIT.into(),
+            source: String::new(),
+        }
+    }
+
+    /// 单行清洗（content 与每个 step 通用）：换行折叠为空格 + 截断。
+    pub fn fold_one_line(s: &str, max_chars: usize) -> String {
+        s.replace(['\r', '\n'], " ")
+            .chars()
+            .take(max_chars)
+            .collect()
+    }
+
+    /// 步骤数组清洗：单行折叠 + 截断 + 条数上限。
+    pub fn sanitize_steps(steps: &[String]) -> Vec<String> {
+        steps
+            .iter()
+            .map(|s| Self::fold_one_line(s, MAX_STEP_CHARS))
+            .filter(|s| !s.trim().is_empty())
+            .take(MAX_STEPS)
+            .collect()
+    }
 }
 
 /// 用户画像（user_profile.json 根）。
@@ -69,6 +166,15 @@ pub struct UserProfile {
     pub last_sweep_ms: Option<i64>,
     #[serde(default)]
     pub habits: Vec<HabitEntry>,
+    /// 上次 LLM 反思的水线（epoch 毫秒；G1 重构——反思触发改为
+    /// 「窗内新增用户消息 ≥ reflect_min_new_messages」或 sweep 计数到顶，
+    /// 本水线界定「新增」的起点；None = 从未反思，回落 sweep 窗口）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reflect_ms: Option<i64>,
+    /// 距上次反思的 sweep 计数（G1 根修：持久化进画像文件——重启不再
+    /// 归零，频繁重启的设备反思通道也能到达触发阈值）。
+    #[serde(default)]
+    pub sweeps_since_reflect: u32,
 }
 
 /// 统计通道证据窗起点（epoch 毫秒；滚动 24h，二轮复查定稿）：
@@ -172,7 +278,7 @@ pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfil
 }
 
 /// 渲染层过滤：拒绝任何含权限/安全语义的习惯内容（硬边界防御性双保险）。
-fn violates_security_boundary(content: &str) -> bool {
+pub(crate) fn violates_security_boundary(content: &str) -> bool {
     let lower = content.to_lowercase();
     const FORBIDDEN: &[&str] = &[
         "自动批准",
@@ -194,8 +300,10 @@ fn violates_security_boundary(content: &str) -> bool {
 /// 上榜前清洗：剔除 expired + 安全违规条目；**vetoed 条目保留驻留**（二轮
 /// 复查根修：负样本压制语义——vetoed 一旦被 prune 删除，规则通道的固定
 /// 字符串候选会在下一轮 sweep 原样重新生成，否决失效；驻留时 upsert 命中
-/// 同内容条目保持 vetoed 态，天然抑制重生成）；条数上限只数非 vetoed
-/// 条目（按置信度截断），vetoed 不占活跃名额。
+/// 同内容条目保持 vetoed 态，天然抑制重生成）；条数上限分桶计数（G8）：
+/// 非 auto 条目按置信度截 [`MAX_ENTRIES`]（config 可调），auto 条目
+/// （固定规则/挖掘器产物）单独截 [`AUTO_MAX_ENTRIES`]，vetoed 不占任何
+/// 名额。pinned 条目优先保留（用户意志不被截断）。
 pub fn prune_and_cap(profile: &mut UserProfile) {
     prune_and_cap_with_max(profile, MAX_ENTRIES);
 }
@@ -207,21 +315,25 @@ pub fn prune_and_cap_with_max(profile: &mut UserProfile, max_entries: usize) {
     profile
         .habits
         .retain(|h| h.status != STATUS_EXPIRED && !violates_security_boundary(&h.content));
-    let (active, vetoed): (Vec<_>, Vec<_>) = profile
+    let (kept, vetoed): (Vec<_>, Vec<_>) = profile
         .habits
         .drain(..)
         .partition(|h| h.status != STATUS_VETOED);
-    let mut active = active;
-    // pinned 优先（用户意志不被截断），其次置信度。
-    active.sort_by(|a, b| {
+    let (mut manual, mut auto): (Vec<_>, Vec<_>) = kept.into_iter().partition(|h| !h.auto);
+    // 各桶内 pinned 优先（用户意志不被截断），其次置信度。
+    let sort_key = |a: &HabitEntry, b: &HabitEntry| {
         b.pinned.cmp(&a.pinned).then_with(|| {
             b.confidence
                 .partial_cmp(&a.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-    });
-    active.truncate(max_entries);
-    profile.habits = active;
+    };
+    manual.sort_by(|a, b| sort_key(a, b));
+    auto.sort_by(|a, b| sort_key(a, b));
+    manual.truncate(max_entries);
+    auto.truncate(AUTO_MAX_ENTRIES);
+    profile.habits = manual;
+    profile.habits.extend(auto);
     profile.habits.extend(vetoed);
 }
 
@@ -229,8 +341,18 @@ pub fn prune_and_cap_with_max(profile: &mut UserProfile, max_entries: usize) {
 /// 刷新 last_seen；不同则插入。vetoed 条目命中时**保持 vetoed**（仅
 /// decaying→active 转换）——与 `prune_and_cap` 的驻留语义配套构成否决
 /// 抑制链：驻留 + 不复活 = 同内容候选永不重生成。
+///
+/// 结构化字段合并（批二）：steps 取并集（去重保序、清洗截断）——反思
+/// 通道对同一仪式的步骤细化能累积进既有条目；evidence 同并集（溯源
+/// 累积）；auto 取 OR（一旦被挖掘器命中过，配额归 auto 桶）。
 pub fn upsert_habit(profile: &mut UserProfile, mut entry: HabitEntry) {
     let norm = |s: &str| s.trim().to_lowercase();
+    // 双保险（批 A）：非 habit 主语分型一律拒入——lesson 即便被反思解析层
+    // 误路由（应分流到 bridge 队列），也进不了用户画像注入面。未知分型
+    // 同拒（fail-closed：注入面语义只有用户习惯一种）。
+    if entry.kind != KIND_HABIT {
+        return;
+    }
     if violates_security_boundary(&entry.content) {
         return; // 硬边界：安全语义候选直接丢弃
     }
@@ -246,11 +368,61 @@ pub fn upsert_habit(profile: &mut UserProfile, mut entry: HabitEntry) {
             if existing.status == STATUS_DECAYING {
                 existing.status = STATUS_ACTIVE.to_string();
             }
+            // 结构化合并：steps 并集（保序去重 + 清洗）。
+            for s in HabitEntry::sanitize_steps(&entry.steps) {
+                if !existing.steps.iter().any(|e| e == &s) {
+                    existing.steps.push(s);
+                }
+            }
+            existing.steps = HabitEntry::sanitize_steps(&existing.steps);
+            // evidence 并集（溯源累积，超限保尾部）：新证据比旧证据信息量
+            // 高（近期行为更能代表当前习惯），头部淘汰而非尾部截断——尾部
+            // 截断会把刚并入的新溯源当溢出项丢掉。
+            for ev in &entry.evidence {
+                if !existing.evidence.iter().any(|e| e == ev) {
+                    existing.evidence.push(ev.clone());
+                }
+            }
+            if existing.evidence.len() > MAX_EVIDENCE {
+                let start = existing.evidence.len() - MAX_EVIDENCE;
+                existing.evidence.drain(..start);
+            }
+            existing.auto = existing.auto || entry.auto;
             return;
         }
     }
     entry.confidence = entry.confidence.clamp(0.0, 1.0);
+    entry.steps = HabitEntry::sanitize_steps(&entry.steps);
+    entry.evidence.truncate(MAX_EVIDENCE);
     profile.habits.push(entry);
+}
+
+/// 外部经验抛入（批 A 接口二：Forge → userprofile）。`source` **强制**
+/// 来源标记（空 = Err——外部知识必须可溯源到抛入方；自产条目 source 为
+/// 空，不走本函数）。
+///
+/// 纪律：`kind` 强制归一 [`KIND_HABIT`]（外部抛入的是「关于用户的经验」；
+/// lesson 语义走 [`super::bridge`] 队列，方向相反）；`auto` 强制 false
+/// （进反思配额桶，不占挖掘器固定配额）；合并语义与自产完全一致（同
+/// content 并 evidence、置信度取高、保尾溯源——内部走 [`upsert_habit`]，
+/// 安全边界过滤与 lesson 双保险同源生效）。合并命中已有自产条目时保留
+/// 原条目 source（本地证据链优先，外部来源不覆盖自产标记）。
+pub fn ingest_external_entry(
+    workspace: &Path,
+    mut entry: HabitEntry,
+    source: &str,
+) -> Result<(), String> {
+    if source.trim().is_empty() {
+        return Err("ingest 来源标记为空（外部经验必须可溯源到抛入方），拒绝执行".into());
+    }
+    entry.kind = KIND_HABIT.into();
+    entry.auto = false;
+    entry.source = source.to_string(); // 强制：参数是权威，不透传调用方残留值
+    // RMW 全程持锁（veto/forget 同族纪律）；损坏画像 = Err 不回写。
+    let _serial = nemesis_config::config_write_lock();
+    let mut profile = try_load_profile(workspace)?;
+    upsert_habit(&mut profile, entry);
+    save_profile_locked(workspace, &profile)
 }
 
 /// 衰减 sweep：last_seen 距今 >decay_days 天 → decaying；>2×decay_days →
@@ -289,8 +461,12 @@ pub fn decay_sweep_with_days(
     }
 }
 
-/// 注入段渲染（loop::messages merged snapshot 的输入；空 = 未开启或无
-/// active 条目，零字节注入）。content 换行折叠为空格（单行纪律）。
+/// 注入段渲染（agent loop::messages merged snapshot 的输入；空 = 未开启
+/// 或无 active 条目，零字节注入）。content 换行折叠为空格（单行纪律）。
+///
+/// 结构化升级（批二）：带 steps 条目渲染为步骤清单块（步骤单行折叠 +
+/// 安全边界过滤）；无 steps 条目保持旧单行形态（字节兼容既有注入段，
+/// prompt cache 前缀在内容不变期间稳定）。
 pub fn render_section(profile: &UserProfile) -> String {
     let mut lines = Vec::new();
     let mut entries: Vec<&HabitEntry> = profile
@@ -306,6 +482,16 @@ pub fn render_section(profile: &UserProfile) -> String {
         // B- 根修——反思维护内容统一压成单行）。
         let one_line = h.content.replace(['\r', '\n'], " ");
         lines.push(format!("- [{}] {}{pin_mark}", h.category, one_line));
+        // 步骤清单块（结构化条目）：步骤同样单行折叠 + 安全边界过滤。
+        for (i, step) in h
+            .steps
+            .iter()
+            .filter(|s| !violates_security_boundary(s))
+            .enumerate()
+        {
+            let step_line = step.replace(['\r', '\n'], " ");
+            lines.push(format!("  {}. {}", i + 1, step_line));
+        }
     }
     if lines.is_empty() {
         return String::new();
@@ -377,88 +563,6 @@ pub fn set_pinned(workspace: &Path, content_sub: &str, pinned: bool) -> Result<b
         save_profile_locked(workspace, &p)?;
     }
     Ok(hit)
-}
-
-/// 统计通道候选（信号 → HabitEntry）。
-///
-/// 输入 = 近期会话的用户消息列表（仅 enabled_at 之后的数据由调用方过滤）。
-/// 规则（v1 确定性集，纯函数可单测）：
-/// - 语言：消息 ≥10 条且中文字符占比 >0.7 → 中文交流习惯；
-/// - 简洁：平均用户长度 <40 字 → 简洁交互习惯；
-/// - 纠正：纠正前缀（不对/不，/我意思是/别/不要）频次 ≥3 →
-///   「先确认理解再动手」习惯。
-pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
-    let mut out = Vec::new();
-    let n = user_messages.len();
-    if n == 0 {
-        return out;
-    }
-    let now = now.to_string();
-
-    // 语言。
-    let total_chars: usize = user_messages.iter().map(|m| m.chars().count()).sum();
-    if total_chars > 0 {
-        let cjk: usize = user_messages
-            .iter()
-            .flat_map(|m| m.chars())
-            .filter(|c| {
-                let c = *c as u32;
-                (0x4E00..=0x9FFF).contains(&c)
-            })
-            .count();
-        let ratio = cjk as f64 / total_chars as f64;
-        if n >= 10 && ratio > 0.7 {
-            out.push(HabitEntry {
-                category: "style".into(),
-                content: "用户主要使用中文交流，回复使用中文".into(),
-                confidence: (0.5 + ratio * 0.4).min(0.95),
-                hits: n as u32,
-                first_seen: now.clone(),
-                last_seen: now.clone(),
-                status: STATUS_ACTIVE.into(),
-                pinned: false,
-            });
-        }
-    }
-
-    // 简洁。
-    let avg_len = total_chars as f64 / n as f64;
-    if n >= 10 && avg_len < 40.0 {
-        out.push(HabitEntry {
-            category: "style".into(),
-            content: "用户消息简短直接，回复宜简洁、结论先行".into(),
-            confidence: 0.7,
-            hits: n as u32,
-            first_seen: now.clone(),
-            last_seen: now.clone(),
-            status: STATUS_ACTIVE.into(),
-            pinned: false,
-        });
-    }
-
-    // 纠正前缀。
-    const PREFIXES: &[&str] = &["不对", "不，", "不是的", "我意思是", "别", "不要"];
-    let corrections = user_messages
-        .iter()
-        .filter(|m| {
-            let t = m.trim_start();
-            PREFIXES.iter().any(|p| t.starts_with(p))
-        })
-        .count();
-    if corrections >= 3 {
-        out.push(HabitEntry {
-            category: "correction".into(),
-            content: "用户常用纠正性反馈——动手前优先复述理解、小步确认方向".into(),
-            confidence: (0.5 + corrections as f64 * 0.1).min(0.9),
-            hits: corrections as u32,
-            first_seen: now.clone(),
-            last_seen: now.clone(),
-            status: STATUS_ACTIVE.into(),
-            pinned: false,
-        });
-    }
-
-    out
 }
 
 #[cfg(test)]

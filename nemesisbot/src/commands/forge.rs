@@ -563,13 +563,18 @@ fn cmd_reflect(
                         &period,
                         "all",
                         Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                        // 批 D：空切片 = CLI 反思不消费 lesson 队列/veto 注记
+                        //（消费面唯一 = 网关周期反思循环，与 Dashboard 手动
+                        // 反思同一纪律）。
+                        &[],
+                        &[],
                     )
                     .await
             } else {
                 forge
                     .reflector()
                     .expect("reflector initialized above")
-                    .reflect(&experiences, &traces, None, &period, "all")
+                    .reflect(&experiences, &traces, None, &period, "all", &[], &[])
             };
             // 学习闭环状态入报告（与网关同源；CLI 侧用运行时原子旗标
             // ——runtime enable/disable 热切后 config 值会说谎）。

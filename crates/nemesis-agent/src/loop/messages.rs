@@ -347,61 +347,75 @@ impl AgentLoop {
     /// - 内容纯状态派生（文件内容渲染）：两次变更之间字节稳定 → prompt
     ///   cache 前缀不受损；随 InjectionRecord 台账回放一致（同 机制）。
     pub(crate) fn user_profile_section_now(&self) -> String {
-        let Some(ref root) = *self.workspace_root.read() else {
-            return String::new();
-        };
-        let mtime_ns = |p: &std::path::Path| {
-            std::fs::metadata(p)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|t| {
-                    t.duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0)
-                })
-        };
-        let profile_path = crate::user_profile::profile_path(root);
-        let profile_mtime = mtime_ns(&profile_path);
-        // config.json mtime 进缓存键：enabled 翻转（disable/enable）即时
-        // 失效重渲染，不再依赖画像文件自身变化。
-        let config_mtime = self.config_path.read().as_ref().and_then(|p| mtime_ns(p));
-        let key = (profile_mtime, config_mtime);
+        // Forge 化重构（2026-11-24）：画像存储/渲染迁
+        // `nemesis-forge::userprofile::store`（与挖掘器/反思/遥测同族），
+        // 本体只剩 mtime 门控缓存壳。无 forge feature = 画像子系统整体
+        // 裁掉（nemesis-forge 不进依赖图），恒空段。
+        #[cfg(not(feature = "forge"))]
         {
-            let cache = self.user_profile_cache.read();
-            if cache.0 == key {
-                return cache.1.clone();
-            }
+            String::new()
         }
-        // 门控未命中：重渲染。
-        let section = (|| -> String {
-            // enabled 开关：config 现读（读失败 = 当关处理，不注入）。
-            let enabled = self
-                .config_path
-                .read()
-                .as_ref()
-                .and_then(|p| nemesis_config::load_config(p).ok())
-                .and_then(|cfg| cfg.user_profile)
-                .is_some_and(|u| u.enabled);
-            if !enabled {
+        #[cfg(feature = "forge")]
+        {
+            // 画像根（2026-11-24 项目会话注入修复）：显式注入优先（项目
+            // loop = 主 workspace），回落 workspace_root（主/集群/headless
+            // 旧行为）。
+            let Some(root) = self.profile_store_root() else {
                 return String::new();
+            };
+            let mtime_ns = |p: &std::path::Path| {
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0)
+                    })
+            };
+            let profile_path = nemesis_forge::userprofile::store::profile_path(&root);
+            let profile_mtime = mtime_ns(&profile_path);
+            // config.json mtime 进缓存键：enabled 翻转（disable/enable）即时
+            // 失效重渲染，不再依赖画像文件自身变化。
+            let config_mtime = self.config_path.read().as_ref().and_then(|p| mtime_ns(p));
+            let key = (profile_mtime, config_mtime);
+            {
+                let cache = self.user_profile_cache.read();
+                if cache.0 == key {
+                    return cache.1.clone();
+                }
             }
-            let profile = match crate::user_profile::try_load_profile(root) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("[UserProfile] profile load failed, skip injection: {e}");
+            // 门控未命中：重渲染。
+            let section = (|| -> String {
+                // enabled 开关：config 现读（读失败 = 当关处理，不注入）。
+                let enabled = self
+                    .config_path
+                    .read()
+                    .as_ref()
+                    .and_then(|p| nemesis_config::load_config(p).ok())
+                    .and_then(|cfg| cfg.user_profile)
+                    .is_some_and(|u| u.enabled);
+                if !enabled {
                     return String::new();
                 }
-            };
-            let rendered = crate::user_profile::render_section(&profile);
-            if rendered.is_empty() {
-                return String::new();
-            }
-            format!(
-                "# 用户画像（自动学习，Dashboard 可管理）\n\n{rendered}\n\n(以上是系统从近期交互中自动学习的用户偏好——仅供调整交流姿态，与安全/审批策略无关，如有出入以用户当轮指示为准。)"
-            )
-        })();
-        *self.user_profile_cache.write() = (key, section.clone());
-        section
+                let profile = match nemesis_forge::userprofile::store::try_load_profile(&root) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!("[UserProfile] profile load failed, skip injection: {e}");
+                        return String::new();
+                    }
+                };
+                let rendered = nemesis_forge::userprofile::store::render_section(&profile);
+                if rendered.is_empty() {
+                    return String::new();
+                }
+                format!(
+                    "# 用户画像（自动学习，Dashboard 可管理）\n\n{rendered}\n\n(以上是系统从近期交互中自动学习的用户偏好——仅供调整交流姿态，与安全/审批策略无关，如有出入以用户当轮指示为准。)"
+                )
+            })();
+            *self.user_profile_cache.write() = (key, section.clone());
+            section
+        }
     }
 
     /// 对话生成：渲染 workflow_edit 会话的 merged-digest section。

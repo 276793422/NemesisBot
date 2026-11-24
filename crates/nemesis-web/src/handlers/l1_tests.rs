@@ -404,6 +404,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         "goals",
         "mail",
         "browser", // 浏览器接管管理面（不带 browser 重跑会把 browser.* 八命令整模块冲没）
+        "profile", // 用户习惯画像（Forge 化重构后随 forge gate；不带会把 profile.* 九命令整模块冲没）
     ];
     let missing_module = GATED_DOC_MODULES
         .iter()

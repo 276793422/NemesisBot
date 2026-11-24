@@ -40,6 +40,43 @@ fn alert_denial(
     );
 }
 
+/// 用户行为学习采集（2026-11-24 批 C ④）：审批**强信号**落盘
+/// （`<ws>/forge/userprofile/signals.jsonl`）——卡片创建到裁决的墙钟 +
+/// 操作类别 + 裁决方向。**只加观测行，审批语义一个字不改**；挖掘器
+/// （nemesis-forge userprofile::mining::approval_strong_candidates）据此
+/// 出「秒批/迟疑」读法。workspace 推导 = rules_path 两级父目录
+/// （`<ws>/config/approval_rules.json`）；rules_path 未配置 = 不落
+/// （诚实降级——signals 是旁路面，缺了只丢学习素材）。失败静默
+/// （append_signal 侧同纪律）。
+#[cfg(feature = "forge")]
+fn record_approval_signal(
+    rules_path: Option<&std::path::PathBuf>,
+    entry_operation: &str,
+    entry_risk_level: &str,
+    entry_approved: bool,
+    entry_session_key: &str,
+    duration_ms: u64,
+) {
+    let Some(rules) = rules_path else {
+        return;
+    };
+    let Some(workspace) = rules.parent().and_then(|p| p.parent()) else {
+        return;
+    };
+    nemesis_forge::userprofile::collection::append_signal(
+        workspace,
+        &serde_json::json!({
+            "ts_ms": chrono::Utc::now().timestamp_millis(),
+            "kind": "approval",
+            "operation": entry_operation,
+            "risk_level": entry_risk_level,
+            "approved": entry_approved,
+            "duration_ms": duration_ms,
+            "session_key": entry_session_key,
+        }),
+    );
+}
+
 /// 从台账 payload 提取 session_key（缺省空串——无来源上下文的卡）。
 fn payload_session_key_of(entry: &nemesis_types::approval_journal::ApprovalJournalEntry) -> String {
     entry
@@ -873,6 +910,17 @@ impl ApprovalResponder for WebApprovalManager {
         // 裁决已送达 → 广播 resolved，竞速败方窗口摘卡。在 always 规则
         // 写盘之前发（写失败不影响「卡已处理」事实）。
         self.broadcast_resolved(request_id, if approved { "approved" } else { "denied" });
+        // 批 C ④：审批强信号观测行（决策墙钟 + 类别）——学习侧旁路，
+        // 审批语义零改动。
+        #[cfg(feature = "forge")]
+        record_approval_signal(
+            self.rules_path.as_ref(),
+            &entry.operation,
+            &entry.risk_level,
+            approved,
+            &entry.session_key,
+            entry.created_at.elapsed().as_millis() as u64,
+        );
 
         // 批准 + 总是允许 → 写规则。裁决已送达不回滚；层级安全门
         // （CRITICAL 仅 process_exec 豁免 + 安装类永不入规则）不过则忽略
@@ -1088,6 +1136,16 @@ impl ApprovalResponder for WebApprovalManager {
                 );
             }
             self.broadcast_resolved(&id, if approved { "approved" } else { "denied" });
+            // 批 C ④：逐卡审批强信号观测行（同单体 respond）。
+            #[cfg(feature = "forge")]
+            record_approval_signal(
+                self.rules_path.as_ref(),
+                &entry.operation,
+                &entry.risk_level,
+                approved,
+                &entry.session_key,
+                entry.created_at.elapsed().as_millis() as u64,
+            );
             responded += 1;
             responded_ids.push(id.clone());
             if approved && always {

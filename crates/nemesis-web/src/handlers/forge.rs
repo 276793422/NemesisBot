@@ -706,10 +706,16 @@ impl ForgeHandler {
                     &period,
                     "all",
                     Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
+                    // 批 D：空切片 = 手动反思不消费 lesson 队列/veto 注记
+                    //（消费面唯一 = 网关周期反思循环，避免 UI 点一下就
+                    // 把队列消费掉；报告无「用户会话教训」节 = 本通道
+                    // 未消费，诚实形态）。
+                    &[],
+                    &[],
                 )
                 .await
         } else {
-            reflector.reflect(&experiences, &traces, None, &period, "all")
+            reflector.reflect(&experiences, &traces, None, &period, "all", &[], &[])
         };
         let mut report = report;
         // 学习闭环状态入报告（与 run_reflection_cycle 同源）。权威源 =

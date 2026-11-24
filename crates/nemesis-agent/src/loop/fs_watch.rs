@@ -116,6 +116,29 @@ impl AgentLoop {
         nemesis_path::default_path_manager().workspace()
     }
 
+    /// 注入用户画像存储根（项目 loop 装配时从主 workspace 注入——项目
+    /// loop 的 workspace_root 是项目目录（用户真实工作树），画像资产
+    /// `config/user_profile.json` 在主 workspace；vault/session-home 根
+    /// 同族先例）。未注入 = 回落 workspace_root（主/集群/headless loop
+    /// 行为不变）。
+    pub fn set_profile_root(&self, root: std::path::PathBuf) {
+        *self.profile_root.write() = Some(root);
+    }
+
+    /// 用户画像存储根（2026-11-24 项目会话注入缺口修复）：显式注入优先，
+    /// 回落 workspace_root。`user_profile_section_now` 唯一消费（画像文件
+    /// 定位与 mtime 缓存键同根——根不变则缓存键语义不变）。
+    /// （消费点在 `#[cfg(feature = "forge")]` 臂内——无 forge 构建下
+    /// 恒死代码，条件 allow 压掉；回归测试 r36_profile_cache_tests 同为
+    /// forge 门控。）
+    #[cfg_attr(not(feature = "forge"), allow(dead_code))]
+    pub(crate) fn profile_store_root(&self) -> Option<std::path::PathBuf> {
+        self.profile_root
+            .read()
+            .clone()
+            .or_else(|| self.workspace_root.read().clone())
+    }
+
     /// 注入工作区指令信任档（项目 loop 装配时解析注入；
     /// `projects.trust` WSAPI 对运行中 loop 热更新——下一轮 build_messages
     /// 即生效，区块逐 build 重渲染无残留）。

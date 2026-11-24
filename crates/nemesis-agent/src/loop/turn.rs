@@ -628,6 +628,9 @@ impl AgentLoop {
                 // assistant 终局回复行正常气泡展示（系统通知标记只在
                 // user 行——见 admission.rs system_notice_of）。
                 system_notice: None,
+                // 批 C ⑥：assistant 行不写通道标记（通道是真人 user 行的
+                // 属性；None 不写键，读侧宽容）。
+                channel: None,
             },
         );
 
