@@ -146,11 +146,14 @@ impl<'a> scheduler::ProgressHook for CheckpointHook<'a> {
         // Detect whether a human_review node paused us mid-level. The hook
         // is invoked after *every* level, Waiting or not — capturing the
         // waiting node id here keeps resume straightforward.
-        let waiting = wf_ctx
-            .get_all_node_results()
-            .iter()
-            .find(|(_, r)| r.state == ExecutionState::Waiting)
-            .map(|(id, _)| id.clone());
+        //
+        // 多等待节点并存时取 id 最小者（smallest_waiting_node_id，与
+        // run / resume 收口尾段同源）——iter().find 是 HashMap 迭代序随
+        // 机，同层多个 human_review 时 checkpoint.waiting_node 观测字段
+        // 随进程漂移（BUG-20261124-034 同族修正：该 helper 的 doc 注释
+        // 明说「run 与 resume 两处 checkpoint 收口共用」，per-level 写
+        // 点是第三处，漏用即同族疤痕漏铺）。
+        let waiting = smallest_waiting_node_id(&wf_ctx.get_all_node_results());
 
         if let Err(e) = self
             .engine
@@ -3367,15 +3370,47 @@ impl WorkflowEngine {
             }
         };
 
-        let schedule_result = scheduler::schedule_resume(
-            &workflow.nodes,
-            &workflow.edges,
-            &self.node_executors,
-            &mut wf_ctx,
-            &completed_nodes,
-            cancel_token.clone(),
-        )
-        .await;
+        // BUG-20261124-034：resume 段同样挂 per-level checkpoint hook——
+        // schedule_resume_with_hook 与 schedule_resume 是 schedule_inner 的
+        // 同一实现的 hook 开关两形态（API 已存在且有专测
+        // w4a_schedule_resume_with_hook_invoked_per_level），旧代码只接了
+        // 无 hook 形态：resume 段中途崩溃（进程被杀/断电/panic）时盘上最新
+        // checkpoint 停在 resume 前的 Waiting 快照，resume 已完成的全部下
+        // 游节点工作（真实 LLM token 花费 + tool 副作用结果）全部丢失，
+        // 重启 restore 回到 human_review、重新 resume 重跑全部下游——重复
+        // 花费 + 副作用重放。首跑路径（run_async has_store 时
+        // schedule_with_hook）每层落盘无此问题；同一引擎同一崩溃恢复机制，
+        // 首跑能断点续跑、resume 不能的不对称即本缺陷。hook 复用
+        // CheckpointHook（find Waiting + save_checkpoint 与首跑同语义，
+        // waiting 取值已改 smallest_waiting_node_id 确定性同源）。
+        let has_store = self.checkpoint_store.read().is_some();
+        let schedule_result = if has_store {
+            let hook = CheckpointHook {
+                engine: self,
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+            };
+            scheduler::schedule_resume_with_hook(
+                &workflow.nodes,
+                &workflow.edges,
+                &self.node_executors,
+                &mut wf_ctx,
+                &completed_nodes,
+                cancel_token.clone(),
+                &hook,
+            )
+            .await
+        } else {
+            scheduler::schedule_resume(
+                &workflow.nodes,
+                &workflow.edges,
+                &self.node_executors,
+                &mut wf_ctx,
+                &completed_nodes,
+                cancel_token.clone(),
+            )
+            .await
+        };
 
         // BUG-20261120-038：token 摘除挪到下方内存终态 insert 之后（与
         // run_async 同纪律）——摘早了，窗口内 cancel_execution 查不到
