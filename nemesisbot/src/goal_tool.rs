@@ -172,6 +172,14 @@ impl GoalTool {
                 ));
             }
             let id = nemesis_goals::alloc_id(&self.workspace);
+            // BUG-20261124-037：内容先于登记提交——md 写失败时闭包 Err =
+            // update_registry 整表放弃不落盘（store.rs 契约），注册表不留
+            // 无内容的 Active 条目。旧序（登记先落盘、md 写 `?` 在闭包外）
+            // 下 md 写失败 = Active 条目永久 skip eval（"md file missing"）
+            // + add 拒新建（非 Done 条目占会话）= 会话目标楔死需人工删。
+            // 反向残渣（md 成功而注册表 save 失败）= 仅孤儿 md（id 单调
+            // 跳号无消费方，nemesis-loop create_loop 作废语义同款，良性）。
+            write_goal_md(&self.workspace, &id, content)?;
             entries.push(nemesis_goals::GoalEntry::new(
                 id.clone(),
                 context.session_key.clone(),
@@ -182,7 +190,6 @@ impl GoalTool {
             ));
             Ok(id)
         })?;
-        write_goal_md(&self.workspace, &id, content)?;
         Ok(format!(
             "目标 {id} 已创建并绑定本会话（created_by=agent）。从下一个回合结束起，评估闸会独立核验目标达成情况：\
              未达成会注入缺口让你继续，达成才判 done——请勿在回复中自行宣告完成。目标全文：goals/{id}.goal.md。"
