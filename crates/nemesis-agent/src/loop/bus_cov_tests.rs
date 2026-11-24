@@ -65,6 +65,24 @@ fn inbound(content: &str, channel: &str, sender_id: &str, key: &str) -> InboundM
     }
 }
 
+/// 等 spawn 的 turn 任务收尾（session busy 释放 = turn 完成信号）。
+///
+/// turn 起点带 spawn_blocking 让出点后（wip_journal consume/register 移
+/// 阻塞线程池），`pump.await` 返回（入站通道关闭即退）不再蕴含 spawn 的
+/// turn 已跑完——旧断言依赖「turn 全程同步 Ready、首轮 poll 即完成」的
+/// 实现巧合。此处有界轮询到 busy 释放或超时，恢复断言确定性（生产无此
+/// 耦合：入站通道从不在 turn 在飞时关闭）。
+async fn wait_turn_done(al: &AgentLoop, key: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while al.is_session_busy(key) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "turn did not finish within 5s (session still busy): {key}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 /// 泵驱动维护命令与用户派发：两臂都以 spawn_turn_task 执行并发布回执，
 /// 尾巴释放会话。
 #[tokio::test]
@@ -144,6 +162,7 @@ async fn pump_admits_plain_message_and_publishes_response() {
         .unwrap();
     drop(itx);
     pump.await.unwrap();
+    wait_turn_done(&al, key).await;
 
     let mut got = Vec::new();
     while let Ok(o) = orx.try_recv() {
@@ -276,6 +295,7 @@ async fn pump_expands_builtin_template_before_gate() {
     .unwrap();
     drop(itx);
     pump.await.unwrap();
+    wait_turn_done(&al, "agent:main:session:covslash").await;
 
     let got = captured.lock().unwrap();
     // LLM 收到的必须是展开后的模板正文（含安全评审纪律 + 参数注入），
@@ -419,6 +439,7 @@ async fn pump_final_reply_has_no_occupies_key() {
     .unwrap();
     drop(itx);
     pump.await.unwrap();
+    wait_turn_done(&al, "agent:main:session:covocc-f").await;
 
     let mut got = Vec::new();
     while let Ok(o) = orx.try_recv() {
