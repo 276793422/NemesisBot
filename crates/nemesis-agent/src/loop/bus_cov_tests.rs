@@ -98,6 +98,14 @@ async fn pump_runs_maintenance_and_user_dispatch_as_turn_tasks() {
     .unwrap();
     drop(itx);
     pump.await.unwrap();
+    // BUG-20261124-046 让出点配套：spawn_blocking 在 turn 路径引入首个让出
+    // 点，泵「recv None 即退出」可先于 turn 完成（测试收口连带终止在飞
+    // turn）——bounded 等在飞 turn 排空再收集断言。
+    assert!(
+        al.wait_turns_drained(std::time::Duration::from_secs(5))
+            .await,
+        "in-flight turn did not drain"
+    );
 
     let mut got = Vec::new();
     while let Ok(o) = orx.try_recv() {
@@ -144,6 +152,14 @@ async fn pump_admits_plain_message_and_publishes_response() {
         .unwrap();
     drop(itx);
     pump.await.unwrap();
+    // BUG-20261124-046 让出点配套：spawn_blocking 在 turn 路径引入首个让出
+    // 点，泵「recv None 即退出」可先于 turn 完成（测试收口连带终止在飞
+    // turn）——bounded 等在飞 turn 排空再收集断言。
+    assert!(
+        al.wait_turns_drained(std::time::Duration::from_secs(5))
+            .await,
+        "in-flight turn did not drain"
+    );
 
     let mut got = Vec::new();
     while let Ok(o) = orx.try_recv() {
@@ -276,6 +292,14 @@ async fn pump_expands_builtin_template_before_gate() {
     .unwrap();
     drop(itx);
     pump.await.unwrap();
+    // BUG-20261124-046 让出点配套：spawn_blocking 在 turn 路径引入首个让出
+    // 点，泵「recv None 即退出」可先于 turn 完成（测试收口连带终止在飞
+    // turn）——bounded 等在飞 turn 排空再断言。
+    assert!(
+        al.wait_turns_drained(std::time::Duration::from_secs(5))
+            .await,
+        "in-flight turn did not drain"
+    );
 
     let got = captured.lock().unwrap();
     // LLM 收到的必须是展开后的模板正文（含安全评审纪律 + 参数注入），
@@ -373,6 +397,14 @@ async fn pump_stamps_occupies_false_on_maintenance_frames() {
     .unwrap();
     drop(itx);
     pump.await.unwrap();
+    // BUG-20261124-046 让出点配套：spawn_blocking 在 turn 路径引入首个让出
+    // 点，泵「recv None 即退出」可先于 turn 完成（测试收口连带终止在飞
+    // turn）——bounded 等在飞 turn 排空再收集断言。
+    assert!(
+        al.wait_turns_drained(std::time::Duration::from_secs(5))
+            .await,
+        "in-flight turn did not drain"
+    );
 
     let mut got = Vec::new();
     while let Ok(o) = orx.try_recv() {
@@ -419,6 +451,14 @@ async fn pump_final_reply_has_no_occupies_key() {
     .unwrap();
     drop(itx);
     pump.await.unwrap();
+    // BUG-20261124-046 让出点配套：spawn_blocking 在 turn 路径引入首个让出
+    // 点，泵「recv None 即退出」可先于 turn 完成（测试收口连带终止在飞
+    // turn）——bounded 等在飞 turn 排空再收集断言。
+    assert!(
+        al.wait_turns_drained(std::time::Duration::from_secs(5))
+            .await,
+        "in-flight turn did not drain"
+    );
 
     let mut got = Vec::new();
     while let Ok(o) = orx.try_recv() {
