@@ -760,3 +760,60 @@ fn class_by_code_unlisted_and_contamination_guards() {
     assert_eq!(class_by_code(""), None);
     assert_eq!(class_by_code("   "), None);
 }
+
+// —— 会话级封禁词表（2026-11-24 用户事故批）——
+
+#[test]
+fn is_session_scoped_block_positive_families() {
+    use super::is_session_scoped_block as blocked;
+    // 实录完整形态（码 + 中英文短语三锚全在）：
+    assert!(blocked(
+        r#"status 403: {"error":{"code":"session_blocked_by_cyber_policy","message":"该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please start a new session"}}"#
+    ));
+    // 码族锚单独成立（变体大小写/同构码）：
+    assert!(blocked("Session_Blocked_By_Cyber_Policy"));
+    assert!(blocked("code=session_blocked"));
+    // 中文实测短语单独成立（无码形态兜底）：
+    assert!(blocked("该会话已被网络安全策略屏蔽，请开启新会话"));
+    // 英文实测短语单独成立：
+    assert!(blocked(
+        "this session is blocked by cyber-security policy, please start a new session"
+    ));
+}
+
+#[test]
+fn is_session_scoped_block_negative_guards() {
+    use super::is_session_scoped_block as blocked;
+    // 普通 403/内容风控：换内容可解，不得误入会话封禁文案（两案处置不同）：
+    assert!(!blocked(
+        "forbidden by provider demo: status 403: This content was flagged per our content policy"
+    ));
+    assert!(!blocked(
+        r#"status 403: {"type":"permission_error","message":"denied"}"#
+    ));
+    assert!(!blocked("access denied region restricted"));
+    // 空串/无关文本：
+    assert!(!blocked(""));
+    assert!(!blocked("connect error (model m): timeout"));
+}
+
+#[test]
+fn class_by_code_session_blocked_family_is_forbidden() {
+    use LlmErrorClass as C;
+    // 受控前缀族：完整实录码 + 同构变体 → Forbidden（封会话恒终态）：
+    assert_eq!(
+        class_by_code("session_blocked_by_cyber_policy"),
+        Some(C::Forbidden)
+    );
+    assert_eq!(class_by_code("session_blocked"), Some(C::Forbidden));
+    assert_eq!(
+        class_by_code("SESSION_BLOCKED_BY_POLICY"),
+        Some(C::Forbidden)
+    );
+    // 前缀族不吞自由文本（starts_with 锚定，非 contains）：
+    assert_eq!(class_by_code("not_session_blocked"), None);
+    assert_eq!(
+        class_by_code("session_blocked_was_lifted"),
+        Some(C::Forbidden)
+    );
+}
