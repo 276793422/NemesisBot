@@ -47,6 +47,7 @@ pub async fn run(local: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Debug)]
 pub(crate) struct GatewayInfo {
     #[allow(dead_code)]
     pub(crate) pid: u32,
@@ -65,6 +66,26 @@ pub(crate) fn read_gateway_state(path: &Path) -> Option<GatewayInfo> {
         web_host: v["web_host"].as_str()?.to_string(),
         web_port: v["web_port"].as_i64()?,
     })
+}
+
+/// 读 gateway state 并区分「文件不存在」与「文件存在但无法解析」两种失败
+/// 形态（BUG-20261125-011）。此前 estop/selfupdate/vm/ziwei 四个消费者对
+/// 两种形态报同一条「找不到 state 文件」——文件明明在却被告知不存在，把
+/// 排查引向错误方向（BUG-20261123-017 让损坏 state → None 后两义性显形）。
+/// dashboard 命令自身走 start_and_wait 自愈路径，不需要此区分，仍用
+/// `read_gateway_state`。
+pub(crate) fn read_gateway_state_or_err(state_path: &Path) -> Result<GatewayInfo, String> {
+    match read_gateway_state(state_path) {
+        Some(info) => Ok(info),
+        None if state_path.exists() => Err(format!(
+            "Gateway state 文件存在但无法解析（{}）：内容损坏或缺少必要字段。删除该文件或重启 gateway 重建。",
+            state_path.display()
+        )),
+        None => Err(format!(
+            "Gateway 未运行（找不到 state 文件：{}）。先用 `nemesisbot gateway` 启动它。",
+            state_path.display()
+        )),
+    }
 }
 
 pub(crate) async fn check_health(base_url: &str) -> Result<(), String> {
