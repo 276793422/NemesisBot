@@ -513,13 +513,27 @@ pub fn parse_cfg_function_table(file: &[u8], pe: &PeInfo) -> Option<Vec<u32>> {
 /// 加载/DLL_PROCESS_ATTACH 前最先执行的用户代码，递归下降与.pdata 都
 /// 不覆盖 TLS 回调）。AddressOfCallBacks 是 VA 指针数组（NULL 终止）。
 pub fn parse_tls_callbacks(file: &[u8], pe: &PeInfo) -> Option<Vec<u32>> {
-    const OFF_CALLBACKS: usize = 24; // IMAGE_TLS_DIRECTORY64.AddressOfCallBacks
+    // 目录布局按 machine 分支（BUG-20261124-042）：IMAGE_TLS_DIRECTORY64 的
+    // AddressOfCallBacks 在 +24（u64 VA），32 位（IMAGE_TLS_DIRECTORY32）在
+    // +12（DWORD VA）；回调数组元素宽 = 指针宽（4/8）。旧代码硬编码 64 位
+    // 布局——x86 目标读到错误偏移，TLS 种子源静默缺席（目录外垃圾值恰在
+    // 镜像内时还会混入垃圾候选）。
+    let is32 = pe.machine == 0x14C;
+    let (off_callbacks, slot_len) = if is32 {
+        (12usize, 4usize)
+    } else {
+        (24usize, 8usize)
+    };
     let (dir_rva, dir_size) = *pe.directories.get(DIRECTORY_TLS)?;
-    if dir_rva == 0 || (dir_size as usize) < OFF_CALLBACKS + 8 {
+    if dir_rva == 0 || (dir_size as usize) < off_callbacks + slot_len {
         return None;
     }
     let dir_off = pe.rva_to_file_offset(dir_rva)?;
-    let cb_va = u64_at(file, dir_off + OFF_CALLBACKS).ok()?;
+    let cb_va = if is32 {
+        u32_at(file, dir_off + off_callbacks).ok()? as u64
+    } else {
+        u64_at(file, dir_off + off_callbacks).ok()?
+    };
     let arr_rva = va_to_rva(cb_va, pe.image_base)?;
     if arr_rva == 0 {
         return None;
@@ -527,11 +541,20 @@ pub fn parse_tls_callbacks(file: &[u8], pe: &PeInfo) -> Option<Vec<u32>> {
     let mut out = Vec::new();
     for i in 0..64u32 {
         // 防御：正常回调数组个位数，64 封顶
-        let Some(slot_off) = pe.rva_to_file_offset(arr_rva.wrapping_add(i * 8)) else {
+        let Some(slot_off) = pe.rva_to_file_offset(arr_rva.wrapping_add(i * slot_len as u32))
+        else {
             break;
         };
-        let Ok(fn_va) = u64_at(file, slot_off) else {
-            break;
+        let fn_va = if is32 {
+            let Ok(v) = u32_at(file, slot_off) else {
+                break;
+            };
+            v as u64
+        } else {
+            let Ok(v) = u64_at(file, slot_off) else {
+                break;
+            };
+            v
         };
         if fn_va == 0 {
             break; // NULL 终止

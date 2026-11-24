@@ -51,9 +51,23 @@ const MAX_INSNS_PER_FUNC: usize = 8192;
 
 /// 递归下降恢复。
 /// - `image`：内存快照（.text 必须在节 blob 内）；
-/// - `seeds`：入口 RVA（入口点 + 导出 + 调用目标随过程增长）；
+/// - `seeds`：权威种子（入口点/导出/调用目标随过程增长）；
+/// - `heuristic_seeds`：启发式种子（nopsled 字节游程），最后批处理；
 /// - `text_range`：(text_rva, text_end)——出界分支不追。
-pub fn recover(arch: Arch, image: &ImageMap, seeds: &[u32], text_range: (u32, u32)) -> FunctionSet {
+///
+/// 种子分层（BUG-20261124-043）：权威批先**降序**处理——高地址函数先
+/// 注册，低地址函数的线性扫描在高地址函数边界收口，导出/符号声明的
+/// 起点不被低地址扫描吞并。nopsled 批最后接力：此时真实函数已全部在
+/// 册，函数体内/体间的 sled 误报种子被 contains 让位（重叠先到先得），
+/// 真实函数不再被截断（旧代码两批混同降序，体内 sled 抢先注册把真实
+/// 函数拦腰截断，后半段 calls/imms/rip_refs 全丢）。
+pub fn recover(
+    arch: Arch,
+    image: &ImageMap,
+    seeds: &[u32],
+    heuristic_seeds: &[u32],
+    text_range: (u32, u32),
+) -> FunctionSet {
     let text_bytes = match image.read_rva(text_range.0, (text_range.1 - text_range.0) as usize) {
         Some(b) => b,
         None => return FunctionSet::default(),
@@ -61,9 +75,24 @@ pub fn recover(arch: Arch, image: &ImageMap, seeds: &[u32], text_range: (u32, u3
     let mut work: Vec<u32> = seeds.to_vec();
     work.sort_unstable();
     work.dedup();
+    // pop() 尾取：升序排序后直接 pop = 降序处理（高地址权威函数先注册，
+    // 低地址线性扫描在其边界收口）
+    let mut pending: Vec<u32> = heuristic_seeds.to_vec();
+    pending.sort_unstable();
+    pending.dedup();
     let mut set = FunctionSet::default();
 
-    while let Some(start) = work.pop() {
+    loop {
+        if work.is_empty() {
+            if pending.is_empty() {
+                break;
+            }
+            // 权威批（含其 DFS call 目标）耗尽 → nopsled 批接力让位
+            work = std::mem::take(&mut pending);
+        }
+        let Some(start) = work.pop() else {
+            break;
+        };
         if set.contains(start) || start < text_range.0 || start >= text_range.1 {
             continue;
         }

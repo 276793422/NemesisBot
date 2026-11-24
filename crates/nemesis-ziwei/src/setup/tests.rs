@@ -1766,6 +1766,7 @@ fn text_bounds_resolve_func_and_semantic_names_projection() {
         nemesis_ziwei_rev::disasm::Arch::X64,
         &img,
         &seeds,
+        &[],
         (0x1000, 0x1100),
     );
     let (f, note) = resolve_func(&set, 0x1000).unwrap();
