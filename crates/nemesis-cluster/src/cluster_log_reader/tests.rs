@@ -542,3 +542,157 @@ fn test_format_event_ts_fallbacks_and_remaining_arms() {
     assert!(messages.contains(&&"任务失败 task-1 (peer_chat)".to_string()));
     assert!(messages.contains(&&"任务超时 task-1 (peer_chat)".to_string()));
 }
+
+// ============================================================
+// BUG-20261124-032：read_log_entries 跨天拼接序（旧天先读、今天最后）
+// ——此前 [今天, 昨天] 乱序让 read_recent_events 取到昨天旧事件、
+// reconstruct_traces 尾 50 截错端、read_rpc_connections last_seen 被
+// 旧条目覆盖。
+// ============================================================
+
+fn day_log_path(log_dir: &std::path::Path, offset_days: i64) -> std::path::PathBuf {
+    let date = Local::now() - chrono::Duration::days(offset_days);
+    log_dir.join(format!("cluster_{}.log", date.format("%Y-%m-%d")))
+}
+
+fn submitted(action: &str, ts: &str) -> String {
+    format!(
+        r#"{{"event":"task_submitted","ts":"{ts}","task_id":"task-{action}","action":"{action}"}}"#
+    )
+}
+
+/// 拼接序钉死：返回序 = [昨天事件..., 今天事件...]（全局时间升序）。
+#[test]
+fn test_read_log_entries_cross_midnight_appends_oldest_first() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    fs::write(
+        day_log_path(log_dir, 1),
+        format!(
+            "{}\n{}\n",
+            submitted("y1", "2024-01-01T08:00:00+00:00"),
+            submitted("y2", "2024-01-01T09:00:00+00:00")
+        ),
+    )
+    .unwrap();
+    fs::write(
+        day_log_path(log_dir, 0),
+        format!("{}\n", submitted("t1", "2024-01-02T10:00:00+00:00")),
+    )
+    .unwrap();
+
+    let entries = read_log_entries(log_dir, 2);
+    let actions: Vec<String> = entries
+        .iter()
+        .filter_map(|e| {
+            e.data
+                .get("action")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        vec!["y1", "y2", "t1"],
+        "旧天先读、今天最后: {actions:?}"
+    );
+}
+
+/// read_recent_events 跨午夜取**最新** limit 条（修复前 rev().take 会取到
+/// 全是昨天的旧事件，今天的最新事件反而取不到）。
+#[test]
+fn test_read_recent_events_cross_midnight_returns_latest() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    fs::write(
+        day_log_path(log_dir, 1),
+        format!(
+            "{}\n{}\n{}\n",
+            submitted("y1", "2024-01-01T08:00:00+00:00"),
+            submitted("y2", "2024-01-01T09:00:00+00:00"),
+            submitted("y3", "2024-01-01T23:59:00+00:00")
+        ),
+    )
+    .unwrap();
+    fs::write(
+        day_log_path(log_dir, 0),
+        format!(
+            "{}\n{}\n",
+            submitted("t1", "2024-01-02T09:00:00+00:00"),
+            submitted("t2", "2024-01-02T10:00:00+00:00")
+        ),
+    )
+    .unwrap();
+
+    let events = read_recent_events(log_dir, 3);
+    let actions: Vec<String> = events
+        .iter()
+        .map(|e| {
+            e.message
+                .rsplit('(')
+                .next()
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        actions,
+        vec!["y3", "t1", "t2"],
+        "limit=3 必须取时间上最新的三条（y3/t1/t2），不得全是昨天: {actions:?}"
+    );
+}
+
+/// trace.failed 接线：success=false → 失败；success=true / 缺字段 → 完成
+/// （缺省 false：旧事件无该字段不误标）。
+#[test]
+fn test_reconstruct_traces_failed_wiring() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let log_content = r#"{"event":"rpc_call","ts":"2024-01-01T10:00:00+00:00","direction":"outbound","request_id":"req-bad","source":"a","target":"b","success":false}
+{"event":"rpc_call","ts":"2024-01-01T10:01:00+00:00","direction":"outbound","request_id":"req-ok","source":"a","target":"b","success":true}
+{"event":"rpc_call","ts":"2024-01-01T10:02:00+00:00","direction":"outbound","request_id":"req-legacy","source":"a","target":"b"}
+"#;
+    fs::write(today_log_path(log_dir), log_content).unwrap();
+
+    let traces = reconstruct_traces(log_dir);
+    assert_eq!(traces.len(), 3);
+    let by_id = |id: &str| traces.iter().find(|t| t.id == id).unwrap();
+    assert!(by_id("req-bad").failed, "success=false 必须标失败");
+    assert!(!by_id("req-ok").failed);
+    assert!(!by_id("req-legacy").failed, "无 success 字段不误标");
+}
+
+/// 同 (from,to) 连接对的 last_seen 必须是时间上最新的事件（拼接序升序
+/// 后 HashMap 后写覆盖 = 最新；修复前被昨天旧条目覆盖）。
+#[test]
+fn test_read_rpc_connections_last_seen_prefers_latest_cross_midnight() {
+    let temp_dir = TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+
+    let rpc = |ts: &str| {
+        format!(
+            r#"{{"event":"rpc_call","ts":"{ts}","direction":"outbound","request_id":"r","source":"A","target":"B"}}"#
+        )
+    };
+    fs::write(
+        day_log_path(log_dir, 1),
+        format!("{}\n", rpc("2024-01-01T08:00:00+00:00")),
+    )
+    .unwrap();
+    fs::write(
+        day_log_path(log_dir, 0),
+        format!("{}\n", rpc("2024-01-02T09:00:00+00:00")),
+    )
+    .unwrap();
+
+    let conns = read_rpc_connections(log_dir);
+    assert_eq!(conns.len(), 1, "{conns:?}");
+    assert_eq!(
+        conns[0].last_seen, "2024-01-02T09:00:00+00:00",
+        "last_seen 必须取今天的事件: {conns:?}"
+    );
+}
