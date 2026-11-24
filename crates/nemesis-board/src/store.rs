@@ -3132,8 +3132,16 @@ impl BoardStore {
             )
             .optional()
             .map_err(|e| format!("get_meta: {e}"))?;
+        // 横扫族 C 六轮（2026-11-06）纪律同款（append_pending_merge /
+        // pop_pending_merge 先例）：存量 JSON 损坏时静默当空 map = 本次
+        // 授予回写把全部既有节点授予整条毁掉（且读侧 granted_tags_map
+        // 同步隐形）——诚实拒绝写，原授予保留，调用方拿到 Err。
         let mut map: std::collections::HashMap<String, Vec<String>> =
-            serde_json::from_str(&existing.unwrap_or_else(|| "{}".to_string())).unwrap_or_default();
+            serde_json::from_str(&existing.unwrap_or_else(|| "{}".to_string())).map_err(|e| {
+                format!(
+                    "grant_tags_to_node: granted_tags 解析失败（原授予保留，本次授予未写入）: {e}"
+                )
+            })?;
         let entry = map.entry(node_id.to_string()).or_default();
         let mut granted_new = Vec::new();
         for t in tags {

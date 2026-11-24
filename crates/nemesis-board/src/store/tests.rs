@@ -4846,6 +4846,39 @@ fn grant_tags_concurrent_writers_do_not_lose_grants() {
     cleanup(&dir);
 }
 
+/// 存量 granted_tags JSON 损坏 → grant_tags_to_node 诚实拒绝写（BUG-20261124-018
+/// 回归锁）：旧实现 `unwrap_or_default()` 静默当空 map——本次授予回写把全部
+/// 既有节点授予整条毁掉（读侧 granted_tags_map 同步隐形），违反同文件
+/// append_pending_merge / pop_pending_merge 在横扫族 C 六轮（2026-11-06）
+/// 确立的「损坏诚实拒绝写」纪律。现：Err 上抛 + 原值保留。
+#[test]
+fn grant_tags_corrupt_existing_json_rejected_not_wiped() {
+    let (store, dir) = temp_store("grant-tags-corrupt");
+    // 先正常授予一笔（既有数据基础）。
+    store
+        .grant_tags_to_node("Node-A", &["cpp".to_string()])
+        .unwrap();
+    // 手工把 board_meta.granted_tags 写成损坏 JSON（模拟手工改库/损坏）。
+    store.set_meta("granted_tags", "{not valid json!!").unwrap();
+    // 损坏态下授予必须 Err（诚实拒绝），不得静默清空回写。
+    let err = store
+        .grant_tags_to_node("Node-B", &["rust".to_string()])
+        .unwrap_err();
+    assert!(
+        err.contains("granted_tags 解析失败"),
+        "错误信息必须指明 granted_tags 解析失败：{err}"
+    );
+    // 原损坏值原样保留（库内数据不动——修复是调用方的职责，不是库悄悄重置）。
+    let raw = store.get_meta("granted_tags").unwrap().unwrap();
+    assert_eq!(
+        raw, "{not valid json!!",
+        "损坏值必须原样保留，不得被回写覆盖"
+    );
+    // 读侧投影维持既有语义：损坏按无授予 + WARN（fail-closed）。
+    assert!(store.granted_tags_map().unwrap().is_empty());
+    cleanup(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // NB-CODE-012：人工跳过评审直达 done 的审计评论
 // ---------------------------------------------------------------------------
