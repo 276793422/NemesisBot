@@ -4799,10 +4799,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nemesis-ui"
-version = "0.1.0"
-
-[[package]]
 name = "nemesis-utils"
 version = "0.1.0"
 dependencies = [
