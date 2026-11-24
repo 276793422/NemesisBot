@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
+import { computed, ref } from 'vue'
 
 // P4（能力扩展 WS8）：发送区三态选择器（立即 / ⚡插队 / ⏭排队）与
 // chat.queue_status 徽标。选择器是纯发送侧路由归约（steer 补 `!` 前缀 /
@@ -28,6 +29,7 @@ vi.mock('../../composables/useWebSocket', async () => {
 import { send, wsStatus } from '../../composables/useWebSocket'
 import type { InboxStatusData } from '../../composables/useInboxStatus'
 import type { QueueStatusData } from '../../composables/useQueueStatus'
+import { RESOURCES_PANEL_CTL, type ResourcesPanelCtl } from '../../composables/useResourcesPanel'
 import ChatPanel from '../ChatPanel.vue'
 import { useChatStore } from '../../stores/chat'
 import { useSessionStore } from '../../stores/session'
@@ -185,6 +187,78 @@ describe('ChatPanel P4 queue_status 徽标', () => {
     chat.streaming = true
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.queue-badge').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+// -------------------------------------------------------------------------
+// 2026-11-24 发送方式三键迁移资源窗：注入面（ChatView provide）在场时选择器
+// 让位（家在资源窗「发送方式」卡，状态真值 chat store sendMode 两边同源）；
+// 资源窗收起时非默认方式以只读小徽标留守输入框旁（收起态的补偿可见性，
+// 展开态不渲染——真值面归卡，不与卡同屏），点击重开资源窗。
+describe('ChatPanel 三键迁移资源窗（注入面门控 + 收起态小徽标）', () => {
+  function mountWithCtl(open: boolean) {
+    useSessionStore().currentId = 's1'
+    const toggle = vi.fn()
+    const openRef = ref(open)
+    const ctl: ResourcesPanelCtl = { open: computed(() => openRef.value), toggle }
+    const wrapper = mount(ChatPanel, {
+      global: { provide: { [RESOURCES_PANEL_CTL as symbol]: ctl } },
+    })
+    return { wrapper, toggle, openRef }
+  }
+
+  it('注入面在场：选择器不渲染（家在资源窗发送方式卡）；now 默认态徽标也不渲染', async () => {
+    routeMock(inboxSnap({ mode: 'steer' }), queueSnap())
+    const { wrapper } = mountWithCtl(true)
+    await flushPromises()
+    expect(wrapper.find('.send-mode-sel').exists()).toBe(false)
+    expect(wrapper.find('.send-mode-badge').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('收起态 + sendMode=steer：徽标「⚡插队」可见，点击重开资源窗', async () => {
+    routeMock(inboxSnap({ mode: 'steer' }), queueSnap())
+    const { wrapper, toggle } = mountWithCtl(false)
+    await flushPromises()
+    const chat = useChatStore()
+    chat.sendMode = 'steer'
+    await wrapper.vm.$nextTick()
+    const badge = wrapper.find('.send-mode-badge')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('⚡插队')
+    await badge.trigger('click')
+    expect(toggle).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('收起态 + sendMode=queue：徽标「⏭排队」；面板展开后徽标让位（不与卡同屏）', async () => {
+    routeMock(inboxSnap({ mode: 'steer' }), queueSnap())
+    const { wrapper, toggle, openRef } = mountWithCtl(false)
+    await flushPromises()
+    const chat = useChatStore()
+    chat.sendMode = 'queue'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.send-mode-badge').text()).toBe('⏭排队')
+    // 模拟 ChatView 状态机展开面板（open 翻真）→ 徽标消失，toggle 未被误触。
+    openRef.value = true
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.send-mode-badge').exists()).toBe(false)
+    expect(toggle).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('状态真值在 store：standalone 选择器与 store 双向同步（资源窗卡同源）', async () => {
+    routeMock(inboxSnap({ mode: 'steer' }), queueSnap())
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    // 资源窗卡视角：store 直写（模拟面板侧点击）→ standalone 选择器 active 即时跟随。
+    chat.sendMode = 'steer'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.sm-opt.active').text()).toBe('⚡插队')
+    // 反向：standalone 选择器点击 → store 更新（资源窗卡/徽标同源互见）。
+    await wrapper.find('.sm-queue').trigger('click')
+    expect(chat.sendMode).toBe('queue')
     wrapper.unmount()
   })
 })

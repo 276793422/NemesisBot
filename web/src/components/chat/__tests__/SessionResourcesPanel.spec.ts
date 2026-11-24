@@ -71,6 +71,7 @@ vi.mock('../../../composables/useSessionAllowAll', async () => {
 })
 
 import { addMessageHandler, wsStatus } from '../../../composables/useWebSocket'
+import { useChatStore } from '../../../stores/chat'
 import SessionResourcesPanel from '../SessionResourcesPanel.vue'
 
 function wsHandler(): (frame: any) => void {
@@ -86,7 +87,7 @@ function resourcesPayload(revision: number): any {
     session_key: 'agent:main:session:s1',
     revision,
     categories: {
-      execution: { label: '执行态', order: 0, transient: true, status: 'ok', total: 2, summary: { running: true, turn: { turn_started_ms: 1, current_tool: { name: 'exec', started_ms: 2 } }, steer_pending: 1, followup_pending: 0 } },
+      execution: { label: '执行态', order: 0, transient: true, status: 'ok', total: 2, summary: { running: true, turn: { turn_started_ms: Date.now() - 125_000, current_tool: { name: 'exec', started_ms: 2 } }, steer_pending: 1, followup_pending: 0 } },
       approvals_pending: { label: '待审批', order: 10, transient: true, status: 'ok', total: 1, summary: { rows: [{ session_key: 'agent:main:session:s1', pattern: 'git push *' }], omitted: 0 } },
       questions_pending: { label: '待提问', order: 20, transient: true, status: 'empty', total: 0 },
       hooks_session: { label: '会话钩子', order: 30, transient: false, status: 'empty', total: 0 },
@@ -156,13 +157,41 @@ describe('渲染分区', () => {
     w.unmount()
   })
 
-  it('执行态大卡：running 点 + 当前工具名 + 插队徽标', async () => {
+  it('执行态大卡：running 点 + 当前工具名 + 插队徽标 + ⏱ 计时徽标', async () => {
     const w = await mountPanel('s1')
     expect(w.find('.srp-exec').exists()).toBe(true)
     expect(w.find('.srp-dot').classes()).toContain('running')
     expect(w.text()).toContain('执行中：exec')
     expect(w.text()).toContain('插队 1')
+    // ⏱ 计时徽标（2026-11-24）：锚 turn_started_ms = now-125s → 2m05s。
+    const elapsed = w.find('.srp-exec-elapsed')
+    expect(elapsed.exists()).toBe(true)
+    expect(elapsed.text()).toContain('2m05s')
     w.unmount()
+  })
+
+  it('执行态 ⏱ 计时：随时间走表；空闲/turn 缺失诚实不渲染', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1')
+    expect(w.find('.srp-exec-elapsed').text()).toContain('2m05s')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(w.find('.srp-exec-elapsed').text()).toContain('3m05s')
+    w.unmount()
+
+    // 空闲（running=false，无 turn 数据）：无计时徽标。
+    const idle = resourcesPayload(2)
+    idle.categories.execution.summary = { running: false, steer_pending: 1, followup_pending: 0 }
+    const w2 = await mountPanel('s1', idle)
+    expect(w2.find('.srp-exec-elapsed').exists()).toBe(false)
+    expect(w2.text()).toContain('空闲')
+    w2.unmount()
+
+    // turn_started_ms 缺失/非法（后端时钟异常锚 0 等）：诚实不渲染，不显示荒唐值。
+    const bad = resourcesPayload(3)
+    bad.categories.execution.summary = { running: true, turn: { turn_started_ms: 0 }, steer_pending: 0, followup_pending: 0 }
+    const w3 = await mountPanel('s1', bad)
+    expect(w3.find('.srp-exec-elapsed').exists()).toBe(false)
+    w3.unmount()
   })
 
   it('在途区：待审批行渲染，红线——面板内无审批交互按钮', async () => {
@@ -260,6 +289,93 @@ describe('渲染分区', () => {
     await cb.setValue(true)
     await flushPromises()
     expect(setAllowMock).toHaveBeenCalledWith('s1', true)
+    w.unmount()
+  })
+})
+
+describe('等待队列气泡（2026-11-24）', () => {
+  /** 带 waiting_queue ok 类目的响应（插队 1 + 排队 2，末条长文本测预览截断）。 */
+  function wqPayload(): any {
+    const p = resourcesPayload(5)
+    p.categories.waiting_queue = {
+      label: '等待队列',
+      order: 5,
+      transient: true,
+      status: 'ok',
+      total: 3,
+      summary: {
+        steer: [
+          { content: '!帮我把测试跑一遍然后把结果发给我', sender_id: 'web', timestamp: '14:32:05', priority: 'normal' },
+        ],
+        follow_up: [
+          { content: '顺便看下 CI 为什么红了', sender_id: 'web', timestamp: '14:35:00', priority: 'normal' },
+          { content: '再'.repeat(60), sender_id: 'web', timestamp: '14:36:00', priority: 'high' },
+        ],
+        capacity: 8,
+      },
+    }
+    return p
+  }
+
+  it('有等待才渲染：插队在上、排队在下（组内序 = 真实执行序），徽标计数 + 行预览截断', async () => {
+    const w = await mountPanel('s1', wqPayload())
+    const card = w.find('.srp-queue')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('插队 1')
+    expect(card.text()).toContain('排队 2')
+    const keys = card.findAll('.srp-key')
+    expect(keys.length).toBe(3)
+    expect(keys[0].text()).toBe('⚡')
+    expect(keys[1].text()).toBe('⏳')
+    expect(keys[2].text()).toBe('⏳')
+    // 行预览 48 字符截断（第三条 60 字符 → 48 + 省略号）；全文只在弹层。
+    const previews = card.findAll('.srp-wq-preview')
+    expect(previews[2].text()).toBe(`${'再'.repeat(48)}…`)
+    w.unmount()
+  })
+
+  it('hover 行出全文弹层（fixed 挂根级）：全文 + meta；离开延迟隐藏、悬入弹层取消', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1', wqPayload())
+    expect(w.find('.srp-wq-pop').exists()).toBe(false)
+    await w.findAll('.srp-wq-row')[0].trigger('mouseenter')
+    const pop = w.find('.srp-wq-pop')
+    expect(pop.exists()).toBe(true)
+    expect(pop.text()).toContain('!帮我把测试跑一遍然后把结果发给我')
+    expect(pop.text()).toContain('插队 · 14:32:05')
+    // 行离开：hover-intent 延迟 200ms 再藏（防指针移入弹层时闪烁）。
+    await w.findAll('.srp-wq-row')[0].trigger('mouseleave')
+    expect(w.find('.srp-wq-pop').exists()).toBe(true)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(w.find('.srp-wq-pop').exists()).toBe(false)
+    // 悬入弹层取消隐藏：行离开 → 弹层悬入 → 越过延迟窗仍不消失。
+    await w.findAll('.srp-wq-row')[1].trigger('mouseenter')
+    expect(w.find('.srp-wq-pop').exists()).toBe(true)
+    await w.findAll('.srp-wq-row')[1].trigger('mouseleave')
+    await w.find('.srp-wq-pop').trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(w.find('.srp-wq-pop').exists()).toBe(true)
+    // 弹层自身离开即时藏。
+    await w.find('.srp-wq-pop').trigger('mouseleave')
+    expect(w.find('.srp-wq-pop').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('无等待（empty）不渲染气泡且不进空徽标流', async () => {
+    const p = resourcesPayload(5)
+    p.categories.waiting_queue = { label: '等待队列', order: 5, transient: true, status: 'empty', total: 0 }
+    const w = await mountPanel('s1', p)
+    expect(w.find('.srp-queue').exists()).toBe(false)
+    const chips = w.findAll('.srp-chip').map(c => c.text())
+    expect(chips).not.toContain('等待队列')
+    w.unmount()
+  })
+
+  it('ok 态无双渲染：等待队列不进通用资源卡流', async () => {
+    const w = await mountPanel('s1', wqPayload())
+    expect(w.findAll('.srp-queue').length).toBe(1)
+    const genericTitles = w.findAll('.srp-card-head.clickable .srp-card-title').map(t => t.text())
+    expect(genericTitles).not.toContain('等待队列')
     w.unmount()
   })
 })
@@ -547,6 +663,79 @@ describe('B4 活态刷新', () => {
     expect(requestMock).toHaveBeenCalledWith('session', 'resources', { session_id: 's2' })
     expect(requestMock).toHaveBeenCalledWith('system', 'status')
     expect(w.find('.srp-root').text()).not.toContain('修 bug 会话')
+    w.unmount()
+  })
+})
+
+// -------------------------------------------------------------------------
+// 发送方式卡（2026-11-24 三键迁移资源窗）：立即/插队/排队三键，状态真值
+// chat store sendMode（与 ChatPanel 发送链 applySendMode 同源——此处切换
+// 即时生效）；「立即」忙碌字面降级（BUG-1 同源口径，busy 读 store
+// busyBySid 实时）；reject（queueEnabled=false）卡片整体不渲染。
+// 本 spec 未 mock useInboxStatus——requestMock 对 agent.inbox_status 返
+// {} → 快照 available 缺席 → mode 兜底 'steer'（开放态），三键全渲染。
+describe('发送方式卡（三键迁移）', () => {
+  // wrapper 结构走 any（VueWrapper 泛型在此处无谓纠缠；DOMWrapper 数组
+  // 上的 find/findAll/text 链直接消费即可，本文件 resourcesPayload 同款口径）。
+  function findSendModeCard(w: any) {
+    return w.findAll('.srp-card').find((c: any) => c.find('.srp-card-title').text() === '发送方式')
+  }
+
+  it('三键渲染：默认「立即」active；点击写 chat store（与 ChatPanel 发送链同源）', async () => {
+    const w = await mountPanel('s1')
+    const card = findSendModeCard(w)
+    expect(card, '发送方式卡必须渲染（快照缺席 → steer 兜底 → queueEnabled）').toBeTruthy()
+    const btns = card!.findAll('.srp-tool-btn')
+    expect(btns.map((b: { text: () => string }) => b.text())).toEqual(['立即', '⚡插队', '⏭排队'])
+    expect(btns[0].classes()).toContain('active')
+    const chat = useChatStore()
+    expect(chat.sendMode).toBe('now')
+    await btns[1].trigger('click')
+    expect(chat.sendMode).toBe('steer')
+    expect(btns[1].classes()).toContain('active')
+    expect(btns[0].classes()).not.toContain('active')
+    await btns[2].trigger('click')
+    expect(chat.sendMode).toBe('queue')
+    await btns[0].trigger('click')
+    expect(chat.sendMode).toBe('now')
+    w.unmount()
+  })
+
+  it('busy 字面降级：「立即」↔「立即→插队」（快照缺席兜底 steer 模式）', async () => {
+    const chat = useChatStore()
+    const w = await mountPanel('s1')
+    const nowBtn = findSendModeCard(w)!.findAll('.srp-tool-btn')[0]
+    expect(nowBtn.text()).toBe('立即')
+    chat.setBusy('s1', true)
+    await w.vm.$nextTick()
+    expect(nowBtn.text()).toBe('立即→插队')
+    chat.setBusy('s1', false)
+    await w.vm.$nextTick()
+    expect(nowBtn.text()).toBe('立即')
+    w.unmount()
+  })
+
+  it('reject 模式（显式快照 mode=reject）：queueEnabled=false → 卡片整体不渲染', async () => {
+    requestMock.mockImplementation(async (mod: string, cmd: string) => {
+      if (mod === 'session' && cmd === 'resources') return resourcesPayload(1)
+      if (mod === 'system' && cmd === 'status') return { workspace: 'C:/ws' }
+      if (mod === 'agent' && cmd === 'inbox_status') {
+        return {
+          available: true,
+          session_key: 'agent:main:session:s1',
+          next_turn: 0,
+          next_step: 0,
+          capacity: 8,
+          busy: false,
+          mode: 'reject',
+        }
+      }
+      return {}
+    })
+    const w = mount(SessionResourcesPanel, { props: { sessionId: 's1' } })
+    await flushPromises()
+    expect(w.findAll('.srp-card').find((c) => c.find('.srp-card-title').text() === '发送方式'))
+      .toBeUndefined()
     w.unmount()
   })
 })

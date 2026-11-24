@@ -2147,6 +2147,13 @@ impl AgentLoop {
         }
     }
 
+    /// 等待队列只读快照访问器（2026-11-24 资源看板「等待队列」气泡）：
+    /// 委托 `Inbox::peek`，字段私有（resource_providers 跨模块消费所需）。
+    /// 只读——消费链 claim/transfer/clear 语义零变化。
+    pub(crate) fn inbox_peek(&self, session_key: &str) -> crate::inbox::QueuePeek {
+        self.inbox.peek(session_key)
+    }
+
     /// 测试支撑：共享 inbox 句柄——跨 crate（nemesis-web）
     /// 测试播种队列条目用（crate 内测试直引私有字段即可，无需此访问器）。
     /// doc-hidden：非公开 API 承诺，仅供测试生态使用，运行时路径不得依赖。

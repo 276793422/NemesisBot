@@ -42,6 +42,7 @@ struct StubLoopApi {
     context: Option<Value>,
     inbox: (usize, usize),
     timeline: Option<Value>,
+    queue: Option<Value>,
     checkpoints: Vec<nemesis_types::resources::CheckpointSummary>,
 }
 
@@ -51,6 +52,7 @@ impl Default for StubLoopApi {
             context: Some(json!({"pct": 12})),
             inbox: (0, 0),
             timeline: None,
+            queue: None,
             checkpoints: Vec::new(),
         }
     }
@@ -65,6 +67,9 @@ impl SessionLoopApi for StubLoopApi {
     }
     fn work_timeline(&self, _session_key: &str) -> Option<Value> {
         self.timeline.clone()
+    }
+    fn queue_peek(&self, _session_key: &str) -> Option<Value> {
+        self.queue.clone()
     }
     fn checkpoint_summary(
         &self,
@@ -132,6 +137,72 @@ fn execution_pending_queues_without_turn() {
     assert_eq!(view.summary["running"], json!(false));
     assert_eq!(view.summary["steer_pending"], json!(2));
     assert_eq!(view.summary["followup_pending"], json!(1));
+}
+
+// ---------------------------------------------------------------------------
+// WaitingQueueProvider（等待队列，2026-11-24）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn waiting_queue_idle_is_empty() {
+    // Stub Default 的 queue=None = 查询面缺席（Unavailable 臂）；「查询面
+    // 在但无等待」= Empty，需显式给空快照（真实现恒 Some）。
+    let api = StubLoopApi {
+        queue: Some(json!({"steer": [], "follow_up": [], "capacity": 8})),
+        ..Default::default()
+    };
+    let ctx = ctx_for(Path::new("."), "agent:main:session:x", "x");
+    let view = WaitingQueueProvider.collect(&ctx, &api);
+    assert_eq!(view.status, CategoryStatus::Empty);
+    assert_eq!(view.total, 0);
+}
+
+#[test]
+fn waiting_queue_unavailable_when_peek_absent() {
+    let mut api = StubLoopApi::default();
+    // queue=Some(空两队列) 是「查询面在但无等待」= Empty；None 才是缺席 =
+    // Unavailable。Stub 里 Some 形态需显式构造（Default 为 None 与真实现
+    // 恒 Some 的差异由本用例钉住 Unavailable 臂可达）。
+    api.queue = None;
+    let ctx = ctx_for(Path::new("."), "agent:main:session:x", "x");
+    let view = WaitingQueueProvider.collect(&ctx, &api);
+    assert!(matches!(view.status, CategoryStatus::Unavailable { .. }));
+}
+
+#[test]
+fn waiting_queue_ok_with_rows_and_total() {
+    let api = StubLoopApi {
+        queue: Some(json!({
+            "steer": [
+                {"content": "!steer 1", "sender_id": "web", "timestamp": "t1", "priority": "normal"},
+                {"content": "!steer 2", "sender_id": "web", "timestamp": "t2", "priority": "normal"},
+            ],
+            "follow_up": [
+                {"content": "turn A", "sender_id": "web", "timestamp": "t3", "priority": "high"},
+            ],
+            "capacity": 8,
+        })),
+        ..Default::default()
+    };
+    let ctx = ctx_for(Path::new("."), "agent:main:session:x", "x");
+    let view = WaitingQueueProvider.collect(&ctx, &api);
+    assert_eq!(view.status, CategoryStatus::Ok);
+    assert_eq!(view.total, 3, "插队 2 + 排队 1");
+    assert_eq!(view.summary["steer"].as_array().unwrap().len(), 2);
+    assert_eq!(view.summary["follow_up"].as_array().unwrap().len(), 1);
+    assert_eq!(view.summary["follow_up"][0]["priority"], json!("high"));
+    assert_eq!(view.summary["capacity"], json!(8));
+}
+
+#[test]
+fn waiting_queue_empty_arrays_are_empty_view() {
+    let api = StubLoopApi {
+        queue: Some(json!({"steer": [], "follow_up": [], "capacity": 8})),
+        ..Default::default()
+    };
+    let ctx = ctx_for(Path::new("."), "agent:main:session:x", "x");
+    let view = WaitingQueueProvider.collect(&ctx, &api);
+    assert_eq!(view.status, CategoryStatus::Empty);
 }
 
 // ---------------------------------------------------------------------------
@@ -834,6 +905,47 @@ fn test_agent_config() -> crate::types::AgentConfig {
         models: std::collections::HashMap::new(),
         tool_fence_profession: None,
     }
+}
+
+#[test]
+fn session_loop_api_inbox_pending_contract_order() {
+    // 契约钉子（2026-11-24 端到端抓出的互换 bug）：trait 文档口径
+    // `inbox_pending → (steer, follow_up)`。真 impl 此前返回
+    // (next_turn, next_step)（互换）——执行态卡「插队」徽标实显排队数。
+    // 播种 1 steer + 2 排队：期望 (1, 2)；互换形态会得 (2, 1)。
+    let l = crate::r#loop::AgentLoop::new(Box::new(DeadProvider), test_agent_config());
+    let inbox = l.inbox_handle();
+    let key = "agent:main:session:x";
+    let mk = |content: &str| crate::inbox::QueuedMessage {
+        msg: nemesis_types::channel::InboundMessage::user_ingress(
+            "web".to_string(),
+            String::new(),
+            "c1".to_string(),
+            content.to_string(),
+        )
+        .with_session_key(key.to_string())
+        .with_metadata_map(Default::default()),
+        timestamp: "2026-11-24T00:00:00Z".to_string(),
+        priority: crate::inbox::MessagePriority::Normal,
+    };
+    // steer 通道仅在 Steer 模式开闸且 `!` 前缀命中（与 admission busy 臂同参）。
+    assert!(matches!(
+        inbox.enqueue_for_mode(key, mk("!插一条"), true),
+        crate::inbox::EnqueueOutcome::QueuedForNextStep
+    ));
+    assert!(matches!(
+        inbox.enqueue_for_mode(key, mk("排队甲"), true),
+        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+    ));
+    assert!(matches!(
+        inbox.enqueue_for_mode(key, mk("排队乙"), true),
+        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+    ));
+    assert_eq!(
+        SessionLoopApi::inbox_pending(&l, key),
+        (1, 2),
+        "契约序 (steer, follow_up)：1 条插队 + 2 条排队"
+    );
 }
 
 #[test]

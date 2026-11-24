@@ -562,6 +562,39 @@ impl PerLoopResourceProvider for ExecutionProvider {
     }
 }
 
+/// 等待队列（`waiting_queue` / 等待队列，瞬态类目，2026-11-24）。数据源 =
+/// inbox 两用户队列只读快照（`Inbox::peek`，单条 8000 字上限截断）。
+/// 逐条内容（非计数）：插队组在上先执行、排队组在下，组内 FIFO。无等待 =
+/// Empty（看板气泡自动消失，与执行态同机制）。goal 唤醒 / hook prompt /
+/// 系统通告有自己的呈现面，不进本类目。
+pub struct WaitingQueueProvider;
+
+impl PerLoopResourceProvider for WaitingQueueProvider {
+    fn meta(&self) -> ProviderMeta {
+        ProviderMeta::new("waiting_queue", "等待队列", 5, true)
+    }
+
+    fn collect(&self, ctx: &ResourceCtx, api: &dyn SessionLoopApi) -> CategoryView {
+        let Some(peek) = api.queue_peek(ctx.session_key) else {
+            return CategoryView::unavailable("等待队列快照不可用");
+        };
+        let steer = peek
+            .get("steer")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        let follow_up = peek
+            .get("follow_up")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        if steer == 0 && follow_up == 0 {
+            return CategoryView::empty();
+        }
+        CategoryView::ok(steer + follow_up, peek)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SessionLoopApi 实现——4 方法委托既有查询面（loop.rs 本体零改动）
 // ---------------------------------------------------------------------------
@@ -572,8 +605,11 @@ impl SessionLoopApi for crate::r#loop::AgentLoop {
     }
 
     fn inbox_pending(&self, session_key: &str) -> (usize, usize) {
+        // 契约序 = (steer, follow_up)（trait 文档口径）。此前返回
+        // (next_turn, next_step)（互换）——执行态卡「插队」徽标实显排队数，
+        // 2026-11-24 等待队列端到端探测抓出（两队列同时非空时错位可见）。
         let st = self.inbox_status(session_key);
-        (st.next_turn, st.next_step)
+        (st.next_step, st.next_turn)
     }
 
     fn work_timeline(&self, session_key: &str) -> Option<Value> {
@@ -585,6 +621,10 @@ impl SessionLoopApi for crate::r#loop::AgentLoop {
                 }),
             })
         })
+    }
+
+    fn queue_peek(&self, session_key: &str) -> Option<Value> {
+        serde_json::to_value(self.inbox_peek(session_key)).ok()
     }
 
     fn checkpoint_summary(&self, session_key: &str) -> Vec<CheckpointSummary> {

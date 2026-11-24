@@ -307,8 +307,29 @@ function prefixSteer() {
 // 立即发送（默认）/ ⚡插队（steer，`!` 前缀语义）/ ⏭排队（followUp，
 // 现有队列机制）。纯发送侧路由变换，不改后端协议。
 
-/** 本次发送的投递方式；跨会话保持（用户偏好，粘滞到手动切换）。 */
-const sendMode = ref<'now' | 'steer' | 'queue'>('now')
+/** 本次发送的投递方式；跨会话保持（用户偏好，粘滞到手动切换）。
+ *  2026-11-24 三键迁移资源窗：状态真值迁 chat store（资源窗「发送方式」
+ *  卡与输入框旁小徽标共享同一份）——这里留可写 computed 做本地投影，
+ *  模板 `sendMode = 'x'` 写法零改动。 */
+const sendMode = computed({
+  get: () => chatStore.sendMode,
+  set: (v: 'now' | 'steer' | 'queue') => { chatStore.sendMode = v },
+})
+
+/** 只读小徽标（迁移拍板项）：资源窗**收起时**输入框旁的当前发送方式可见
+ *  性（展开态让位资源窗本体的「发送方式」卡——卡就是真值面，徽标是收起
+ *  态的补偿可见性，避免同一状态两处同屏）。仅注入面在场时渲染（standalone
+ *  无资源窗，下方选择器本身就是真值面）；now 是默认态无需占用视线。点击
+ *  重开资源窗（守卫仅防竞态：徽标只在收起态渲染）。 */
+const sendModeBadgeVisible = computed(() =>
+  !!resourcesCtl && !resourcesCtl.open.value && sendMode.value !== 'now',
+)
+const sendModeBadgeLabel = computed(() =>
+  sendMode.value === 'steer' ? '⚡插队' : '⏭排队',
+)
+function openResourcesPanel() {
+  if (resourcesCtl && !resourcesCtl.open.value) resourcesCtl.toggle()
+}
 
 /** 插队选项仅在 steer 模式下有意义（queue 模式下 `!` 会被后端当普通
  *  消息排队——前端不提供假插队）。 */
@@ -4689,9 +4710,12 @@ onUnmounted(() => {
       ></textarea>
       <!-- P4（能力扩展 WS8）：发送三态选择器（默认立即）。queue/steer 模式
            才有意义（reject 模式 busy 发送直接被拒）；插队选项仅 steer 模式
-           放出（queue 模式下 `!` 会被后端当普通消息排队，不提供假插队）。 -->
+           放出（queue 模式下 `!` 会被后端当普通消息排队，不提供假插队）。
+           2026-11-24 三键迁移资源窗：注入面在场（resourcesCtl）时选择器
+           让位资源窗「发送方式」卡（九键全迁同款门控），standalone chat
+           页无注入面保留原 UI。 -->
       <div
-        v-if="isDefaultChat && queueEnabled"
+        v-if="isDefaultChat && queueEnabled && !resourcesCtl"
         class="send-mode-sel"
         role="radiogroup"
         aria-label="发送方式"
@@ -4719,6 +4743,18 @@ onUnmounted(() => {
           @click="sendMode = 'queue'"
         >⏭排队</button>
       </div>
+      <!-- 2026-11-24 三键迁移资源窗：资源窗收起时，非默认发送方式以只读
+           小徽标留守输入框旁（状态可见性不依赖资源窗展开；展开态不渲染
+           ——真值面归资源窗「发送方式」卡）；点击重开资源窗修改。 -->
+      <button
+        v-if="sendModeBadgeVisible"
+        class="send-mode-badge"
+        type="button"
+        :title="sendMode === 'steer'
+          ? '当前发送方式：插队（发送时自动加 ! 前缀，agent 忙碌时立即送达当前轮）。点击打开会话资源窗修改'
+          : '当前发送方式：排队（发送时剥掉 ! 标记，agent 忙碌时在本轮结束后处理）。点击打开会话资源窗修改'"
+        @click="openResourcesPanel"
+      >{{ sendModeBadgeLabel }}</button>
       <!-- 批 2 第二轮横扫补齐（2026-11-20）：刷新/切走切回的恢复态（悬空
            user 行占位轮询）此前不亮停止按钮——注入轮在该形态下同样只能干等。
            pendingTurn 态并入亮起条件即可：stopGeneration 按 session_id 路由
@@ -4913,6 +4949,26 @@ onUnmounted(() => {
 .sm-opt:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+/* 2026-11-24 三键迁移资源窗：输入框旁只读小徽标（资源窗收起时的发送方式
+   可见性）——sm-opt 同族视觉（xs 字号胶囊），非 active 态弱化呈现 + hover
+   提示可点开资源窗。 */
+.send-mode-badge {
+  align-self: flex-end;
+  padding: 4px 8px;
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.2;
+  transition: all 0.15s;
+}
+.send-mode-badge:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 /* P4：queue_status 徽标——queue-chip 同款条形布局，双队列分段着色
    （steer 用 accent 与 steer-btn 呼应，followUp 用次级文本色）。 */

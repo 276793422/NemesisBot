@@ -1878,3 +1878,8 @@ mod continuation_drop_gate_tests;
 // git 形态（存量条目落盘需要 tree）。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod bug24_tests;
+
+// hook 回灌轮计时锚续传（2026-11-24）：acquire 带锚 / 未来锚防御 /
+// None 旧行为 / spawn_turn_task 带锚端到端 + Drop 清理。
+#[cfg(test)]
+mod work_timeline_tests;

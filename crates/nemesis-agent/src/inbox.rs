@@ -131,6 +131,45 @@ pub struct InboxStatus {
     pub mode: &'static str,
 }
 
+/// peek 单条内容截断上限（chars，2026-11-24 等待队列气泡拍板 8000）：
+/// 显示载荷上限，超出尾部诚实注记；队列原文不动。
+pub const QUEUE_PEEK_ENTRY_CAP: usize = 8000;
+
+/// peek 单条内容截断（char 边界安全——`chars().take` 天然按字符切，CJK
+/// 不 panic；超出注记真实总字数）。空文本 / 上限内原样返回。
+fn truncate_peek_content(content: &str) -> String {
+    let total = content.chars().count();
+    if total <= QUEUE_PEEK_ENTRY_CAP {
+        return content.to_string();
+    }
+    let head: String = content.chars().take(QUEUE_PEEK_ENTRY_CAP).collect();
+    format!("{head}…（已截断，共 {total} 字）")
+}
+
+/// 等待队列 peek 单条（2026-11-24 资源看板「等待队列」气泡）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QueuePeekEntry {
+    /// 消息内容（8000 字上限截断 + 注记；steer 条目保留 `!` 前缀原样）。
+    pub content: String,
+    /// 发送者 id。
+    pub sender_id: String,
+    /// 队列回执时间戳（入队时刻，诊断口径与 QueuedMessage 同源）。
+    pub timestamp: String,
+    /// 队列优先级："high" | "normal"（High 在 next_turn 队内插队，展示用）。
+    pub priority: &'static str,
+}
+
+/// 等待队列 peek 快照（只读，与 [`InboxStatus`] 计数面互补的内容面）。
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct QueuePeek {
+    /// 插队队列（next_step，注入正在跑的轮次）——先执行，展示在上。
+    pub steer: Vec<QueuePeekEntry>,
+    /// 排队队列（next_turn，当前轮结束后开新轮）——展示在下。
+    pub follow_up: Vec<QueuePeekEntry>,
+    /// 两队列共享容量。
+    pub capacity: usize,
+}
+
 /// Sixth-batch sweep: `VecDeque` — the queues are FIFOs (push_back/pop_front);
 /// the previous `Vec` + `remove(0)` was an O(n) shift per head claim.
 #[derive(Default)]
@@ -404,6 +443,38 @@ impl Inbox {
     /// Shared capacity across both queues (dashboard `agent.inbox_status`).
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// 等待队列只读快照（2026-11-24 资源看板「等待队列」气泡数据源）：
+    /// 两条用户队列（next_step=插队 / next_turn=排队）逐条内容，**绝不动
+    /// 队列**（消费链 claim/transfer/clear 语义零变化）。不在 map = 空
+    /// snapshot（无等待是常态）。单条 content 过 [`truncate_peek_content`]
+    /// （8000 字上限，显示载荷截断，队列原文不动）。
+    pub fn peek(&self, session_key: &str) -> QueuePeek {
+        let all = self.queues.lock();
+        let Some(q) = all.get(session_key) else {
+            // 无等待是常态；capacity 照实带（Default 会丢成 0）。
+            return QueuePeek {
+                steer: Vec::new(),
+                follow_up: Vec::new(),
+                capacity: self.capacity,
+            };
+        };
+        let map = |m: &QueuedMessage| QueuePeekEntry {
+            content: truncate_peek_content(&m.msg.content),
+            sender_id: m.msg.sender_id.clone(),
+            timestamp: m.timestamp.clone(),
+            priority: if m.priority.is_high() {
+                "high"
+            } else {
+                "normal"
+            },
+        };
+        QueuePeek {
+            steer: q.next_step.iter().map(&map).collect(),
+            follow_up: q.next_turn.iter().map(&map).collect(),
+            capacity: self.capacity,
+        }
     }
 
     /// （cron 合闸）：会话队列里是否已有同一 cron job 的待处

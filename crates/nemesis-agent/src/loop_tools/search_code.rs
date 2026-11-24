@@ -293,7 +293,7 @@ impl GitTool {
     /// `checkout` 的 ref 可带 `--force`（丢弃工作区改动）、`add` 可带
     /// `-f`（强加 ignored 文件）。以 `-` 开头的值一律诚实拒绝并给出
     /// 指引；唯一豁免 = schema 文档化的 `-A`（stage-everything）。
-    fn reject_option_values<'a>(&self, values: &[&'a str], action: &str) -> Result<(), String> {
+    fn reject_option_values(&self, values: &[&str], action: &str) -> Result<(), String> {
         for tok in values {
             if tok.starts_with('-') && *tok != "-A" {
                 return Err(format!(

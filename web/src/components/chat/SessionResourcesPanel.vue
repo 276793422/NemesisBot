@@ -15,6 +15,7 @@
  *   store），弹窗（ShareModal/DelegateDialog）渲染仍在 ChatPanel；
  *   头部 ✕ 恒渲染（两形态的收起出口）；
  * - 执行态置顶大卡（仅 status==='ok' 渲染；空闲 = Empty 整卡隐藏）；
+ *   运行中卡头 ⏱ 当前轮实时用时徽标（锚 turn_started_ms，2026-11-24）；
  * - 在途区：待审批 / 待提问（只展示清单——审批交互走既有弹窗链路，
  *   看板红线：绝不内联审批按钮）；
  * - 资源卡流：其余类目按 order 排序；空类目收「无资源」徽标行（可展开）；
@@ -104,7 +105,11 @@ const {
 // steer 可用性（插队键显隐）：面板侧独立 useInboxStatus 实例但只刷不轮询
 //（模式快照非低延迟关键；挂载/会话切换各刷一次。ChatPanel 自己的实例
 // 照常轮询，两边只读同一后端真相，无状态同步问题）。
-const { steerEnabled: panelSteerEnabled, refresh: refreshInboxMode } = useInboxStatus()
+const {
+  steerEnabled: panelSteerEnabled,
+  queueEnabled: panelQueueEnabled,
+  refresh: refreshInboxMode,
+} = useInboxStatus()
 
 /** 构建/计划模式切换（ChatPanel toggleAgentMode 同款：await 回包后更新，
  *  失败 toast 不翻转）。 */
@@ -127,6 +132,27 @@ function prefixSteer() {
   if (!/^[!！]/.test(chatStore.input.trimStart())) {
     chatStore.input = '! ' + chatStore.input
   }
+}
+
+// ---- 发送方式卡（2026-11-24 三键迁移）：立即/插队/排队三键 ----
+// 状态真值 chat store sendMode（与 ChatPanel 发送链 applySendMode 同一份
+// ——此处切换即时生效，无请求、纯前端路由偏好；输入框旁小徽标同步互见）。
+// 「立即」忙碌时字面降级与 ChatPanel nowLabel/nowTitle 同语义（BUG-1 同源
+// 修复口径）；busy 读 chat store busyBySid 实时（非轮询）。
+
+const panelBusy = computed(() => !!props.sessionId && chatStore.isBusy(props.sessionId))
+const panelNowLabel = computed(() =>
+  panelBusy.value ? (panelSteerEnabled.value ? '立即→插队' : '立即→排队') : '立即',
+)
+const panelNowTitle = computed(() =>
+  !panelBusy.value
+    ? '立即发送（默认）：agent 忙碌时自动插队（steer 模式）或排队（queue 模式）'
+    : panelSteerEnabled.value
+      ? '忙碌中：本次发送将插队注入当前轮'
+      : '忙碌中：当前为排队模式（后端未开插队通道），本次发送将排队，本轮结束后自动执行',
+)
+function setSendMode(mode: 'now' | 'steer' | 'queue') {
+  chatStore.sendMode = mode
 }
 
 // Full Access 点击语义（ChatPanel 同款）：关 FA 必须随关 ext（服务端联动
@@ -195,12 +221,113 @@ const execution = computed(() => {
   return c && c.status === 'ok' ? c : null
 })
 
+/** 执行态卡头计时徽标（2026-11-24）：当前轮实时用时——锚
+ *  summary.turn.turn_started_ms（后端 TurnTimelineGuard acquire 时刻），
+ *  nowTick 1s 走表驱动；running=false 无 turn 数据 → 空串不渲染。
+ *  turn 结束整卡转空闲隐藏，计时随卡消失（语义 = 当前任务执行了多久）。 */
+const executionElapsed = computed(() => {
+  if (execution.value?.summary?.running !== true) return ''
+  const turn = execution.value.summary.turn as Record<string, unknown> | undefined
+  const start = typeof turn?.turn_started_ms === 'number' ? turn.turn_started_ms : Number.NaN
+  return Number.isFinite(start) && start > 0 ? fmtElapsed(start, nowTick.value) : ''
+})
+
 /** 在途区：待审批/待提问（ok 且 total>0 才渲染）。 */
 const pendingCategories = computed(() =>
   (['approvals_pending', 'questions_pending'] as const)
     .map(id => ({ id, c: categories.value[id] }))
     .filter(x => x.c && x.c.status === 'ok' && x.c.total > 0),
 )
+
+/** 等待队列气泡（2026-11-24）：ok 才渲染（无等待 = Empty 自动隐藏，与
+ *  执行态同机制）。数据 = summary.steer / follow_up 逐条全文（后端单条
+ *  8000 字上限截断）。插队组在上先执行、排队组在下，组内按后端队列序
+ *  （High 优先级已在后端插到队首，展示序 = 真实执行序）。 */
+interface WqRow {
+  icon: string
+  kind: string
+  content: string
+  timestamp: string
+  priority: string
+}
+
+const waitingQueue = computed(() => {
+  const c = categories.value['waiting_queue']
+  return c && c.status === 'ok' ? c : null
+})
+
+const wqRows = computed<WqRow[]>(() => {
+  const s = waitingQueue.value?.summary ?? {}
+  const steer = Array.isArray(s.steer) ? (s.steer as Record<string, unknown>[]) : []
+  const follow = Array.isArray(s.follow_up) ? (s.follow_up as Record<string, unknown>[]) : []
+  const toRow = (e: Record<string, unknown>, icon: string, kind: string): WqRow => ({
+    icon,
+    kind,
+    content: typeof e.content === 'string' ? e.content : '',
+    timestamp: typeof e.timestamp === 'string' ? e.timestamp : '',
+    priority: typeof e.priority === 'string' ? e.priority : 'normal',
+  })
+  return [
+    ...steer.map(e => toRow(e, '⚡', '插队')),
+    ...follow.map(e => toRow(e, '⏳', '排队')),
+  ]
+})
+
+const wqSteerCount = computed(
+  () => wqRows.value.filter(r => r.kind === '插队').length,
+)
+const wqFollowCount = computed(
+  () => wqRows.value.filter(r => r.kind === '排队').length,
+)
+
+/** 行预览截断（全文在 hover 弹层；48 字符与既有 goal 行 80 字符口径同型）。 */
+function wqPreview(text: string): string {
+  return text.length > 48 ? `${text.slice(0, 48)}…` : text
+}
+
+/** hover 弹层状态：fixed 定位（逃出 srp-card overflow:hidden 与面板
+ *  overflow-y:auto 的裁剪链——absolute 会被双层裁剪）。坐标取 mouseenter
+ *  视口点，弹出偏移 + 视口右/下缘钳位。 */
+const wqHover = ref<{ content: string; meta: string; x: number; y: number } | null>(null)
+
+/** hover-intent：弹层 spawn 在光标旁 12px，指针移入弹层会触发行
+ *  mouseleave——立即隐藏 = 弹层在眼前闪烁。行离开延迟 200ms 再藏，
+ *  悬入弹层取消（指针可移进弹层选读全文）；弹层离开即时藏。 */
+let wqHideTimer: ReturnType<typeof setTimeout> | null = null
+
+function wqCancelHide(): void {
+  if (wqHideTimer) {
+    clearTimeout(wqHideTimer)
+    wqHideTimer = null
+  }
+}
+
+function wqScheduleHide(): void {
+  wqCancelHide()
+  wqHideTimer = setTimeout(() => {
+    wqHover.value = null
+    wqHideTimer = null
+  }, 200)
+}
+
+function wqShow(e: WqRow, ev: MouseEvent): void {
+  wqCancelHide()
+  wqHover.value = {
+    content: e.content,
+    meta: `${e.kind} · ${e.timestamp || '—'}${e.priority === 'high' ? ' · 优先' : ''}`,
+    x: ev.clientX,
+    y: ev.clientY,
+  }
+}
+
+const wqPopStyle = computed(() => {
+  const h = wqHover.value
+  if (!h) return {}
+  return {
+    left: `${Math.max(8, Math.min(h.x + 12, window.innerWidth - 380))}px`,
+    top: `${Math.max(8, Math.min(h.y + 12, window.innerHeight - 240))}px`,
+  }
+})
 
 /** 资源卡流：排除执行态/在途区/identity 后的 ok 类目，order 升序。
  *  session_allow 例外：empty（未开启=常态）也渲染——开关是「状态开关」
@@ -212,6 +339,7 @@ const cardCategories = computed(() =>
       (c.status === 'ok' || id === 'session_allow')
       && id !== 'execution'
       && id !== 'identity'
+      && id !== 'waiting_queue'
       && !PENDING_IDS.has(id))
     .filter(([, c]) => !(c.transient && c.total === 0))
     .sort((a, b) => a[1].order - b[1].order),
@@ -229,7 +357,7 @@ const ctaEmptyCategories = computed(() =>
  *  走开关卡，不进「无资源」徽标流）。 */
 const emptyCategories = computed(() =>
   Object.entries(categories.value)
-    .filter(([id, c]) => c.status === 'empty' && id !== 'cron' && id !== 'hooks_global' && id !== 'session_allow')
+    .filter(([id, c]) => c.status === 'empty' && id !== 'cron' && id !== 'hooks_global' && id !== 'session_allow' && id !== 'waiting_queue')
     .sort((a, b) => a[1].order - b[1].order),
 )
 
@@ -564,14 +692,20 @@ function subagentTaskText(row: Record<string, unknown>): string {
   return t.length > 80 ? `${t.slice(0, 80)}…` : t
 }
 
+/** 计时格式单一真相源（子代理行 + 执行态卡头共用）：epoch ms 起锚 +
+ *  当前时刻 → `5s` / `2m05s` / `1h03m`。 */
+function fmtElapsed(startMs: number, now: number): string {
+  const secs = Math.max(0, Math.floor((now - startMs) / 1000))
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  if (m >= 60) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+  return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`
+}
+
 /** running 行实时用时（锚 started_at_ms，nowTick 驱动）。终态行不走这。 */
 function subagentElapsed(row: Record<string, unknown>): string {
   const start = typeof row.started_at_ms === 'number' ? row.started_at_ms : Number.NaN
-  if (!Number.isFinite(start) || start <= 0) return ''
-  const secs = Math.max(0, Math.floor((nowTick.value - start) / 1000))
-  const m = Math.floor(secs / 60)
-  const s = secs % 60
-  return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`
+  return Number.isFinite(start) && start > 0 ? fmtElapsed(start, nowTick.value) : ''
 }
 </script>
 
@@ -722,6 +856,43 @@ function subagentElapsed(row: Record<string, unknown>): string {
       </div>
     </div>
 
+    <!-- 发送方式分节（2026-11-24 三键迁移）：立即/插队/排队三键从 ChatPanel
+         输入框旁迁入（用户拍板位置：语音卡下、执行态卡上）。状态真值 chat
+         store sendMode；ChatPanel 输入框旁选择器在有资源窗注入面时不再渲染
+         （standalone chat 页保留原 UI），资源窗收起后非默认方式以只读小徽标
+         留守输入框旁。卡片渲染门 queueEnabled（reject 模式 busy 发送直接被拒，
+         三键无意义——与 ChatPanel 选择器同门）；「立即」忙碌时字面降级同
+         ChatPanel nowLabel/nowTitle（BUG-1 同源口径）。 -->
+    <div v-if="panelQueueEnabled" class="srp-card srp-tools">
+      <div class="srp-card-head">
+        <span class="srp-card-title">发送方式</span>
+      </div>
+      <div class="srp-tools-row">
+        <button
+          class="srp-tool-btn"
+          :class="{ active: chatStore.sendMode === 'now' }"
+          type="button"
+          :title="panelNowTitle"
+          @click="setSendMode('now')"
+        >{{ panelNowLabel }}</button>
+        <button
+          v-if="panelSteerEnabled"
+          class="srp-tool-btn"
+          :class="{ active: chatStore.sendMode === 'steer' }"
+          type="button"
+          title="插队（steer）：发送时自动加 ! 前缀，agent 处理中时立即送达当前轮（工具间隙即中断剩余工具）"
+          @click="setSendMode('steer')"
+        >⚡插队</button>
+        <button
+          class="srp-tool-btn"
+          :class="{ active: chatStore.sendMode === 'queue' }"
+          type="button"
+          title="排队（followUp）：发送时剥掉 ! 标记，agent 处理中时在本轮结束后处理"
+          @click="setSendMode('queue')"
+        >⏭排队</button>
+      </div>
+    </div>
+
     <div v-if="loadError" class="srp-error">{{ loadError }}</div>
 
     <div v-if="!resp && !loadError" class="srp-empty-hint">加载中…</div>
@@ -732,6 +903,8 @@ function subagentElapsed(row: Record<string, unknown>): string {
         <div class="srp-card-head">
           <span class="srp-dot" :class="{ running: execution.summary?.running === true }" />
           <span class="srp-card-title">{{ execution.label }}</span>
+          <!-- ⏱ 当前轮实时用时（running 且 turn_started_ms 有效才渲染；1s 走表）。 -->
+          <span v-if="executionElapsed" class="srp-badge srp-exec-elapsed">⏱ {{ executionElapsed }}</span>
           <span v-if="execution.summary?.running !== true" class="srp-badge">空闲</span>
           <span v-if="typeof execution.summary?.steer_pending === 'number' && execution.summary.steer_pending > 0" class="srp-badge">插队 {{ execution.summary.steer_pending }}</span>
           <span v-if="typeof execution.summary?.followup_pending === 'number' && execution.summary.followup_pending > 0" class="srp-badge">追问 {{ execution.summary.followup_pending }}</span>
@@ -743,6 +916,28 @@ function subagentElapsed(row: Record<string, unknown>): string {
               : '执行中：思考中' }}
           </template>
         </div>
+      </div>
+
+      <!-- 等待队列（2026-11-24）：插队/排队消息逐条可见，行 hover 弹层看
+           全文（fixed 定位逃裁剪链）；无等待 = Empty 不渲染，与执行态同机制 -->
+      <div v-if="waitingQueue" class="srp-card srp-queue">
+        <div class="srp-card-head">
+          <span class="srp-card-title">{{ waitingQueue.label }}</span>
+          <span v-if="wqSteerCount" class="srp-badge">插队 {{ wqSteerCount }}</span>
+          <span v-if="wqFollowCount" class="srp-badge">排队 {{ wqFollowCount }}</span>
+        </div>
+        <ul class="srp-rows">
+          <li
+            v-for="(e, i) in wqRows"
+            :key="i"
+            class="srp-row srp-wq-row"
+            @mouseenter="wqShow(e, $event)"
+            @mouseleave="wqScheduleHide"
+          >
+            <span class="srp-key">{{ e.icon }}</span>
+            <span class="srp-wq-preview">{{ wqPreview(e.content) }}</span>
+          </li>
+        </ul>
       </div>
 
       <!-- 在途区（审批/提问只展示，交互走弹窗） -->
@@ -932,6 +1127,19 @@ function subagentElapsed(row: Record<string, unknown>): string {
       <div v-for="[id, c] in unavailableCategories" :key="id" class="srp-unavail">⚠ {{ c.label }}：{{ c.reason ?? '不可用' }}</div>
     </template>
 
+    <!-- 等待队列 hover 全文弹层（fixed 定位，挂根级逃出卡片/面板裁剪链；
+         悬入取消行离开的延迟隐藏——指针可移进弹层选读全文） -->
+    <div
+      v-if="wqHover"
+      class="srp-wq-pop"
+      :style="wqPopStyle"
+      @mouseenter="wqCancelHide"
+      @mouseleave="wqHover = null"
+    >
+      <div class="srp-wq-pop-text">{{ wqHover.content }}</div>
+      <div class="srp-wq-pop-meta">{{ wqHover.meta }}</div>
+    </div>
+
     <ProjectCreateModal
       v-if="showProjectModal"
       @close="showProjectModal = false"
@@ -1031,6 +1239,13 @@ function subagentElapsed(row: Record<string, unknown>): string {
 
 /* 执行态大卡 */
 .srp-exec { border-color: var(--accent); }
+/* ⏱ 当前轮计时徽标（2026-11-24）：accent 走表；tabular-nums 防每秒
+   跳动时徽标宽度抖动。 */
+.srp-exec-elapsed {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
 .srp-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--text-muted);
@@ -1039,6 +1254,41 @@ function subagentElapsed(row: Record<string, unknown>): string {
 .srp-dot.running { background: var(--accent); animation: srp-pulse 1.2s infinite; }
 @keyframes srp-pulse { 50% { opacity: 0.4; } }
 .srp-exec-tool { padding: 0 10px 8px; color: var(--text-muted); }
+
+/* 等待队列（2026-11-24）：行 hover 全文弹层。行本体单行截断（flex 内
+   preview span 自截断），弹层 fixed 定位挂根级（卡片 overflow:hidden 与
+   面板 overflow-y:auto 会裁 absolute 子元素）。 */
+.srp-wq-row { cursor: default; }
+.srp-wq-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.srp-wq-pop {
+  position: fixed;
+  z-index: 500;
+  width: 340px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+}
+.srp-wq-pop-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.srp-wq-pop-meta {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
 
 /* 在途区 */
 .srp-pending { border-color: var(--accent); background: var(--bg-elev); }

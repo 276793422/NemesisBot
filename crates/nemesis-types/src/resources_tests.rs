@@ -50,6 +50,9 @@ impl SessionLoopApi for StubLoopApi {
     fn work_timeline(&self, _session_key: &str) -> Option<Value> {
         None
     }
+    fn queue_peek(&self, _session_key: &str) -> Option<Value> {
+        None
+    }
     fn checkpoint_summary(&self, _session_key: &str) -> Vec<CheckpointSummary> {
         vec![CheckpointSummary {
             turn: 3,
