@@ -18,6 +18,17 @@ use crate::types::CollectedExperience;
 /// An experience store persisting to the flat `experiences.jsonl` file.
 /// `cleanup` additionally sweeps legacy per-month `YYYYMM/YYYYMMDD.jsonl`
 /// subdirectories left by the pre-F- date-based layout.
+/// 平文件（`experiences.jsonl`）写入互斥（BUG-20261125-004 同族横向修复）：
+/// 追加族（collector 持久化 `collector.rs::append_jsonl` + `append`）与
+/// 整文件写回族（`cleanup` 平文件修剪 / `clear`）共用。锁是**模块级静态**
+/// 而非实例字段——ExperienceStore 各调用点现场新建（forge.rs 反思/清理
+/// 周期、forge_tools、CLI），实例锁串不起不同实例；collector 又是另一个
+/// 结构体，写同一个文件。RMW 全程持锁：重写读在锁外时，读→写窗内并发
+/// append 的行不在快照里，整文件写回即静默丢失采集经验。tokio Mutex
+/// （guard Send，临界区含 await）。
+pub(crate) static EXPERIENCES_FLAT_WRITE_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 pub struct ExperienceStore {
     base_dir: PathBuf,
 }
@@ -47,6 +58,8 @@ impl ExperienceStore {
         tokio::fs::create_dir_all(&self.base_dir).await?;
 
         let file_path = self.base_dir.join("experiences.jsonl");
+        // 与 cleanup 平文件修剪/clear 同锁（见静态锁文档）。
+        let _w = EXPERIENCES_FLAT_WRITE_LOCK.lock().await;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -119,6 +132,10 @@ impl ExperienceStore {
         // rewrite. (F-)
         let flat = self.base_dir.join("experiences.jsonl");
         if flat.exists() {
+            // RMW 全程持锁（BUG-20261125-004 同族横向修复）：读在锁外时，
+            // 读→写窗内 collector/store 并发 append 的行不在快照里，写回
+            // 即静默丢失采集经验。
+            let _w = EXPERIENCES_FLAT_WRITE_LOCK.lock().await;
             let cutoff_dt = chrono::Local::now() - chrono::Duration::days(max_age_days);
             if let Ok(content) = tokio::fs::read_to_string(&flat).await {
                 let total: usize = content.lines().filter(|l| !l.trim().is_empty()).count();
@@ -213,6 +230,9 @@ impl ExperienceStore {
     /// Remove all experiences from the store.
     pub async fn clear(&self) -> std::io::Result<()> {
         let file_path = self.base_dir.join("experiences.jsonl");
+        // 与 cleanup 写回同锁（BUG-20261125-004 同族横向修复）：否则
+        // cleanup 持旧快照 → clear 删文件 → cleanup 写回 = 已清空内容复活。
+        let _w = EXPERIENCES_FLAT_WRITE_LOCK.lock().await;
         if file_path.exists() {
             tokio::fs::remove_file(&file_path).await?;
         }

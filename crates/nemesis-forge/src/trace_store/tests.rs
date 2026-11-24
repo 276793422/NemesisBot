@@ -403,3 +403,50 @@ async fn r735_cleanup_u64_max_does_not_panic_and_keeps_recent() {
     assert_eq!(remaining.len(), 1);
     assert!(remaining.iter().any(|e| e.event_type == "recent"));
 }
+
+/// BUG-20261125-004 同族回归锁（确定性锁纪律测试）：手动持 write_lock 后
+/// spawn append 与 cleanup，持锁下给足 100ms 完成预算——若任一侧未被锁
+/// 挡（锁纪律破坏），微秒级即完成 → timeout Ok = 红；正确阻塞 → Err = 绿。
+/// 即 append（每次工具派发的频率）与 cleanup 的读→滤→整文件写回在同一
+/// 把互斥上串行化，丢失窗在结构上不存在。
+///
+/// 为什么不用并发冒烟测：窗口是 µs 级同步段，多线程形态阳性对照实证
+/// 撤锁 5/5 假绿；is_finished 探测同样不敏感（append 自身多段 async IO
+/// 未跑完同样 false，撤锁后仍假绿）——「给足预算仍未完成」才是阻塞证据。
+#[tokio::test]
+async fn append_and_cleanup_serialize_on_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(TraceStore::new(dir.path().join("traces.jsonl")));
+    store.append(&make_event("seed")).await.unwrap();
+
+    // 外部持锁（模拟清理侧已进入临界区）。
+    let guard = store.write_lock.lock().await;
+
+    let mut append_task = {
+        let s = store.clone();
+        tokio::spawn(async move { s.append(&make_event("x")).await })
+    };
+    let mut cleanup_task = {
+        let s = store.clone();
+        tokio::spawn(async move { s.cleanup(365).await })
+    };
+    let budget = std::time::Duration::from_millis(100);
+    assert!(
+        tokio::time::timeout(budget, &mut append_task)
+            .await
+            .is_err(),
+        "append 必须在 write_lock 释放前阻塞"
+    );
+    assert!(
+        tokio::time::timeout(budget, &mut cleanup_task)
+            .await
+            .is_err(),
+        "cleanup 必须在 write_lock 释放前阻塞"
+    );
+
+    drop(guard);
+    append_task.await.unwrap().unwrap();
+    cleanup_task.await.unwrap().unwrap();
+    let n = store.count().await.unwrap();
+    assert_eq!(n, 2, "锁释放后两侧都必须完成且零丢失: {n}");
+}

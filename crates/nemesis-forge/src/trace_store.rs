@@ -12,12 +12,22 @@ use crate::trace::TraceEvent;
 /// A store that persists trace events to JSONL.
 pub struct TraceStore {
     path: PathBuf,
+    /// 写互斥（BUG-20261125-004 同族横向修复）：`append`（record_trace_event
+    /// 每次工具派发都写）与 `cleanup` 的读→滤→整文件写回共用——重写读在
+    /// 锁外时，读→写窗内并发 append 的事件不在快照里，写回即静默丢失。
+    /// 旧注释只修了崩溃截断窗（write_file_atomic），丢失窗未修。实例锁
+    /// 足够：Forge `init_trace` 持单一实例，append 与 cleanup 同源。
+    /// tokio Mutex（guard Send，临界区含 await）。
+    write_lock: tokio::sync::Mutex<()>,
 }
 
 impl TraceStore {
     /// Create a new trace store at the given path.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            write_lock: tokio::sync::Mutex::new(()),
+        }
     }
 
     /// Append a trace event to the JSONL file.
@@ -26,6 +36,7 @@ impl TraceStore {
             tokio::fs::create_dir_all(parent).await?;
         }
 
+        let _w = self.write_lock.lock().await;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -89,6 +100,9 @@ impl TraceStore {
 
     /// Clear all stored events.
     pub async fn clear(&self) -> std::io::Result<()> {
+        // 与 cleanup 写回同锁（BUG-20261125-004 同族横向修复）：否则
+        // cleanup 持旧快照 → clear 删文件 → cleanup 写回 = 已清空内容复活。
+        let _w = self.write_lock.lock().await;
         if self.path.exists() {
             tokio::fs::remove_file(&self.path).await?;
         }
@@ -111,6 +125,10 @@ impl TraceStore {
         // 上界单一真相源 time_bounds::MAX_AGE_DAYS。
         let max_age_days = max_age_days.min(nemesis_utils::time_bounds::MAX_AGE_DAYS as u64);
         let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days as i64);
+        // RMW 全程持锁（BUG-20261125-004 同族横向修复）：read_all 在锁外时，
+        // 读→写窗内 record_trace_event 并发 append 的事件不在快照里，写回
+        // 即静默丢失（append 频率 = 每次工具派发，丢失概率高）。
+        let _w = self.write_lock.lock().await;
         let all = self.read_all().await?;
         let original_count = all.len();
 

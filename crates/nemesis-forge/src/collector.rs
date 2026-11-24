@@ -151,6 +151,14 @@ impl Collector {
 
     /// Append a single JSONL record.
     async fn append_jsonl(path: &Path, ce: &CollectedExperience) -> std::io::Result<()> {
+        // 与 experience_store 的 cleanup 平文件修剪/clear 同锁（静态锁，
+        // BUG-20261125-004 同族横向修复）：清理读→重写窗内本 append 落盘
+        // 的行不在快照里会被写回吃掉；两侧同一把锁后要么 append 先完成
+        // （行入快照且年轻 → 保留），要么后完成（行在写回之后 → 存活），
+        // 零丢失。
+        let _w = crate::experience_store::EXPERIENCES_FLAT_WRITE_LOCK
+            .lock()
+            .await;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
