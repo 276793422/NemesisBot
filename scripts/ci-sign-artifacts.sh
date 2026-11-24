@@ -193,7 +193,12 @@ PYEOF
 echo "==> 签后自检（每个产物必须 Valid）"
 FAIL=0
 for t in "${TARGETS[@]}"; do
-    GOT="$("$TOOL" verify --root-cert "$REPO_ROOT/certs/root_cert.der" --target "$t" 2>&1 | head -1)" || GOT="(verify 失败)"
+    # verify 对非 Valid 判定 exit(1)（判定词照印 stdout）——pipefail 下管道非零，
+    # 失败分支必须保留已捕获的首行判定词（Tampered/Untrusted/…），仅在零输出
+    # （崩溃无打印）时才落占位串。旧写法 || GOT="(verify 失败)" 会把真实判定顶掉，
+    # 签后自检失败时丢失全部诊断（BUG-20261124-022）。
+    GOT="$("$TOOL" verify --root-cert "$REPO_ROOT/certs/root_cert.der" --target "$t" 2>&1 | head -1)" \
+        || GOT="${GOT:-verify 非零退出且无输出}"
     if [ "${GOT#Valid}" != "$GOT" ]; then
         echo "    [Valid] $(basename "$t")"
     else

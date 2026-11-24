@@ -208,7 +208,11 @@ stage_verify() {
     check() { # check <名称> <期望状态前缀> <verify参数...>
         local NAME="$1" WANT="$2"; shift 2
         local GOT
-        GOT="$("$TOOL" verify "$@" 2>&1 | head -1)" || GOT="(verify 命令失败)"
+        # verify 对负例判定（Tampered/Untrusted/NoSignature）exit(1) 是设计行为
+        #（判定词照印 stdout）——pipefail 下失败分支必须保留已捕获首行，否则三个
+        # 负例全被 (verify 命令失败) 顶掉、prefix 比对全误判 FAIL，仪式坏死
+        #（BUG-20261124-022；CI 实跑的 init-signing.bat 不经此路径故历史 4/4 未暴露）。
+        GOT="$("$TOOL" verify "$@" 2>&1 | head -1)" || GOT="${GOT:-verify 非零退出且无输出}"
         if [ "${GOT#${WANT}}" != "$GOT" ]; then
             echo "  [PASS] $NAME → $GOT"; PASS=$((PASS+1))
         else

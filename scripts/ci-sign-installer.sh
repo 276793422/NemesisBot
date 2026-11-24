@@ -135,7 +135,10 @@ echo "==> 检视成品"
 # --- 签后自检（fail-the-build 语义）：外壳签名必须 Valid ----------------------
 if [ -n "$KEYS" ]; then
     echo "==> 签后自检（外壳签名必须 Valid）"
-    GOT="$("$TOOL" verify --root-cert "$ROOT_CERT" --target "$OUT" 2>&1 | head -1)" || GOT="(verify 失败)"
+    # verify 非 Valid 判定 exit(1)（判定词照印）——pipefail 下失败分支保留已捕获
+    # 首行（BUG-20261124-022 同根修，见 ci-sign-artifacts.sh 注释）。
+    GOT="$("$TOOL" verify --root-cert "$ROOT_CERT" --target "$OUT" 2>&1 | head -1)" \
+        || GOT="${GOT:-verify 非零退出且无输出}"
     if [ "${GOT#Valid}" != "$GOT" ]; then
         echo "    [Valid] $(basename "$OUT") 外壳签名"
     else
