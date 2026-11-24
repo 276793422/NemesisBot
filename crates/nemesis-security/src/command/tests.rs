@@ -773,3 +773,24 @@ fn variant_form_recursive_delete_and_force_kill_blocked() {
         assert!(guard.check(cmd).is_ok(), "`{cmd}` must not be blocked");
     }
 }
+
+/// BUG-20261124-017 回归锁：拦截 pattern 表与 metadata 表必须 1:1。
+/// metadata 缺项 = 第②层页只读快照少显在拦条目（修复前少显 9 条：
+/// truncate/srm/catastrophic_pipe/su_switch/doas/gosu/wireshark/
+/// xxd_reverse/hex_decode_exec）+ get_category 对在拦条目返 None；
+/// 幽灵条目（有 metadata 无 pattern）= 向用户虚报拦截能力。数量护栏
+/// 钉住 63——两侧同漂到另一平衡点时逼人显式改数（与 l1_tests 模块
+/// 数断言同款纪律）。
+#[test]
+fn test_blocklist_metadata_parity() {
+    let mut patterns: Vec<&str> = super::get_blocklist().iter().map(|(n, _)| *n).collect();
+    let mut meta: Vec<&str> = super::builtin_blocklist().iter().map(|e| e.name).collect();
+    patterns.sort_unstable();
+    meta.sort_unstable();
+    assert_eq!(patterns, meta, "blocklist pattern 表与 metadata 表必须 1:1");
+    assert_eq!(
+        patterns.len(),
+        63,
+        "pattern 总数护栏：新增条目必须同步 metadata（反之亦然）"
+    );
+}

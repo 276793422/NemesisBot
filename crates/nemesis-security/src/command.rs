@@ -889,6 +889,75 @@ fn get_blocklist_metadata() -> &'static Vec<BlockEntry> {
                 platform: Platform::All,
                 reason: "Package removal",
             },
+            // BUG-20261124-017 补齐：以下 9 条拦截 pattern 在 get_blocklist()
+            // 早已生效，但 metadata 漏登记（历次加固只给当批新条目补了
+            // metadata，更早的 9 条被跳过）——第②层页 builtin_blocklist()
+            // 只读快照少显 9 条（含 fork bomb Critical 条目）、get_category
+            // 对在拦条目返 None。补齐至与 pattern 表 1:1，配平由
+            // tests::test_blocklist_metadata_parity 钉死。
+            BlockEntry {
+                name: "truncate",
+                category: CommandCategory::Destructive,
+                severity: Severity::High,
+                platform: Platform::Linux,
+                reason: "File truncation to zero size (log-clearing anti-forensics)",
+            },
+            BlockEntry {
+                name: "srm",
+                category: CommandCategory::Destructive,
+                severity: Severity::Critical,
+                platform: Platform::Linux,
+                reason: "Secure file removal",
+            },
+            BlockEntry {
+                name: "catastrophic_pipe",
+                category: CommandCategory::Destructive,
+                severity: Severity::Critical,
+                platform: Platform::Linux,
+                reason: "Fork bomb (colon bomb)",
+            },
+            BlockEntry {
+                name: "su_switch",
+                category: CommandCategory::Privilege,
+                severity: Severity::High,
+                platform: Platform::Linux,
+                reason: "User switch (su)",
+            },
+            BlockEntry {
+                name: "doas",
+                category: CommandCategory::Privilege,
+                severity: Severity::High,
+                platform: Platform::Linux,
+                reason: "Privilege escalation (doas)",
+            },
+            BlockEntry {
+                name: "gosu",
+                category: CommandCategory::Privilege,
+                severity: Severity::High,
+                platform: Platform::Linux,
+                reason: "Container privilege escalation (gosu)",
+            },
+            BlockEntry {
+                name: "wireshark",
+                category: CommandCategory::Recon,
+                severity: Severity::Medium,
+                platform: Platform::All,
+                reason: "Packet capture (tshark/wireshark)",
+            },
+            BlockEntry {
+                name: "xxd_reverse",
+                category: CommandCategory::Obfuscation,
+                severity: Severity::High,
+                platform: Platform::All,
+                reason: "Reversed hex dump (xxd -r) piped onward",
+            },
+            BlockEntry {
+                name: "hex_decode_exec",
+                category: CommandCategory::Obfuscation,
+                severity: Severity::High,
+                platform: Platform::All,
+                reason: "Hex-escaped payload piped to shell",
+            },
         ]
     })
 }
