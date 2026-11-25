@@ -19,6 +19,16 @@ pub const PIPE_CAPTURE_CAP_BYTES: usize = 1 << 20;
 
 const CHUNK: usize = 8192;
 
+/// 丢头保尾截断标记单一真相源：管道排干（[`TailBuf::finish`]）与受限
+/// 文件捕获读回（nemesis-agent exec `read_capture_file_capped`）共用同一
+/// 文案——同一家族语义不许两套措辞漂移。
+pub fn truncated_head_marker(dropped_bytes: u64) -> String {
+    format!(
+        "[output capture capped: first {} bytes dropped (1 MiB cap)]\n",
+        dropped_bytes
+    )
+}
+
 /// 丢头保尾累积器：超限剪头（记录丢弃量），EOF 后统一产出。
 struct TailBuf {
     buf: VecDeque<u8>,
@@ -46,10 +56,7 @@ impl TailBuf {
         if self.dropped == 0 {
             return self.buf.make_contiguous().to_vec();
         }
-        let marker = format!(
-            "[output capture capped: first {} bytes dropped (1 MiB cap)]\n",
-            self.dropped
-        );
+        let marker = truncated_head_marker(self.dropped);
         let mut out = Vec::with_capacity(marker.len() + self.buf.len());
         out.extend_from_slice(marker.as_bytes());
         out.extend_from_slice(self.buf.make_contiguous());

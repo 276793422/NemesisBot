@@ -119,6 +119,10 @@ mod exec_env_slot_tests;
 // 窗丢头保尾 + 节流 + hook 装配 e2e + exec_output_tx 广播接线。
 #[cfg(test)]
 mod exec_stream_tee_tests;
+// 受限文件捕获读回读侧内存闸（BUG-20261126-102）：超帽 seek 尾读丢头保尾
+// + 标记单一真相源；帽内原语义 + 双流接线 + 清理语义回归。
+#[cfg(test)]
+mod exec_capture_read_cap_tests;
 #[cfg(test)]
 mod loop_tools_extra_tests;
 #[cfg(test)]
