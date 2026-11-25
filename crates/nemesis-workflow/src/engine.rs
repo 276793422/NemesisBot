@@ -3800,9 +3800,15 @@ impl WorkflowEngine {
 
     /// Close the engine and clean up resources.
     ///
-    /// Marks the engine as closed. Future calls to `run` or `start_execution`
-    /// will return an error. In-progress executions are not automatically
-    /// cancelled (they will complete naturally).
+    /// Marks the engine as closed. Future calls to `run`, `start_async`, or
+    /// `start_execution` will return an error. **In-flight executions are
+    /// cancelled**: every live cancellation token is fired (scheduler + node
+    /// executors bail out; each execution settles as `Cancelled` through its
+    /// own run/resume 收口尾段), then the token table is cleared.
+    /// `test_close_cancels_all_in_flight` 钉住该语义。
+    /// （BUG-20261125-039：此前 doc 写「In-progress executions are not
+    /// automatically cancelled (they will complete naturally)」——与代码及
+    /// 专属回归锁直接矛盾，按旧 doc 设计停机流程会误期待在飞执行自然跑完。）
     pub async fn close(&self) {
         info!("[Workflow] Closing workflow engine");
         let mut closed = self.closed.write().await;
