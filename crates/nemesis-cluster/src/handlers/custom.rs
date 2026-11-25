@@ -57,8 +57,14 @@ impl CustomHandler {
     }
 
     /// List all registered custom action names.
+    ///
+    /// 排序输出（确定性纪律）：handlers 是 HashMap，keys() 迭代序是进程
+    /// 随机态——ListActions RPC 响应数组直出远端，无序迭代 = 每次重启
+    /// 洗牌（BUG-20261125-078）。
     pub fn list_actions(&self) -> Vec<String> {
-        self.handlers.lock().keys().cloned().collect()
+        let mut names: Vec<String> = self.handlers.lock().keys().cloned().collect();
+        names.sort();
+        names
     }
 }
 

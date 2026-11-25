@@ -837,6 +837,37 @@ fn test_get_extension_rules_no_rules_in_config() {
     assert!(rules.skip_extensions.is_empty());
 }
 
+/// BUG-20261125-078 回归锁：多引擎都配扩展名规则时，`get_extension_rules`
+/// 的胜者必须是确定性的（字典序最小含规则引擎恒胜）。configs 是 HashMap，
+/// 无序迭代 = 首个含规则引擎随进程重启洗牌 = 生效扫描面漂移。
+#[test]
+fn test_get_extension_rules_multi_engine_deterministic_winner() {
+    // 引擎名字典序：alpha_engine < beta_engine——无论 HashMap 桶序如何，
+    // alpha_engine 的规则必须恒胜。
+    let mut chain = ScanChain::with_defaults();
+    let mut full_config = ScannerFullConfig::default();
+    full_config.enabled.push("beta_engine".to_string());
+    full_config.enabled.push("alpha_engine".to_string());
+    full_config.engines.insert(
+        "beta_engine".to_string(),
+        serde_json::json!({
+            "scan_extensions": ["beta_scan"],
+            "skip_extensions": ["beta_skip"]
+        }),
+    );
+    full_config.engines.insert(
+        "alpha_engine".to_string(),
+        serde_json::json!({
+            "scan_extensions": ["alpha_scan"],
+            "skip_extensions": ["alpha_skip"]
+        }),
+    );
+    chain.load_from_full_config(&full_config);
+    let rules = chain.get_extension_rules();
+    assert_eq!(rules.scan_extensions, vec!["alpha_scan".to_string()]);
+    assert_eq!(rules.skip_extensions, vec!["alpha_skip".to_string()]);
+}
+
 #[test]
 fn test_load_from_full_config_missing_engine_config() {
     let mut chain = ScanChain::with_defaults();
