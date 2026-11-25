@@ -1727,14 +1727,27 @@ impl AgentLoop {
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|v| *v > 0);
         // 本轮客户端上报的打开文件进 per-turn 状态（渲染在 build_messages
-        // 的 merged digest；出轮即清——与下方 run 后的 clear 词法配对，cron/
+        // 的 merged digest；出轮即清——与下方 run 后的 remove 词法配对，cron/
         // heartbeat/continuation 等非 process_admitted 路径天然读不到）。
-        *self.pending_open_files.write() =
-            nemesis_types::channel::open_files_from_metadata(&msg.metadata);
-        // 对话生成：workflow_edit 注入目标同款 per-turn 生命周期（出轮 clear
-        // 与上方配对）。
-        *self.pending_workflow_edit.write() =
-            nemesis_types::channel::workflow_edit_from_metadata(&msg.metadata);
+        // 按 session_key 分桶（BUG-20261125-068，BUG-20261120-013 同族）：
+        // V5 泵跨会话并发 turn 各写各键，loop 级单槽会被并发会话覆写/误清。
+        let open_files = nemesis_types::channel::open_files_from_metadata(&msg.metadata);
+        let wf_edit = nemesis_types::channel::workflow_edit_from_metadata(&msg.metadata);
+        self.pending_open_files
+            .lock()
+            .insert(session_key.clone(), open_files);
+        // 对话生成：workflow_edit 注入目标同款 per-turn + 分桶生命周期。
+        // 本轮不带 → remove 本会话上一轮残留（per-turn 语义）。
+        match wf_edit {
+            Some(target) => {
+                self.pending_workflow_edit
+                    .lock()
+                    .insert(session_key.clone(), target);
+            }
+            None => {
+                self.pending_workflow_edit.lock().remove(&session_key);
+            }
+        }
         let result = self
             .run_agent_loop_internal(
                 &session_key,
@@ -1767,10 +1780,11 @@ impl AgentLoop {
         {
             cp.seal_turn(turn);
         }
-        // 轮结束清打开文件状态（与上方 set 词法配对，防跨轮陈旧泄漏）。
-        self.pending_open_files.write().clear();
-        // 对话生成：轮结束清 workflow_edit 目标（同款配对）。
-        *self.pending_workflow_edit.write() = None;
+        // 轮结束清本会话打开文件状态（与上方 set 词法配对，防跨轮陈旧泄
+        // 漏；按 session_key 分桶——只清本会话键，不动并发中其他会话）。
+        self.pending_open_files.lock().remove(&session_key);
+        // 对话生成：轮结束清本会话 workflow_edit 目标（同款配对）。
+        self.pending_workflow_edit.lock().remove(&session_key);
 
         // post-turn inbox handling：单一真相源在
         // `drain_next_turn_queue`（steer 转回 + 队首重注入 + 空队列清理）。

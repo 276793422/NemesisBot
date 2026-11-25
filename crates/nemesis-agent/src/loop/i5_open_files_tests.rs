@@ -109,8 +109,11 @@ fn section_present_in_report_order_and_byte_stable() {
     let agent_loop = i5_loop();
     let inst = i5_instance();
 
-    *agent_loop.pending_open_files.write() =
-        vec!["/ws/src/main.rs".to_string(), "/ws/README.md".to_string()];
+    *agent_loop
+        .pending_open_files
+        .lock()
+        .entry(String::new())
+        .or_default() = vec!["/ws/src/main.rs".to_string(), "/ws/README.md".to_string()];
 
     let msgs = agent_loop.build_messages(&inst);
     let merged = find_merged(&msgs);
@@ -150,13 +153,16 @@ fn clear_restores_baseline_bytes() {
     // 基线：从未 set。
     let baseline = agent_loop.build_messages(&inst);
 
-    // set → 段在场。
-    *agent_loop.pending_open_files.write() = vec!["/ws/src/main.rs".to_string()];
+    // set（"" 键 = build_messages None 键路径读取的桶）→ 段在场。
+    agent_loop
+        .pending_open_files
+        .lock()
+        .insert(String::new(), vec!["/ws/src/main.rs".to_string()]);
     let with_files = agent_loop.build_messages(&inst);
     assert!(find_merged(&with_files).content.contains("# Open Files"));
 
-    // clear（process_admitted 出轮语义）→ 段消失，全部消息回基线字节。
-    agent_loop.pending_open_files.write().clear();
+    // clear（process_admitted 出轮语义：remove 本会话键）→ 段消失，全部消息回基线字节。
+    agent_loop.pending_open_files.lock().remove("");
     let after_clear = agent_loop.build_messages(&inst);
     assert_eq!(baseline.len(), after_clear.len());
     for (a, b) in baseline.iter().zip(after_clear.iter()) {
@@ -182,7 +188,80 @@ fn metadata_parse_feeds_render_state() {
     // 渲染端读同一份数据。
     let agent_loop = i5_loop();
     let inst = i5_instance();
-    *agent_loop.pending_open_files.write() = parsed;
+    agent_loop
+        .pending_open_files
+        .lock()
+        .insert(String::new(), parsed);
     let msgs = agent_loop.build_messages(&inst);
     assert!(find_merged(&msgs).content.contains("- /ws/a.rs"));
+}
+
+// ---------------------------------------------------------------------------
+// ③ 跨会话并发分桶（BUG-20261125-068 回归锁）：A/B 会话各写各键——
+// A set 后 B set 不得覆写 A 的条目；A 出轮 remove 后 B 的条目仍在。
+// 旧 loop 级单槽形态下：B set 覆写 A → A 的请求注入 B 的文件路径
+// （跨会话串漏）；A clear 整槽 → B 的上下文丢失。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn per_session_buckets_isolate_concurrent_turns() {
+    let agent_loop = i5_loop();
+    let inst = i5_instance();
+
+    // 模拟 process_admitted 顺序：A set → B set（并发窗口，B 后到）。
+    agent_loop
+        .pending_open_files
+        .lock()
+        .insert("sess-a".to_string(), vec!["/ws/a_only.rs".to_string()]);
+    agent_loop
+        .pending_open_files
+        .lock()
+        .insert("sess-b".to_string(), vec!["/ws/b_only.rs".to_string()]);
+
+    // A 的构建只注入 A 自己的路径（旧单槽形态此处读到 B 的 b_only）。
+    let (msgs_a, _) =
+        agent_loop.build_messages_with_memory_annotated_for(&inst, None, Some("sess-a"), None);
+    let merged_a = find_merged(&msgs_a);
+    assert!(
+        merged_a.content.contains("- /ws/a_only.rs"),
+        "A must see its own entry, got: {}",
+        merged_a.content
+    );
+    assert!(
+        !merged_a.content.contains("/ws/b_only.rs"),
+        "A must NOT see B's entry (cross-session bleed), got: {}",
+        merged_a.content
+    );
+
+    // B 的构建只注入 B 自己的路径。
+    let (msgs_b, _) =
+        agent_loop.build_messages_with_memory_annotated_for(&inst, None, Some("sess-b"), None);
+    let merged_b = find_merged(&msgs_b);
+    assert!(merged_b.content.contains("- /ws/b_only.rs"));
+    assert!(!merged_b.content.contains("/ws/a_only.rs"));
+
+    // A 出轮 remove（process_admitted 收尾语义：只清本键）→ B 条目仍在。
+    agent_loop.pending_open_files.lock().remove("sess-a");
+    let (msgs_b2, _) =
+        agent_loop.build_messages_with_memory_annotated_for(&inst, None, Some("sess-b"), None);
+    assert!(
+        find_merged(&msgs_b2).content.contains("- /ws/b_only.rs"),
+        "A's turn-end clear must not wipe B's entry"
+    );
+
+    // workflow_edit 同款分桶：A set、B 不带（remove 本键）→ A 条目不受影响。
+    agent_loop.pending_workflow_edit.lock().insert(
+        "sess-a".to_string(),
+        nemesis_types::channel::WorkflowEditTarget {
+            workflow_name: Some("wf-a".to_string()),
+        },
+    );
+    // B 轮不带 workflow_edit（process_admitted None 臂 = remove 本键）。
+    agent_loop.pending_workflow_edit.lock().remove("sess-b");
+    let (msgs_a2, _) =
+        agent_loop.build_messages_with_memory_annotated_for(&inst, None, Some("sess-a"), None);
+    assert!(
+        find_merged(&msgs_a2).content.contains("wf-a"),
+        "B's absent-workflow_edit turn must not clear A's target"
+    );
 }

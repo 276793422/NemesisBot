@@ -1157,3 +1157,113 @@ async fn continuation_final_appends_degradation_note_and_consumes_slot() {
         "整槽无残留（本测试单会话）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261125-067 回归锁：spawn 臂（permits>0）续行 gauge/timeline/handle
+// ---------------------------------------------------------------------------
+
+/// 阻塞 gate provider：chat() 等外部放行（抓住 spawn 续行的在飞窗口）。
+struct GateContinuationProvider {
+    gate: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+#[async_trait]
+impl LlmProvider for GateContinuationProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let rx = self.gate.lock().unwrap().take();
+        if let Some(rx) = rx {
+            let _ = rx.await;
+        }
+        Ok(hs_resp("gate released final"))
+    }
+}
+
+/// BUG-20261125-067：spawn 臂续行在飞期间 gauge 必须计数 + handle 必须入
+/// turn_task_handles。旧形态 gauge/timeline 在 spawn 外栈帧——dispatch
+/// 返回即 Drop：wait_loops_drained 误报排干（teardown 提前关 outbound 消费
+/// 端 → 烧完 LLM 的回复发到关闭的 receiver 静默丢失）且 JoinHandle 丢弃
+/// （stop() abort 覆盖不到 → 孤儿任务 stop 后继续跑/publish）。
+#[tokio::test]
+async fn spawned_continuation_holds_in_flight_gauge_until_done() {
+    let (log_guard, log_buf) = crate::test_support::capture_logs_to_buf();
+    let _logs = log_guard;
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(GateContinuationProvider {
+            gate: std::sync::Mutex::new(Some(gate_rx)),
+        }),
+        hs_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        1, // BUG-067 臂：spawn 模式（permits>0；0=inline 是其余哨兵的形态）
+    );
+    let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    seed_continuation(&mgr, "spawn6a").await;
+    agent_loop.set_continuation_manager(mgr);
+    let al = std::sync::Arc::new(agent_loop);
+
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let pump = tokio::spawn(al.clone().run_bus_arc(in_rx));
+    // gate 识别形态（同 ① 哨兵）：sender_id = PREFIX + task_id。
+    let msg = hs_msg(
+        &format!(
+            "{}spawn6a",
+            nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX
+        ),
+        "task result text",
+        std::collections::HashMap::new(),
+    );
+    in_tx.send(msg).await.unwrap();
+    drop(in_tx); // 关闭泵：消息已入队，处理完后 recv None 退出（stop 后 pump.await 可返回）
+
+    // 等续行任务体进入 chat() 阻塞段——gauge 必须计 1（旧形态恒 0，
+    // dispatch 返回即减账）。
+    let mut seen = false;
+    for _ in 0..100 {
+        if al.in_flight_turns() == 1 {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        seen,
+        "spawn 续行在飞 gauge 必须计 1（BUG-067 旧形态恒 0，drain 不可见）；日志尾: {}",
+        String::from_utf8_lossy(&log_buf.lock().unwrap().clone())
+    );
+
+    // drain 误报锁：在飞时短预算等待必须 false（旧形态恒 true 假排干）。
+    assert!(
+        !al.wait_turns_drained(std::time::Duration::from_millis(150))
+            .await,
+        "在飞续行不得被 wait_turns_drained 误报为已排干"
+    );
+
+    // 放行 → 续行完成 → gauge 归零 + drain true + 最终回复出站。
+    let _ = gate_tx.send(());
+    assert!(
+        al.wait_turns_drained(std::time::Duration::from_secs(3))
+            .await,
+        "续行完成后 drain 等待应返回 true"
+    );
+    assert_eq!(al.in_flight_turns(), 0, "guard Drop 已减账");
+    let out = out_rx.recv().await.expect("continuation final published");
+    assert!(
+        out.content.contains("gate released final"),
+        "got: {}",
+        out.content
+    );
+
+    // handle 已入 turn_task_handles：stop() abort 面可达（drain+abort 收尾
+    // 不 panic；孤儿任务即本缺陷的另一臂——handle 不入册 abort 永远够不着）。
+    al.stop();
+    let _ = pump.await;
+}

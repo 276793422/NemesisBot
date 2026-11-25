@@ -862,20 +862,26 @@ pub struct AgentLoop {
     /// （devtool-upgrade）：当前轮客户端上报的「当前打开文件」路径
     /// （WSAPI `chat.send` data.open_files → metadata["open_files"] → bus 全链
     /// 路透传，解析走 nemesis-types::channel:open_files_from_metadata 单点）。
-    /// Ephemeral per-turn：`process_admitted` 进轮前 set、出轮后 clear（词法
-    /// 配对防泄漏——cron/heartbeat/continuation 等非 process_admitted 路径
-    /// 天然读不到，无陈旧泄漏）。build_messages 渲染进 merged digest section
-    /// （空 = 无 section，字节稳定）；digest 内容随既有 InjectionRecord 台账
-    /// 落账 → 字节级回放免费一致。只存路径不读内容（annotation 语义）。
-    pending_open_files: parking_lot::RwLock<Vec<String>>,
+    /// Ephemeral per-turn：`process_admitted` 进轮前 set、出轮后 clear。
+    /// 按 session_key 分桶（BUG-20261125-068，BUG-20261120-013 同族根修）：
+    /// V5 统一泵「跨会话并发、同会话保序」是结构不变量，loop 级单槽会让
+    /// A 会话 set 的路径被 B 会话覆写（A 的请求注入 B 的文件——跨会话串
+    /// 漏）、B set 后 A 出轮整槽 clear（B 的上下文丢失）——与
+    /// response_degradation 旧形态完全同族。各写各键，build 只取本键。
+    /// build_messages 渲染进 merged digest section（空 = 无 section，字节
+    /// 稳定）；digest 内容随既有 InjectionRecord 台账落账 → 字节级回放免费
+    /// 一致。只存路径不读内容（annotation 语义）。
+    pending_open_files: parking_lot::Mutex<HashMap<String, Vec<String>>>,
     /// 对话生成：当前轮 workflow_edit 注入目标（WSAPI
     /// `chat.send` data.workflow_edit → metadata["workflow_edit"]，解析走
     /// nemesis-types::channel:workflow_edit_from_metadata 单点）。与
-    /// pending_open_files 同款 per-turn ephemeral 生命周期：process_admitted
-    /// set、出轮 clear。Some → build_messages 渲染能力表/当前定义 section。
+    /// pending_open_files 同款 per-turn ephemeral + 按 session_key 分桶
+    /// 生命周期（BUG-20261125-068：并发窗口单槽互覆/误清）。Some 才进表
+    /// （None = remove 本键）；build_messages 渲染能力表/当前定义 section。
     /// 引擎引用只服务「已注册工作流」的当前定义读取；no-workflow 编译下
     /// 整个字段消失。
-    pending_workflow_edit: parking_lot::RwLock<Option<nemesis_types::channel::WorkflowEditTarget>>,
+    pending_workflow_edit:
+        parking_lot::Mutex<HashMap<String, nemesis_types::channel::WorkflowEditTarget>>,
     /// 建设：惰性 schema 供给的 per-session
     /// 解锁账（tools_schema_get 取回成功的工具名，按解锁顺序 append、只增
     /// 不减、去重）。schema_unlock_section 渲染累积注记的落点——
@@ -1141,8 +1147,8 @@ impl AgentLoop {
             #[cfg(all(feature = "codemode", not(target_os = "android")))]
             code_run_tool: parking_lot::RwLock::new(None),
             interactive_approval: parking_lot::RwLock::new(false),
-            pending_open_files: parking_lot::RwLock::new(Vec::new()),
-            pending_workflow_edit: parking_lot::RwLock::new(None),
+            pending_open_files: parking_lot::Mutex::new(HashMap::new()),
+            pending_workflow_edit: parking_lot::Mutex::new(HashMap::new()),
             tool_schema_unlocks: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
