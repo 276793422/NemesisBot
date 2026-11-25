@@ -26,7 +26,12 @@ fn cleanup(path: &Path) {
 /// rename 报 os error 3（cov_tests 同族：2026-11-06 shard7 首录，2026-11-09
 /// shard9 create_persists_immediately 再实录）；atomic write 建临时文件时
 /// 父目录已被删报 `create temp: No such file or directory`（2026-11-11
-/// ET 42950419158 ciphertext_bound_to_alias 实录）。helper 契约
+/// ET 42950419158 ciphertext_bound_to_alias 实录）。Windows 措辞第三臂
+/// （BUG-20261125-076）：同为 ENOENT，Windows io 错误 Display 是
+/// `create temp: The system cannot find the path/file specified. (os
+/// error 3/2)`，Linux 措辞匹配不中 → 被当非瞬态 panic → shard1 三连红
+/// （CI 45642570331 set_overwrite_tracks_rotation 实录，2026-11-25）。
+/// `The system cannot find the` 前缀同时覆盖 file/path 两变体。helper 契约
 /// （nemesis-utils/src/file.rs）明示 rename 遇外部占用"由调用方决定重试或
 /// 上报"，测试侧选重试。create 自带 create_dir_all 臂（父目录被外力删掉后
 /// 同路径重试即恢复现场，且瞬态臂下 vault.enc 尚未落盘、无残留），换目录
@@ -41,7 +46,9 @@ fn create_retrying(path: &Path, mode: VaultMode, passphrase: Option<&str>) -> Va
             Err(VaultError::Io(e))
                 if e.to_string().contains("rename:")
                     || e.to_string()
-                        .contains("create temp: No such file or directory") =>
+                        .contains("create temp: No such file or directory")
+                    || e.to_string()
+                        .contains("create temp: The system cannot find the") =>
             {
                 last_err = e.to_string();
             }
@@ -57,7 +64,9 @@ fn create_retrying(path: &Path, mode: VaultMode, passphrase: Option<&str>) -> Va
 /// create 返回之后的窗口，且文件已灭时逐点重试无意义，只能整段重来。
 /// `f` 必须自包含（create 起步的完整流程）；临时目录按 attempt 换新。
 /// 只吞 panic 消息含 `rename:`/`NotFound(` 的瞬态臂，其余原样 resume
-/// ——断言失败照常红，断言力不变。
+/// ——断言失败照常红，断言力不变。`The system cannot find the` 是
+/// Windows ENOENT 的 OS 措辞（BUG-20261125-076 同修：app 级
+/// VaultError::NotFound 两平台同形，OS 级措辞分叉）。
 fn vault_body_retried<T>(tag: &str, mut f: impl FnMut(&Path) -> T) -> T {
     let mut last_msg = String::new();
     for attempt in 0..3 {
@@ -74,7 +83,10 @@ fn vault_body_retried<T>(tag: &str, mut f: impl FnMut(&Path) -> T) -> T {
                     .cloned()
                     .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
                     .unwrap_or_default();
-                if msg.contains("rename:") || msg.contains("NotFound(") {
+                if msg.contains("rename:")
+                    || msg.contains("NotFound(")
+                    || msg.contains("The system cannot find the")
+                {
                     last_msg = msg;
                 } else {
                     std::panic::resume_unwind(payload);

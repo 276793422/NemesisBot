@@ -25,7 +25,10 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// 清理）会在 create 的 DPAPI/argon2 seal → save 原子写窗口内删掉 temp
 /// 目录。实录两臂：rename 报 os error 3（2026-11-06 15:16Z shard7 实录）；
 /// atomic write 建临时文件时父目录已被删报 `create temp: No such file or
-/// directory`（tests.rs 同族 2026-11-11 ET 42950419158 实录）。helper 契约
+/// directory`（tests.rs 同族 2026-11-11 ET 42950419158 实录）。Windows
+/// 措辞第三臂（BUG-20261125-076，同 tests.rs）：Windows ENOENT Display
+/// 为 `The system cannot find the path/file specified. (os error 3/2)`，
+/// 只认 Linux 措辞会在 Windows 上把外力瞬态误判为业务错误 panic。helper 契约
 /// （nemesis-utils/src/file.rs）明示 rename 遇外部占用"由调用方决定重试或
 /// 上报"，此处选重试：换新 temp 目录最多 3 次；只吞上述两瞬态臂，
 /// 业务错误照常 panic——断言力不变。`rel` 为 vault 文件相对 temp 目录的
@@ -45,7 +48,9 @@ fn create_store_retrying(
             Err(VaultError::Io(e))
                 if e.to_string().contains("rename:")
                     || e.to_string()
-                        .contains("create temp: No such file or directory") =>
+                        .contains("create temp: No such file or directory")
+                    || e.to_string()
+                        .contains("create temp: The system cannot find the") =>
             {
                 last_err = e.to_string();
             }
