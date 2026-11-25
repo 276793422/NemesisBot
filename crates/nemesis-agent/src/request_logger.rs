@@ -367,17 +367,18 @@ impl RequestLogger {
 
         let index = self.next_index();
         let filename = format!("{}.request.md", index);
-        // 正文包 ```text 围栏：消息本身可能含 markdown 标题（# 开头行），
-        // 裸插会把 00.request.md 自身的分节结构打碎（dashboard
-        // read_md_section 在标题行断节→「用户消息全文」被截）。与
-        // log_llm_request 的 Messages 段同一处理逻辑。
+        // 正文包 ````text 围栏（4+ 反引号，CommonMark 语义：只能被 4+ 反引号
+        // 闭合）：消息本身可能含 markdown 标题（# 行）与 ``` 代码块，裸插或
+        // 三反引号围栏都会被正文打碎（dashboard read_md_section 在标题行断节
+        // →「用户消息全文」被截）。4+ 反引号对用户内容里的 ``` 永不失步。与
+        // log_llm_request 的 Messages 段同一处理逻辑（那边读端不走此路径）。
         let content = format!(
             "# User Request\n\n\
              **Timestamp**: {}\n\
              **Channel**: {}\n\
              **Sender ID**: {}\n\
              **Chat ID**: {}\n\n\
-             ## Message\n\n```text\n{}\n```\n",
+             ## Message\n\n````text\n{}\n````\n",
             info.timestamp.to_rfc3339(),
             info.channel,
             info.sender_id,

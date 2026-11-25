@@ -5523,19 +5523,34 @@ fn test_parse_request_dir_name_micros_and_aux_suffix() {
 
 #[test]
 fn test_extract_md_message_fence_and_cap() {
-    // 新写盘形态（```text 围栏）：围栏内的 '#' 行不打断节，围栏行不进预览。
-    let content = "# User Request\n\n## Message\n\n```text\n[压缩摘要 · aux · 3 条消息 · 对话体约50字符]\n\n## 摘要指令（本次请求全文）\n\n正文含 # 标题 行\n```\n\n## Other\n\nx\n";
+    // 新写盘形态（````text 围栏，4+ 反引号）：围栏内的 '#' 行不打断节，
+    // 围栏边界行不进预览。
+    let content = "# User Request\n\n## Message\n\n````text\n[压缩摘要 · aux · 3 条消息 · 对话体约50字符]\n\n## 摘要指令（本次请求全文）\n\n正文含 # 标题 行\n````\n\n## Other\n\nx\n";
     let full = crate::handlers::logs::extract_md_message_full(content);
     assert!(full.contains("## 摘要指令"), "全文含封面后续节: {full}");
     assert!(full.contains("正文含 # 标题 行"));
-    assert!(!full.contains("```"), "围栏行剥除: {full}");
+    assert!(!full.contains("````"), "围栏边界行剥除: {full}");
     let first = crate::handlers::logs::extract_md_first_message(content);
     assert!(first.contains("[压缩摘要"));
     assert!(first.contains("正文含 # 标题 行"));
 
+    // 用户正文里的 ``` 代码块（3 反引号）+ 后续 '#' 注释行：4+ 反引号
+    // 围栏不受 3 反引号影响（CommonMark），全文完整不截断；``` 行原样保留。
+    let with_code = "# User Request\n\n## Message\n\n````text\n看这段：\n```rust\nfn main() {}\n```\n# 这是注释\n之后还有内容\n````\n";
+    let full_code = crate::handlers::logs::extract_md_message_full(with_code);
+    assert!(
+        full_code.contains("# 这是注释"),
+        "代码块后 '#' 行不截断: {full_code}"
+    );
+    assert!(full_code.contains("之后还有内容"));
+    assert!(
+        full_code.contains("```rust"),
+        "用户代码块行原样保留: {full_code}"
+    );
+
     // 超 2000 字符：列表预览裁断 + 字符量注记；fullMessage 不截断。
     let long = "啊".repeat(3000);
-    let md = format!("## Message\n\n```text\n{}\n```\n", long);
+    let md = format!("## Message\n\n````text\n{}\n````\n", long);
     let first2 = crate::handlers::logs::extract_md_first_message(&md);
     assert!(first2.starts_with("啊"));
     assert!(first2.contains("…（全文共 3000 字符"));
@@ -5546,11 +5561,11 @@ fn test_extract_md_message_fence_and_cap() {
         3000
     );
 
-    // 旧文件（无围栏）行为不变：'#' 行仍断节。
-    let legacy = "## Message\n\n旧正文\n\n## Next\n\nx\n";
+    // 旧文件（无围栏）行为不变：'#' 行仍断节；正文中的 ``` 行不被误剥。
+    let legacy = "## Message\n\n旧正文带\n```rust\nx = 1\n```\n\n## Next\n\nx\n";
     assert_eq!(
         crate::handlers::logs::extract_md_message_full(legacy),
-        "旧正文"
+        "旧正文带\n```rust\nx = 1\n```"
     );
 }
 
@@ -5567,7 +5582,7 @@ async fn test_logs_requests_lists_aux_suffix_dirs_with_isaux() {
     std::fs::create_dir_all(&aux).unwrap();
     std::fs::write(
         aux.join("00.request.md"),
-        "# User Request\n\n## Message\n\n```text\n[压缩摘要 · aux · 2 条消息 · 对话体约9字符]\n\n## 摘要指令（本次请求全文）\n\n折我\n```\n",
+        "# User Request\n\n## Message\n\n````text\n[压缩摘要 · aux · 2 条消息 · 对话体约9字符]\n\n## 摘要指令（本次请求全文）\n\n折我\n````\n",
     )
     .unwrap();
     // 旧 aux_ 前缀目录：保持不可见。
@@ -5610,7 +5625,7 @@ async fn test_logs_request_detail_full_message_uncapped() {
     let long = "字".repeat(2500);
     std::fs::write(
         sub.join("00.request.md"),
-        format!("# User Request\n\n## Message\n\n```text\n{long}\n```\n"),
+        format!("# User Request\n\n## Message\n\n````text\n{long}\n````\n"),
     )
     .unwrap();
 

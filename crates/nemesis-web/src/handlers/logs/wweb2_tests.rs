@@ -423,7 +423,10 @@ fn extract_md_first_message_truncates_at_2000_chars() {
     // 上限 2000（此前 200）：ASCII 2500 字 → 截 2000 + 字符量注记
     let md = format!("## Message\n\n{}\n", "a".repeat(2500));
     let got = extract_md_first_message(&md);
-    assert_eq!(got.chars().count(), 2000 + "…（全文共 2500 字符，见详情）".chars().count());
+    assert_eq!(
+        got.chars().count(),
+        2000 + "…（全文共 2500 字符，见详情）".chars().count()
+    );
     assert!(got.starts_with(&"a".repeat(2000)));
     assert!(got.contains("…（全文共 2500 字符"));
     // 中文 2500 字 → 按字符截（不 panic、不出半个字）

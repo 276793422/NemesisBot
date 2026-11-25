@@ -795,9 +795,10 @@ pub(crate) fn extract_md_header(content: &str, key: &str) -> Option<String> {
 }
 
 /// Read the content between `## {header}` and the next `#`-prefixed line.
-/// ``` 围栏内的行不算节边界——消息正文可能含 markdown 标题行（新写盘形态
-/// 把正文包进 ```text 围栏；旧文件靠这里的围栏态跟踪少截，正文自身含
-/// 三反引号时会失步，属诚实边界）。
+/// ```` 围栏（4+ 反引号）内的行不算节边界——消息正文可能含 markdown 标题行
+/// 与 ``` 代码块（新写盘形态把正文包进 ````text 围栏；CommonMark 语义下
+/// 4+ 反引号围栏只能被 4+ 反引号闭合，用户内容里的 ``` 行永不失步）。
+/// 旧文件（无写端围栏）无 4+ 反引号行 → 行为与 historic 一致（'#' 行断节）。
 pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
     let prefix = format!("## {}", header);
     let mut in_section = false;
@@ -806,7 +807,7 @@ pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         if in_section {
-            if trimmed.starts_with("```") {
+            if trimmed.starts_with("````") {
                 in_fence = !in_fence;
             } else if !in_fence && trimmed.starts_with('#') {
                 break;
@@ -820,12 +821,28 @@ pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// Strip the ```text / ``` fence lines produced by the writers.
+/// Strip the ````text / ```` fence boundary lines produced by the writers.
+/// 只剥首尾边界行（新文件首行恒 ````text、末行恒 ````）；正文内部的
+/// ``` 代码块行是用户内容，原样保留。旧无围栏文件首末非空行是正文
+/// 本身 → 不剥，一字不动。
 fn strip_md_fence_lines(body: &str) -> String {
-    body.lines()
-        .filter(|l| !l.trim_start().starts_with("```"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let lines: Vec<&str> = body.lines().collect();
+    let first_non_empty = lines.iter().position(|l| !l.trim().is_empty());
+    let last_non_empty = lines.iter().rposition(|l| !l.trim().is_empty());
+    match (first_non_empty, last_non_empty) {
+        (Some(f), Some(l))
+            if f < l
+                && lines[f].trim_start().starts_with("````")
+                && lines[l].trim_start().starts_with("````") =>
+        {
+            let mut out: Vec<&str> = Vec::with_capacity(lines.len() - 2);
+            out.extend_from_slice(&lines[..f]);
+            out.extend_from_slice(&lines[f + 1..l]);
+            out.extend_from_slice(&lines[l + 1..]);
+            out.join("\n")
+        }
+        _ => body.to_string(),
+    }
 }
 
 /// Pull the first user message under `## Message`（列表行预览：上限 2000
