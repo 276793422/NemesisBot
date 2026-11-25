@@ -230,57 +230,28 @@ fn test_cmd_status_specific_id_not_found() {
     cmd_status(tmp.path(), Some("nonexistent-id")).unwrap();
 }
 
-/// NEMESISBOT_HOME 重定向守卫（指向空 tempdir）：构造时持 GLOBAL_STATE_LOCK
-/// 并设 env，Drop 按 Option 还原后再按声明序还锁、删目录。get_templates 的
-/// 磁盘扫描走进程级 home，且语义是「磁盘有任一模板 → 整组替换默认集」
-/// （workflow.rs get_templates）——凡依赖内置默认集的测试必须用它隔离
-/// （同 cov_tests/board_bus/verify_policy 的 GLOBAL_STATE_LOCK + 守卫纪律；
-/// 读侧不加锁 = 读到 mutator 测试篡改的中间态， 全量跑实证 2 挂
-/// 的根因）。持锁失败不连坐：poison-aware。
-struct EnvHomeGuard {
-    orig: Option<std::ffi::OsString>,
-    _lock: std::sync::MutexGuard<'static, ()>,
-    _tmp: tempfile::TempDir,
-}
-
-impl EnvHomeGuard {
-    fn new() -> Self {
-        let _lock = crate::GLOBAL_STATE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let orig = std::env::var_os("NEMESISBOT_HOME");
-        let _tmp = tempfile::TempDir::new().unwrap();
-        unsafe {
-            std::env::set_var("NEMESISBOT_HOME", _tmp.path());
-        }
-        Self { orig, _lock, _tmp }
-    }
-}
-
-impl Drop for EnvHomeGuard {
-    fn drop(&mut self) {
-        // 先还原 env，再按声明序自动还锁 → 删目录。
-        unsafe {
-            match self.orig.clone() {
-                Some(v) => std::env::set_var("NEMESISBOT_HOME", v),
-                None => std::env::remove_var("NEMESISBOT_HOME"),
-            }
-        }
-    }
-}
+/// 模板家族测试的共享面互斥纪律（BUG-20261126-085 后）：模板发现不再读
+/// env（home 显式传参），但 get_templates 仍扫 exe_dir/templates 进程级
+/// 共享面（ExeTemplateFile 测试会写入），且「磁盘非空 ⇒ 整组替换默认集」
+/// ——凡依赖内置默认集可见性的测试持 GLOBAL_STATE_LOCK 与写面测试互斥
+/// （同 cov_tests/board_bus/verify_policy 纪律；持锁失败不连坐：poison-aware）。
 
 #[test]
 fn test_cmd_template_show_not_found() {
-    let _home = EnvHomeGuard::new();
-    cmd_template_show("nonexistent_template").unwrap();
+    // 断言与「激活模板集是哪组」无关（任何集里都无此名）→ 不持锁。
+    let tmp = tempfile::TempDir::new().unwrap();
+    cmd_template_show("nonexistent_template", tmp.path()).unwrap();
 }
 
 #[test]
 fn test_cmd_template_show_found() {
-    // 依赖默认集里的 researcher：撞上设 env 的 mutator 测试窗口时磁盘模板
-    // 整组替换默认集 → 假红（与 cmd_template_create 系列同根因）。
-    let _home = EnvHomeGuard::new();
-    cmd_template_show("researcher").unwrap();
+    // 依赖默认集里的 researcher：exe_dir/templates 共享面出现任一磁盘模板
+    // 会整组替换默认集 → 假红。持全局锁互斥 + 传隔离空 home。
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().unwrap();
+    cmd_template_show("researcher", tmp.path()).unwrap();
 }
 
 #[test]
@@ -504,16 +475,18 @@ fn test_cmd_status_with_specific_execution() {
 
 #[test]
 fn test_cmd_template_create_yaml() {
-    // cmd_template_create -> get_templates -> load_templates_from_disk 读
-    // NEMESISBOT_HOME（进程级全局）——守卫=持全局锁+钉空 tmp，隔离 mutator
-    // 测试的磁盘模板（整组替换默认集会让内置 researcher 找不到）。
-    let _home = EnvHomeGuard::new();
+    // 依赖默认集 researcher（BUG-20261126-085 后 home 显式传参不读 env）：
+    // exe_dir/templates 共享面非空会整组替换默认集 → 持全局锁互斥 + 隔离空 home。
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::TempDir::new().unwrap();
 
     let tmp = tempfile::TempDir::new().unwrap();
     let workflow_dir = tmp.path().join("workflow");
     std::fs::create_dir_all(&workflow_dir).unwrap();
 
-    cmd_template_create(&workflow_dir, "researcher", None).unwrap();
+    cmd_template_create(&workflow_dir, "researcher", None, home.path()).unwrap();
 
     let created = workflow_dir.join("researcher.yaml");
     assert!(created.exists());
@@ -521,14 +494,17 @@ fn test_cmd_template_create_yaml() {
 
 #[test]
 fn test_cmd_template_create_json_explicit() {
-    // 同上：守卫持全局锁 + NEMESISBOT_HOME 钉空 tmp。
-    let _home = EnvHomeGuard::new();
+    // 同上：持全局锁 + 隔离空 home。
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::TempDir::new().unwrap();
 
     let tmp = tempfile::TempDir::new().unwrap();
     let workflow_dir = tmp.path().join("workflow");
     std::fs::create_dir_all(&workflow_dir).unwrap();
 
-    cmd_template_create(&workflow_dir, "coder", Some("myflow.json")).unwrap();
+    cmd_template_create(&workflow_dir, "coder", Some("myflow.json"), home.path()).unwrap();
 
     let created = workflow_dir.join("myflow.json");
     assert!(created.exists());
@@ -536,14 +512,14 @@ fn test_cmd_template_create_json_explicit() {
 
 #[test]
 fn test_cmd_template_create_not_found() {
-    // 同上：守卫持全局锁 + NEMESISBOT_HOME 钉空 tmp。
-    let _home = EnvHomeGuard::new();
+    // 断言与激活模板集无关（任何集里都无此名）→ 只传隔离空 home，不持锁。
+    let home = tempfile::TempDir::new().unwrap();
 
     let tmp = tempfile::TempDir::new().unwrap();
     let workflow_dir = tmp.path().join("workflow");
     std::fs::create_dir_all(&workflow_dir).unwrap();
 
-    cmd_template_create(&workflow_dir, "nonexistent_template", None).unwrap();
+    cmd_template_create(&workflow_dir, "nonexistent_template", None, home.path()).unwrap();
 
     // Should print error but not create file
     assert!(std::fs::read_dir(&workflow_dir).unwrap().count() == 0);
@@ -687,13 +663,15 @@ fn test_cmd_status_with_input_and_vars() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_cmd_template_show_all_defaults() {
-    // get_templates() 经 load_templates_from_disk 读 NEMESISBOT_HOME——守卫
-    // 隔离（持锁+钉空 tmp）：磁盘模板会整组替换默认集，仅持锁挡不住真实
-    // home 有用户模板的场景。
-    let _home = EnvHomeGuard::new();
+    // 依赖默认集全量可见（BUG-20261126-085 后 home 显式传参不读 env）：
+    // exe_dir/templates 共享面非空会整组替换默认集 → 持全局锁互斥 + 隔离空 home。
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::TempDir::new().unwrap();
     let templates = get_default_templates();
     for (name, _, _) in &templates {
-        cmd_template_show(name).unwrap();
+        cmd_template_show(name, home.path()).unwrap();
     }
 }
 
@@ -704,16 +682,20 @@ fn test_cmd_template_show_all_defaults() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_cmd_template_create_all_defaults() {
-    // get_templates() 读 NEMESISBOT_HOME（守卫纪律：持锁+钉空 tmp）。
-    // 另注：get_templates 语义是"磁盘有任一模板 → 整组替换默认集"（Go 行为，
-    // workflow.rs:318-324），守卫保证 env home 下无模板目录。
-    let _home = EnvHomeGuard::new();
+    // 依赖默认集全量可见。另注：get_templates 语义是"磁盘有任一模板 →
+    // 整组替换默认集"（Go 行为，workflow.rs get_templates），exe_dir/templates
+    // 共享面与 home 盘面都可能供给磁盘模板——持全局锁互斥 + 传隔离空 home
+    // （BUG-20261126-085 后 home 显式传参，不再读 env）。
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = tempfile::TempDir::new().unwrap();
     let templates = get_default_templates();
     for (name, _, _) in &templates {
         let tmp = tempfile::TempDir::new().unwrap();
         let workflow_dir = tmp.path().join("workflow");
         std::fs::create_dir_all(&workflow_dir).unwrap();
-        cmd_template_create(&workflow_dir, name, None).unwrap();
+        cmd_template_create(&workflow_dir, name, None, home.path()).unwrap();
         assert!(
             workflow_dir.join(format!("{}.yaml", name)).exists(),
             "Template {} should be created",
@@ -1598,12 +1580,10 @@ mod wave_b {
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
         }
-        let tpl_dir = tmp
-            .path()
-            .join(".nemesisbot")
-            .join("workspace")
-            .join("workflow")
-            .join("templates");
+        // env 留给 run(..., false) 的解析路径；load_templates_from_disk 本身
+        // 已改显式 home 契约（BUG-20261126-085），传与 env 解析一致的值。
+        let home = tmp.path().join(".nemesisbot");
+        let tpl_dir = home.join("workspace").join("workflow").join("templates");
         std::fs::create_dir_all(tpl_dir.join("subdir")).unwrap(); // 目录 entry
 
         let good_body = "name: good\ndescription: g\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
@@ -1614,7 +1594,7 @@ mod wave_b {
         std::fs::write(tpl_dir.join("a.yaml"), twin_a).unwrap();
         std::fs::write(tpl_dir.join("a.yml"), twin_a).unwrap();
 
-        let templates = super::super::load_templates_from_disk();
+        let templates = super::super::load_templates_from_disk(&home);
         let names: Vec<&str> = templates.iter().map(|(n, _, _)| n.as_str()).collect();
         assert_eq!(
             names,
@@ -1718,7 +1698,7 @@ mod r10 {
 // （human_review 节点 → Waiting 收口，ended_at 置 None）、status 详情的
 // 有 ended 无 started / 节点 output 打印臂。
 // ===========================================================================
-#[cfg(windows)] // Windows-form (exe templates dir layout + EnvHomeGuard; Linux nightly: excluded, sweep)
+#[cfg(windows)] // Windows-form (exe templates dir layout + 共享面互斥锁; Linux nightly: excluded, sweep)
 mod cov_wf {
     use super::*;
 
@@ -1733,17 +1713,61 @@ mod cov_wf {
     }
 
     /// load_templates_from_disk 的 workspace 搜索目录是文件 → read_dir Err 收口。
+    /// （BUG-20261126-085 附带修正：旧形态把目录建在 `<envhome>/workspace/workflow`
+    /// ——env home 还会被解析层追加 `.nemesisbot`，真实搜索目录是再深一层的
+    /// templates，于是本测试的目标臂从未执行过 = Vacuous；显式 home 契约下
+    /// home 即 .nemesisbot 根，路径直接对齐目标臂。）
     #[test]
     fn wf_templates_search_dir_is_file_yields_empty() {
-        let _home = EnvHomeGuard::new();
-        let templates_root = _home._tmp.path().join("workspace").join("workflow");
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path(); // 显式 home 契约：home 即 .nemesisbot 根
+        let templates_root = home.join("workspace").join("workflow");
         std::fs::create_dir_all(&templates_root).unwrap();
         // templates 落成文件而非目录 → exists() 为真但 read_dir 失败。
         std::fs::write(templates_root.join("templates"), "not a dir").unwrap();
-        let found = load_templates_from_disk();
+        let found = load_templates_from_disk(home);
         assert!(
             found.iter().all(|(n, _, _)| n != "templates"),
             "文件型搜索目录不得产出模板"
+        );
+    }
+
+    /// BUG-20261126-085 回归锁：模板发现跟随显式 home 参数——两个不同 home
+    /// 各自的模板互不可见（此前 home 硬编码 resolve_home(false)，`--local`
+    /// 实例的模板发现被静默指到默认 home）。持全局锁排除 exe_dir/templates
+    /// 共享面并发写干扰（写面测试同样持锁，互斥即无注入窗口）。
+    #[test]
+    fn wf_template_discovery_follows_explicit_home_param() {
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let body = |name: &str| {
+            format!(
+                "name: {name}\ndescription: {name}\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n"
+            )
+        };
+        let home_a = tempfile::tempdir().unwrap();
+        let home_b = tempfile::tempdir().unwrap();
+        for (home, tag) in [
+            (home_a.path(), "bug085-home-a"),
+            (home_b.path(), "bug085-home-b"),
+        ] {
+            let tpl_dir = home.join("workspace").join("workflow").join("templates");
+            std::fs::create_dir_all(&tpl_dir).unwrap();
+            std::fs::write(tpl_dir.join(format!("{tag}.yaml")), body(tag)).unwrap();
+        }
+
+        let in_a = load_templates_from_disk(home_a.path());
+        let in_b = load_templates_from_disk(home_b.path());
+        let names_a: Vec<&str> = in_a.iter().map(|(n, _, _)| n.as_str()).collect();
+        let names_b: Vec<&str> = in_b.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(
+            names_a.contains(&"bug085-home-a") && !names_a.contains(&"bug085-home-b"),
+            "home_a 必须只见自己的模板，got: {names_a:?}"
+        );
+        assert!(
+            names_b.contains(&"bug085-home-b") && !names_b.contains(&"bug085-home-a"),
+            "home_b 必须只见自己的模板，got: {names_b:?}"
         );
     }
 
@@ -1775,7 +1799,7 @@ mod cov_wf {
     }
 
     // 持全局串行锁：exe_dir/templates 是进程级共享面，get_templates 族
-    // 测试（EnvHomeGuard 同锁）必须与本测试互斥，否则磁盘模板整组替换
+    // 测试（默认集依赖者同锁）必须与本测试互斥，否则磁盘模板整组替换
     // 默认集会让并发侧找不到内置模板。
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
@@ -1901,16 +1925,23 @@ mod cov_wf {
     }
 
     /// 模板 create 的 JSON 写臂遇缺父目录 → `?` 错误臂上抛。
-    // 持全局串行锁：get_templates 读 exe_dir/templates 共享面（同上互斥）。
+    // 持全局串行锁：模板 "researcher" 依赖默认集可见，exe_dir/templates 共享
+    // 面非空会整组替换默认集（同上互斥）；home 传隔离空 tmp（显式契约）。
     #[test]
     fn wf_template_create_json_write_failure_propagates() {
         let _lock = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let wf_dir = tmp.path().join("defs");
         std::fs::create_dir_all(&wf_dir).unwrap();
-        let res = cmd_template_create(&wf_dir, "researcher", Some("missing-sub/out.json"));
+        let res = cmd_template_create(
+            &wf_dir,
+            "researcher",
+            Some("missing-sub/out.json"),
+            home.path(),
+        );
         assert!(
             res.is_err(),
             "缺父目录的 JSON 写必须 Err，got: {:?}",
