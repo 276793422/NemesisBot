@@ -770,29 +770,72 @@ async fn test_ready_with_multiple_checks_all_passing() {
 
 // ---- Additional edge-case tests for 95%+ coverage ----
 
+/// 裸 TCP HTTP GET（health 测试无 reqwest 依赖；返回完整响应文本，
+/// 就绪判定看状态行 " 200 "）。
+async fn http_get_raw(addr: &str) -> std::io::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await?;
+    stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await?;
+    let mut buf = Vec::new();
+    let _ = stream.read_to_end(&mut buf).await?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
 #[tokio::test]
 async fn test_start_with_shutdown_valid_addr_and_stop() {
-    let server = HealthServer::new(HealthServerConfig {
-        listen_addr: "127.0.0.1:0".to_string(),
-        version: Some("test-stop".to_string()),
-    });
-
+    // 未启动实例上 stop() 是无害 no-op（shutdown_tx 未置位）——主线程
+    // 隐式 no-panic 断言（此处 panic 会让测试真红）。
     let server_for_stop = HealthServer::new(HealthServerConfig {
         listen_addr: "127.0.0.1:0".to_string(),
         version: Some("test-stop".to_string()),
     });
-
-    // Start in background, then stop
-    let handle = tokio::spawn(async move {
-        let _ = server.start_with_shutdown().await;
-    });
-
-    // Give server time to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     server_for_stop.stop();
 
-    // The original server hasn't started, so abort its handle
-    handle.abort();
+    // 借空闲端口（bind 后释放——存在微小竞窗，轮询容忍；旧版盲 sleep+
+    // abort 零断言，连 start_with_shutdown 的 no-panic 都没验到）。
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let server = Arc::new(HealthServer::new(HealthServerConfig {
+        listen_addr: format!("127.0.0.1:{port}"),
+        version: Some("test-stop".to_string()),
+    }));
+    let handle = tokio::spawn({
+        let server = Arc::clone(&server);
+        async move { server.start_with_shutdown().await }
+    });
+
+    // 轮询 /health 直到就绪 = start_with_shutdown 真正 bind+serve 的
+    // 可观测证据。
+    let addr = format!("127.0.0.1:{port}");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut served = false;
+    while std::time::Instant::now() < deadline {
+        if let Ok(resp) = http_get_raw(&addr).await
+            && resp.contains(" 200 ")
+        {
+            served = true;
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    assert!(served, "start_with_shutdown must bind and serve /health");
+
+    // stop() 已启动实例（shutdown_tx 在 start_with_shutdown 内置位）→
+    // 优雅停机，serve future 返回。
+    server.stop();
+    let result = tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await;
+    assert!(
+        result.is_ok(),
+        "stop() must terminate start_with_shutdown (serve future still running)"
+    );
+    assert!(
+        result.unwrap().is_ok(),
+        "start_with_shutdown must return Ok after graceful stop"
+    );
 }
 
 #[test]
