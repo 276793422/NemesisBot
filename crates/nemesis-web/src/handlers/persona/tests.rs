@@ -1051,7 +1051,8 @@ fn copy_dir_recursive_skips_symlink_cycles() {
 // 判定真相源 = 根 sidecar 的 project_id 非空；stem 提取一律后缀 strip
 //（BUG-20261125-079 家族纪律：含点会话键不得用 with_extension 两步构造）。
 
-/// 在根上构造一个会话的完整文件族（logs 侧 3 件 + store 侧 2 件）。
+/// 在根上构造一个会话的完整文件族（logs 侧 3 件 + store 侧 3 件，dedup
+/// BUG-20261126-104 补漏后入族）。
 fn bug26_write_session_family(ws: &std::path::Path, safe_stem: &str, project_id: Option<&str>) {
     let logs = ws.join("logs").join("session_logs");
     std::fs::create_dir_all(&logs).unwrap();
@@ -1065,10 +1066,15 @@ fn bug26_write_session_family(ws: &std::path::Path, safe_stem: &str, project_id:
     let store = ws.join("sessions");
     std::fs::create_dir_all(&store).unwrap();
     std::fs::write(store.join(format!("{}.json", safe_stem)), "{}").unwrap();
+    std::fs::write(
+        store.join(format!("{}.dedup.json", safe_stem)),
+        r#"{"items":[]}"#,
+    )
+    .unwrap();
     std::fs::write(store.join(format!("todo_{}.json", safe_stem)), "[]").unwrap();
 }
 
-/// 断言会话文件族完整在根（5 件核心文件）。
+/// 断言会话文件族完整在根（6 件核心文件）。
 fn bug26_assert_family_at_root(ws: &std::path::Path, safe_stem: &str) {
     let logs = ws.join("logs").join("session_logs");
     let store = ws.join("sessions");
@@ -1086,6 +1092,7 @@ fn bug26_assert_family_at_root(ws: &std::path::Path, safe_stem: &str) {
     }
     for (name, desc) in [
         (format!("{}.json", safe_stem), "store"),
+        (format!("{}.dedup.json", safe_stem), "dedup"),
         (format!("todo_{}.json", safe_stem), "todo"),
     ] {
         assert!(
@@ -1118,6 +1125,14 @@ fn bug26_stem_extractors_handle_dotted_session_keys() {
     assert_eq!(session_stem_of_store_file_name("a.b.json"), Some("a.b"));
     assert_eq!(
         session_stem_of_store_file_name("todo_a.b.json"),
+        Some("a.b")
+    );
+    // dedup 幂等窗口 sidecar（BUG-20261126-104 补漏）。顺序敏感回归锁：
+    // .dedup.json 双段后缀必须先于裸 .json，否则 {safe}.dedup.json 被
+    // strip 成错误 stem {safe}.dedup → 项目会话去重状态被误判人格私有。
+    assert_eq!(session_stem_of_store_file_name("x.dedup.json"), Some("x"));
+    assert_eq!(
+        session_stem_of_store_file_name("a.b.dedup.json"),
         Some("a.b")
     );
     assert_eq!(session_stem_of_meta_file_name("a.b.meta.json"), Some("a.b"));
@@ -1229,6 +1244,16 @@ fn bug26_activate_roundtrip_project_session_never_moves() {
         !ws.join("personas/researcher/sessions/proj-live.json")
             .exists()
     );
+    // dedup 幂等窗口 sidecar 同钉在根（BUG-20261126-104 回归锁：漏了它
+    // 会被误判人格私有——归档进旧人格、从根清除、新人格无镜像可还）。
+    assert!(
+        !ws.join("personas/default/sessions/proj-live.dedup.json")
+            .exists()
+    );
+    assert!(
+        !ws.join("personas/researcher/sessions/proj-live.dedup.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -1256,17 +1281,25 @@ fn bug26_repair_moves_back_legacy_layout_complete_family() {
     // drain_orphan_pending 每 10s 兜底扫描只看根，不回根 = 排队消息滞留。
     std::fs::write(plogs.join("legacy-proj.taking"), "r").unwrap();
     std::fs::write(pstore.join("legacy-proj.json"), "{}").unwrap();
+    // dedup 幂等窗口 sidecar（BUG-20261126-104 补漏）：归档里的项目会话
+    // 去重状态必须随族回根，否则回根会话的红利重放窗口为空。
+    std::fs::write(
+        pstore.join("legacy-proj.dedup.json"),
+        r#"{"items":[["m1",1]]}"#,
+    )
+    .unwrap();
     std::fs::write(pstore.join("todo_legacy-proj.json"), "[]").unwrap();
 
     let moved = repair_project_sessions(&ws.to_string_lossy()).unwrap();
 
-    assert_eq!(moved, 8, "logs 侧 6 件 + store 侧 2 件应全部搬回");
+    assert_eq!(moved, 9, "logs 侧 6 件 + store 侧 3 件应全部搬回");
     bug26_assert_family_at_root(ws, "legacy-proj");
     assert!(ws.join("logs/session_logs/legacy-proj.iqueue").is_file());
     assert!(ws.join("logs/session_logs/legacy-proj.notices").is_file());
     // 源已清（搬回不是复制）。
     assert!(!plogs.join("legacy-proj.jsonl").exists());
     assert!(!pstore.join("legacy-proj.json").exists());
+    assert!(!pstore.join("legacy-proj.dedup.json").exists());
 }
 
 #[test]

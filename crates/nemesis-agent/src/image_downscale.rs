@@ -24,6 +24,9 @@
 //!
 //! 缩放核为 Lanczos3；阶梯语义（4096→2048→1024 / JPEG q85 / 8MB 底线）为本侧 provider 适配。
 
+// Cursor 只被 image-process 门控的解码路径消费（R2953 残留：无门控导入在
+// 关 feature 组合下 clippy unused_imports 告警，BUG-20261126-104 一并收拾）。
+#[cfg(feature = "image-process")]
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 

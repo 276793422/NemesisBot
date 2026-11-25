@@ -1659,9 +1659,15 @@ fn session_stem_of_log_file_name(name: &str) -> Option<&str> {
 }
 
 /// sessions/ 文件名 → 会话 safe stem：{safe}.json（LLM 上下文 store）/
-/// todo_{safe}.json（todo 清单）。
+/// todo_{safe}.json（todo 清单）/{safe}.dedup.json（chat 去重幂等窗口
+/// sidecar，BUG-20261126-104 补漏——chat_dedup::sidecar_path 同构路径族）。
 fn session_stem_of_store_file_name(name: &str) -> Option<&str> {
-    let stem = name.strip_suffix(".json")?;
+    // 顺序敏感（.taking 双段变体同款纪律）：.dedup.json 双段后缀必须先于
+    // 裸 .json，否则 {safe}.dedup.json 会被 strip 成错误 stem {safe}.dedup
+    // → 项目绑定会话的去重 sidecar 被误判为人格私有，切人格被清出根。
+    let stem = name
+        .strip_suffix(".dedup.json")
+        .or_else(|| name.strip_suffix(".json"))?;
     Some(stem.strip_prefix("todo_").unwrap_or(stem))
 }
 
@@ -1827,7 +1833,8 @@ fn restore_session_dir_filtered(
 /// personas/<人格>/。本函数扫描各人格目录的 session_logs meta，凡
 /// project_id 非空且根上缺席的会话，把其文件族搬回 workspace 根
 /// （`logs/session_logs/` 下的 .jsonl/.meta.json/.pending/.iqueue/.notices
-/// 加 `sessions/` 下的 store json 与 todo json）。
+/// 加 `sessions/` 下的 store json、dedup 幂等窗口 json（BUG-20261126-104
+/// 补漏）与 todo json）。
 /// 幂等：根已在 = 跳过（撞车保留根——根是活体权威）；返回搬回文件数。
 /// gateway 启动与每次人格激活入口（ensure_persona_store）调用。
 pub fn repair_project_sessions(workspace: &str) -> Result<usize, String> {
@@ -1891,8 +1898,14 @@ pub fn repair_project_sessions(workspace: &str) -> Result<usize, String> {
                     moved += 1;
                 }
             }
-            // store 侧（LLM 上下文 store + todo 清单）
-            for file_name in [format!("{}.json", stem), format!("todo_{}.json", stem)] {
+            // store 侧（LLM 上下文 store + dedup 幂等窗口 sidecar +
+            // todo 清单；dedup BUG-20261126-104 补漏——漏了它，归档里的
+            // 项目会话去重状态永远回不了根）
+            for file_name in [
+                format!("{}.json", stem),
+                format!("{}.dedup.json", stem),
+                format!("todo_{}.json", stem),
+            ] {
                 if move_file_root_first(
                     &persona_store.join(&file_name),
                     &root_store.join(&file_name),
