@@ -2489,7 +2489,13 @@ impl VoiceHandler {
             let mut manager_guard = speaker_manager_state().lock().unwrap();
             let manager = manager_guard.as_mut().ok_or("Speaker manager not loaded")?;
             manager.remove(&name); // Remove existing if re-registering
-            manager.register(&name, &embedding);
+            // BUG-20261125-044：register rc 不再忽略——rc=false（内嵌 NUL 名
+            // /长度错位/C 侧失败）时旧路径仍持久化配置并报 "registered": true
+            // 假成功，污染的空配置项在恢复路径被 len==dim 静默跳过。诚实失败
+            // 先于持久化，配置零污染。
+            if !manager.register(&name, &embedding) {
+                return Err(format!("Speaker registration failed for '{name}'"));
+            }
 
             // Persist to config.voice.print.json（锁在 update_voiceprint_config
             // 内：读→改→写 = RMW，与 speaker_remove/set_threshold 等写臂互斥；

@@ -12,6 +12,23 @@ fn c_string(s: &str) -> Result<CString> {
     CString::new(s).map_err(|e| anyhow::anyhow!("字符串含内嵌 NUL 字节，无法转 C 字符串: {e}"))
 }
 
+/// C 侧嵌入缓冲 → 拥有型 Vec。null 缓冲 = 诚实错误臂（BUG-20261125-044：
+/// 此前静默返回 Ok(空 Vec)，下游把空切片裸指针交给按 dim 无条件读的
+/// C API = 堆越界读）。非 null 时按 dim 拷贝；负 dim（契约外）按 0 处理
+/// 不做巨分配。
+fn collect_embedding(ptr: *const f32, dim: i32) -> Result<Vec<f32>> {
+    if ptr.is_null() {
+        anyhow::bail!("speaker embedding extraction returned null buffer (dim={dim})");
+    }
+    let n = dim.max(0) as usize;
+    let mut embedding = Vec::with_capacity(n);
+    unsafe {
+        std::ptr::copy_nonoverlapping(ptr, embedding.as_mut_ptr(), n);
+        embedding.set_len(n);
+    }
+    Ok(embedding)
+}
+
 pub struct SpeakerEngine {
     extractor: *const sherpa::SherpaOnnxSpeakerEmbeddingExtractor,
     dim: i32,
@@ -92,22 +109,20 @@ impl SpeakerEngine {
             sherpa::SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding(self.extractor, stream)
         };
 
-        let mut embedding = Vec::with_capacity(self.dim as usize);
+        // BUG-20261125-044：ComputeEmbedding 返回 null（防御面）不再静默落
+        // Ok(空 Vec)。空切片喂给 SpeakerManager::register/verify/search——
+        // C API 不接收长度参数、按构造时 dim 无条件读——是堆越界读；且空
+        // 嵌入会被 register_stop 持久化进声纹配置跨重启存活（恢复路径按
+        // len==dim 静默跳过 → 声纹消失但当时报过 "registered": true）。对齐
+        // 本函数上方 stream null / ready==0 两臂的诚实失败形态。
+        let embedding = collect_embedding(embedding_ptr, self.dim);
         if !embedding_ptr.is_null() {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    embedding_ptr,
-                    embedding.as_mut_ptr(),
-                    self.dim as usize,
-                );
-                embedding.set_len(self.dim as usize);
-            }
             unsafe { sherpa::SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding(embedding_ptr) };
         }
 
         unsafe { sherpa::SherpaOnnxDestroyOnlineStream(stream) };
 
-        Ok(embedding)
+        embedding
     }
 
     pub fn embedding_dim(&self) -> i32 {
@@ -148,6 +163,12 @@ impl SpeakerManager {
         let Some(name_c) = speaker_name_cstr(name) else {
             return false;
         };
+        // BUG-20261125-044：C API Add 不接收长度参数，按构造时 dim 无条件
+        // 读——错误长度切片（含空）= 堆越界读。长度闸前置（与 NUL 名闸
+        // 同型：FFI 前诚实 false）。
+        if embedding.len() != self.dim as usize {
+            return false;
+        }
         let rc = unsafe {
             sherpa::SherpaOnnxSpeakerEmbeddingManagerAdd(
                 self.manager,
@@ -165,6 +186,11 @@ impl SpeakerManager {
         let Some(name_c) = speaker_name_cstr(name) else {
             return false;
         };
+        // BUG-20261125-044：AddListFlattened 读 n×dim 个 float——任一分量
+        // 长度错位即越界。分量长度闸前置。
+        if embeddings.iter().any(|e| e.len() != self.dim as usize) {
+            return false;
+        }
         let flattened: Vec<f32> = embeddings.iter().flat_map(|e| e.iter().copied()).collect();
         let n = embeddings.len() as libc::c_int;
         let rc = unsafe {
@@ -192,6 +218,10 @@ impl SpeakerManager {
         let Some(name_c) = speaker_name_cstr(name) else {
             return false;
         };
+        // BUG-20261125-044：Verify 按 dim 无条件读，长度闸前置（同 register）。
+        if embedding.len() != self.dim as usize {
+            return false;
+        }
         let rc = unsafe {
             sherpa::SherpaOnnxSpeakerEmbeddingManagerVerify(
                 self.manager,
@@ -204,6 +234,10 @@ impl SpeakerManager {
     }
 
     pub fn search(&self, embedding: &[f32], threshold: f32) -> Option<String> {
+        // BUG-20261125-044：Search 按 dim 无条件读，长度闸前置（同 register）。
+        if embedding.len() != self.dim as usize {
+            return None;
+        }
         let result_ptr = unsafe {
             sherpa::SherpaOnnxSpeakerEmbeddingManagerSearch(
                 self.manager,
