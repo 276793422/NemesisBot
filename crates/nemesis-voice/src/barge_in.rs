@@ -30,16 +30,24 @@ impl BargeInWatch {
     /// Feed the current VAD state. Returns `true` exactly on the rising edge
     /// (previous sample silent, now speaking) — the caller starts audio
     /// accumulation for speaker verification at that point.
+    ///
+    /// 语音停止（falling edge）即解除武装：armed 要求从 onset 起**连续**说话
+    /// ≥ min_sustain。若停声不清 `onset_at`，短噪声（咳嗽 < min_sustain）
+    /// 之后进入静默期，`sustained()` 靠墙钟照样过闸——「咳嗽/桌响防误触」
+    /// 被架空，声纹关闭时（`barge_speaker_ok` fail-open）直接误打断。
     pub fn onset(&mut self, speaking: bool) -> bool {
         let rising = speaking && !self.was_speaking;
         if rising {
             self.onset_at = Some(Instant::now());
+        } else if !speaking {
+            self.onset_at = None;
         }
         self.was_speaking = speaking;
         rising
     }
 
-    /// Onset recorded and sustained for at least `min_sustain`.
+    /// Onset recorded and **continuously** sustained for at least `min_sustain`
+    ///（语音中途停过即解除武装，见 [`Self::onset`]）。
     pub fn sustained(&self) -> bool {
         self.onset_at
             .is_some_and(|t| t.elapsed() >= self.min_sustain)
