@@ -761,3 +761,68 @@ async fn test_export_artifact_tests_dir_truthful_manifest() {
         );
     }
 }
+
+// 回归锁 BUG-20261126-093 同族：文件符号链接一律不物化。旧实现
+// file_type() 不跟随 symlink → is_dir()=false 滑进 else 臂，
+// tokio::fs::read 跟随目标读出界外内容并进导出清单（files 返回值）。
+// 文件链接 Windows 需开发者模式/管理员——创建失败诚实 SKIP。
+#[cfg(windows)]
+fn forge_make_file_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+    std::os::windows::fs::symlink_file(target, link).is_ok()
+}
+
+#[cfg(unix)]
+fn forge_make_file_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[tokio::test]
+async fn copy_dir_recursive_file_symlink_skipped_not_materialized() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src");
+    let dst = dir.path().join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("normal.txt"), "ok").unwrap();
+    let outside = dir.path().join("outside_secret.txt");
+    std::fs::write(&outside, "SECRET-CONTENT-OUTSIDE").unwrap();
+    let link = src.join("leak.txt");
+    if !forge_make_file_link(&outside, &link) {
+        eprintln!("SKIP: 文件符号链接创建失败（Windows 需开发者模式/管理员）");
+        return;
+    }
+
+    let files = super::copy_dir_recursive(&src, &dst).await.unwrap();
+    // 链接不进清单、不物化；普通文件照常复制。
+    assert!(
+        !files.iter().any(|f| f.contains("leak.txt")),
+        "文件链接进了导出清单: {:?}",
+        files
+    );
+    assert!(!dst.join("leak.txt").exists(), "文件链接被物化进目标树");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("normal.txt")).unwrap(),
+        "ok"
+    );
+    assert!(
+        !std::fs::read_to_string(dst.join("normal.txt"))
+            .unwrap()
+            .contains("SECRET-CONTENT-OUTSIDE")
+    );
+    // 目标树全量扫：界外内容不得出现在任何文件里。
+    let mut stack = vec![dst.clone()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = entry.path();
+            if p.is_dir() && !p.is_symlink() {
+                stack.push(p);
+            } else {
+                let body = std::fs::read_to_string(&p).unwrap_or_default();
+                assert!(
+                    !body.contains("SECRET-CONTENT-OUTSIDE"),
+                    "界外内容出现在目标树: {}",
+                    p.display()
+                );
+            }
+        }
+    }
+}

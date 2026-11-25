@@ -1236,14 +1236,16 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| format!("readdir entry: {e}"))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        // 目录链接环守卫（与 nemesis-migrate workspace.rs 同源形态）：
-        // entry.file_type() 不穿越 symlink，目录链接不递归——is_dir()
-        // 跟随链接遇环 = 病态嵌套复制直到 OS 路径上限再 Err。跳过目录
-        // 链接；普通 symlink 文件仍按内容照常拷贝。
+        // 链接一律不物化（BUG-20261126-093）：目录链接防环之外，文件链接
+        // 此前「按内容照常拷贝」走 fs::copy 跟随目标——界外文件内容被吸进
+        // 目的树并物化成普通文件，下游 diff/清单面（collect_dir_files /
+        // diff_walk 均按 symlink_metadata 跳链接）无法再识别，界外敏感
+        // 文件经变更集/基线档外泄。与 session_home 同款纪律：文件+目录
+        // 链接一律 skip。
         let ft = entry
             .file_type()
             .map_err(|e| format!("entry type {}: {e}", from.display()))?;
-        if ft.is_symlink() && from.is_dir() {
+        if ft.is_symlink() {
             continue;
         }
         if from.is_dir() {

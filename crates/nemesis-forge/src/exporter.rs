@@ -312,7 +312,16 @@ fn copy_dir_recursive<'a>(
             let name = entry.file_name();
             let name_str = name.to_string_lossy().to_string();
 
-            if entry.file_type().await?.is_dir() {
+            // 链接一律不物化（BUG-20261126-093 同族）：file_type() 不跟随
+            // symlink——is_dir()=false 会让文件链接滑进 else 臂，
+            // tokio::fs::read 跟随目标读出界外内容并进导出清单回传；
+            // 目录链接 read 报 Err 中断整次导出。一律 skip（与 transfer /
+            // session_home 同款纪律）。
+            let ft = entry.file_type().await?;
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
                 // Recurse into subdirectory
                 let sub_src = src_dir.join(&name_str);
                 let sub_dst = dst_dir.join(&name_str);
