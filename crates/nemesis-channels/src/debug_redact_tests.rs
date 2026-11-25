@@ -340,7 +340,7 @@ fn irc_config_debug_redacts_password() {
 #[test]
 #[cfg(feature = "wecom")]
 fn wecom_config_debug_redacts_url_token_aeskey_and_webhooks_map() {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     let mut c = crate::wecom::WeComConfig {
         webhook_url: format!("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={SECRET}"),
         token: SECRET.into(),
@@ -354,7 +354,8 @@ fn wecom_config_debug_redacts_url_token_aeskey_and_webhooks_map() {
         "WeComConfig: 空表态不应泄露: {out_empty}"
     );
     c.webhooks = {
-        let mut m = HashMap::new();
+        // BUG-20261122-045 后 webhooks 是 BTreeMap（config 确定性序列化）
+        let mut m = BTreeMap::new();
         m.insert("chat-a".to_string(), format!("https://hook?key={SECRET}"));
         m
     };

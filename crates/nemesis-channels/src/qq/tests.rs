@@ -44,6 +44,52 @@ fn test_is_duplicate() {
     assert!(!ch.is_duplicate("msg-2"));
 }
 
+// ---------------------------------------------------------------------------
+// 回归锁（BUG-20261125-032）：去重表接线——QQ 网关 at-least-once +
+// RESUMED 重放会重复投递同一 msg_id；此前去重表存在但生产分派路径
+// 零调用（死代码），重放消息重复喂 agent。
+
+#[test]
+fn b032_should_dispatch_first_seen_then_duplicate() {
+    let map = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+    assert!(QQChannel::should_dispatch(&map, "msg-a"), "首见放行");
+    assert!(!QQChannel::should_dispatch(&map, "msg-a"), "重复丢弃");
+    assert!(QQChannel::should_dispatch(&map, "msg-b"), "另一条放行");
+    // c2c / group 共表：同 ID 跨事件形态同样去重（同一消息不会合法地
+    // 以两种事件类型重复投递）
+    assert!(!QQChannel::should_dispatch(&map, "msg-a"));
+    // 表内容：两条登记
+    assert_eq!(map.read().len(), 2);
+}
+
+#[test]
+fn b032_should_dispatch_empty_id_always_passes() {
+    let map = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+    // 空 ID 恒放行：无键可查；若登记空键，全部无 ID 消息折叠成一条
+    assert!(QQChannel::should_dispatch(&map, ""));
+    assert!(QQChannel::should_dispatch(&map, ""));
+    assert!(QQChannel::should_dispatch(&map, ""));
+    // 空键不得污染表
+    assert_eq!(map.read().len(), 0, "空 ID 不登记");
+}
+
+#[test]
+fn b032_is_duplicate_delegates_to_shared_table() {
+    // 实例方法与静态 helper 必须共享同一张表（Arc 槽位接线语义）
+    let config = QQConfig {
+        app_id: "app-123".to_string(),
+        app_secret: "secret".to_string(),
+        ..Default::default()
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = QQChannel::new(config, tx).unwrap();
+    assert!(QQChannel::should_dispatch(&ch.processed_ids, "msg-x"));
+    assert!(
+        ch.is_duplicate("msg-x"),
+        "静态 helper 登记后实例方法必须可见"
+    );
+}
+
 #[test]
 fn test_default_config() {
     let config = QQConfig::default();

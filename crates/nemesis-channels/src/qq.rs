@@ -131,7 +131,9 @@ pub struct QQChannel {
     config: QQConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    processed_ids: parking_lot::RwLock<HashMap<String, bool>>,
+    /// 已处理消息 ID 去重表（Arc 槽位：spawn 闭包与实例方法共享同一张表）。
+    /// QQ 网关 at-least-once：RESUMED 重放未 ack 事件会重复投递同一 msg_id。
+    processed_ids: Arc<parking_lot::RwLock<HashMap<String, bool>>>,
     access_token: Arc<parking_lot::RwLock<String>>,
     /// Bus sender for publishing inbound messages to the agent engine.
     bus_sender: broadcast::Sender<InboundMessage>,
@@ -163,7 +165,7 @@ impl QQChannel {
             config,
             http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            processed_ids: parking_lot::RwLock::new(HashMap::new()),
+            processed_ids: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),
             bus_sender,
             cancel_tx: parking_lot::Mutex::new(None),
@@ -172,21 +174,34 @@ impl QQChannel {
 
     /// Checks if a message ID is a duplicate.
     pub fn is_duplicate(&self, message_id: &str) -> bool {
-        let mut map = self.processed_ids.write();
-        if map.contains_key(message_id) {
+        Self::dedup_check(&self.processed_ids, message_id)
+    }
+
+    /// 去重查表核心（静态形态：spawn 闭包持有的 Arc 槽位与实例方法同源）。
+    /// 重复返回 `true`（is_duplicate 语义），首见登记后返回 `false`。
+    fn dedup_check(map: &parking_lot::RwLock<HashMap<String, bool>>, message_id: &str) -> bool {
+        let mut m = map.write();
+        if m.contains_key(message_id) {
             return true;
         }
-        map.insert(message_id.to_string(), true);
+        m.insert(message_id.to_string(), true);
 
         // Simple cleanup: limit map size
-        if map.len() > 10000 {
-            let keys: Vec<String> = map.keys().take(5000).cloned().collect();
+        if m.len() > 10000 {
+            let keys: Vec<String> = m.keys().take(5000).cloned().collect();
             for key in keys {
-                map.remove(&key);
+                m.remove(&key);
             }
         }
 
         false
+    }
+
+    /// 分派前去重判定（BUG-20261125-032 接线点）：msg_id 非空查表——首见
+    /// 放行并登记、重复丢弃；msg_id 为空恒放行——无键可查，若把空 ID 也
+    /// 登记，所有无 ID 消息会被折叠成一条（每批只活一条）。
+    fn should_dispatch(map: &parking_lot::RwLock<HashMap<String, bool>>, msg_id: &str) -> bool {
+        msg_id.is_empty() || !Self::dedup_check(map, msg_id)
     }
 
     /// 循环尾退避等待：睡满 `backoff` 返回 true；等待期间取消被触发
@@ -375,6 +390,7 @@ impl QQChannel {
         let running = self.running.clone();
         let bus_sender = self.bus_sender.clone();
         let allow_from = self.config.allow_from.clone();
+        let processed_ids = self.processed_ids.clone();
 
         tokio::spawn(async move {
             let mut cancel_rx = cancel_rx;
@@ -533,20 +549,44 @@ impl QQChannel {
                                                     }
                                                     "C2C_MESSAGE_CREATE" => {
                                                         if let Some(data) = &event.d {
-                                                            Self::handle_c2c_message(
-                                                                data,
-                                                                &bus_sender,
-                                                                &allow_from,
-                                                            );
+                                                            // 去重接线（BUG-20261125-032）：
+                                                            // RESUMED 重放同一 msg_id 在此拦截
+                                                            let msg_id = data
+                                                                .get("id")
+                                                                .and_then(|v| v.as_str())
+                                                                .unwrap_or("");
+                                                            if Self::should_dispatch(
+                                                                &processed_ids,
+                                                                msg_id,
+                                                            ) {
+                                                                Self::handle_c2c_message(
+                                                                    data,
+                                                                    &bus_sender,
+                                                                    &allow_from,
+                                                                );
+                                                            } else {
+                                                                debug!(msg_id = %msg_id, "[QQChannel] duplicate C2C message dropped");
+                                                            }
                                                         }
                                                     }
                                                     "GROUP_AT_MESSAGE_CREATE" => {
                                                         if let Some(data) = &event.d {
-                                                            Self::handle_group_message(
-                                                                data,
-                                                                &bus_sender,
-                                                                &allow_from,
-                                                            );
+                                                            let msg_id = data
+                                                                .get("id")
+                                                                .and_then(|v| v.as_str())
+                                                                .unwrap_or("");
+                                                            if Self::should_dispatch(
+                                                                &processed_ids,
+                                                                msg_id,
+                                                            ) {
+                                                                Self::handle_group_message(
+                                                                    data,
+                                                                    &bus_sender,
+                                                                    &allow_from,
+                                                                );
+                                                            } else {
+                                                                debug!(msg_id = %msg_id, "[QQChannel] duplicate group message dropped");
+                                                            }
                                                         }
                                                     }
                                                     _ => {

@@ -282,7 +282,7 @@ impl WeChatConfig {
 
 /// 入站回调消息 wire schema（假设形态；serde alias 做了一轮宽容命名——
 /// 真机 schema 不匹配时这里是 serde 校准点）。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 pub struct WeChatCallbackMessage {
     /// 消息类型（`text` 及其他；非 text 仍取 content 透传）。
@@ -305,20 +305,6 @@ pub struct WeChatCallbackMessage {
     /// 消息 ID（可选，进 metadata）。
     #[serde(rename = "msg_id", alias = "message_id")]
     pub msg_id: String,
-}
-
-impl Default for WeChatCallbackMessage {
-    fn default() -> Self {
-        Self {
-            msg_type: String::new(),
-            from_user_id: String::new(),
-            from_nickname: String::new(),
-            chat_id: String::new(),
-            chat_type: String::new(),
-            content: String::new(),
-            msg_id: String::new(),
-        }
-    }
 }
 
 /// 出站发送消息请求体（假设形态；真机 schema 不匹配时这里是校准点）。
@@ -690,10 +676,10 @@ impl WeChatChannel {
             if line.is_empty() {
                 break;
             }
-            if let Some((name, value)) = line.split_once(':') {
-                if name.trim().eq_ignore_ascii_case(SIGNATURE_HEADER) {
-                    signature_header = Some(value.trim());
-                }
+            if let Some((name, value)) = line.split_once(':')
+                && name.trim().eq_ignore_ascii_case(SIGNATURE_HEADER)
+            {
+                signature_header = Some(value.trim());
             }
         }
 

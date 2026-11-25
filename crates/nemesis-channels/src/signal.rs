@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
@@ -126,7 +126,11 @@ pub struct SignalChannel {
     config: SignalConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    processed_timestamps: parking_lot::RwLock<HashMap<i64, bool>>,
+    /// 已处理时间戳去重表（Arc 槽位：spawn 闭包与实例方法共享同一张表）。
+    /// BUG-20261125-038：signal-cli REST 长轮询 at-least-once（消费超时/
+    /// 服务重启等场景重复投递同一 envelope），此前表存在但 receive loop
+    /// 零调用（死代码，与 qq BUG-20261125-032 同构），重复消息原样喂 agent。
+    processed_timestamps: Arc<parking_lot::RwLock<HashMap<i64, bool>>>,
     bus_sender: broadcast::Sender<InboundMessage>,
 }
 
@@ -163,7 +167,7 @@ impl SignalChannel {
                 .build()
                 .map_err(|e| NemesisError::Channel(format!("HTTP client creation failed: {e}")))?,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            processed_timestamps: parking_lot::RwLock::new(HashMap::new()),
+            processed_timestamps: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             bus_sender,
         })
     }
@@ -178,18 +182,35 @@ impl SignalChannel {
 
     /// Checks if a timestamp has already been processed.
     pub fn is_duplicate(&self, timestamp: i64) -> bool {
-        let mut map = self.processed_timestamps.write();
-        if map.contains_key(&timestamp) {
+        Self::dedup_check(&self.processed_timestamps, timestamp)
+    }
+
+    /// 去重查表核心（静态形态：spawn 闭包持有的 Arc 槽位与实例方法同源）。
+    /// 重复返回 `true`（is_duplicate 语义），首见登记后返回 `false`。
+    fn dedup_check(map: &parking_lot::RwLock<HashMap<i64, bool>>, timestamp: i64) -> bool {
+        let mut m = map.write();
+        if m.contains_key(&timestamp) {
             return true;
         }
-        map.insert(timestamp, true);
-        if map.len() > 10000 {
-            let keys: Vec<i64> = map.keys().take(5000).copied().collect();
+        m.insert(timestamp, true);
+
+        // Simple cleanup: limit map size
+        if m.len() > 10000 {
+            let keys: Vec<i64> = m.keys().take(5000).copied().collect();
             for key in keys {
-                map.remove(&key);
+                m.remove(&key);
             }
         }
+
         false
+    }
+
+    /// 分派前去重判定（BUG-20261125-038 接线点）：timestamp 非零查表——首见
+    /// 放行并登记、重复丢弃；timestamp 为 0 恒放行——process_envelope 对缺失
+    /// timestamp 落 0（unwrap_or(0)），无键可查；若把 0 也登记，所有缺时间戳
+    /// 消息会被折叠成一条（每批只活一条），与 qq 空 msg_id 恒放行同语义。
+    fn should_publish(map: &parking_lot::RwLock<HashMap<i64, bool>>, timestamp: i64) -> bool {
+        timestamp == 0 || !Self::dedup_check(map, timestamp)
     }
 
     /// Sends a message to a number or group.
@@ -260,6 +281,7 @@ impl Channel for SignalChannel {
         let receive_url = self.receive_url();
         let running = self.running.clone();
         let allow_from = self.config.allow_from.clone();
+        let processed_timestamps = self.processed_timestamps.clone();
 
         tokio::spawn(async move {
             let poll_interval = std::time::Duration::from_secs(5);
@@ -314,6 +336,13 @@ impl Channel for SignalChannel {
                         Some(t) => t,
                         None => continue,
                     };
+
+                    // 去重接线（BUG-20261125-038）：长轮询重复投递同一
+                    // envelope（同 timestamp）在此拦截
+                    if !Self::should_publish(&processed_timestamps, timestamp) {
+                        debug!(timestamp = %timestamp, "[SignalChannel] duplicate message dropped");
+                        continue;
+                    }
 
                     // Filter by allow_from
                     if !allow_from.is_empty()
