@@ -1042,3 +1042,93 @@ fn copy_dir_recursive_skips_symlink_cycles() {
     );
     assert!(!dst.join("loop").exists(), "目录链接必须跳过");
 }
+
+// ---- BUG-20261126-093：case 变体调用 vs 大小写不敏感文件系统（NTFS）----
+//
+// persona 目录解析在 Windows 上大小写不敏感（`personas/coder` 与
+// `personas/Coder` 是同一目录），而 active 标记比对是精确 `==`——case
+// 变体调用会绕过「激活中人格先恢复 default」「编辑同步活体」两条语义。
+// 与 BUG-20261125-069（default 保留名闸 ASCII 变体）同族相邻位点，修复
+// 口径同款：ASCII 大小写变体视为同一人格。目录解析仍大小写不敏感（
+// Windows 文件系统语义），比对口径与物理目录对齐。
+
+/// Windows-only：目录查找大小写不敏感才能命中 case 变体目录。
+#[cfg(windows)]
+fn persona_case_variant_setup(handler: &PersonaHandler, ws: &str) {
+    handler.ensure_initialized(ws).unwrap();
+    // 安装 Coder 人格（手工物化最小目录）并激活。
+    let coder_dir = resolve_path(ws, "personas/Coder").unwrap();
+    std::fs::create_dir_all(&coder_dir).unwrap();
+    std::fs::write(coder_dir.join("IDENTITY.md"), "# Coder Identity").unwrap();
+    handler.cmd_activate(ws, "Coder").unwrap();
+    // 激活前置确认：marker 与活体均在位。
+    assert_eq!(handler.read_active(ws).unwrap(), "Coder");
+    assert_eq!(
+        std::fs::read_to_string(resolve_path(ws, "IDENTITY.md").unwrap()).unwrap(),
+        "# Coder Identity"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn case_variant_remove_of_active_persona_restores_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_str().unwrap();
+    let handler = PersonaHandler::new();
+    persona_case_variant_setup(&handler, ws);
+
+    // case 变体 remove：目录解析命中同一物理目录，active 比对必须同样
+    // 命中（否则跳过 default 恢复——marker 悬空指向已删人格）。
+    handler.cmd_remove(ws, "coder").unwrap();
+
+    assert_eq!(
+        handler.read_active(ws).unwrap(),
+        "default",
+        "case 变体 remove 激活中人格必须先恢复 default（marker 不悬空）"
+    );
+    assert!(
+        !resolve_path(ws, "personas/coder").unwrap().exists(),
+        "目标人格目录必须已删除"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn case_variant_file_save_syncs_active_live_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_str().unwrap();
+    let handler = PersonaHandler::new();
+    persona_case_variant_setup(&handler, ws);
+
+    // case 变体 file.save：存档副本（personas/CODER → Coder）与活体
+    // （workspace 根）是同一人格——比对必须命中，活体同步不能漏。
+    handler
+        .cmd_file_save(ws, "CODER", "IDENTITY.md", "# Patched")
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(resolve_path(ws, "IDENTITY.md").unwrap()).unwrap(),
+        "# Patched",
+        "case 变体保存激活中人格必须同步 workspace 根活体文件"
+    );
+}
+
+/// Linux 对照（保守分歧声明）：目录查找大小写敏感，case 变体 remove
+/// 诚实报 not found——与 BUG-20261125-069 注记的平台分歧口径一致。
+#[cfg(not(windows))]
+#[test]
+fn case_variant_remove_missing_dir_is_honest_not_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_str().unwrap();
+    let handler = PersonaHandler::new();
+    handler.ensure_initialized(ws).unwrap();
+    let coder_dir = resolve_path(ws, "personas/Coder").unwrap();
+    std::fs::create_dir_all(&coder_dir).unwrap();
+    std::fs::write(coder_dir.join("IDENTITY.md"), "# Coder Identity").unwrap();
+    handler.cmd_activate(ws, "Coder").unwrap();
+
+    let err = handler.cmd_remove(ws, "coder").unwrap_err();
+    assert!(err.contains("not found"), "实际错误：{err}");
+    // 原目录不受影响。
+    assert!(resolve_path(ws, "personas/Coder").unwrap().exists());
+}
