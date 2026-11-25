@@ -40,6 +40,7 @@ use nemesis_prompts::forge::{
     LEARN_DIALOGUE_SYSTEM_PROMPT, learn_phase1_prompt, learn_phase2_prompt, learn_phase3_prompt,
     learn_phase4_prompt,
 };
+use nemesis_types::safety::violates_security_boundary;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -876,8 +877,14 @@ fn route_user_finding(
     };
     let category = fi.category.trim().to_lowercase();
     let in_vocab = REFLECT_CATEGORIES.contains(&category.as_str());
+    // 安全词表闸（BUG-20261125-052）：违规陈述（含禁词，如「跳过审批」）
+    // 即使高置信+合法类别也不能走 ingest——upsert_habit 的静默闸会丢弃条
+    // 目但 ingest_external_entry 返回 Ok，outcome 记 disposition="ingested"
+    // 而条目三方失配（无画像条目、无观察提名、回执造假）。违规 = 走观察
+    // 提名人工裁决（与文档「非法词表 → 观察提名」同语义）。
+    let violates = violates_security_boundary(&statement);
     let now = chrono::Local::now().to_rfc3339();
-    if fi.confidence >= CONFIDENCE_THRESHOLD && in_vocab {
+    if fi.confidence >= CONFIDENCE_THRESHOLD && in_vocab && !violates {
         let entry = HabitEntry {
             category: category.clone(),
             content: statement.clone(),

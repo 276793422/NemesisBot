@@ -176,15 +176,19 @@ impl CandidateStore {
         }
         let _serial = WRITE_LOCK.lock();
         let existing = self.read_all();
-        let seen: std::collections::HashSet<&str> =
-            existing.iter().map(|c| c.draft.fp.as_str()).collect();
+        // 批内去重（BUG-20261125-051）：`seen` 不只是盘上已有行——同批两条
+        // 同指纹草稿（同会话两次完全相同问答）也要去重，追加一条后立即
+        // insert。String 而非 &str：`d` 会被 move 进 row，&str 借用悬垂。
+        let mut seen: std::collections::HashSet<String> =
+            existing.iter().map(|c| c.draft.fp.clone()).collect();
         let mut added = 0usize;
         let mut next_id_state = NextIdState::from_existing(&existing);
         let mut lines = String::new();
         for d in drafts {
-            if seen.contains(d.fp.as_str()) {
+            if seen.contains(&d.fp) {
                 continue;
             }
+            seen.insert(d.fp.clone());
             let id = next_id_state.take();
             let row = CorrectionCandidate { id, draft: d };
             lines.push_str(&serde_json::to_string(&row).map_err(|e| format!("serialize: {e}"))?);

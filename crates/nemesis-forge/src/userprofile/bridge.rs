@@ -334,6 +334,17 @@ pub fn read_pending_observations(workspace: &Path, limit: usize) -> Vec<Observat
     pending.split_off(start)
 }
 
+/// 只读 peek 单条待裁决观察（BUG-20261125-053：确认路径先查内容再裁决
+/// ——安全禁词条目在 resolve 之前 loud 拒绝，条目留 pending 供人工
+/// dismiss 负样本回流；resolve 是 RMW 裁决不可逆，peek 后再 resolve）。
+/// id 不存在 / 已裁决 / 读失败 = None。
+pub fn peek_pending_observation(workspace: &Path, id: &str) -> Option<ObservationEntry> {
+    let _w = WRITE_LOCK.lock();
+    all_observations(workspace)
+        .into_iter()
+        .find(|o| o.status == OBS_STATUS_PENDING && o.id == id)
+}
+
 /// 裁决观察提名：pending → confirmed/dismissed（留痕不删——队列文件同时
 /// 是提名审计记录）。返回裁决后的条目（供确认路径构造画像条目）；id 不
 /// 存在 / 已裁决 = Ok(None)。写回原子落盘，损坏行原样保留。

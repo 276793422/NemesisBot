@@ -1744,6 +1744,17 @@ fn test_merge_artifacts_by_id_union_dedup_primary_wins() {
     let merged = crate::forge::merge_artifacts_by_id(primary, Vec::new());
     assert_eq!(merged.len(), 1);
     assert_eq!(merged[0].id, "a");
+
+    // BUG-20261125-054 回归锁：secondary 内部互相重复的 id 也只计一次
+    // （盘上注册表手工编辑/损坏可现双 id 行）。
+    let primary = vec![make_artifact("a", "a")];
+    let secondary = vec![
+        make_artifact("dup", "first"),
+        make_artifact("dup", "second"),
+    ];
+    let merged = crate::forge::merge_artifacts_by_id(primary, secondary);
+    assert_eq!(merged.len(), 2, "secondary 内部重复 id 只保留首个");
+    assert_eq!(merged[1].name, "first");
 }
 
 /// Background loops with interval = 2s: the first 1s tick must take the
