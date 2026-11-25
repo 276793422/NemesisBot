@@ -252,3 +252,16 @@ describe('WorkTimelineBlock 流式思考卡（B3）', () => {
     expect(w.emitted('grown')).toBeUndefined()
   })
 })
+
+describe('formatDuration ≥1h 保留秒（2026-11-25）', () => {
+  it('用时 1时3分0秒：≥1h 分支不再丢秒（与资源窗 fmtElapsed 同形状对齐）', () => {
+    const w = mount(WorkTimelineBlock, {
+      props: {
+        work: { started_at_ms: 0, ended_at_ms: 3_780_000, rounds: [] },
+        live: false,
+      },
+    })
+    expect(w.find('.wt-title').text()).toBe('用时 1时3分0秒')
+    w.unmount()
+  })
+})

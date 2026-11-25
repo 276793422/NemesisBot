@@ -295,7 +295,8 @@ impl GatewayCtx {
         }
 
         // Step 5: Initialize logger from config
-        let mut args: Vec<String> = std::env::args().skip(2).collect();
+        // args_os+lossy：非 UTF-8 参数 panic 面（common::collect_args_lossy 同源）。
+        let mut args: Vec<String> = common::collect_args_lossy().into_iter().skip(2).collect();
         args.extend(extra_args.iter().cloned());
         let _log_flags = common::init_logger_from_config(&config_path, &args);
 

@@ -18,6 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::checkpoint::{Checkpoint, CheckpointStore, FileCheckpointStore, SerializableContext};
 use crate::context::WorkflowContext;
+use crate::drafts::sanitize_workflow_filename;
 use crate::events::{WorkflowEvent, WorkflowEventManager};
 use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
@@ -96,29 +97,10 @@ fn cron_next_fire_at_from_trigger(trigger: &TriggerConfig) -> Option<String> {
     Some(next_str)
 }
 
-/// Make a workflow name safe to use as a filename. Replaces anything
-/// outside `[A-Za-z0-9_-]` with `_`. Empty names get a `wf_` prefix to
-/// avoid hidden files.
-fn sanitize_workflow_filename(name: &str) -> String {
-    if name.is_empty() {
-        return "wf_unnamed".to_string();
-    }
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized.starts_with('.') {
-        format!("wf_{}", sanitized)
-    } else {
-        sanitized
-    }
-}
+// `sanitize_workflow_filename` 已收编为 `crate::drafts` 的单一真相源
+//（BUG-20261125-073：删除此处的逐字节双副本——旧副本缺 Windows 保留
+// 设备名中和，漂移面；persist/清理/读取/execution 记录面经顶部 use
+// 消费同一实现）。
 
 /// 读取 workflow 定义文件并返回其内容里的 workflow 名（
 /// 碰撞守卫辅助）。parse 失败返回 None——坏文件没有可辨认的属主。
@@ -3800,9 +3782,15 @@ impl WorkflowEngine {
 
     /// Close the engine and clean up resources.
     ///
-    /// Marks the engine as closed. Future calls to `run` or `start_execution`
-    /// will return an error. In-progress executions are not automatically
-    /// cancelled (they will complete naturally).
+    /// Marks the engine as closed. Future calls to `run`, `start_async`, or
+    /// `start_execution` will return an error. **In-flight executions are
+    /// cancelled**: every live cancellation token is fired (scheduler + node
+    /// executors bail out; each execution settles as `Cancelled` through its
+    /// own run/resume 收口尾段), then the token table is cleared.
+    /// `test_close_cancels_all_in_flight` 钉住该语义。
+    /// （BUG-20261125-039：此前 doc 写「In-progress executions are not
+    /// automatically cancelled (they will complete naturally)」——与代码及
+    /// 专属回归锁直接矛盾，按旧 doc 设计停机流程会误期待在飞执行自然跑完。）
     pub async fn close(&self) {
         info!("[Workflow] Closing workflow engine");
         let mut closed = self.closed.write().await;

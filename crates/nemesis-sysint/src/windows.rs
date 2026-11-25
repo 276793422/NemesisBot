@@ -410,16 +410,22 @@ pub unsafe fn cert_store_add(store_name: &str, der: &[u8]) -> Result<()> {
             &mut ctx,
         )
     };
+    // last error 必须在失败指示后立即捕获（BUG-20261125-017）：下方
+    // CertFreeCertificateContext / CertCloseStore 清理调用会改写线程
+    // last error，事后读取的可能是清理调用的错误码而非真实失败原因
+    // ——诊断消息带错根因（与 open_store / cert_store_delete 的立即
+    // 捕获形态对齐；sandbox token.rs / acl_impl.rs 的 win32_err 同纪律）。
+    let add_err = if ok == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
     if !ctx.is_null() {
         unsafe { CertFreeCertificateContext(ctx as *const _) };
     }
     unsafe { CertCloseStore(store, 0) };
     if ok == 0 {
-        bail!(
-            "证书写入 {} 库失败（GetLastError={}）",
-            store_name,
-            unsafe { GetLastError() }
-        );
+        bail!("证书写入 {} 库失败（GetLastError={}）", store_name, add_err);
     }
     Ok(())
 }

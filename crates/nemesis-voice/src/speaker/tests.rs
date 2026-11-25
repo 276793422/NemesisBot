@@ -329,3 +329,63 @@ fn speaker_manager_nul_name_returns_false_before_ffi() {
     assert!(!m.register_multi("a\0b", &[]));
     std::mem::forget(m);
 }
+
+// ===========================================================================
+// BUG-20261125-044：ComputeEmbedding null 缓冲诚实错误 + Manager 四方法
+// 长度闸。C API（Add/AddListFlattened/Verify/Search）不接收长度参数、按
+// 构造时 dim 无条件读——错误长度切片（含 embed null 臂旧形态产出的空
+// Vec）= 堆越界读。守卫缺失时这些调用会撞 FFI 符号查找 panic（无 DLL
+// 环境），测试即红；守卫在位时提前 false/None，不 panic。
+// ===========================================================================
+
+#[test]
+fn collect_embedding_null_buffer_is_err_not_empty_ok() {
+    let err = format!(
+        "{:#}",
+        collect_embedding(std::ptr::null(), 192).expect_err("null buffer must be Err")
+    );
+    assert!(err.contains("null buffer"), "{err}");
+    assert!(err.contains("192"), "dim must appear in the message: {err}");
+}
+
+#[test]
+fn collect_embedding_copies_dim_floats_from_valid_buffer() {
+    let buf = [1.5_f32, -2.0, 3.25];
+    let v = collect_embedding(buf.as_ptr(), 3).expect("valid buffer must be Ok");
+    assert_eq!(v, vec![1.5, -2.0, 3.25]);
+}
+
+#[test]
+fn speaker_manager_register_wrong_length_returns_false_before_ffi() {
+    let mut m = null_speaker_manager();
+    assert!(
+        !m.register("alice", &[]),
+        "empty embedding must be rejected pre-FFI"
+    );
+    assert!(!m.register("alice", &[0.1; 191]), "191 != dim 192");
+    assert!(!m.register("alice", &[0.1; 193]), "193 != dim 192");
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_register_multi_wrong_length_component_returns_false_before_ffi() {
+    let mut m = null_speaker_manager();
+    assert!(!m.register_multi("alice", &[vec![0.1; 192], vec![0.2; 191]]));
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_verify_wrong_length_returns_false_before_ffi() {
+    let m = null_speaker_manager();
+    assert!(!m.verify("alice", &[], 0.7));
+    assert!(!m.verify("alice", &[0.1; 191], 0.7));
+    std::mem::forget(m);
+}
+
+#[test]
+fn speaker_manager_search_wrong_length_returns_none_before_ffi() {
+    let m = null_speaker_manager();
+    assert!(m.search(&[], 0.7).is_none());
+    assert!(m.search(&[0.1; 191], 0.7).is_none());
+    std::mem::forget(m);
+}

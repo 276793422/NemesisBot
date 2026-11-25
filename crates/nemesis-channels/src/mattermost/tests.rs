@@ -124,6 +124,68 @@ fn test_strip_bot_mention() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 回归锁（BUG-20261125-034）：裸 @username 提及的边界感知剥离——朴素
+// replace 会前缀吞并（@nemesis 被 @nem 吃掉）与词中吞并（email@nem）。
+
+#[test]
+fn b034_strip_mention_no_prefix_swallow() {
+    // bot 名是另一用户名的前缀：提及 @nemesis（别的用户）不得被 @nem 剥掉
+    assert_eq!(
+        MattermostChannel::strip_bot_mention("@nemesis check this", "nem"),
+        "@nemesis check this",
+        "前缀吞并腐蚀正文"
+    );
+    // 词中（前一字符是 username 字符）：email@nem 不是提及
+    assert_eq!(
+        MattermostChannel::strip_bot_mention("email@nem to you", "nem"),
+        "email@nem to you",
+        "词中吞并腐蚀正文"
+    );
+    // 破折/下划线同族
+    assert_eq!(
+        MattermostChannel::strip_bot_mention("@nem-bot speaking", "nem"),
+        "@nem-bot speaking"
+    );
+}
+
+#[test]
+fn b034_strip_mention_boundary_hits_still_stripped() {
+    // 合法提及各形态照常剥离（边界感知不吞掉真提及）
+    assert_eq!(MattermostChannel::strip_bot_mention("@nem hi", "nem"), "hi");
+    // 尾随标点（非 username 字符）= 独立提及
+    assert_eq!(
+        MattermostChannel::strip_bot_mention("(@nem), help", "nem"),
+        "(), help"
+    );
+    // 句尾无尾随字符
+    assert_eq!(MattermostChannel::strip_bot_mention("hi @nem", "nem"), "hi");
+    // 句中双提及
+    assert_eq!(
+        MattermostChannel::strip_bot_mention("@nem @nem ping", "nem"),
+        "ping"
+    );
+    // 精确长名不受短名配置影响：bot=nemesis 配置下 @nemesis 正常剥
+    assert_eq!(
+        MattermostChannel::strip_bot_mention("@nemesis go", "nemesis"),
+        "go"
+    );
+}
+
+#[test]
+fn b035_posted_garbage_post_string_drops_with_none() {
+    // data.post 字符串非法 JSON → None 丢弃（修复前经 .ok()? 静默；
+    // 修复后 warn 告警同路径，None 契约不变）
+    let event = serde_json::json!({
+        "event": "posted",
+        "data": { "post": "not-valid-json{{" },
+    });
+    assert!(
+        MattermostChannel::parse_posted_event(&event, "botid", "testbot", &[], &[]).is_none(),
+        "垃圾 post 字符串必须丢弃（不得产出半残消息）"
+    );
+}
+
 #[test]
 fn test_format_mapping_markdown_passthrough() {
     let (tx, _rx) = broadcast::channel(16);
@@ -191,7 +253,7 @@ fn test_parse_posted_event_basic() {
     assert_eq!(msg.metadata.get("post_id").unwrap(), "post1");
     assert_eq!(msg.metadata.get("channel_name").unwrap(), "town-square");
     assert_eq!(msg.metadata.get("sender_name").unwrap(), "alice");
-    assert!(msg.metadata.get("was_mentioned").is_none());
+    assert!(!msg.metadata.contains_key("was_mentioned"));
 }
 
 #[test]
@@ -616,4 +678,48 @@ async fn test_ws_session_auth_fail_requests_reconnect() {
         "鉴权 FAIL = 需要重连（交还重连循环退避处理）"
     );
     server.await.unwrap();
+}
+
+// 回归锁（BUG-20261125-036）：鉴权应答等待必须有总 deadline——服务端收
+// challenge 后不回帧也不关连接（挂起网关/半开代理）时，旧实现的
+// ws_rx.next() 无限挂起（重连循环卡死、入站静默死亡、running 旗标失真）。
+#[tokio::test(start_paused = true)]
+async fn b036_ws_session_auth_silence_times_out_requests_reconnect() {
+    use futures::StreamExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+
+    let (tx, _rx) = broadcast::channel(16);
+    let ctx = WsCtx {
+        bot_token: "tok123".to_string(),
+        bot_user_id: Arc::new(parking_lot::RwLock::new(String::new())),
+        bot_username: Arc::new(parking_lot::RwLock::new(String::new())),
+        allow_from: vec![],
+        listen_channels: vec![],
+        bus_sender: tx,
+        running: Arc::new(parking_lot::RwLock::new(true)),
+    };
+
+    // 服务端：收鉴权帧后**不回任何帧**也不关连接（挂起形态）
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let auth = ws.next().await.unwrap().expect("鉴权帧");
+        let auth_json: serde_json::Value =
+            serde_json::from_str(auth.into_text().unwrap().as_str()).unwrap();
+        assert_eq!(auth_json["action"], "authentication_challenge");
+        // 挂起：既不回 status 也不 close
+        std::future::pending::<()>().await;
+        drop(ws);
+    });
+
+    let url = MattermostChannel::ws_url_from_base(&base);
+    let (stream, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    // start_paused：无就绪任务时虚拟时钟自动推进到 deadline——30s 鉴权
+    // 上限即刻到期，真实耗时毫秒级
+    let need_reconnect = MattermostChannel::ws_session(stream, ctx).await;
+    assert!(need_reconnect, "鉴权静默超时必须走重连臂（而非无限挂起）");
+    server.abort();
 }

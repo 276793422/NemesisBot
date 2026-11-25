@@ -828,28 +828,27 @@ async fn w4a_region_mcp_error_falls_back_to_powershell_and_times_out() {
 }
 
 #[tokio::test]
-async fn w4a_window_mode_title_find_returning_garbage_captures_without_hwnd() {
+async fn w4a_window_mode_title_find_returning_garbage_errors_honestly() {
     struct GarbageFindMCP;
     impl crate::browser::MCPToolCaller for GarbageFindMCP {
         fn call_tool(
             &self,
             tool_name: &str,
-            args: &serde_json::Value,
+            _args: &serde_json::Value,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
         {
             let name = tool_name.to_string();
-            let has_hwnd = args.get("hwnd").is_some();
             Box::pin(async move {
                 match name.as_str() {
                     // Non-JSON body -> serde parse fails -> resolved_hwnd
-                    // stays empty -> capture proceeds without a hwnd arg.
+                    // empty -> BUG-20261125-031 翻转：修复前静默不带 hwnd
+                    // 继续 capture（MCP 全屏假成功 "Window screenshot
+                    // saved"），修复后早退诚实报错。
                     "find_window_by_title" => Ok("definitely not json".to_string()),
                     "capture_screenshot_to_file" => {
-                        assert!(
-                            !has_hwnd,
-                            "capture must be called without hwnd when find failed to parse"
+                        panic!(
+                            "capture must not be called when the find result cannot be resolved"
                         );
-                        Ok("captured anyway".to_string())
                     }
                     _ => Err("unknown tool".to_string()),
                 }
@@ -866,9 +865,9 @@ async fn w4a_window_mode_title_find_returning_garbage_captures_without_hwnd() {
             "mode": "window", "window_title": "Whatever"
         }))
         .await;
-    assert!(!result.is_error);
+    assert!(result.is_error);
     assert!(
-        result.for_llm.contains("Window screenshot saved"),
+        result.for_llm.contains("could not resolve window handle"),
         "got: {}",
         result.for_llm
     );
@@ -964,17 +963,17 @@ async fn s2_window_capture_disconnected_mcp_falls_back_to_powershell() {
 
 #[test]
 fn test_build_window_find_part_hwnd_takes_precedence() {
-    let part = ScreenCaptureTool::build_window_find_part("HWND(0x1234)", "ignored title");
+    let part = ScreenCaptureTool::build_window_find_part("HWND(0x1234)", "ignored title").unwrap();
     assert!(part.contains("[IntPtr]0x1234"), "got: {}", part);
     assert!(!part.contains("MainWindowTitle"), "got: {}", part);
 
-    let plain = ScreenCaptureTool::build_window_find_part("0xABCD", "");
+    let plain = ScreenCaptureTool::build_window_find_part("0xABCD", "").unwrap();
     assert!(plain.contains("[IntPtr]0xABCD"), "got: {}", plain);
 }
 
 #[test]
 fn test_build_window_find_part_title_in_single_quotes() {
-    let part = ScreenCaptureTool::build_window_find_part("", "Calculator");
+    let part = ScreenCaptureTool::build_window_find_part("", "Calculator").unwrap();
     assert!(part.contains("-like '*Calculator*'"), "got: {}", part);
     // The failure diagnostic must be single-quoted (no double-quote
     // interpolation context for title data).
@@ -995,7 +994,7 @@ fn test_build_window_find_part_title_metachars_stay_literal() {
     // A title containing PS double-quote interpolation metachars must be
     // embedded inertly: `'` doubled for the single-quote context, `$` never
     // in a double-quoted string.
-    let part = ScreenCaptureTool::build_window_find_part("", "it's $100 (off)");
+    let part = ScreenCaptureTool::build_window_find_part("", "it's $100 (off)").unwrap();
     assert!(part.contains("-like '*it''s $100 (off)*'"), "got: {}", part);
     assert!(
         part.contains("Write-Error 'Window not found: it''s $100 (off)'"),
@@ -1021,7 +1020,7 @@ fn test_build_window_find_part_hwnd_prefixes_normalized() {
     // so every hwnd-based PowerShell window capture failed at script parse.
     // All four accepted input shapes must normalize to the same snippet.
     for hwnd in ["HWND(0x1234)", "HWND(1234)", "0x1234", "1234"] {
-        let part = ScreenCaptureTool::build_window_find_part(hwnd, "");
+        let part = ScreenCaptureTool::build_window_find_part(hwnd, "").unwrap();
         assert!(
             part.contains("[IntPtr]0x1234"),
             "hwnd {:?} → {}",
@@ -1039,7 +1038,7 @@ fn test_build_window_find_part_hwnd_prefixes_normalized() {
 #[test]
 fn test_build_window_find_part_escapes_wildcards() {
     // 方括号标题：模式位字面化，Write-Error 位保持可读原文。
-    let s = ScreenCaptureTool::build_window_find_part("", "记事本 [兼容模式]");
+    let s = ScreenCaptureTool::build_window_find_part("", "记事本 [兼容模式]").unwrap();
     assert!(
         s.contains("-like '*记事本 [[]兼容模式[]]*'"),
         "模式位未字面化: {s}"
@@ -1050,24 +1049,24 @@ fn test_build_window_find_part_escapes_wildcards() {
     );
 
     // `*` 与 `?` 单字符通配符字面化。
-    let s = ScreenCaptureTool::build_window_find_part("", "app * beta?");
+    let s = ScreenCaptureTool::build_window_find_part("", "app * beta?").unwrap();
     assert!(s.contains("-like '*app [*] beta[?]*'"), "got: {s}");
 
     // 单引号保持 `''` 转义（字符串注入面，模式位与错误位都要）。
-    let s = ScreenCaptureTool::build_window_find_part("", "it's here");
+    let s = ScreenCaptureTool::build_window_find_part("", "it's here").unwrap();
     assert!(s.contains("-like '*it''s here*'"), "got: {s}");
     assert!(s.contains("Window not found: it''s here"), "got: {s}");
 
     // 单遍映射：输入本身是通配符组合 `[*]` 时产物不得二次转义叠加
     // （预期 `[[][*][]]`——每个输入字符恰好映射一次）。
-    let s = ScreenCaptureTool::build_window_find_part("", "[*]");
+    let s = ScreenCaptureTool::build_window_find_part("", "[*]").unwrap();
     assert!(s.contains("-like '*[[][*][]]*'"), "got: {s}");
 }
 
 /// hwnd 分支不受标题转义影响（路径回归对照）。
 #[test]
 fn test_build_window_find_part_hwnd_branch_untouched() {
-    let s = ScreenCaptureTool::build_window_find_part("HWND(0x302ba)", "any [title]");
+    let s = ScreenCaptureTool::build_window_find_part("HWND(0x302ba)", "any [title]").unwrap();
     assert!(s.contains("$handle = [IntPtr]0x302ba"), "got: {s}");
     assert!(!s.contains("-like"), "hwnd 分支不应含 -like: {s}");
 }
@@ -1129,5 +1128,236 @@ AND CommandLine LIKE '%Start-Sleep -Seconds 111%' AND ProcessId <> \" + $PID) \
     assert_eq!(
         count, 0,
         "orphaned powershell child survived the timeout (kill_on_drop missing?)"
+    );
+}
+
+// ===========================================================================
+// BUG-20261125-029 回归锁：hwnd → PowerShell 脚本裸插值注入。
+// `$handle = [IntPtr]0x{hwnd}` 中 hwnd 若含 `;`/换行，PowerShell -Command
+// 多语句语义（活体探针实证：`;` 后随语句恒执行）→ 任意命令执行。修复 =
+// 纯十六进制校验（空 / >16 位 / 非 hexdigit → Err）。本函数是该参数的
+// 唯一注入闸：screen_tools.rs 注册恒 None MCP → PowerShell fallback 是
+// 生产路径；命令守卫只审 exec 类工具命令行，screen_capture 内部 spawn 的
+// PowerShell 不在其视线内。
+// ===========================================================================
+
+#[test]
+fn b029_hwnd_injection_forms_rejected() {
+    // 语句分隔符（`;`/换行）、引号闭包、纯非 hex、边界形态全拒。
+    for bad in [
+        "1234; calc",
+        "0; Write-Output pwned",
+        "HWND(0x1) ; iex('x')",
+        "HWND(0x1); Write-Host x",
+        "1234\ncalc",
+        "xyz",  // 全非 hex 字母（x/y/z 不在 0-9a-f）
+        "abcg", // g 非 hex——注意 "abc" 本身是合法 hex（0xabc），不可作拒绝向量
+        "0xZZ",
+        "1234;",
+        // 注：裸空串 "" 不在本表——空 hwnd 是模式分派（落标题分支），
+        // 不是拒绝语义；空组合由 execute 层 missing_params 测试覆盖。
+        "HWND()", // 剥前缀后为空 → 拒
+        "HWND() calc",
+    ] {
+        let r = ScreenCaptureTool::build_window_find_part(bad, "");
+        assert!(
+            r.is_err(),
+            "hwnd {bad:?} must be rejected, got {:?}",
+            r.ok()
+        );
+    }
+    // u64 上界：17 位 hex 超 16 位上限拒绝（溢出面 + 脚本膨胀面）。
+    assert!(ScreenCaptureTool::build_window_find_part("0x12345678901234567", "").is_err());
+    assert!(ScreenCaptureTool::build_window_find_part("HWND(12345678901234567)", "").is_err());
+}
+
+#[test]
+fn b029_hwnd_valid_forms_accepted_and_injected_verbatim() {
+    // 合法 hex 形态放行且插值精确（HWND()/0x 前缀归一对照
+    // test_build_window_find_part_hwnd_prefixes_normalized）。
+    for (input, expect) in [
+        ("HWND(0x12345)", "$handle = [IntPtr]0x12345"),
+        ("0xABCD", "$handle = [IntPtr]0xABCD"),
+        ("deadbeef", "$handle = [IntPtr]0xdeadbeef"),
+        ("HWND(1234)", "$handle = [IntPtr]0x1234"),
+    ] {
+        let part = ScreenCaptureTool::build_window_find_part(input, "")
+            .unwrap_or_else(|e| panic!("hwnd {input:?} wrongly rejected: {e}"));
+        assert!(part.contains(expect), "hwnd {input:?} → {part}");
+        // 校验通过 → 插值位不可能残留注入语句分隔符。
+        assert!(!part.contains(';'), "hwnd {input:?} → {part}");
+        assert!(!part.contains('\n'), "hwnd {input:?} → {part}");
+    }
+}
+
+#[tokio::test]
+async fn b029_execute_window_mode_invalid_hwnd_errors_before_spawn() {
+    // execute 全链：非法 hwnd 在拼脚本前诚实报错（错误含 "invalid hwnd"
+    // = 校验闸命中。若校验缺失，Windows 会 spawn 注入脚本产生完全不同的
+    // 结果，非 Windows 报 spawn 失败——都不是这个文案）。校验先于 spawn
+    // = 跨平台确定性，本测试在 Linux 也真实拦截。
+    let dir = tempfile::tempdir().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), None);
+    for bad in ["1234; calc", "0; Write-Output pwned", "xyz"] {
+        let result = tool
+            .execute(&serde_json::json!({"mode": "window", "hwnd": bad}))
+            .await;
+        assert!(result.is_error, "hwnd {bad:?} must be rejected");
+        assert!(
+            result.for_llm.contains("invalid hwnd"),
+            "hwnd {bad:?} → {}",
+            result.for_llm
+        );
+    }
+}
+
+// ===========================================================================
+// BUG-20261125-030 回归锁：format 白名单。此前 format 未校验直接拼进输出
+// 文件扩展名（`screenshot_{ts}.{format}`）——Windows 把 `\` `/` 都当路径
+// 分隔符，`"png\..\..\evil"` 借 `..` 归一把 `$bitmap.Save` 引到 workspace
+// 外。白名单 = png/jpg/jpeg/bmp（schema enum ∪ image_format_enum 支持集），
+// 小写归一，其余诚实报错（agent 路径有 args_validator enum 闸，workflow
+// 工具节点路径直通——工具必须自校验）。
+// ===========================================================================
+
+#[tokio::test]
+async fn b030_format_whitelist_rejects_traversal_and_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), None);
+    for bad in [
+        "png\\..\\..\\evil", // Windows 反斜杠分隔符 + .. 归一
+        "../x",              // POSIX 形态
+        "png/../../x",       // 正斜杠分隔符 + .. 归一
+        "exe",               // 可执行扩展名
+        "png ",              // 尾空格：非白名单成员，诚实拒绝不静默 trim
+        "",                  // 空串：拒绝（format 键缺失才回落 png）
+        "PNG\\x",            // 大小写归一发生在白名单匹配前
+    ] {
+        let result = tool
+            .execute(&serde_json::json!({"mode": "full_screen", "format": bad}))
+            .await;
+        assert!(result.is_error, "format {bad:?} must be rejected");
+        assert!(
+            result.for_llm.contains("invalid format"),
+            "format {bad:?} → {}",
+            result.for_llm
+        );
+    }
+}
+
+#[tokio::test]
+async fn b030_format_whitelist_accepts_supported_set() {
+    // 支持集全部通过白名单闸（1ms timeout 让 PowerShell 臂快速失败——
+    // 只断言不是格式闸拒绝，真实截屏成败与本 BUG 无关；Linux 上 spawn
+    // ENOENT 同样立即失败，断言形态一致）。
+    let dir = tempfile::tempdir().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), None);
+    tool.set_timeout(Duration::from_millis(1)).await;
+    for fmt in ["png", "PNG", "jpg", "JPG", "jpeg", "JPEG", "bmp"] {
+        let result = tool
+            .execute(&serde_json::json!({"mode": "full_screen", "format": fmt}))
+            .await;
+        assert!(
+            !result.for_llm.contains("invalid format"),
+            "format {fmt:?} wrongly rejected: {}",
+            result.for_llm
+        );
+    }
+}
+
+#[test]
+fn b030_prepare_output_path_jpeg_extension_accepted() {
+    // jpeg 在白名单内（schema enum 只列 png/jpg，image_format_enum 支持
+    // jpeg）——白名单 = 两集合并集，jpeg 走通落 .jpeg 后缀。
+    let temp = tempfile::tempdir().unwrap();
+    let tool = ScreenCaptureTool::new(PathBuf::from(temp.path()), None);
+    let path = tool.prepare_output_path("jpeg").unwrap();
+    assert!(path.to_string_lossy().ends_with(".jpeg"));
+}
+
+// ===========================================================================
+// BUG-20261125-031 回归锁：capture_window MCP 臂标题解析失败必须诚实报错。
+// 修复前 resolved_hwnd 空 → mcp_args 不带 hwnd 继续调 capture → MCP 按自身
+// 默认捕获全屏，却以 "Window screenshot saved" 假成功上报。garbage JSON
+// 形态的翻转见 w4a_window_mode_title_find_returning_garbage_errors_honestly；
+// 本块补 JSON 合法但 hwnd 空/缺失形态。
+// ===========================================================================
+
+#[tokio::test]
+async fn b031_title_resolved_empty_hwnd_errors_instead_of_fullscreen_fallback() {
+    struct EmptyHwndFindMCP;
+    impl crate::browser::MCPToolCaller for EmptyHwndFindMCP {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
+            let name = tool_name.to_string();
+            Box::pin(async move {
+                match name.as_str() {
+                    // JSON 合法但 hwnd 空 = find 到窗口却拿不到句柄的诚实形态。
+                    "find_window_by_title" => Ok(r#"{"hwnd":""}"#.to_string()),
+                    // 假成功复发即失败：修复在位时不可达。
+                    "capture_screenshot_to_file" => {
+                        panic!("capture must not proceed without a resolved hwnd");
+                    }
+                    _ => Err("unknown tool".to_string()),
+                }
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), Some(Arc::new(EmptyHwndFindMCP)));
+    let result = tool
+        .execute(&serde_json::json!({"mode": "window", "window_title": "Whatever"}))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("could not resolve window handle"),
+        "got: {}",
+        result.for_llm
+    );
+}
+
+#[tokio::test]
+async fn b031_title_find_missing_hwnd_field_errors_instead_of_fullscreen_fallback() {
+    struct NoHwndFieldMCP;
+    impl crate::browser::MCPToolCaller for NoHwndFieldMCP {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+        {
+            let name = tool_name.to_string();
+            Box::pin(async move {
+                match name.as_str() {
+                    // JSON 合法但 hwnd 字段缺失（unwrap_or("") 同落空）。
+                    "find_window_by_title" => Ok(r#"{"ok":true}"#.to_string()),
+                    "capture_screenshot_to_file" => {
+                        panic!("capture must not proceed without a resolved hwnd");
+                    }
+                    _ => Err("unknown tool".to_string()),
+                }
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), Some(Arc::new(NoHwndFieldMCP)));
+    let result = tool
+        .execute(&serde_json::json!({"mode": "window", "window_title": "Whatever"}))
+        .await;
+    assert!(result.is_error);
+    assert!(
+        result.for_llm.contains("could not resolve window handle"),
+        "got: {}",
+        result.for_llm
     );
 }

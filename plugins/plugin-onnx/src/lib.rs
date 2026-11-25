@@ -156,9 +156,10 @@ fn l2_normalize(vec: &mut [f32]) {
 /// 3. Fast path: already initialised → bump ref count
 /// 4. Slow path:
 ///    a. Resolve model.onnx and tokenizer.json paths from model_dir
-///    b. Load tokenizer
-///    c. Create ONNX session
-///    d. Set dim=0 (inferred from first plugin_embed call)
+///    b. Lock state, re-check PERMANENTLY_FREED (race with concurrent free)
+///    c. Load tokenizer
+///    d. Create ONNX session
+///    e. Set dim=0 (inferred from first plugin_embed call)
 /// 5. Return E_OK
 #[no_mangle]
 pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostServices) -> i32 {
@@ -251,6 +252,20 @@ pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostService
             ),
         );
         return E_OK;
+    }
+
+    // Gate 3: re-check PERMANENTLY_FREED inside the lock.  plugin_free may
+    // have fully completed between Gate 1 and the lock acquisition above
+    // (session already destroyed, ONNX Runtime global state gone) — creating
+    // a session here would resurrect state on torn-down Runtime (the exact
+    // segfault the free gate exists to prevent).
+    if PERMANENTLY_FREED.load(Ordering::SeqCst) {
+        drop(state);
+        log_msg(
+            4,
+            "plugin_init: cannot re-init after free (ONNX Runtime limitation)",
+        );
+        return E_INIT;
     }
 
     // Load tokenizer
@@ -539,14 +554,18 @@ pub extern "C" fn plugin_free() {
     let prev = INIT_COUNT.fetch_sub(1, Ordering::SeqCst);
 
     if prev <= 1 {
+        // All teardown side-effects go INSIDE the state lock so that a
+        // concurrent plugin_init holding the lock can never observe the
+        // intermediate state (session cleared but free-gate flags not yet
+        // set) and start rebuilding a session on torn-down Runtime.
         if let Ok(mut state) = STATE.lock() {
             state.session = None;
             state.tokenizer = None;
+            INIT_COUNT.store(0, Ordering::SeqCst);
+            MODEL_DIM.store(0, Ordering::SeqCst);
+            PERMANENTLY_FREED.store(true, Ordering::SeqCst);
+            HOST_PTR.store(std::ptr::null_mut(), Ordering::SeqCst);
         }
-        INIT_COUNT.store(0, Ordering::SeqCst);
-        MODEL_DIM.store(0, Ordering::SeqCst);
-        PERMANENTLY_FREED.store(true, Ordering::SeqCst);
-        HOST_PTR.store(std::ptr::null_mut(), Ordering::SeqCst);
         log_msg(2, "Resources released (last reference freed)");
     } else {
         log_msg(

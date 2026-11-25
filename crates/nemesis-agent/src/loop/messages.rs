@@ -681,6 +681,20 @@ impl AgentLoop {
                     sections.push(reminder);
                 }
             }
+            // 自学习铺路批次一（2026-11-24）：active 洞察常驻段（forge
+            // 台账 <workspace>/forge/insights.json）。闭包缺席（headless/
+            // 测试/forge 裁剪装配）或台账空/损坏 fail-closed = 段缺席零
+            // 字节（cache 纪律）；每 build 从盘重渲，文件不变 ⇒ 输出字节
+            // 不变（与 skills digest 同款字节稳定语义）。渲染异常不炸
+            // loop（闭包内部已吞错降级 None）。
+            if let Some(section) = self
+                .insights_section_source
+                .read()
+                .as_ref()
+                .and_then(|source| source())
+            {
+                sections.push(section);
+            }
             if let Some(ref root) = ws_root {
                 // 信任档三分——isolated 整段跳过（指令链
                 // 完全不进上下文）；annotate 注入但前置不可信来源横幅；
@@ -763,13 +777,20 @@ impl AgentLoop {
                 ));
             }
             // （devtool-upgrade）：当前轮客户端上报的打开文件路径
-            // —— per-turn ephemeral 状态（process_admitted set / 出轮 clear）。
+            // —— per-turn ephemeral 状态（process_admitted 按会话键 set /
+            // 出轮 remove，BUG-20261125-068 分桶：只取本会话键；None 键
+            // 兼容路径落 "" 键，与 skills_digest_state 先例同形）。
             // 只渲染路径不读内容（annotation 语义；agent 真正读文件仍走
             // read_file 工具与安全 8 层，零新增信任面）。空 = 无 section
             // （字节稳定）；turn 内多迭代状态不变 → 每次构建字节一致；
             // 回放走 InjectionRecord 台账记录的 digest 内容（transient
             // 注入既有机制，零额外回放工作）。
-            let open_files = self.pending_open_files.read().clone();
+            let open_files = self
+                .pending_open_files
+                .lock()
+                .get(session_key.unwrap_or(""))
+                .cloned()
+                .unwrap_or_default();
             if !open_files.is_empty() {
                 let body = open_files
                     .iter()
@@ -784,7 +805,11 @@ impl AgentLoop {
             // 当前定义 YAML（引擎未装配/未找到时诚实注明）；_new 会话渲染
             // 能力表引导块。空目标 = 无 section（字节稳定）。内容随既有
             // InjectionRecord 台账落账 → 回放免费一致（同 机制）。
-            let wf_edit_target = self.pending_workflow_edit.read().clone();
+            let wf_edit_target = self
+                .pending_workflow_edit
+                .lock()
+                .get(session_key.unwrap_or(""))
+                .cloned();
             if let Some(target) = wf_edit_target {
                 sections.push(self.render_workflow_edit_section(&target));
             }

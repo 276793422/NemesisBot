@@ -4,6 +4,7 @@
 // 未评估（None）= '--' 诚实缺省。
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createPinia } from 'pinia'
 import { useToast } from '../../composables/useToast'
 
 const requestMock = vi.fn()
@@ -31,6 +32,8 @@ function artifact(over: Record<string, unknown> = {}) {
 function mountForge() {
   return mount(ForgeView, {
     global: {
+      // 洞察页接线（2026-11-24）：setup 使用 session store，需 active Pinia。
+      plugins: [createPinia()],
       stubs: {
         // A/C 线子面板不在本 spec 范围（各自有 spec）。
         BehaviorTestPanel: { template: '<div />' },

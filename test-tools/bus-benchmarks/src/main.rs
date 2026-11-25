@@ -8,7 +8,6 @@
 //!   5. Stress Test                    (10,000 messages)
 //!   6. Burst Traffic                  (5 bursts x 100 messages)
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};

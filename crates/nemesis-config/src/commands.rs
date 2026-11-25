@@ -41,16 +41,34 @@ impl CommandsConfig {
 }
 
 /// `<workspace>/config/config.commands.json`（调用方经 nemesis-path 取路径）。
+///
+/// HotLoadFn 契约（nemesis-agent loop/fs_watch.rs）：签名必须是
+/// `fn(&Path) -> CommandsConfig`——必须容忍缺失文件、错误不外泄，违形
+/// （`[]` 等非 object 文档）只能走 WARN 降级臂。形状闸前置
+/// （`ensure_object`，BUG-20261125-008）：CommandsConfig 全字段 default
+/// 无 flatten，`[]` 曾走 serde visit_seq 零元素臂 = 静默「空表」零诊断
+/// （全部自定义 slash 命令无声消失）；object 闸后违形进既有 WARN 臂。
 pub fn load_commands_config(path: &Path) -> CommandsConfig {
     match nemesis_utils::fsutil::read_config_string(path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            tracing::warn!(
-                "[Commands] config 解析失败（{}），按空表处理: {}",
-                path.display(),
-                e
-            );
-            CommandsConfig::default()
-        }),
+        Ok(raw) => {
+            let parsed = serde_json::from_str::<serde_json::Value>(&raw)
+                .map_err(|e| e.to_string())
+                .and_then(|v| {
+                    nemesis_utils::json_shape::ensure_object(&v, "config.commands.json")?;
+                    serde_json::from_value::<CommandsConfig>(v).map_err(|e| e.to_string())
+                });
+            match parsed {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    tracing::warn!(
+                        "[Commands] config 解析失败/形状非法（{}），按空表处理: {}",
+                        path.display(),
+                        e
+                    );
+                    CommandsConfig::default()
+                }
+            }
+        }
         Err(_) => CommandsConfig::default(),
     }
 }

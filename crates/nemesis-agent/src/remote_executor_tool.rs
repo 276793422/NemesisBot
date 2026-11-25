@@ -995,6 +995,21 @@ where
         .collect()
 }
 
+/// 宿主 env 的标准收集形态（`filter_env_allowlist` 的喂入面单一来源）：
+/// `vars_os` + `to_string_lossy`。禁裸 `std::env::vars()`——任一变量名/值
+/// 非 valid Unicode 时当场 panic（Windows 环境块允许非配对代理项码元，
+/// BUG-20261125-014 同族）：persistent spawn 线程会反复炸。白名单语义下
+/// 非法变量本就会被丢弃，lossy 只影响假想的白名单收录形态，合法 env 零
+/// 行为差异。
+pub fn env_vars_lossy() -> impl Iterator<Item = (String, String)> {
+    std::env::vars_os().map(|(k, v)| {
+        (
+            k.to_string_lossy().into_owned(),
+            v.to_string_lossy().into_owned(),
+        )
+    })
+}
+
 /// persistent 模式的 home 族重定向对：agent home 就是子进程的「家」——
 /// `HOME` / `USERPROFILE` 直指 agent home，应用配置/数据目录（APPDATA、
 /// XDG_*）落进 home 的常规子目录。浏览器身份由此天然隔离在 home 内。

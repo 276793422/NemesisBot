@@ -61,6 +61,17 @@ impl AgentLoop {
         *self.skills_loader.write() = Some(loader);
     }
 
+    /// 自学习铺路批次一：注入 active 洞察段渲染闭包（见
+    /// `insights_section_source` 字段文档）。每 build 调用一次；返回
+    /// None = 段缺席（空台账/损坏 fail-closed 的诚实形态）。重复调用
+    /// 覆盖（agent 重建装配点每次注入等价 Arc）。
+    pub fn set_insights_section_source(
+        &self,
+        source: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) {
+        *self.insights_section_source.write() = Some(source);
+    }
+
     /// enable the workspace instruction-chain section by giving
     /// the workspace root (chain root = this dir; the chain itself is read
     /// per-injection).

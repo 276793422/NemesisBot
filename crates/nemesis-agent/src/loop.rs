@@ -771,6 +771,15 @@ pub struct AgentLoop {
     /// the old per-session hash map gated nothing and was removed — see
     /// skills_digest.rs module doc).
     skills_digest_state: std::sync::Arc<crate::skills_digest::DigestState>,
+    /// 自学习铺路批次一（2026-11-24）：active 洞察注入段渲染闭包。
+    /// 闭包形态而非类型依赖——forge 是本 crate 的**可选** feature，
+    /// 直接依赖 nemesis-forge 类型会破坏裁剪；装配点（bot agent_factory，
+    /// feature=forge 时）把台账渲染闭包注入进来。`None` = 不注入（段
+    /// 缺席零字节）。每 build 调用一次，从盘重渲（merged snapshot 字节
+    /// 稳定语义与 skills digest 同款）。Set via
+    /// `set_insights_section_source`.
+    insights_section_source:
+        parking_lot::RwLock<Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>>,
     /// per-session message inbox for Queue/Steer modes. Unused in
     /// Reject mode (kept anyway — trivial cost, simplifies mode switching).
     inbox: crate::inbox::SharedInbox,
@@ -856,20 +865,26 @@ pub struct AgentLoop {
     /// （devtool-upgrade）：当前轮客户端上报的「当前打开文件」路径
     /// （WSAPI `chat.send` data.open_files → metadata["open_files"] → bus 全链
     /// 路透传，解析走 nemesis-types::channel:open_files_from_metadata 单点）。
-    /// Ephemeral per-turn：`process_admitted` 进轮前 set、出轮后 clear（词法
-    /// 配对防泄漏——cron/heartbeat/continuation 等非 process_admitted 路径
-    /// 天然读不到，无陈旧泄漏）。build_messages 渲染进 merged digest section
-    /// （空 = 无 section，字节稳定）；digest 内容随既有 InjectionRecord 台账
-    /// 落账 → 字节级回放免费一致。只存路径不读内容（annotation 语义）。
-    pending_open_files: parking_lot::RwLock<Vec<String>>,
+    /// Ephemeral per-turn：`process_admitted` 进轮前 set、出轮后 clear。
+    /// 按 session_key 分桶（BUG-20261125-068，BUG-20261120-013 同族根修）：
+    /// V5 统一泵「跨会话并发、同会话保序」是结构不变量，loop 级单槽会让
+    /// A 会话 set 的路径被 B 会话覆写（A 的请求注入 B 的文件——跨会话串
+    /// 漏）、B set 后 A 出轮整槽 clear（B 的上下文丢失）——与
+    /// response_degradation 旧形态完全同族。各写各键，build 只取本键。
+    /// build_messages 渲染进 merged digest section（空 = 无 section，字节
+    /// 稳定）；digest 内容随既有 InjectionRecord 台账落账 → 字节级回放免费
+    /// 一致。只存路径不读内容（annotation 语义）。
+    pending_open_files: parking_lot::Mutex<HashMap<String, Vec<String>>>,
     /// 对话生成：当前轮 workflow_edit 注入目标（WSAPI
     /// `chat.send` data.workflow_edit → metadata["workflow_edit"]，解析走
     /// nemesis-types::channel:workflow_edit_from_metadata 单点）。与
-    /// pending_open_files 同款 per-turn ephemeral 生命周期：process_admitted
-    /// set、出轮 clear。Some → build_messages 渲染能力表/当前定义 section。
+    /// pending_open_files 同款 per-turn ephemeral + 按 session_key 分桶
+    /// 生命周期（BUG-20261125-068：并发窗口单槽互覆/误清）。Some 才进表
+    /// （None = remove 本键）；build_messages 渲染能力表/当前定义 section。
     /// 引擎引用只服务「已注册工作流」的当前定义读取；no-workflow 编译下
     /// 整个字段消失。
-    pending_workflow_edit: parking_lot::RwLock<Option<nemesis_types::channel::WorkflowEditTarget>>,
+    pending_workflow_edit:
+        parking_lot::Mutex<HashMap<String, nemesis_types::channel::WorkflowEditTarget>>,
     /// 建设：惰性 schema 供给的 per-session
     /// 解锁账（tools_schema_get 取回成功的工具名，按解锁顺序 append、只增
     /// 不减、去重）。schema_unlock_section 渲染累积注记的落点——
@@ -1117,6 +1132,7 @@ impl AgentLoop {
             plan_present: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
+            insights_section_source: parking_lot::RwLock::new(None),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
@@ -1134,8 +1150,8 @@ impl AgentLoop {
             #[cfg(all(feature = "codemode", not(target_os = "android")))]
             code_run_tool: parking_lot::RwLock::new(None),
             interactive_approval: parking_lot::RwLock::new(false),
-            pending_open_files: parking_lot::RwLock::new(Vec::new()),
-            pending_workflow_edit: parking_lot::RwLock::new(None),
+            pending_open_files: parking_lot::Mutex::new(HashMap::new()),
+            pending_workflow_edit: parking_lot::Mutex::new(HashMap::new()),
             tool_schema_unlocks: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
@@ -1470,6 +1486,10 @@ mod inbox_tests;
 // 自定义 slash 命令改写：rewrite_custom_command 决策表测试。
 #[cfg(test)]
 mod commands_tests;
+// 自学习铺路批次一（2026-11-24）：active 洞察注入段测试
+// （闭包注入/缺席零字节/字节稳定）。
+#[cfg(test)]
+mod insights_tests;
 // （cache-warmer）：TTL 解析 / 90% 触发 / 经济闸 / 快照淘汰 / 热关退出测试。
 #[cfg(test)]
 mod cache_warmer_tests;

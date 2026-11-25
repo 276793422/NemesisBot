@@ -204,6 +204,20 @@ fn get_remote_oep(hp: HANDLE) -> Result<u64, InjectError> {
     }
 }
 
+/// 收集当前进程环境为 `KEY=VALUE` 字符串形态（ANSI 环境块装配单一来源，
+/// 纯函数可单测）。
+///
+/// 必须走 `vars_os` + `to_string_lossy`，禁回退 `std::env::vars()`：后者在
+/// 任一环境变量名/值非 valid Unicode 时当场 panic（Windows 环境块允许非配
+/// 对代理项码元），而本块的编码意图恰是 lossy 降级（非 ASCII → '?'，见
+/// `launch_and_inject_with_env` 内的转换循环）——收集步不得抢先把「容忍
+/// 降级」升级成进程崩溃（BUG-20261125-014）。
+fn collect_env_pairs() -> Vec<String> {
+    std::env::vars_os()
+        .map(|(k, v)| format!("{}={}", k.to_string_lossy(), v.to_string_lossy()))
+        .collect()
+}
+
 /// 挂起启动 + EP 注入。
 ///
 /// - `target_exe`：宿主 exe 全路径（已签名的目标，如 SbieCtrl.exe）
@@ -248,7 +262,7 @@ pub fn launch_and_inject_with_env(
         // encoded to the ANSI code page — all eval paths are ASCII), then
         // apply the caller's overrides. The injected DLL reads env via
         // GetEnvironmentVariableA, which matches this encoding exactly.
-        let mut vars: Vec<String> = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
+        let mut vars: Vec<String> = collect_env_pairs();
         for (k, v) in env {
             let needle = format!("{k}=");
             vars.retain(|s| !s.starts_with(&needle));

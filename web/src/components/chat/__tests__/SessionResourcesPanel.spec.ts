@@ -17,15 +17,29 @@ import { ref } from 'vue'
 
 // vi.mock 工厂被提升到 import 之前执行——工厂内引用的句柄必须走
 // vi.hoisted（直接 const 声明会 TDZ ReferenceError）。
-const { requestMock, pushMock, setAllowMock, sseHandlers } = vi.hoisted(() => ({
+const { requestMock, pushMock, setAllowMock, sseHandlers, toastMocks } = vi.hoisted(() => ({
   requestMock: vi.fn(),
   pushMock: vi.fn(),
   setAllowMock: vi.fn(),
   sseHandlers: {} as Record<string, ((d: any) => void)[]>,
+  toastMocks: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }))
 
 vi.mock('../../../composables/useWSAPI', () => ({
   useWSAPI: () => ({ request: (...args: any[]) => requestMock(...args) }),
+}))
+
+// 头部路径行（2026-11-25）成功/失败 toast 断言用；既有用例不断言 toast，
+// mock 不影响其行为。
+vi.mock('../../../composables/useToast', () => ({
+  useToast: () => ({
+    toasts: [],
+    info: toastMocks.info,
+    success: toastMocks.success,
+    warn: toastMocks.warn,
+    error: toastMocks.error,
+    remove: vi.fn(),
+  }),
 }))
 
 vi.mock('../../../composables/useWebSocket', async () => {
@@ -72,7 +86,9 @@ vi.mock('../../../composables/useSessionAllowAll', async () => {
 
 import { addMessageHandler, wsStatus } from '../../../composables/useWebSocket'
 import { useChatStore } from '../../../stores/chat'
+import { useSessionStore } from '../../../stores/session'
 import SessionResourcesPanel from '../SessionResourcesPanel.vue'
+import ProjectCreateModal from '../../ProjectCreateModal.vue'
 
 function wsHandler(): (frame: any) => void {
   const calls = vi.mocked(addMessageHandler).mock.calls
@@ -123,6 +139,10 @@ beforeEach(() => {
   requestMock.mockReset()
   pushMock.mockReset()
   setAllowMock.mockReset().mockResolvedValue(undefined)
+  toastMocks.success.mockReset()
+  toastMocks.error.mockReset()
+  toastMocks.info.mockReset()
+  toastMocks.warn.mockReset()
   for (const k of Object.keys(sseHandlers)) delete sseHandlers[k]
 })
 
@@ -736,6 +756,193 @@ describe('发送方式卡（三键迁移）', () => {
     await flushPromises()
     expect(w.findAll('.srp-card').find((c) => c.find('.srp-card-title').text() === '发送方式'))
       .toBeUndefined()
+    w.unmount()
+  })
+})
+
+describe('头部路径行点击打开目录（2026-11-25）', () => {
+  /** 从 fs.open 调用里挑出 path 入参（无调用 = undefined）。 */
+  function fsOpenCall(): any[] | undefined {
+    return requestMock.mock.calls.find((c: any[]) => c[0] === 'fs' && c[1] === 'open')
+  }
+
+  it('项目行点击 → fs.open {path: 项目路径}（可点 affordance 类在场）', async () => {
+    const w = await mountPanel('s1')
+    const row = w.find('[data-test="srp-open-project"]')
+    expect(row.exists()).toBe(true)
+    expect(row.classes()).toContain('srp-sub-link')
+    await row.trigger('click')
+    await flushPromises()
+    expect(fsOpenCall()).toEqual(['fs', 'open', { path: 'C:/proj/a' }])
+    expect(toastMocks.success).toHaveBeenCalledWith('已在文件管理器中打开目录')
+    w.unmount()
+  })
+
+  it('目录行点击 → fs.open {path: 工作区路径}', async () => {
+    const w = await mountPanel('s1')
+    await w.find('[data-test="srp-open-workdir"]').trigger('click')
+    await flushPromises()
+    expect(fsOpenCall()).toEqual(['fs', 'open', { path: 'C:/ws' }])
+    w.unmount()
+  })
+
+  it('fs.open 失败 → 诚实 error toast，不冒充成功', async () => {
+    const w = await mountPanel('s1')
+    // mount 后覆写：fs.open 抛错（面板挂载取数不受影响，点击路径才走 fs.open）。
+    requestMock.mockImplementation(async (mod: string, cmd: string) => {
+      if (mod === 'fs' && cmd === 'open') throw new Error('path 越出 workspace')
+      return {}
+    })
+    await w.find('[data-test="srp-open-workdir"]').trigger('click')
+    await flushPromises()
+    expect(toastMocks.error).toHaveBeenCalledWith('打开失败：path 越出 workspace')
+    expect(toastMocks.success).not.toHaveBeenCalled()
+    w.unmount()
+  })
+})
+
+describe('执行态计时 ≥1h 保留秒 + ＋项目分叉（2026-11-25）', () => {
+  /** 最小合法 SessionEntry（store 直种用）。 */
+  function sessionEntry(id: string, projectId?: string): any {
+    return {
+      id,
+      channel: 'web',
+      startTime: 't',
+      lastTime: 't',
+      messageCount: 0,
+      firstMessage: '',
+      model: 'm',
+      ...(projectId ? { projectId } : {}),
+    }
+  }
+  function project(id: string, name: string, path: string): any {
+    return { id, name, path, created_at: '', running: false }
+  }
+
+  it('执行态计时 ≥1h：秒位保留（1h03m00s），不再丢秒', async () => {
+    const p = resourcesPayload(1)
+    p.categories.execution.summary.turn.turn_started_ms = Date.now() - 3_780_000 // 63min
+    const w = await mountPanel('s1', p)
+    expect(w.find('.srp-exec-elapsed').text()).toContain('1h03m00s')
+    w.unmount()
+  })
+
+  it('项目会话点 ＋项目 → add-dir 弹窗（添加目录 — <项目名>），不是新建项目', async () => {
+    const store = useSessionStore()
+    store.sessions = [sessionEntry('s1', 'p1')]
+    store.projects = [project('p1', '演示项目', 'C:/proj/a')]
+    const w = await mountPanel('s1')
+    const btn = w.find('.srp-add-project')
+    expect(btn.attributes('title')).toBe('给当前项目添加目录')
+    await btn.trigger('click')
+    await flushPromises()
+    const h3s = w.findAll('h3').map(x => x.text())
+    expect(h3s.some(t => t.startsWith('添加目录 —'))).toBe(true)
+    expect(h3s).not.toContain('新建项目')
+    w.unmount()
+  })
+
+  it('非项目会话点 ＋项目 → 新建项目弹窗（原语义不变）', async () => {
+    const store = useSessionStore()
+    store.sessions = [sessionEntry('s1')]
+    store.projects = [project('p1', '别家项目', 'C:/proj/a')]
+    const p = resourcesPayload(1)
+    delete p.categories.identity.summary.project_path // 非项目会话
+    const w = await mountPanel('s1', p)
+    expect(w.find('.srp-add-project').attributes('title')).toBe('新建项目')
+    await w.find('.srp-add-project').trigger('click')
+    await flushPromises()
+    expect(w.findAll('h3').map(x => x.text())).toContain('新建项目')
+    w.unmount()
+  })
+
+  it('孤儿会话（projectId 失联 + path 无匹配）→ 回落新建项目弹窗', async () => {
+    const store = useSessionStore()
+    store.sessions = [sessionEntry('s1', 'gone')]
+    store.projects = [project('p2', '无关项目', 'C:/other')]
+    const w = await mountPanel('s1') // identity project_path=C:/proj/a，注册表无此 path
+    await w.find('.srp-add-project').trigger('click')
+    await flushPromises()
+    expect(w.findAll('h3').map(x => x.text())).toContain('新建项目')
+    w.unmount()
+  })
+})
+
+describe('附加放行目录显示（2026-11-25：注册表 extra_dirs 投影）', () => {
+  function sessionEntry(id: string, projectId?: string): any {
+    return {
+      id,
+      channel: 'web',
+      startTime: 't',
+      lastTime: 't',
+      messageCount: 0,
+      firstMessage: '',
+      model: 'm',
+      ...(projectId ? { projectId } : {}),
+    }
+  }
+  function project(id: string, name: string, path: string): any {
+    return { id, name, path, created_at: '', running: false }
+  }
+  /** 从 fs.open 调用里挑出 path 入参（无调用 = undefined）。 */
+  function fsOpenCall(): any[] | undefined {
+    return requestMock.mock.calls.find((c: any[]) => c[0] === 'fs' && c[1] === 'open')
+  }
+
+  it('项目行下方逐条渲染注册表 extra_dirs（附加：前缀 + 可点开目录）', async () => {
+    const store = useSessionStore()
+    store.sessions = [sessionEntry('s1', 'p1')]
+    store.projects = [
+      { ...project('p1', '演示项目', 'C:/proj/a'), extra_dirs: ['C:/Zoo', 'C:/proj/b'] },
+    ]
+    const w = await mountPanel('s1')
+    const rows = w.findAll('[data-test="srp-extra-dir"]')
+    expect(rows.length).toBe(2)
+    expect(rows[0].text()).toContain('C:/Zoo')
+    expect(rows[0].classes()).toContain('srp-extra-dir')
+    await rows[0].trigger('click')
+    await flushPromises()
+    expect(fsOpenCall()).toEqual(['fs', 'open', { path: 'C:/Zoo' }])
+    expect(toastMocks.success).toHaveBeenCalledWith('已在文件管理器中打开目录')
+    w.unmount()
+  })
+
+  it('无 extra_dirs 的项目不渲染附加行（不占位）', async () => {
+    const store = useSessionStore()
+    store.sessions = [sessionEntry('s1', 'p1')]
+    store.projects = [project('p1', '演示项目', 'C:/proj/a')]
+    const w = await mountPanel('s1')
+    expect(w.findAll('[data-test="srp-extra-dir"]').length).toBe(0)
+    w.unmount()
+  })
+
+  it('非项目会话（注册表解析不到归属项目）不渲染附加行', async () => {
+    const store = useSessionStore()
+    store.sessions = [sessionEntry('s1')]
+    store.projects = [{ ...project('p1', '别家项目', 'C:/elsewhere'), extra_dirs: ['C:/Zoo'] }]
+    const w = await mountPanel('s1') // identity project_path=C:/proj/a 无匹配
+    expect(w.findAll('[data-test="srp-extra-dir"]').length).toBe(0)
+    w.unmount()
+  })
+
+  it('add-dir updated 回传 → 附加行即时出现（store 原位同步，不必重开面板）', async () => {
+    const store = useSessionStore()
+    store.sessions = [sessionEntry('s1', 'p1')]
+    store.projects = [project('p1', '演示项目', 'C:/proj/a')]
+    const w = await mountPanel('s1')
+    expect(w.findAll('[data-test="srp-extra-dir"]').length).toBe(0)
+    await w.find('.srp-add-project').trigger('click')
+    await flushPromises()
+    // 模拟弹窗内追加成功后的 updated 回传
+    w.getComponent(ProjectCreateModal).vm.$emit('updated', {
+      ...store.projects[0],
+      extra_dirs: ['C:/Zoo'],
+    })
+    await flushPromises()
+    const rows = w.findAll('[data-test="srp-extra-dir"]')
+    expect(rows.length).toBe(1)
+    expect(rows[0].text()).toContain('C:/Zoo')
+    expect(store.projects[0].extra_dirs).toEqual(['C:/Zoo'])
     w.unmount()
   })
 })

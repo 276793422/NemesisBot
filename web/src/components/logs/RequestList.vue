@@ -21,6 +21,8 @@ const emit = defineEmits<{
 const search = ref('')
 const modelFilter = ref('all')
 const expandedIterations = ref<Set<string>>(new Set())
+// 「用户消息全文」卡展开态（默认展开；切换选中时复位展开）。
+const fullMsgOpen = ref(true)
 
 // 模型过滤选项从数据派生（BUG-20261106-028 横向）：此前硬编码两个字面量
 // （glm-4.7/claude-sonnet-4-5），而实际记录的 model 串带 provider 前缀
@@ -55,6 +57,10 @@ const relatedSession = computed(() => {
 const relatedTask = computed(() => {
   if (!selected.value?.clusterTaskId) return null
   return props.tasks.find(t => t.id === selected.value!.clusterTaskId) || null
+})
+
+watch(() => selected.value?.id, () => {
+  fullMsgOpen.value = true
 })
 
 function toggleIteration(key: string) {
@@ -104,6 +110,7 @@ watch(
         >
           <div class="item-header">
             <span class="item-time">{{ formatRelative(r.timestamp) }}</span>
+            <span v-if="r.isAux" class="item-aux-badge" title="压缩摘要杂务调用（_aux 目录）">杂务</span>
             <span class="item-duration">{{ (r.duration_ms / 1000).toFixed(1) }}s</span>
           </div>
           <div class="item-preview">{{ r.firstMessage }}</div>
@@ -147,6 +154,18 @@ watch(
 
         <!-- 迭代列表 -->
         <div class="iterations scrollable">
+          <!-- 用户消息全文（00.request.md Message 段原样回传，不截断；
+               列表预览截 2000 字符，全文在这里看）。 -->
+          <div v-if="selected.fullMessage" class="fullmsg-card">
+            <div class="iteration-header" @click="fullMsgOpen = !fullMsgOpen">
+              <span class="iteration-index">📝 全文</span>
+              <span class="iteration-summary">用户消息全文</span>
+              <span class="iteration-toggle">{{ fullMsgOpen ? '▼' : '▶' }}</span>
+            </div>
+            <div v-if="fullMsgOpen" class="fullmsg-body">
+              <pre class="fullmsg-pre">{{ selected.fullMessage }}</pre>
+            </div>
+          </div>
           <div
             v-for="iter in selected.iterations"
             :key="`${selected.id}-${iter.index}`"
@@ -306,6 +325,16 @@ watch(
   margin-top: var(--space-1);
 }
 
+.item-aux-badge {
+  padding: 1px 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
 .explorer-detail {
   display: flex;
   flex-direction: column;
@@ -460,6 +489,32 @@ watch(
   color: var(--text-muted);
   font-family: monospace;
   margin-bottom: var(--space-1);
+}
+
+.fullmsg-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-3);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.fullmsg-body {
+  padding: var(--space-3);
+}
+
+.fullmsg-pre {
+  background: var(--bg-primary);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent-muted);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  max-height: 480px;
+  overflow-y: auto;
 }
 
 .scrollable { overflow-y: auto; }

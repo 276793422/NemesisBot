@@ -9391,15 +9391,32 @@ async fn w5_issue_dispatch_success_via_handler() {
     .unwrap();
     assert_eq!(out["dispatched"], serde_json::json!(true), "{out}");
     assert!(!out["task_id"].as_str().unwrap().is_empty());
-    assert_eq!(
-        store.get_issue(issue.id).unwrap().status,
-        IssueStatus::InProgress
-    );
-    // 派发即指派回填。
-    assert_eq!(
-        store.get_issue(issue.id).unwrap().assignee_id.as_deref(),
-        Some("node-py")
-    );
+    // 乐观状态断言（时序诚实化，BUG-20261125-063）：dispatch core 移
+    // spawn_blocking 后，await 窗口让 RPC 分离失败体（对端不可达秒拒）的
+    // 回退有机会先于本断言落定——两种序都合法：未见 ⛔ 评论 = 断言乐观
+    // InProgress + 指派回填；已见 = 断言已回退终态。完整回退链由下方
+    // 轮询 + 终态断言覆盖，两分支最终收敛一致。
+    let rolled_back_early = store
+        .list_comments(issue.id)
+        .unwrap()
+        .iter()
+        .any(|c| c.content.contains("⛔ 派发失败"));
+    let issue_now = store.get_issue(issue.id).unwrap();
+    if rolled_back_early {
+        assert_eq!(
+            issue_now.status,
+            IssueStatus::Backlog,
+            "回退已先行落定则应为派发前状态"
+        );
+        assert_eq!(issue_now.assignee_id, None, "回退已先行落定则指派应已恢复");
+    } else {
+        assert_eq!(issue_now.status, IssueStatus::InProgress);
+        // 派发即指派回填。
+        assert_eq!(
+            store.get_issue(issue.id).unwrap().assignee_id.as_deref(),
+            Some("node-py")
+        );
+    }
 
     // RPC spawn 体：对端不可达 → finish_dispatch FAILED + ⛔ 评论（有界
     // 轮询等它落定）。

@@ -415,6 +415,7 @@ pub(crate) async fn run_runtime(
             let web_mgr = Arc::new(crate::web_approval::WebApprovalManager::new(
                 shared_resources.agent_event_tx.clone(),
                 Some(approval_rules_path),
+                Some(shared_resources.home.clone()),
             ));
             // 审批续执行（2026-10-22 拍板「批准+拒绝都回灌」）：stale 卡
             // （gateway 重启前签发）裁决后，按台账 payload 的 session_key
@@ -1787,8 +1788,30 @@ pub(crate) async fn run_runtime(
         // 区分入口）；审计链未启用 = append None（内部 warn），tracing 兜底。
         let estop_engage = Arc::clone(&shared_resources.estop);
         let tray_audit_engage = security_plugin.clone();
+        // 用户行为学习信号（复查 2026-11-24）：托盘入口与 WSAPI/CLI 同款落
+        // signals.jsonl（复用 nemesis-web 单点实现；forge feature 闸，裁掉
+        // = 零引用零开销）。复查 2026-11-25：append_signal 总闸需要 home
+        // 闸面路径，与 workspace 一并预备（clone 先于 engage 闭包的 move
+        // 消费，release 闭包自用一份）。
+        #[cfg(feature = "forge")]
+        let tray_estop_ws = shared_resources
+            .workspace_dir()
+            .to_string_lossy()
+            .to_string();
+        #[cfg(feature = "forge")]
+        let tray_estop_home = shared_resources.home.to_string_lossy().to_string();
+        #[cfg(feature = "forge")]
+        let tray_release_ws = tray_estop_ws.clone();
+        #[cfg(feature = "forge")]
+        let tray_release_home = tray_estop_home.clone();
         tray.set_on_estop(Box::new(move || {
             estop_engage.trigger();
+            #[cfg(feature = "forge")]
+            nemesis_web::handlers::estop::record_estop_signal(
+                Some(&tray_estop_home),
+                Some(&tray_estop_ws),
+                "engage",
+            );
             if let Some(plugin) = tray_audit_engage.as_ref()
                 && plugin
                     .append_direct_audit_event(
@@ -1813,6 +1836,12 @@ pub(crate) async fn run_runtime(
         let tray_audit_release = security_plugin.clone();
         tray.set_on_release(Box::new(move || {
             estop_release.release();
+            #[cfg(feature = "forge")]
+            nemesis_web::handlers::estop::record_estop_signal(
+                Some(&tray_release_home),
+                Some(&tray_release_ws),
+                "release",
+            );
             if let Some(plugin) = tray_audit_release.as_ref()
                 && plugin
                     .append_direct_audit_event(

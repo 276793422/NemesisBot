@@ -335,10 +335,42 @@ fn drafts_dir_is_sibling_of_definitions() {
 fn sanitizer_matches_engine_behavior() {
     assert_eq!(sanitize_workflow_filename("a b/c.d"), "a_b_c_d");
     assert_eq!(sanitize_workflow_filename(""), "wf_unnamed");
-    // '.' is replaced like any other unsafe char (the engine's wf_ prefix
-    // branch is unreachable for the same reason) — the copy here must stay
-    // byte-identical to engine.rs's so draft stems == definition stems.
+    // '.' is replaced like any other unsafe char — `.`/`..` 穿越与隐藏文件
+    // 首点在白名单映射后结构性不可能出现。engine.rs 经 use 消费同一实现
+    //（BUG-20261125-073 单一真相源，双副本已删），draft stems ==
+    // definition stems 由编译期同源保证。
     assert_eq!(sanitize_workflow_filename(".hidden"), "_hidden");
+}
+
+/// 保留设备名中和回归锁（BUG-20261125-073）：白名单全字母数字的
+/// `con`/`nul`/`com1` 等此前逐字节直通——`<defs>/con.yaml` /
+/// `<drafts>/nul.yaml` 在旧 Windows（10/Server）设备解析（创建诡误/
+/// 写入设备/静默丢数据），与 sanitize_path_segment 出口中和
+///（BUG-20261111-083）同威胁面同形态（前缀 `_` 断开设备名解析）。
+#[test]
+fn sanitizer_neutralizes_windows_reserved_device_names() {
+    // 纯保留名（扩展名前的基名命中）。
+    assert_eq!(sanitize_workflow_filename("con"), "_con");
+    assert_eq!(sanitize_workflow_filename("nul"), "_nul");
+    assert_eq!(sanitize_workflow_filename("prn"), "_prn");
+    assert_eq!(sanitize_workflow_filename("aux"), "_aux");
+    // 大小写不敏感（Windows 设备名解析不分大小写）。
+    assert_eq!(sanitize_workflow_filename("COM1"), "_COM1");
+    assert_eq!(sanitize_workflow_filename("Lpt4"), "_Lpt4");
+    // 输入带点：白名单先映射 `.` → `_`，产出 `con_yaml`（基名非 `con`，
+    // 天然安全不命中——`con_yaml.yaml` 不是设备名）。
+    assert_eq!(sanitize_workflow_filename("con.yaml"), "con_yaml");
+    // 带下划线后缀的长形态不是保留名——直通不变。
+    assert_eq!(sanitize_workflow_filename("con_x"), "con_x");
+    assert_eq!(sanitize_workflow_filename("conveyor"), "conveyor");
+    // 普通名零影响（非保留名的既有映射不变）。
+    assert_eq!(sanitize_workflow_filename("my_flow"), "my_flow");
+    // 非法字符映射出尾部 `_` 的形态不命中（`con ` → `con_`，基名
+    // `con_` ≠ `con`；Win32 只剥离尾点/尾空格不剥下划线——尾 `_` 是
+    // 稳定安全形态，无剥离回退风险）。
+    assert_eq!(sanitize_workflow_filename("con "), "con_");
+    // 空串形态不变。
+    assert_eq!(sanitize_workflow_filename(""), "wf_unnamed");
 }
 
 #[test]

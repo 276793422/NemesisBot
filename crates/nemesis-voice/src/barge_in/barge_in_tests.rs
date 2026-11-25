@@ -38,6 +38,33 @@ fn reset_clears_armed_state() {
     assert!(!w.sustained(), "reset 后不再 armed");
 }
 
+/// 反咳嗽回归锁（BUG-20261125-041）：短噪声（< min_sustain）之后进入静默期，
+/// sustained() 不得靠墙钟过闸——语音停止必须解除武装。
+#[test]
+fn sustained_disarms_when_speech_stops() {
+    let mut w = BargeInWatch::new(Duration::from_millis(40));
+    assert!(w.onset(true), "咳嗽起点 = onset");
+    assert!(!w.onset(false), "咳嗽结束");
+    sleep(Duration::from_millis(60)); // 静默期墙钟已超 min_sustain
+    assert!(
+        !w.sustained(),
+        "停声后静默期不得 armed（修复前此处为真=咳嗽误打断）"
+    );
+}
+
+/// armed 要求连续说话：中途停过一次，重新开口 = 新 onset，持续计时重置。
+#[test]
+fn sustained_restarts_after_re_onset() {
+    let mut w = BargeInWatch::new(Duration::from_millis(40));
+    assert!(w.onset(true));
+    sleep(Duration::from_millis(30));
+    let _ = w.onset(false); // 短暂停顿 → 解除武装
+    assert!(w.onset(true), "重新开口 = 新 onset");
+    assert!(!w.sustained(), "新 onset 起计时重置，立即查不得 armed");
+    sleep(Duration::from_millis(50));
+    assert!(w.sustained(), "重新连续说话超 min_sustain 后 armed");
+}
+
 #[test]
 fn playback_window_logic() {
     // 从未播放 → 关

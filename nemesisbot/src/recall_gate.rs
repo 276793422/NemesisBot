@@ -112,7 +112,10 @@ pub fn build_recall_gate(cfg: &nemesis_config::Config) -> Option<Arc<RecallGate>
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
-        // provider 不消费 workspace（消费方是工具层）；判定无工具调用。
+        // 判定无工具调用（纯文本进出）；workspace 留空对 HTTP lane 无影响，
+        // 但 CLI 型 lane（claude-cli/codex-cli）的子进程 cwd 会消费它
+        // （BUG-20261125-018 横向排查定性：本函数签名只收 cfg 无 workspace
+        // 可传，透传需改签名波及调用方——chore 通道挂账，见 BUG_FIX 横向排查节）。
         workspace: String::new(),
         connect_mode: resolution.connect_mode.clone(),
         protocol: resolution.protocol.clone(),

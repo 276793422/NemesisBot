@@ -232,3 +232,88 @@ fn definition_record_matches_subject_text_shape() {
     let rec = definition_record_value(&definition_text(&def));
     assert_eq!(rec["text"], serde_json::to_string(&def).unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261125-008：`[]` 文档形状闸（allowlist）
+// ---------------------------------------------------------------------------
+
+// WARN 捕获（自制最小 Subscriber 收事件文本进共享缓冲，形态抄
+// nemesis-agent test_support::capture_logs_to_buf；不引 tracing-subscriber
+// dev-dep——Cargo.toml/Cargo.lock 零变更）。set_default 是 thread-local，
+// 并行测试互不污染。
+mod warn_capture {
+    use std::sync::{Arc, Mutex};
+
+    struct EventText(Arc<Mutex<Vec<String>>>);
+
+    struct MsgVisitor(String);
+    impl tracing::field::Visit for MsgVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                if !self.0.is_empty() {
+                    self.0.push(' ');
+                }
+                self.0.push_str(&format!("{value:?}"));
+            } else {
+                self.0.push_str(&format!(" {}={value:?}", field.name()));
+            }
+        }
+    }
+
+    impl tracing::Subscriber for EventText {
+        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut v = MsgVisitor(String::new());
+            event.record(&mut v);
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("[{}] {}", event.metadata().level(), v.0));
+        }
+        fn enter(&self, _span: &tracing::Id) {}
+        fn exit(&self, _span: &tracing::Id) {}
+    }
+
+    /// thread-local 装捕获 subscriber；返回 (guard, 缓冲)，guard 持有至断言完。
+    pub fn capture() -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<String>>>) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let guard = tracing::subscriber::set_default(EventText(buf.clone()));
+        (guard, buf)
+    }
+}
+
+#[test]
+fn allowlist_array_document_warns_and_falls_back_empty() {
+    let dir = std::env::temp_dir().join(format!(
+        "nb_preinstall_al8_{:?}_{}",
+        std::thread::current().id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mcp_scan_allowlist.json");
+    std::fs::write(&path, "[]").unwrap();
+    let (_guard, buf) = warn_capture::capture();
+    let al = Allowlist::new(path.clone());
+    let fp = definition_fingerprint(&serde_json::json!({"name": "srv"}));
+    assert!(
+        !al.contains(&fp),
+        "`[]` 零条目 → 空表（fail-open 语义保持）"
+    );
+    let logs = buf.lock().unwrap().join("\n");
+    assert!(
+        logs.contains("must be a JSON object"),
+        "违形必须 WARN（此前零诊断）：logs={logs}"
+    );
+    assert!(logs.contains("array"), "形状必须可见：logs={logs}");
+    std::fs::remove_dir_all(&dir).ok();
+}

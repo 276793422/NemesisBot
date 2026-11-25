@@ -22,6 +22,9 @@ futures = { workspace = true }
 regex = { workspace = true }
 parking_lot = { workspace = true }
 nemesis-path = { workspace = true }
+# web_fetch SSRF 字面量闸的 URL 解析（url crate 真实解析替代旧自写极简
+# 解析器——userinfo/IPv6/非点分十进制六形态绕过，BUG-20261125-028）。
+url = { workspace = true }
 # exec env 清洗（T4/D2a）：spawn 前剥凭据类继承变量（黑白名单单点在此 crate）。
 nemesis-utils = { workspace = true, features = ["http"] }
 

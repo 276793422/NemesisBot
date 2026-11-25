@@ -7,8 +7,12 @@
  * 职责收窄为**纯点名器**：运行实例状态 + 标签页可点选（点名即授权——AI
  * 只看被点名 tab）；管理/配置/审计归执行单元页【浏览器】TAB。点名发生在
  * 对话中途，跳页点名反人类，故此面板常驻可开。
+ *
+ * 2026-11-25 批 A+B（死实例堵死新建入口修复）：
+ * - A：footer 常驻「打开浏览器」（仅非空态渲染——空态保留居中 CTA）；
+ * - B：死实例卡「↻ 重新打开」= 同 kind 重开（F16 闸防同 kind 重复）。
  */
-import { onBeforeUnmount, onMounted, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useToast } from '../../composables/useToast'
 import { useBrowserPanel } from '../../composables/useBrowserPanel'
 import { useBrowserStore, type BrowserSessionSummary } from '../../stores/browser'
@@ -16,6 +20,9 @@ import { useBrowserStore, type BrowserSessionSummary } from '../../stores/browse
 const toast = useToast()
 const { open, setOpen } = useBrowserPanel()
 const store = useBrowserStore()
+
+/** 启动防抖：footer 常驻按钮 / 死实例「重新打开」/ 空态按钮共享一把闸。 */
+const spawning = ref(false)
 
 let sessionTimer: ReturnType<typeof setInterval> | null = null
 let tabTimer: ReturnType<typeof setInterval> | null = null
@@ -67,15 +74,29 @@ onMounted(() => {
   }
 })
 
-async function openBrowser() {
+/**
+ * 统一启动入口（2026-11-25 批 A+B）：
+ * - A：footer 常驻「打开浏览器」——旧实现按钮只在空态分支，而死实例
+ *   （已退出）保留注册表使空态永不达成 = 面板永无新建入口；
+ * - B：死实例卡「重新打开」= 同 kind 重开（后端 F16 闸只挡同 kind 活体，
+ *   死会话不挡道；同 kind 活体在场时诚实报错走 toast）。
+ * kind 缺省 = 后端解析序（配置 kind > auto）。
+ */
+async function spawnBrowser(kind?: string) {
+  if (spawning.value) return
+  spawning.value = true
   try {
-    const s = await store.spawn()
+    const s = await store.spawn(kind)
     toast.success(`已打开浏览器：${s?.kind_name ?? ''}`)
     await store.fetchTabs(s!.id).catch(() => {})
   } catch (e: any) {
     toast.error(e?.message ?? String(e))
+  } finally {
+    spawning.value = false
   }
 }
+const openBrowser = () => spawnBrowser()
+const reopenSession = (s: BrowserSessionSummary) => spawnBrowser(s.kind)
 
 async function attachTab(session: BrowserSessionSummary, targetId: string) {
   try {
@@ -127,6 +148,14 @@ onBeforeUnmount(() => {
           </div>
           <template v-if="!s.alive">
             <div class="browserpick-notabs">浏览器已退出（窗口被手关或崩溃）</div>
+            <button
+              class="browserpick-reopen"
+              type="button"
+              data-test="browser-pick-reopen"
+              :disabled="spawning"
+              title="以同类型重新启动一个实例"
+              @click="reopenSession(s)"
+            >↻ 重新打开</button>
           </template>
           <template v-else>
             <div
@@ -144,6 +173,16 @@ onBeforeUnmount(() => {
             <div v-if="!(store.tabsBySession[s.id] || []).length" class="browserpick-notabs">读取标签页中…</div>
           </template>
         </div>
+      </div>
+
+      <div v-if="store.sessions.length > 0" class="browserpick-footer">
+        <button
+          class="btn btn-primary btn-sm"
+          type="button"
+          data-test="browser-pick-open"
+          :disabled="spawning"
+          @click="openBrowser"
+        >{{ spawning ? '打开中…' : '＋ 打开浏览器' }}</button>
       </div>
     </div>
   </div>
@@ -292,5 +331,32 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--text-muted);
   padding: 2px 8px 2px 16px;
+}
+/* A：footer 常驻启动（仅非空态渲染——空态有自己的居中 CTA，避免双按钮）。 */
+.browserpick-footer {
+  border-top: 1px solid var(--border);
+  padding: 8px;
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+}
+/* B：死实例卡「重新打开」幽灵小按钮。 */
+.browserpick-reopen {
+  margin: 2px 8px 6px 16px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.browserpick-reopen:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+.browserpick-reopen:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 </style>

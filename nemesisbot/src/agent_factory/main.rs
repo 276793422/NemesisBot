@@ -293,6 +293,30 @@ pub fn build_agent_loop(
     if let Some(ref loader) = shared.skills_loader {
         agent_loop.set_skills_loader(loader.clone());
     }
+    // 自学习铺路批次一（2026-11-24）：active 洞察常驻注入（v1 仅主
+    // gateway loop——项目 loop/集群 loop 不接，计划 §8）。forge feature
+    // 裁掉 = 不注入行为零变化；台账空/损坏 fail-closed = 段缺席零字节。
+    // store 是路径视图（渲染从盘重读），与 WSAPI/CLI 按调用现构造互不
+    // 冲突（RMW 由 forge 侧模块级全局写锁串行）。
+    #[cfg(feature = "forge")]
+    {
+        // 激活阈值与学习对话消费方同源（config learn.activation_recurrence
+        // ——批次三接线：渲染 store 虽只读，构造口径不与写入侧分裂）。
+        let forge_cfg = nemesis_forge::config::load_forge_config(
+            &shared
+                .workspace_dir()
+                .join("config")
+                .join("config.forge.json"),
+        );
+        let insights_store =
+            std::sync::Arc::new(nemesis_forge::insights::InsightStore::with_recurrence(
+                &shared.workspace_dir(),
+                forge_cfg.learn.activation_recurrence,
+            ));
+        agent_loop.set_insights_section_source(std::sync::Arc::new(move || {
+            insights_store.render_section()
+        }));
+    }
     // workspace instruction chain (AGENTS.md/CLAUDE.md) rides the
     // same merged context-digest injection.
     agent_loop.set_workspace_root(shared.workspace_dir());
@@ -871,13 +895,32 @@ pub fn build_agent_loop(
                 // S8：judge 调用落 aux 账本（与上方 bridge 同源归因）。
                 .with_data_store(shared.data_store.clone()),
             ));
+            // 学习对话杂务模型回落链（自学习铺路批次三；judge 链同构：
+            // forge.learn.model → agents.small_model → 主模型；chat 现场
+            // 解析，模型热切即时生效）。set_provider 的级联供体在此被
+            // 显式回落链覆盖——gateway 双入口（WSAPI cycle/手动）与 CLI
+            // `forge learn run` 同一解析口径。
+            forge.set_learn_caller(Arc::new(
+                crate::forge_test_runner::ChainLearnCaller::new(
+                    shared.home.clone(),
+                    crate::common::workspace_path(&shared.home),
+                )
+                // 学习对话调用落 aux 账本（judge 同款归因）。
+                .with_data_store(shared.data_store.clone()),
+            ));
+            // 学习对话 estop 闸（四入口同一 EstopState，急停冻结 agent
+            // 活动同语义覆盖学习对话）。
+            let learn_estop = shared.estop.clone();
+            forge.set_learn_estop_check(Arc::new(move || learn_estop.is_engaged()));
             // web 槽（forge.test WSAPI 消费；PROJECTS_BRIDGE 同款槽模式）。
             nemesis_web::handlers::forge::set_forge_test_runner(test_runner);
             // B 线画像 sweep（OnceLock 一次守卫；enabled=false 时 sweep 内部 no-op）。
             // S8：反思通道的 LLM 调用同落 aux 账本（data_store 随任务带出）。
+            // estop 闸同源注入（急停冻结 sweep——学习对话闸同语义覆盖面）。
             crate::profile_service::ensure_sweep_spawned(
                 shared.home.clone(),
                 shared.data_store.clone(),
+                shared.estop.clone(),
             );
             info!(
                 "[AgentFactory] Forge provider updated to model {}",

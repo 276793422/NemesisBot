@@ -62,7 +62,11 @@ async function selectRequest(id: string) {
     const iterations = res?.iterations ?? []
     requestIterations.value[id] = iterations
     const target = props.requests.find(r => r.id === id)
-    if (target) target.iterations = iterations
+    if (target) {
+      target.iterations = iterations
+      // 用户消息全文（不截断）——详情页独立成节展示（列表预览截 2000）。
+      if (typeof res?.fullMessage === 'string') target.fullMessage = res.fullMessage
+    }
   } catch (e) {
     console.error('[SessionExplorer] request_detail failed', e)
   } finally {

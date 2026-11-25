@@ -534,6 +534,40 @@ async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
     );
 }
 
+/// BUG-20261125-047 回归锁：broadcast 逐会话隔离——单个失败会话不得中断
+/// 整段扇出。修复前首个失败会话上的 `?` 直接返回 Err，其后会话连尝试都
+/// 没有；本路径帧不经 chat_event_log 落环（无 seq，chat.sync 无从补拉），
+/// 中断 = 其后会话永久丢帧。场景：两个无发送队列的死会话（SessionManager
+/// 对无队列会话立即 Err，不阻塞）——修复后两个会话都被尝试并聚合进同一
+/// Err（聚合数 = 2）；修复前 Err 只含第一个 id（第二个在 `?` 处被跳过）。
+/// 注：活会话送达面无法在本 crate 构造（SendQueue 的无 writer 测试构造器
+/// from_channels 是 nemesis-web 的 #[cfg(test)] 专用，跨 crate 不可见），
+/// 「继续投递」由循环完成性保证：所有会话被尝试 = 健康会话的 sm.broadcast
+/// 真实收到帧。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_web_server_ops_broadcast_isolates_failed_sessions_continues_fanout() {
+    let sm = Arc::new(nemesis_web::session::SessionManager::new(
+        std::time::Duration::from_secs(3600),
+    ));
+    let adapter = WebServerOpsAdapter::new(sm.clone());
+    let dead1 = sm.create_session();
+    let dead2 = sm.create_session();
+
+    let err = adapter.broadcast("payload").unwrap_err();
+    assert!(
+        err.contains(dead1.id.as_str()),
+        "err must mention dead1: {err}"
+    );
+    assert!(
+        err.contains(dead2.id.as_str()),
+        "err must mention dead2 (old code aborted at dead1 and never tried it): {err}"
+    );
+    assert!(
+        err.contains("2 failed"),
+        "aggregate count must cover both sessions: {err}"
+    );
+}
+
 // =========================================================================
 // 补测批（coverage-95 goal）：bridge Lagged/Closed 组合臂 + agent 任务
 // 轮询行 + HealthServer 绑定冲突 error 臂。

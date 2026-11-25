@@ -337,12 +337,34 @@ async fn test_start_stop_idempotent() {
     ch.start().await.unwrap();
     assert!(*ch.running.read());
 
-    // bind 传播后：同端口二次 start 必须诚实报错（旧形态 bind 失败被
-    // 后台任务吞掉，start 报 Ok 且残留第二个僵尸 accept 循环）
+    // BUG-20261125-019 家族幂等守卫：运行中二次 start 诚实跳过（返回 Ok，
+    // 不再走到 bind——bind 撞墙报错是旧防线的副产品，幂等守卫是正防线；
+    // 家族模板 telegram/discord/feishu/dingtalk/qq/matrix/slack/irc 同口径）。
+    ch.start().await.unwrap();
+    assert!(ch.base.is_running());
+
+    // bind 传播语义（原始意图保留）：未运行状态下端口被占，start 必须诚
+    // 实报 Err（旧形态 bind 失败被后台任务吞掉，start 报 Ok 且残留第二个
+    // 僵尸 accept 循环）；失败路径不留置位旗标（接线在 bind 成功后）。
+    let blocker = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let blocked_port = blocker.local_addr().unwrap().port();
+    let config2 = LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_port: blocked_port,
+        webhook_host: "127.0.0.1".to_string(),
+        webhook_path: "/webhook/line".to_string(),
+        allow_from: Vec::new(),
+    };
+    let ch2 = LineChannel::new(config2, test_bus()).unwrap();
     assert!(
-        ch.start().await.is_err(),
-        "double start on the same port must fail loudly"
+        ch2.start().await.is_err(),
+        "start on an occupied port must fail loudly"
     );
+    assert!(!ch2.base.is_running());
+    drop(blocker);
 
     ch.stop().await.unwrap();
     ch.stop().await.unwrap(); // double stop should be fine
@@ -2299,5 +2321,39 @@ async fn test_bug149_allow_from_blocks_disallowed_sender() {
         reply_tokens.get("U-allowed").map(|v| v.clone()),
         Some("rt-ok".to_string()),
         "allowed sender reply token must be stored"
+    );
+}
+
+/// BUG-20261125-019 回归锁：start/stop 必须维护 base running 旗标 + 幂等双启
+/// 守卫（BUG-20261121-050 同构家族横向扫漏网补齐——manager 的 start_all 守卫 /
+/// any_channel_running / status 上报三消费点都读 trait is_running）。
+/// 服务端点指 loopback 死端口（后台 receive loop 连接失败零外网，start 本体
+/// 不阻塞）；二次 start 走幂等守卫诚实跳过（不 spawn 第二个 receive loop）。
+#[tokio::test]
+async fn b019_start_stop_maintain_base_running_flag_and_guard_duplicate_start() {
+    let config = LineConfig {
+        channel_access_token: "t".to_string(),
+        channel_secret: "s".to_string(),
+        webhook_host: "127.0.0.1".to_string(),
+        webhook_port: 39423,
+        webhook_path: "/hook".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _) = tokio::sync::broadcast::channel(16);
+    let ch = LineChannel::new(config, tx).unwrap();
+    assert!(!ch.base.is_running());
+
+    ch.start().await.unwrap();
+    assert!(
+        ch.base.is_running(),
+        "start 后 trait is_running 必须为 true（BUG-20261125-019）"
+    );
+    ch.start().await.unwrap();
+    assert!(ch.base.is_running());
+
+    ch.stop().await.unwrap();
+    assert!(
+        !ch.base.is_running(),
+        "stop 后 trait is_running 必须为 false"
     );
 }

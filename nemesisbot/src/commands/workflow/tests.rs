@@ -285,7 +285,10 @@ fn test_cmd_template_show_found() {
 
 #[test]
 fn test_cmd_validate_nonexistent() {
-    cmd_validate("/nonexistent/file.yaml").unwrap();
+    // BUG-20261125-010：裁决型命令校验失败必须非零退码——不存在路径 = Err
+    //（旧契约 print+Ok 已废除，脚本/CI 靠退码区分「通过」与「否决」）。
+    let err = cmd_validate("/nonexistent/file.yaml").unwrap_err();
+    assert!(format!("{err:#}").contains("not found"), "{err:#}");
 }
 
 #[test]
@@ -566,9 +569,7 @@ nodes:
     config:
       tool_name: http_request
     depends_on: []
-edges:
-  - from_node: step1
-    to_node: step1
+edges: []
 "#,
     )
     .unwrap();
@@ -585,7 +586,9 @@ fn test_cmd_validate_invalid_yaml() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("bad.yaml");
     std::fs::write(&path, "not: valid: yaml: [[[[").unwrap();
-    cmd_validate(&path.to_string_lossy()).unwrap();
+    // BUG-20261125-010：解析失败 = Err（非零退码）。
+    let err = cmd_validate(&path.to_string_lossy()).unwrap_err();
+    assert!(format!("{err:#}").contains("parse failed"), "{err:#}");
 }
 
 // -------------------------------------------------------------------------
@@ -728,7 +731,9 @@ fn test_cmd_validate_empty_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("empty.yaml");
     std::fs::write(&path, "").unwrap();
-    cmd_validate(&path.to_string_lossy()).unwrap();
+    // BUG-20261125-010：解析失败 = Err（非零退码）。
+    let err = cmd_validate(&path.to_string_lossy()).unwrap_err();
+    assert!(format!("{err:#}").contains("parse failed"), "{err:#}");
 }
 
 #[test]
@@ -1211,14 +1216,16 @@ mod run_arm {
             )
             .expect("template show not found");
 
-            // Validate：不存在的路径 → File not found + Ok。
-            run(
+            // Validate：不存在的路径 → File not found + Err（BUG-20261125-010
+            // 裁决型命令失败分支非零退码；旧契约 print+Ok 已废除）。
+            let err = run(
                 WorkflowAction::Validate {
                     path: "Z:/no/such/wf.yaml".into(),
                 },
                 false,
             )
-            .expect("validate missing ok");
+            .expect_err("validate missing must fail");
+            assert!(format!("{err:#}").contains("not found"), "{err:#}");
         });
     }
 

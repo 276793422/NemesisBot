@@ -271,3 +271,43 @@ fn ledger_roundtrip_and_tail() {
     append_ledger(ws, &[]);
     assert_eq!(read_recent_conclusions(ws, 10).len(), 3);
 }
+
+/// ledger 清理（复查 2026-11-25 批 D）：ts_ms 早于 cutoff 的行整行删除、
+/// 边界保留、损坏行不过滤、缺文件 = Ok(0)；limit=0 读空（tail 优化护栏）。
+/// append_ledger 时间戳恒为 now，旧行直接种盘。
+#[test]
+fn prune_ledger_older_than_cutoff_and_zero_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let path = ws
+        .join("forge")
+        .join("userprofile")
+        .join("reflections.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let body = "\
+        {\"ts_ms\": 1, \"conclusions\": [\"旧行甲\"]}\n\
+        {\"ts_ms\": 2, \"conclusions\": [\"边界行乙\"]}\n\
+        {\"ts_ms\": 3, \"conclusions\": [\"新行丙\"]}\n\
+        corrupt-line\n";
+    std::fs::write(&path, body).unwrap();
+
+    assert_eq!(
+        read_recent_conclusions(ws, 0),
+        Vec::<String>::new(),
+        "limit=0 = 空（护栏）"
+    );
+
+    let pruned = prune_ledger_older_than(ws, 2).unwrap();
+    assert_eq!(pruned, 1, "只删早于 cutoff 的行");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(raw.lines().count(), 3, "边界行 + 新行 + 损坏行保留");
+    assert!(raw.contains("corrupt-line"), "损坏行原样保留");
+    let out = read_recent_conclusions(ws, 10);
+    assert_eq!(out, vec!["边界行乙", "新行丙"]);
+
+    // 无删除不重写（pruned=0 直接 Ok(0)）；缺文件同。
+    assert_eq!(prune_ledger_older_than(ws, 1).unwrap(), 0);
+    let empty_ws = dir.path().join("fresh_ws");
+    std::fs::create_dir_all(&empty_ws).unwrap();
+    assert_eq!(prune_ledger_older_than(&empty_ws, 1).unwrap(), 0);
+}

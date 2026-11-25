@@ -134,6 +134,42 @@ fn test_store_registry_path(name: &str) -> String {
     format!("Software\\Microsoft\\SystemCertificates\\{name}")
 }
 
+/// BUG-20261125-017 回归锁：垃圾 DER 拒绝 + 错误消息必须携带**添加调用
+/// 自身**的错误码（CRYPT_E_ASN1 家族，非零）——修复前错误码在
+/// CertFreeCertificateContext/CertCloseStore 清理调用之后才读取，报告的
+/// 可能是清理路径的 last error 而非真实失败原因（Win32 纪律：失败指示后
+/// 立即捕获）。
+#[test]
+fn cert_store_add_garbage_der_reports_add_phase_error() -> Result<()> {
+    let store_name = format!("NemesisBotSysintTestBadDER_{}", std::process::id());
+    let garbage: Vec<u8> = [0x30, 0x82, 0xFF, 0xFF, 0xDE, 0xAD, 0xBE, 0xEF].to_vec();
+    let err = unsafe { nemesis_sysint::windows::cert_store_add(&store_name, &garbage) }
+        .expect_err("垃圾 DER 必须被拒绝");
+    let msg = format!("{err:#}");
+    let code_str = msg
+        .split("GetLastError=")
+        .nth(1)
+        .and_then(|s| s.split(|c: char| !c.is_ascii_digit()).next())
+        .unwrap_or_else(|| panic!("错误消息必须带 GetLastError= 码: {msg}"));
+    let code: u32 = code_str
+        .parse()
+        .unwrap_or_else(|_| panic!("GetLastError 码必须是十进制数字: {msg}"));
+    assert_ne!(code, 0, "添加阶段错误码不得为零: {msg}");
+    // CRYPT_E_ASN1 家族（0x80093100 起，十进制 2148073984..）＝ ASN.1
+    // 解码失败，证明码来自添加调用而非后续清理。
+    assert!(
+        (0x8009_3100..=0x8009_31FF).contains(&code),
+        "错误码应落在 CRYPT_E_ASN1 家族（0x80093100+）: {code:#010x} — {msg}"
+    );
+
+    // 清扫测试 store 注册表壳（add 失败不留证书，键壳顺手摘）。
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+    let _ =
+        RegKey::predef(HKEY_CURRENT_USER).delete_subkey_all(test_store_registry_path(&store_name));
+    Ok(())
+}
+
 #[test]
 fn cert_store_add_find_delete_roundtrip() -> Result<()> {
     let der = nemesis_sysint::certdata::cert_der_from_bytes(TEST_ROOT_PEM.as_bytes())?;

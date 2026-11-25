@@ -543,6 +543,39 @@ async fn test_remove_non_active_persona() {
     assert_eq!(active["name"], "default");
 }
 
+// remove — ASCII case variant of "default" must be rejected by the reserved-name
+// gate (BUG-20261125-069): "Default" is a valid slug and on case-insensitive
+// filesystems personas/Default resolves to personas/default — an exact-match
+// gate deletes the non-regenerable default archive.
+
+#[tokio::test]
+async fn test_remove_default_case_variant_bails() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let ctx = init_workspace(&dir).await;
+    assert!(
+        ws.join("personas/default").exists(),
+        "init 应产出 default 归档"
+    );
+
+    let h = PersonaHandler::new();
+    for variant in ["Default", "DEFAULT", "deFault"] {
+        let data = serde_json::json!({ "name": variant });
+        let err = h
+            .handle_cmd("remove", Some(data), &ctx)
+            .await
+            .expect_err(&format!("大小写变体 '{variant}' 必须被保留名闸拒绝"));
+        assert!(
+            err.contains("cannot remove default persona"),
+            "variant '{variant}' err: {err}"
+        );
+    }
+    assert!(
+        ws.join("personas/default").exists(),
+        "default 归档目录必须原样保留"
+    );
+}
+
 // file.get — corrupted PERSONA.json handled
 
 #[tokio::test]

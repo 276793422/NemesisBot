@@ -77,6 +77,40 @@ fn collect_respects_window_start_boundary() {
     assert_eq!(out[0].content, "窗外");
 }
 
+/// 文件 mtime 预过滤（复查 2026-11-25 批 F2 回归锁）：mtime < 窗起点 ⇒
+/// 整文件不可能有窗内行（行先写、mtime 后盖）——stat 跳过免全量读；
+/// 新鲜 mtime 照常采集（既有窗口测试的 mtime=now 天然在此臂）。
+#[test]
+fn collect_skips_files_whose_mtime_precedes_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    seed_rows(
+        ws,
+        "old.jsonl",
+        &[user_row("2026-10-25T10:00:00Z", "旧文件行")],
+    );
+    // 回拨 mtime 到窗起点之前（1ms > UNIX_EPOCH，避开 0 的平台怪癖）。
+    let p = ws.join("logs").join("session_logs").join("old.jsonl");
+    let f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+    f.set_times(
+        std::fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_000)),
+    )
+    .unwrap();
+    drop(f);
+    let out = collect_dialogue_after(ws, 60_000).unwrap();
+    assert!(out.is_empty(), "mtime 早于窗起点的文件整文件跳过");
+    // 对照臂：同窗起点、新鲜 mtime 文件 → 行照常进管线。
+    seed_rows(
+        ws,
+        "new.jsonl",
+        &[user_row("2026-10-25T10:01:00Z", "新文件行")],
+    );
+    let out = collect_dialogue_after(ws, 60_000).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].content, "新文件行");
+}
+
 /// 非 jsonl / 坏行 / 非 user/assistant 行跳过；缺目录 = Ok(空)。
 #[test]
 fn collect_skips_non_dialogue_and_missing_dir_is_empty() {
@@ -235,21 +269,91 @@ fn collect_todos_reads_fresh_files_only() {
 }
 
 /// 负反馈事件：append → read_recent 尾部取回（升序保序）。
+/// 批 F3 起 append_event 认总闸——测试需 enabled home（与 signals 同纪律）。
 #[test]
 fn events_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path();
-    assert!(read_recent_events(ws, 10).is_empty(), "缺文件 = 空");
-    append_event(ws, &serde_json::json!({"kind": "veto", "content": "甲"}));
-    append_event(ws, &serde_json::json!({"kind": "forget", "content": "乙"}));
-    let out = read_recent_events(ws, 10);
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    let home_s = home.to_str().unwrap();
+    assert!(read_recent_events(&ws, 10).is_empty(), "缺文件 = 空");
+    append_event(
+        &ws,
+        Some(home_s),
+        &serde_json::json!({"kind": "veto", "content": "甲"}),
+    );
+    append_event(
+        &ws,
+        Some(home_s),
+        &serde_json::json!({"kind": "forget", "content": "乙"}),
+    );
+    let out = read_recent_events(&ws, 10);
     assert_eq!(out.len(), 2);
     assert_eq!(out[0]["kind"], "veto");
     assert_eq!(out[1]["kind"], "forget");
     // limit 截尾（取最近 N 条）。
-    let out = read_recent_events(ws, 1);
+    let out = read_recent_events(&ws, 1);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0]["kind"], "forget");
+}
+
+/// events 闸四臂（复查 2026-11-25 批 F3 回归锁，镜像 signals 闸测试）：
+/// config 缺失 fail-closed / home=None / enabled=false / enabled=true 落。
+#[test]
+fn events_gate_respects_profile_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let ev = || serde_json::json!({"ts_ms": 1, "kind": "veto", "content": "x"});
+    // home 缺失（无 config.json）→ fail-closed 不落。
+    let no_cfg_home = dir.path().join("home_nocfg");
+    std::fs::create_dir_all(&no_cfg_home).unwrap();
+    append_event(&ws, Some(no_cfg_home.to_str().unwrap()), &ev());
+    assert!(
+        !ws.join("forge")
+            .join("userprofile")
+            .join("events.jsonl")
+            .exists(),
+        "config 缺失 = 闸面不可得，fail-closed 不落"
+    );
+    // home = None → 不落。
+    append_event(&ws, None, &ev());
+    assert!(!ws.join("forge").exists(), "home 缺失 = 不落");
+    // enabled=false → 不落（独立 home 路径防 GATE 缓存串扰）。
+    let off_home = dir.path().join("home_off");
+    std::fs::create_dir_all(&off_home).unwrap();
+    std::fs::write(
+        off_home.join("config.json"),
+        r#"{"user_profile": {"enabled": false}}"#,
+    )
+    .unwrap();
+    append_event(&ws, Some(off_home.to_str().unwrap()), &ev());
+    assert!(
+        !ws.join("forge")
+            .join("userprofile")
+            .join("events.jsonl")
+            .exists(),
+        "enabled=false 事件也不落（存储即隐私闸统一）"
+    );
+    // enabled=true → 落。
+    let on_home = dir.path().join("home_on");
+    std::fs::create_dir_all(&on_home).unwrap();
+    std::fs::write(
+        on_home.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    append_event(&ws, Some(on_home.to_str().unwrap()), &ev());
+    let content =
+        std::fs::read_to_string(ws.join("forge").join("userprofile").join("events.jsonl")).unwrap();
+    assert_eq!(content.lines().count(), 1, "只有总闸开启那一条落盘");
 }
 
 // ---- 批 C 采集增强（2026-11-24）：四投影 + signals.jsonl ----
@@ -374,20 +478,32 @@ fn batch_c_work_note_char_cap() {
     assert_eq!(out[0].work_notes, vec![expect]);
 }
 
-/// signals.jsonl：append → read_recent 尾部取回（升序保序）；缺文件 = 空。
+/// signals.jsonl：append → read_recent 尾部取回（升序保序）；缺文件 = 空；
+/// 总闸（复查 2026-11-25）：enabled=false / home 缺失 = 不落。
 #[test]
 fn signals_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
+    // 种 home config（enabled=true——闸面现读）。
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    let home_s = home.to_str().unwrap();
     assert!(read_recent_signals(ws, 10).is_empty(), "缺文件 = 空");
     append_signal(
         ws,
+        Some(home_s),
         &serde_json::json!({
             "ts_ms": 1, "kind": "estop", "action": "engage"
         }),
     );
     append_signal(
         ws,
+        Some(home_s),
         &serde_json::json!({
             "ts_ms": 2, "kind": "approval", "operation": "exec",
             "risk_level": "HIGH", "approved": true, "duration_ms": 3200,
@@ -396,6 +512,7 @@ fn signals_roundtrip() {
     );
     append_signal(
         ws,
+        Some(home_s),
         &serde_json::json!({
             "ts_ms": 3, "kind": "approval", "operation": "write_file",
             "risk_level": "HIGH", "approved": false, "duration_ms": 15000,
@@ -411,6 +528,75 @@ fn signals_roundtrip() {
     assert_eq!(out.len(), 2);
     assert_eq!(out[0]["kind"], "approval");
     assert_eq!(out[1]["duration_ms"], 15000);
+}
+
+/// 总闸（复查 2026-11-25）：`user_profile.enabled=false` = 信号也不落
+/// （存储即隐私闸统一——关闭状态下信号零消费者）；home 缺失 =
+/// 闸面不可得，fail-closed 不落。
+#[test]
+fn signals_gate_respects_profile_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    // home 缺失（无 config.json）→ fail-closed 不落。
+    let no_cfg_home = dir.path().join("home_nocfg");
+    std::fs::create_dir_all(&no_cfg_home).unwrap();
+    append_signal(
+        &ws,
+        Some(no_cfg_home.to_str().unwrap()),
+        &serde_json::json!({"ts_ms": 1, "kind": "estop", "action": "engage"}),
+    );
+    assert!(
+        !ws.join("forge")
+            .join("userprofile")
+            .join("signals.jsonl")
+            .exists(),
+        "config 缺失 = 闸面不可得，fail-closed 不落"
+    );
+    // home = None → 不落。
+    append_signal(
+        &ws,
+        None,
+        &serde_json::json!({"ts_ms": 2, "kind": "estop", "action": "engage"}),
+    );
+    assert!(!ws.join("forge").exists(), "home 缺失 = 不落");
+    // enabled=false → 不落（独立 home 路径防 GATE 缓存串扰）。
+    let off_home = dir.path().join("home_off");
+    std::fs::create_dir_all(&off_home).unwrap();
+    std::fs::write(
+        off_home.join("config.json"),
+        r#"{"user_profile": {"enabled": false}}"#,
+    )
+    .unwrap();
+    append_signal(
+        &ws,
+        Some(off_home.to_str().unwrap()),
+        &serde_json::json!({"ts_ms": 3, "kind": "estop", "action": "engage"}),
+    );
+    assert!(
+        !ws.join("forge")
+            .join("userprofile")
+            .join("signals.jsonl")
+            .exists(),
+        "enabled=false 信号也不落（隐私闸统一）"
+    );
+    // enabled=true（ui_telemetry 缺省）→ 落（信号面只认总闸）。
+    let on_home = dir.path().join("home_on");
+    std::fs::create_dir_all(&on_home).unwrap();
+    std::fs::write(
+        on_home.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    append_signal(
+        &ws,
+        Some(on_home.to_str().unwrap()),
+        &serde_json::json!({"ts_ms": 4, "kind": "estop", "action": "engage"}),
+    );
+    let content =
+        std::fs::read_to_string(ws.join("forge").join("userprofile").join("signals.jsonl"))
+            .unwrap();
+    assert_eq!(content.lines().count(), 1, "只有总闸开启那一条落盘");
 }
 
 // ---------- 终端会话采集（2026-11-24 T 批） ----------
@@ -534,4 +720,93 @@ fn collect_terminal_sessions_window_and_shape() {
     let empty_ws = dir.path().join("no-terminal");
     std::fs::create_dir_all(&empty_ws).unwrap();
     assert!(collect_terminal_sessions(&empty_ws, 0).unwrap().is_empty());
+}
+
+/// 非法 UTF-8 容错（复查 2026-11-25）：pty 写侧落**原始字节**——ConPTY 读
+/// 块边界可劈开多字节字符（中文输出高发）、中文 Windows cmd.exe 默认
+/// chcp 936 输出直接是 GBK。旧行为 read_to_string 整文件 Err → 整会话
+/// 静默丢失；lossy 解码后坏字节变替换符，ASCII 输入命令照常采集。
+#[test]
+fn collect_terminal_sessions_lossy_invalid_utf8() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let tdir = ws.join("logs").join("terminal");
+    std::fs::create_dir_all(&tdir).unwrap();
+    // GBK「本地目录」（\xB1\xBE\xB5\xD8\xC4\xBF\xC2\xBC）夹在输出帧——
+    // 每字节都是 10xxxxxx 连续形态，非法 UTF-8。
+    let mut body: Vec<u8> = b"# shell: cmd\n\n[I] git status\n[O] ".to_vec();
+    body.extend_from_slice(&[0xB1, 0xBE, 0xB5, 0xD8, 0xC4, 0xBF, 0xC2, 0xBC]);
+    body.extend_from_slice(b"\n[I] cd src\n");
+    std::fs::write(tdir.join("pty_gbk.log"), &body).unwrap();
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let out = collect_terminal_sessions(ws, now_ms - 60_000).unwrap();
+    assert_eq!(out.len(), 1, "非法 UTF-8 文件不再整会话丢失");
+    assert_eq!(out[0].shell, "cmd");
+    assert_eq!(out[0].commands, vec!["git status", "cd src"]);
+}
+
+// ---------- 旁路文件清理（复查 2026-11-25 批 D） ----------
+
+/// signals/events 清理：早于 cutoff 的行整行删除、边界保留（< 严格比较）、
+/// 损坏行不过滤（不吃数据）、缺文件 = Ok(0)。
+#[test]
+fn prune_signals_and_events_older_than_cutoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    // events 走 append 需闸开启的 home（批 F3 起 events 与 signals 同闸）。
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    let home_s = home.to_str().unwrap();
+    for ts in [1i64, 2, 3] {
+        append_event(
+            ws,
+            Some(home_s),
+            &serde_json::json!({"ts_ms": ts, "kind": "veto", "content": "x"}),
+        );
+        append_signal(
+            ws,
+            Some(home_s),
+            &serde_json::json!({"ts_ms": ts, "kind": "estop", "action": "engage"}),
+        );
+    }
+    // 损坏行（两侧各一条）——清理不过滤损坏行。
+    let sp = ws.join("forge").join("userprofile").join("signals.jsonl");
+    let mut sig = std::fs::read_to_string(&sp).unwrap();
+    sig.push_str("not-json\n");
+    std::fs::write(&sp, sig).unwrap();
+    let ep = ws.join("forge").join("userprofile").join("events.jsonl");
+    let mut ev = std::fs::read_to_string(&ep).unwrap();
+    ev.push_str("{\"ts_ms\": \"oops\"}\n");
+    std::fs::write(&ep, ev).unwrap();
+
+    // cutoff=2 → ts=1 删（1 < 2），ts=2/3 严格保留（边界不清）。
+    let pruned = prune_events_older_than(ws, 2).unwrap();
+    assert_eq!(pruned, 1, "events 只删早于 cutoff 的行");
+    let pruned = prune_signals_older_than(ws, 2).unwrap();
+    assert_eq!(pruned, 1, "signals 只删早于 cutoff 的行");
+
+    let ev_out = read_recent_events(ws, 10);
+    assert_eq!(ev_out.len(), 3, "剩余 2 有效行 + 1 损坏行原样保留");
+    assert_eq!(ev_out[0]["ts_ms"], 2, "边界行（==cutoff）保留且升序在前");
+    assert_eq!(ev_out[1]["ts_ms"], 3);
+    assert_eq!(ev_out[2]["ts_ms"], "oops", "损坏行不过滤");
+
+    let sig_out = read_recent_signals(ws, 10);
+    assert_eq!(sig_out.len(), 2, "读侧跳过损坏行（ts2/ts3）");
+    assert_eq!(sig_out[0]["ts_ms"], 2);
+    let raw = std::fs::read_to_string(&sp).unwrap();
+    assert!(raw.contains("not-json"), "signals 损坏行原样保留");
+    assert_eq!(raw.lines().count(), 3);
+
+    // 缺文件 = Ok(0)。
+    let empty_ws = dir.path().join("fresh_ws");
+    std::fs::create_dir_all(&empty_ws).unwrap();
+    assert_eq!(prune_events_older_than(&empty_ws, 1).unwrap(), 0);
+    assert_eq!(prune_signals_older_than(&empty_ws, 1).unwrap(), 0);
 }

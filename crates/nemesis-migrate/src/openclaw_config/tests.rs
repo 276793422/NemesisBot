@@ -574,7 +574,11 @@ fn test_convert_config_agents_without_defaults_key() {
         nemesis_types::capability::DEFAULT_MAX_TOKENS,
         "骨架 max_tokens 必须引用出厂单一真相源（BUG-20261120-016：8192 旧值是 d083e51e 已定性的撞顶截断形态）"
     );
-    assert_eq!(config["agents"]["defaults"]["max_tool_iterations"], 100);
+    assert_eq!(
+        config["agents"]["defaults"]["max_tool_iterations"],
+        nemesis_types::capability::DEFAULT_MAX_TOOL_ITERATIONS,
+        "骨架 max_tool_iterations 必须引用出厂单一真相源（BUG-20261125-045：旧值 100 在 2026-11-23 拍板缺省 0=不限 后漏同步，迁移装机独享已废除的撞顶暂停形态）"
+    );
 }
 
 #[test]
@@ -586,6 +590,11 @@ fn test_convert_config_skeleton_matches_factory_defaults() {
     //   时消费方 unwrap_or(true) 会给迁移装机开 8 层管线，姿态反转。
     // - mcp：模板显式 true；骨架缺段时消费方 unwrap_or(false) 会给迁移
     //   装机静默关掉 MCP 子系统。
+    // - BUG-20261125-045 扩项：max_tool_iterations。016 修复时该键出厂值
+    //   仍是 100（2026-11-23 拍板改 0=不限 发生在 016 之后），拍板只改了
+    //   nemesis-config serde default + 模板，骨架漏同步——本断言把
+    //   「骨架 == capability 单一真相源常量」钉死，未来再拍板改缺省时
+    //   骨架自动跟随（常量只有一处），不再需要手工三处同步。
     let mut data = HashMap::new();
     data.insert("gateway".to_string(), serde_json::json!({"port": 18790}));
     let (config, _) = convert_config(&data);
@@ -593,6 +602,11 @@ fn test_convert_config_skeleton_matches_factory_defaults() {
         config["agents"]["defaults"]["max_tokens"],
         nemesis_types::capability::DEFAULT_MAX_TOKENS,
         "迁移装机不得独享 8192 撞顶截断"
+    );
+    assert_eq!(
+        config["agents"]["defaults"]["max_tool_iterations"],
+        nemesis_types::capability::DEFAULT_MAX_TOOL_ITERATIONS,
+        "迁移装机不得独享已废除的撞顶暂停形态（缺省 0=不限）"
     );
     assert_eq!(
         config["security"]["enabled"], false,

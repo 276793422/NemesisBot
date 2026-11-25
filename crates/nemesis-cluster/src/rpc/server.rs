@@ -276,6 +276,22 @@ impl RpcServer {
                             let conn_count = Arc::clone(&conn_count);
 
                             tokio::spawn(async move {
+                                // BUG-20261125-013：槽位释放必须 panic-safe——
+                                // 旧形态 `handle_connection(...).await; fetch_sub`
+                                // 顺序结构里，handler（`dispatch_wire_request`
+                                // 直接调 `RpcHandlerFn`，无 catch_unwind）panic
+                                // 会撕掉本任务、跳过 fetch_sub：conn_count 泄漏
+                                // +1，同 peer 重放同型 panic 爬到 max_conns 后
+                                // accept 闸拒绝一切新连接（RPC 服务静默锁死到
+                                // 重启）。Drop guard 在正常退出与 unwind 双路径
+                                // 释放槽位。
+                                struct ConnSlotGuard(Arc<std::sync::atomic::AtomicUsize>);
+                                impl Drop for ConnSlotGuard {
+                                    fn drop(&mut self) {
+                                        self.0.fetch_sub(1, Ordering::Relaxed);
+                                    }
+                                }
+                                let _slot = ConnSlotGuard(Arc::clone(&conn_count));
                                 Self::handle_connection(
                                     stream,
                                     remote_addr.to_string(),
@@ -285,7 +301,6 @@ impl RpcServer {
                                     send_timeout,
                                 )
                                 .await;
-                                conn_count.fetch_sub(1, Ordering::Relaxed);
                             });
                         }
                         Err(e) => {

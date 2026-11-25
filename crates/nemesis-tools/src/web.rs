@@ -181,47 +181,140 @@ fn redirect_refetch_message(status: reqwest::StatusCode, location: &str) -> Stri
     )
 }
 
-/// Validate URL to prevent SSRF attacks.
-fn validate_url(url: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {}", e))?;
+/// Validate URL to prevent SSRF attacks（字面量闸）。
+///
+/// 职责边界：URL 解析形态正确性 + **字面量**形态（IP 直接量 / 域名字面量）
+/// 的内网段判定。诚实边界：域名解析到内网 IP（DNS rebinding / 私有 DNS /
+/// mDNS .local）不在此闸能力内——那是 DNS 级闸的职责（nemesis-security
+/// Layer 6 `ssrf::Guard::resolve_and_validate`，生产默认配置下 web_fetch 的
+/// url 参数经 `extract_url` 臂过 Layer 6）。本闸价值：security.enabled=false
+/// 降级配置下的唯一闸 + Layer 6 前的快速失败回显。
+///
+/// 修复历史（BUG-20261125-028）：旧实现自写极简解析器（`split('/').next()`
+/// + `split(':').next()` 抠 host），六形态绕过：
+///
+/// - ① userinfo：`http://x@127.0.0.1/` → host 被抠成 `x@127.0.0.1`，blocked
+///   表精确匹配永不命中，reqwest 真实解析后连的就是 127.0.0.1；
+/// - ② IPv6 括号：`[::1]` → `split(':')` 得 `[`，blocked 表的 `[::1]` 永不
+///   命中——旧 tests.rs 曾把此形态钉成「documented behavior」；
+/// - ③ 非点分十进制 IPv4：`2130706433` / `0x7f000001` / `0177.0.0.1` 均语义
+///   等价 127.0.0.1，字符串匹配全部放行；
+/// - ④ 尾点域名：`localhost.` ≠ `localhost` 精确匹配放行；
+/// - ⑤ link-local 段缺失：blocked 表只精确挡 `169.254.169.254`，段内其余
+///   `169.254.0.0/16` 全放行；
+/// - ⑥ 私有段误伤：`starts_with("172.2")`/`("172.3")` 把公网
+///   `172.32.0.0/12` 之外的 `172.200/172.32-39` 等一并拦掉。
+///
+/// 现用 url crate 真实解析（WHATWG 语义）：userinfo 在解析期与 host 分离
+/// （①结构性消灭）；IP 字面量规范化为 typed `Host::Ipv4/Ipv6`（②③消灭）；
+/// 段判定走 std 分类语义 + resolver 同段位保留段（⑤⑥消灭）；域名走小写 +
+/// 单尾点剥离后匹配（④消灭）。
+fn validate_url(raw: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(raw).map_err(|e| format!("invalid URL: {}", e))?;
 
-    if let Some(host) = parsed.host_str() {
-        // Block common private/local addresses
-        let blocked_hosts = [
-            "localhost",
-            "127.0.0.1",
-            "0.0.0.0",
-            "169.254.169.254", // Cloud metadata endpoint
-            "[::1]",
-        ];
-        let lower = host.to_lowercase();
-        for blocked in &blocked_hosts {
-            if lower == *blocked {
-                return Err(format!(
-                    "access to '{}' is not allowed (SSRF protection)",
-                    host
-                ));
-            }
-        }
-
-        // Block private IP ranges
-        if lower.starts_with("10.")
-            || lower.starts_with("192.168.")
-            || lower.starts_with("172.16.")
-            || lower.starts_with("172.17.")
-            || lower.starts_with("172.18.")
-            || lower.starts_with("172.19.")
-            || lower.starts_with("172.2")
-            || lower.starts_with("172.3")
-        {
-            return Err(format!(
-                "access to private IP '{}' is not allowed (SSRF protection)",
-                host
-            ));
-        }
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!(
+            "scheme '{}' is not allowed (http/https only)",
+            scheme
+        ));
     }
 
-    Ok(())
+    match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => validate_ip_literal(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => validate_ip_literal(std::net::IpAddr::V6(ip)),
+        Some(url::Host::Domain(domain)) => {
+            // WHATWG 允许尾点形态（"localhost." 与 "localhost" 同解析目标），
+            // 单尾点剥离后匹配；多尾点是非法域名（url crate 解析期已拒）。
+            let lower = domain.strip_suffix('.').unwrap_or(domain).to_lowercase();
+            if lower == "localhost"
+                || lower.ends_with(".localhost")
+                || lower == "localhost.localdomain"
+            {
+                return Err(format!(
+                    "access to '{}' is not allowed (SSRF protection)",
+                    domain
+                ));
+            }
+            Ok(())
+        }
+        None => Err("no host in URL".to_string()),
+    }
+}
+
+/// IP 字面量内网段判定（与 nemesis-security `resolver.rs` 同段位的字面量
+/// 闸子集；Layer 6 是权威 DNS 级闸，见 [`validate_url`] 职责边界）。
+fn validate_ip_literal(ip: std::net::IpAddr) -> Result<(), String> {
+    use std::net::IpAddr;
+
+    // IPv4-mapped IPv6（:ffff:0:0/96）在双栈 socket 上按内嵌 IPv4 连接，
+    // 必须先归一再判定（std is_loopback 对映射形态全漏）。
+    let mut normalized = match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
+        other => other,
+    };
+    // RFC 4291 IPv4-compatible（::a.b.c.d）折叠为内嵌 IPv4（::7f00:1 语义
+    // 上命名的就是 127.0.0.1）；:: 与 ::1 各由专属分类承担。
+    if let IpAddr::V6(v6) = normalized
+        && let Some(v4) = ipv4_compatible_of(v6)
+    {
+        normalized = IpAddr::V4(v4);
+    }
+
+    let blocked = match &normalized {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_unspecified()
+                || v4.is_private()
+                || v4.is_link_local() // 169.254.0.0/16（含 metadata 169.254.169.254）
+                || o[0] == 0 // 0.0.0.0/8 current network
+                || o[0] >= 224 // multicast 224/4 + reserved 240/4 + broadcast
+                || (o[0] == 100 && (64..=127).contains(&o[1])) // RFC 6598 CGNAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 2) // RFC 5735 TEST-NET-1
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100) // TEST-NET-2
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113) // TEST-NET-3
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // RFC 2544 benchmarking
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (s[0] & 0xfe00) == 0xfc00 // RFC 4193 ULA fc00::/7
+                || (s[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || s[0] == 0x2002 // 6to4 2002::/16（内嵌 v4 隧道形态，从严整段封锁）
+                || (s[0] == 0x0064 && s[1] == 0xff9b) // RFC 6052 NAT64 64:ff9b::/96
+                || (s[0] == 0x2001 && s[1] == 0x0db8) // RFC 3849 documentation
+        }
+    };
+
+    if blocked {
+        Err(format!(
+            "access to '{}' is not allowed (SSRF protection)",
+            normalized
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// RFC 4291 IPv4-compatible IPv6（前六组全零、尾两节非零）折叠为内嵌
+/// IPv4（`::1` loopback 由 `is_loopback` 承担，显式排除；与
+/// nemesis-security `resolver::ipv4_compatible_of` 同语义）。
+fn ipv4_compatible_of(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let [a, b, c, d, e, f, hi, lo] = v6.segments();
+    if (a, b, c, d, e, f) == (0, 0, 0, 0, 0, 0) && (hi != 0 || lo > 1) {
+        return Some(std::net::Ipv4Addr::new(
+            (hi >> 8) as u8,
+            (hi & 0xff) as u8,
+            (lo >> 8) as u8,
+            (lo & 0xff) as u8,
+        ));
+    }
+    None
 }
 
 /// Search provider trait - abstracts over different search backends.
@@ -846,38 +939,10 @@ fn url_decode_query_param(url: &str, param: &str) -> Option<String> {
     None
 }
 
-/// Internal URL parsing module for SSRF validation.
-mod url {
-    /// Minimal URL parser for SSRF validation (avoids adding another dependency).
-    pub struct Url {
-        pub host: Option<String>,
-    }
-
-    impl Url {
-        pub fn parse(raw: &str) -> Result<Self, String> {
-            // Very simple parsing: extract host from http(s)://host/path
-            let stripped = raw
-                .strip_prefix("http://")
-                .or_else(|| raw.strip_prefix("https://"))
-                .ok_or("not an HTTP URL")?;
-
-            let host_part = stripped.split('/').next().unwrap_or("");
-            // Remove port
-            let host = host_part.split(':').next().unwrap_or("");
-            if host.is_empty() {
-                return Err("no host in URL".to_string());
-            }
-
-            Ok(Self {
-                host: Some(host.to_string()),
-            })
-        }
-
-        pub fn host_str(&self) -> Option<&str> {
-            self.host.as_deref()
-        }
-    }
-}
+// 注：旧版此处有一个自写 `mod url` 极简解析器（「避免加依赖」），同名字
+// 遮蔽 url crate——它正是 BUG-20261125-028 六形态绕过的结构性成因（见
+// [`validate_url`] doc）。现直接依赖 workspace `url = "2.5"`（reqwest 本就
+// 传递依赖它），本文件 `url::` 路径解析到真实 crate。
 
 #[cfg(test)]
 mod tests;

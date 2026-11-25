@@ -62,10 +62,14 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
 
     // 骨架 = fresh-write 迁移路径的整份 config，必须与出厂缺省收敛同值
     // （onboard 走 config.default.json 模板，迁移走本骨架——两条全新安装
-    // 路径不得分叉）。max_tokens 引 capability 单一真相源；security/mcp
-    // 显式落出厂值：缺段会让消费方缺席语义（unwrap_or(true) /
-    // unwrap_or(false)）各自漂移（BUG-20261120-016——8192 是 d083e51e
-    // 已定性的撞顶截断形态、安全管线被缺席语义点亮、MCP 子系统被静默关）。
+    // 路径不得分叉）。max_tokens / max_tool_iterations 引 capability 单一
+    // 真相源；security/mcp 显式落出厂值：缺段会让消费方缺席语义
+    // （unwrap_or(true) / unwrap_or(false)）各自漂移（BUG-20261120-016——
+    // 8192 是 d083e51e 已定性的撞顶截断形态、安全管线被缺席语义点亮、
+    // MCP 子系统被静默关）。BUG-20261125-045：max_tool_iterations 旧值
+    // 100 在 2026-11-23 拍板（缺省改 0=不限）后漏同步，迁移装机独享已被
+    // 废除的撞顶暂停形态；gateway 的 legacy 迁移器只认旧模板值 20，100
+    // 会被当用户显式值永久保留。
     let mut config = serde_json::json!({
         "agents": {
             "defaults": {
@@ -74,7 +78,8 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                 "llm": "zhipu/glm-4.7-flash",
                 "max_tokens": nemesis_types::capability::DEFAULT_MAX_TOKENS,
                 "temperature": 0.7,
-                "max_tool_iterations": 100,
+                "max_tool_iterations":
+                    nemesis_types::capability::DEFAULT_MAX_TOOL_ITERATIONS,
                 "concurrent_request_mode": "steer",
                 "queue_size": 8
             }

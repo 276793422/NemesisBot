@@ -986,41 +986,54 @@ impl ProjectLoopManager {
                 return;
             }
         };
-        let factory_cfg = nemesis_providers::factory::FactoryConfig {
-            proxy: resolution.proxy.clone(),
-            stream_mode: resolution.stream_mode.clone(),
-            cache_breakpoints: resolution.cache_breakpoints,
-            extra_body: resolution.extra_body.clone(),
-            llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
-            api_key: resolution.api_key.clone(),
-            api_base: resolution.api_base.clone(),
-            // workspace 留空：provider 不消费该字段（消费方是工具层，项目
-            // loop 的工具 workspace 在装配期已锚定项目目录，与 provider 无关）。
-            workspace: String::new(),
-            connect_mode: resolution.connect_mode.clone(),
-            protocol: resolution.protocol.clone(),
-            timeout_secs: resolution.timeout_secs,
-            account_id: String::new(),
-            headers: std::collections::HashMap::new(),
-        };
-        let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(
-                    "[ProjectLoops] reload_providers: provider 构造失败，项目 loop 保持现状: {e}"
-                );
-                return;
-            }
-        };
-        let adapter = Arc::new(nemesis_web::llm_bridge::ProviderAdapter::new(
-            provider,
-            resolution.model_name.clone(),
-        ));
+        let fallback_workspace = self.shared.workspace_dir();
+        // 项目目录快照（BUG-20261125-018）：每 loop 的 CLI 型 provider 需要
+        // 自己的 workspace（claude_cli current_dir / codex_cli -C 直接消费
+        // 它）——与初建 build_project_agent_loop 同源（spec.rs 传项目目录）。
+        // registry 查不到的 id 回落主 workspace（不低于 gateway cwd 的降级）。
+        let project_dirs: HashMap<String, PathBuf> = registry::list_projects(&self.registry_path)
+            .into_iter()
+            .map(|e| (e.id.clone(), e.path.clone()))
+            .collect();
         let mut swapped = 0usize;
-        for handle in self.state.lock().unwrap().values() {
-            handle
-                .agent_loop
-                .set_provider_and_model(adapter.clone(), resolution.model_name.clone());
+        let loops: Vec<(String, Arc<nemesis_agent::r#loop::AgentLoop>)> = {
+            let state = self.state.lock().unwrap();
+            state
+                .iter()
+                .map(|(id, h)| (id.clone(), Arc::clone(&h.agent_loop)))
+                .collect()
+        };
+        for (project_id, agent_loop) in loops {
+            let workspace = reload_workspace_for(&project_dirs, &project_id, &fallback_workspace);
+            let factory_cfg = nemesis_providers::factory::FactoryConfig {
+                proxy: resolution.proxy.clone(),
+                stream_mode: resolution.stream_mode.clone(),
+                cache_breakpoints: resolution.cache_breakpoints,
+                extra_body: resolution.extra_body.clone(),
+                llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+                api_key: resolution.api_key.clone(),
+                api_base: resolution.api_base.clone(),
+                workspace: workspace.to_string_lossy().to_string(),
+                connect_mode: resolution.connect_mode.clone(),
+                protocol: resolution.protocol.clone(),
+                timeout_secs: resolution.timeout_secs,
+                account_id: String::new(),
+                headers: std::collections::HashMap::new(),
+            };
+            let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        "[ProjectLoops] reload_providers: 项目 '{project_id}' provider 构造失败，该 loop 保持现状: {e}"
+                    );
+                    continue;
+                }
+            };
+            let adapter = Arc::new(nemesis_web::llm_bridge::ProviderAdapter::new(
+                provider,
+                resolution.model_name.clone(),
+            ));
+            agent_loop.set_provider_and_model(adapter, resolution.model_name.clone());
             swapped += 1;
         }
         if swapped > 0 {
@@ -1031,6 +1044,21 @@ impl ProjectLoopManager {
             );
         }
     }
+}
+
+/// reload 热切的 per-loop workspace 选择（BUG-20261125-018）：registry
+/// 命中 = 该项目目录（与初建 build_project_agent_loop 同源）；未命中 =
+/// 主 workspace 回落（不低于 gateway cwd 的降级）。纯函数以便单测钉住
+/// 两臂语义。
+fn reload_workspace_for(
+    project_dirs: &HashMap<String, PathBuf>,
+    project_id: &str,
+    fallback: &std::path::Path,
+) -> PathBuf {
+    project_dirs
+        .get(project_id)
+        .cloned()
+        .unwrap_or_else(|| fallback.to_path_buf())
 }
 
 impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
@@ -1183,7 +1211,8 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
         dir: &str,
     ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
         // 只写注册表（校验链在 registry::add_project_dir：绝对路径/存在/
-        // canonical/三向不重叠/去重/上限）。**不热更在跑 loop**——围栏
+        // canonical/嵌套拒绝+精确相等共享放行/去重/上限，2026-11-25 单一
+        // 规则）。**不热更在跑 loop**——围栏
         // Arc 在工具注册期烧入，重启网关或重建项目后生效（WSAPI note 已
         // 向用户声明该时机）；未在跑 loop spawn 时自然读新注册表。
         let entry =

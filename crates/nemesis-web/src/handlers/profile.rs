@@ -19,7 +19,10 @@
 //!
 //! `profile.prune_queue {older_than_days}`：队列清理**底层接口**（UI 按钮
 //! 后接；显式用户动作，不挂 sweep 自动删数据）——清理教训队列（acked 且
-//! 早于 cutoff）与观察队列（已裁决且早于 cutoff），pending 永不动。
+//! 早于 cutoff）与观察队列（已裁决且早于 cutoff），pending 永不动；
+//! 2026-11-25 批 D 起同 cutoff 一并清理 signals/events/reflections 三个
+//! 旁路证据文件（响应带 `pruned_signals`/`pruned_events`/
+//! `pruned_reflections` 三个计数）。
 //!
 //! `profile.route`：前端 router.afterEach 页面路由遥测（例 2「使用集群前
 //! 先去诊断页」的页面足迹信号），经 telemetry::record_wsapi_call 以
@@ -92,14 +95,15 @@ impl ProfileHandler {
     fn veto(&self, ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
         let sub = content_sub(data)?;
         let ws = self.workspace(ctx)?;
-        let hit = surface::veto(&ws, &sub)?;
+        // home = append_event 总闸（复查 2026-11-25 批 F3：学习关闭不落）。
+        let hit = surface::veto(&ws, Some(&self.home(ctx)?), &sub)?;
         Ok(Some(json!({ "vetoed": hit })))
     }
 
     fn forget(&self, ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
         let sub = content_sub(data)?;
         let ws = self.workspace(ctx)?;
-        let hit = surface::forget(&ws, &sub)?;
+        let hit = surface::forget(&ws, Some(&self.home(ctx)?), &sub)?;
         Ok(Some(json!({ "forgotten": hit })))
     }
 
@@ -239,7 +243,7 @@ impl ProfileHandler {
         let resolved = if approved {
             surface::confirm_observation(&ws, id)?
         } else {
-            surface::dismiss_observation(&ws, id)?.map(|_| ())
+            surface::dismiss_observation(&ws, Some(&self.home(ctx)?), id)?.map(|_| ())
         };
         Ok(Some(json!({
             "resolved": resolved.is_some(),
@@ -249,7 +253,10 @@ impl ProfileHandler {
 
     /// 队列清理（底层接口；显式用户动作——UI 按钮后接，不挂 sweep）。
     /// `older_than_days ≥ 1`：清理两个队列中早于 cutoff 的**已消费/已裁决**
-    /// 条目（pending 永不动）。
+    /// 条目（pending 永不动）；复查 2026-11-25 批 D 扩展——同 cutoff 一并
+    /// 清理 signals/events/reflections 三个无状态旁路文件（纯 append 证据
+    /// 面，无 pending 概念，早于 cutoff 的行整行删除；挖掘/反思只消费
+    /// 尾部窗口，清理不伤语义）。
     fn prune_queue(
         &self,
         ctx: &RequestContext,
@@ -263,14 +270,26 @@ impl ProfileHandler {
             return Err("older_than_days must be >= 1".to_string());
         }
         let ws = self.workspace(ctx)?;
+        // 饱和算术（复查 2026-11-24，配置面 i64 纪律）：极端大天数不 panic
+        // ——乘法饱和到 i64::MAX、减法饱和到 i64::MIN，cutoff 退化为极早时
+        // 间 = 什么都不清（诚实降级，不崩 handler）。
         let cutoff = prune_cutoff_ms(days);
         let pruned_lessons =
             nemesis_forge::userprofile::bridge::prune_lessons_older_than(&ws, cutoff)?;
         let pruned_observations =
             nemesis_forge::userprofile::bridge::prune_observations_older_than(&ws, cutoff)?;
+        let pruned_signals =
+            nemesis_forge::userprofile::collection::prune_signals_older_than(&ws, cutoff)?;
+        let pruned_events =
+            nemesis_forge::userprofile::collection::prune_events_older_than(&ws, cutoff)?;
+        let pruned_reflections =
+            nemesis_forge::userprofile::reflection::prune_ledger_older_than(&ws, cutoff)?;
         Ok(Some(json!({
             "pruned_lessons": pruned_lessons,
             "pruned_observations": pruned_observations,
+            "pruned_signals": pruned_signals,
+            "pruned_events": pruned_events,
+            "pruned_reflections": pruned_reflections,
         })))
     }
 }
@@ -284,11 +303,13 @@ fn content_sub(data: Option<&Value>) -> Result<String, String> {
         .ok_or_else(|| "missing or empty 'content'".to_string())
 }
 
-/// 清理 cutoff 计算（纯函数可单测）：days 饱和乘法（BUG-20261125-006；
-/// 同族纪律 BUG-20261107-025 decay_sweep——入参来源 i64 裸乘溢出在
-/// debug panic / release 环绕；饱和语义 = 荒谬大天数 → cutoff 探到纪元前
-/// → 清理等于不删，诚实极端值行为）。
-fn prune_cutoff_ms(days: i64) -> i64 {
+/// `profile.prune_queue` 的 cutoff 计算（复查 2026-11-24 抽出纯函数便于单
+/// 测）：`now − days×86400×1000`，两级饱和（BUG-20261125-006；同族纪律
+/// BUG-20261107-025 decay_sweep——入参来源 i64 裸乘溢出在 debug panic /
+/// release 环绕）——乘法饱和到 i64::MAX、减法饱和到 i64::MIN，极端大天数
+/// 不 panic，cutoff 退化为极早时间 = 什么都不清（诚实降级；配置面 i64
+/// 算术纪律同 decay_sweep/stale 安全网族）。
+pub(crate) fn prune_cutoff_ms(days: i64) -> i64 {
     chrono::Utc::now()
         .timestamp_millis()
         .saturating_sub(days.saturating_mul(24 * 60 * 60 * 1000))

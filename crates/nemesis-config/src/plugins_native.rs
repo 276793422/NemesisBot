@@ -163,12 +163,27 @@ pub fn load_enabled(config_dir: &Path, id: NativePluginId) -> bool {
     let Ok(content) = nemesis_utils::fsutil::read_config_string(&path) else {
         return true;
     };
-    let Ok(file) = serde_json::from_str::<SwitchFile>(&content) else {
-        tracing::warn!(
-            path = %path.display(),
-            "[NativePlugin] 开关文件解析失败，按全启用处理"
-        );
-        return true;
+    // 形状闸前置（`ensure_object`，BUG-20261125-008）：SwitchFile 全字段
+    // default 无 flatten，`[]` 曾走 serde visit_seq 零元素臂 = 静默「全空」
+    // 零诊断——fail-open 方向下即**已停用插件静默复活**，可见性必须有。
+    let parsed = serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|e| e.to_string())
+        .and_then(|v| {
+            nemesis_utils::json_shape::ensure_object(&v, "config.plugin.native.json")
+                .map(|_| v)
+                .map_err(|e| e.to_string())
+        })
+        .and_then(|v| serde_json::from_value::<SwitchFile>(v).map_err(|e| e.to_string()));
+    let file = match parsed {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[NativePlugin] 开关文件解析失败/形状非法，按全启用处理"
+            );
+            return true;
+        }
     };
     file.plugins.get(id.id()).map(|e| e.enabled).unwrap_or(true)
 }
@@ -181,9 +196,15 @@ pub fn set_enabled(config_dir: &Path, id: NativePluginId, enabled: bool) -> Resu
     let _serial = crate::config_write_lock();
     let path = plugins_native_config_path(config_dir);
     migrate_legacy_file(&path);
+    // 形状闸（BUG-20261125-008）：`[]` 文档曾从 serde visit_seq 零元素臂
+    // 溜过 = from_str 成功 → 静默空底重建**零诊断**（其余插件开关被抹掉）。
+    // `filter(|v| v.is_object())` 把违形 Value 打回 None——落入下方既有
+    // 「在场但不可读/解析失败」WARN 重建臂，与坏 JSON 同一出口。
     let mut file = match nemesis_utils::fsutil::read_config_string(&path)
         .ok()
-        .and_then(|c| serde_json::from_str::<SwitchFile>(&c).ok())
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .filter(|v| v.is_object())
+        .and_then(|v| serde_json::from_value::<SwitchFile>(v).ok())
     {
         Some(f) => f,
         None => {

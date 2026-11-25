@@ -269,6 +269,27 @@ mod file_commands {
     }
 
     #[test]
+    fn remove_default_case_variant_bails() {
+        // BUG-20261125-069 回归锁：ASCII 大小写变体一律拒（"Default" 是合法
+        // slug，Windows 大小写不敏感文件系统上 personas/Default 与
+        // personas/default 同目录——精确匹配会删掉不可再生的 default 归档）。
+        let dir = ws();
+        seed_persona(dir.path(), "default", "default identity");
+        for variant in ["Default", "DEFAULT", "deFault"] {
+            let err = cmd_remove(dir.path(), variant)
+                .expect_err(&format!("大小写变体 '{variant}' 必须被保留名闸拒绝"));
+            assert!(
+                err.to_string().contains("不能删除默认人格"),
+                "variant '{variant}' err: {err:#}"
+            );
+        }
+        assert!(
+            dir.path().join("personas/default").exists(),
+            "default 归档目录必须原样保留"
+        );
+    }
+
+    #[test]
     fn remove_missing_bails() {
         let dir = ws();
         let err = cmd_remove(dir.path(), "ghost").expect_err("不存在 → Err");

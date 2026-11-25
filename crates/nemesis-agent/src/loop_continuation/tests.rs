@@ -945,6 +945,77 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
     assert!(outbound.unwrap().content.contains("Tool executed"));
 }
 
+/// BUG-20261125-066 回归锁：LLM 空回复且无工具调用 → legacy 迷你循环
+/// 旧形态 `!final_content.is_empty()` 守卫整段跳过持久化+出站+打标，
+/// 而收口 finish_handling 照常回收快照——用户静默收不到回复且无法重试
+/// （新主路同形态有兜底终文 turn.rs default_response，legacy 路缺席）。
+/// 修复后：空终文兜底同文照常出站，快照正常回收。
+#[tokio::test]
+async fn test_continuation_empty_final_content_gets_fallback_outbound() {
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    let messages = vec![make_message("user", "Hello")];
+    manager
+        .save_continuation(
+            "task-empty-final",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+            "",
+        )
+        .await;
+
+    // 空回复且无工具调用（BUG-066 触发形态：break 落 final_content = ""）。
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
+        content: String::new(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    handle_cluster_continuation(
+        &manager,
+        "task-empty-final",
+        "task response",
+        false,
+        None,
+        &provider,
+        "test-model",
+        4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        &tools,
+        &outbound_tx,
+        None,
+        None,
+        true, // F-F vision_supported
+        None, // source_node
+        None, // estop
+    )
+    .await;
+
+    let outbound = outbound_rx
+        .try_recv()
+        .expect("BUG-066: empty final_content must produce fallback outbound");
+    assert_eq!(
+        outbound.content,
+        "I've completed processing but have no response to give."
+    );
+    assert_eq!(outbound.channel, "web");
+    assert_eq!(outbound.chat_id, "chat1");
+    // 快照照常收口（兜底不改变 finish_handling 回收语义）。
+    assert!(!manager.has_continuation("task-empty-final").await);
+}
+
 /// BUG-20261106-041 回归锁：急停已在触发态进入续行 → 迭代循环顶部闸
 /// 生效，一次 LLM 调用都不发起，终局走既有持久化+出站路径带诚实注记。
 #[tokio::test]
@@ -2712,6 +2783,43 @@ async fn cleanup_old_snapshots_evicts_disk_and_memory() {
     assert!(!manager.has_continuation("t2").await);
     assert!(!cache.join("t1.json").exists());
     assert!(!cache.join("t2.json").exists());
+}
+
+/// BUG-20261125-042 回归锁：TTL 清扫必须一并清相位记录（remove_continuation
+/// 同款不变量「条目消亡 = 相位消亡」）。泄漏形态：重启恢复 mark_restored 插入
+/// Restored → 回调永不到 → TTL 清扫删快照+内存条目但漏相位 → restore_phases
+/// 永久驻留（陈旧相位陷阱）。判别式：清扫后二次 mark_restored——修复态回落
+/// Checkpoint（Checkpoint→Restored 合法 = Ok），泄漏态 Restored→Restored
+/// 非法 = Err。
+#[tokio::test]
+async fn cleanup_old_snapshots_clears_phase_records() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+    manager
+        .save_continuation(
+            "t-phase",
+            vec![make_message("user", "a")],
+            "tc",
+            "web",
+            "c",
+            "s",
+            "",
+        )
+        .await;
+    // 模拟重启恢复链：recover_to_manager 折算后 mark_restored 落相位。
+    manager
+        .mark_restored("t-phase")
+        .expect("首次 mark_restored 合法");
+    assert!(manager.has_continuation("t-phase").await);
+
+    std::thread::sleep(Duration::from_millis(20));
+    let removed = manager.cleanup_old_snapshots(Duration::ZERO).await;
+    assert_eq!(removed, 1);
+    assert!(!manager.has_continuation("t-phase").await);
+    // 判别式：相位已随清扫消亡（二次恢复合法）；泄漏态此处 Err(Restored→Restored)。
+    manager
+        .mark_restored("t-phase")
+        .expect("TTL 清扫后相位必须已清（回落 Checkpoint）");
 }
 
 #[tokio::test]

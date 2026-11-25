@@ -280,6 +280,7 @@ impl AgentLoop {
             plan_present: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
+            insights_section_source: parking_lot::RwLock::new(None),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(queue_size.max(1))),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
@@ -297,8 +298,8 @@ impl AgentLoop {
             #[cfg(all(feature = "codemode", not(target_os = "android")))]
             code_run_tool: parking_lot::RwLock::new(None),
             interactive_approval: parking_lot::RwLock::new(false),
-            pending_open_files: parking_lot::RwLock::new(Vec::new()),
-            pending_workflow_edit: parking_lot::RwLock::new(None),
+            pending_open_files: parking_lot::Mutex::new(HashMap::new()),
+            pending_workflow_edit: parking_lot::Mutex::new(HashMap::new()),
             tool_schema_unlocks: parking_lot::RwLock::new(std::collections::HashMap::new()),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
@@ -356,10 +357,34 @@ impl AgentLoop {
             let semaphore = self.continuation_semaphore.clone().unwrap();
             let this = self.clone();
             let m = msg.clone();
-            tokio::spawn(async move {
+            // BUG-20261125-067：gauge/timeline/handle 移入任务体（对齐
+            // spawn_turn_task 范式）。旧形态 gauge/timeline 在 spawn 外栈上
+            // ——dispatch 返回即 Drop，在飞续行 gauge=0：
+            // ① wait_loops_drained 误报排干 → teardown 提前关 outbound
+            //    消费端 → 烧完 LLM 的回复发到关闭的 receiver 静默丢失
+            //    （快照已回收，无法重试）；
+            // ② JoinHandle 丢弃不入 turn_task_handles → stop() abort
+            //    覆盖不到 → 孤儿任务在 stop 后继续跑/publish（V5 注释
+            //    明言防的就是这个）。abort 中断续行有快照兜底（G5 恢复
+            //    链重启捞回），好过孤儿烧完钱丢回复。
+            // guard Drop 保证 panic/abort 展开同样减账；许可等待段不计
+            // in-flight（等待不是执行，spawn_turn_task 同语义）。
+            let gauge = std::sync::Arc::clone(&self.in_flight_turns);
+            let timeline = std::sync::Arc::clone(&self.work_timeline);
+            let timeline_key = msg.session_key.clone();
+            let anchor = Self::timeline_anchor_ms(msg);
+            let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
+                let _gauge = InFlightTurnGuard::acquire(&gauge);
+                // 资源看板 execution 类目：空键不插（无会话身份不盘点）。
+                let _timeline = if timeline_key.is_empty() {
+                    None
+                } else {
+                    Some(TurnTimelineGuard::acquire(&timeline, &timeline_key, anchor))
+                };
                 this.run_continuation_turn(&task_id, &m).await;
             });
+            self.turn_task_handles.lock().push(handle.abort_handle());
         }
     }
 
@@ -1584,7 +1609,11 @@ impl AgentLoop {
                     "[AgentLoop] Handling cluster continuation for task {} (permits={})",
                     task_id, self.max_continuation_permits
                 );
-                // W6：inline continuation 也是在途 turn——gauge 与 spawn 臂同源。
+                // W6：inline continuation 也是在途 turn——gauge/timeline 在
+                // 本栈帧覆盖到 dispatch 返回（inline 分支 await 到底 = 续行
+                // 全程）。spawn 臂（permits>0）的 gauge/timeline 在任务体内
+                // 自持（BUG-20261125-067：旧形态放本栈帧随 dispatch 返回
+                // 即 Drop，在飞续行对 drain/停机不可见）。
                 let _gauge = InFlightTurnGuard::acquire(&self.in_flight_turns);
                 // 资源看板 execution 类目（2026-11-17）：continuation 轮次
                 // 同样进运行态快照（spawn 臂同语义；空键不插）。continuation

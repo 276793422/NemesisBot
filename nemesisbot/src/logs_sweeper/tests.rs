@@ -234,6 +234,7 @@ fn flat_family_sweep_deletes_expired_keeps_fresh() {
             heartbeat: 30,
             ziwei: 30,
             exec_checkpoints: 1,
+            forge_learn: 30,
         },
         old_now(),
     );
@@ -913,7 +914,7 @@ fn per_sweep_cap_bounds_deletions() {
 }
 
 impl LogsTtl {
-    /// 测试助记：十六族全 0 形态。
+    /// 测试助记：十七族全 0 形态。
     fn all_disabled_shape() -> Self {
         Self {
             session_logs: 0,
@@ -932,6 +933,7 @@ impl LogsTtl {
             heartbeat: 0,
             ziwei: 0,
             exec_checkpoints: 0,
+            forge_learn: 0,
         }
     }
 }
@@ -942,18 +944,19 @@ impl LogsTtl {
 
 #[test]
 fn read_logs_ttl_parses_config_values() {
-    // 现读 config logs 段 → 十六族 TTL 解析值（热生效语义的数据面）。
+    // 现读 config logs 段 → 十七族 TTL 解析值（热生效语义的数据面）。
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = dir.path().join("config.json");
     std::fs::write(
         &cfg_path,
-        r#"{"logs": {"session_logs": 9, "terminal": 3, "exec_checkpoints": 2}}"#,
+        r#"{"logs": {"session_logs": 9, "terminal": 3, "exec_checkpoints": 2, "forge_learn": 45}}"#,
     )
     .unwrap();
     let ttl = read_logs_ttl(&cfg_path);
     assert_eq!(ttl.session_logs, 9);
     assert_eq!(ttl.terminal, 3);
     assert_eq!(ttl.exec_checkpoints, 2);
+    assert_eq!(ttl.forge_learn, 45);
     // 未点名族 = 默认值（部分覆盖不抹掉其余族保留策略）。
     assert_eq!(ttl.trash, LogsTtl::default().trash);
 }
@@ -968,4 +971,44 @@ fn read_logs_ttl_defaults_on_missing_and_broken_config() {
     let broken = dir.path().join("broken.json");
     std::fs::write(&broken, "{ not json").unwrap();
     assert_eq!(read_logs_ttl(&broken), LogsTtl::default());
+}
+
+// —— forge_learn：学习对话留痕（第十七族，2026-11-24 自学习批次补） ——
+// 形态与写端 forge.rs trace_dir 同构：`<ws>/forge/learn/{ts}_{trigger}/`
+// 整目录删（**不在 logs/ 根下**——跨根族，ziwei 先例）。
+
+#[test]
+fn forge_learn_sweeps_trace_dirs_whole() {
+    let ws = tempfile::tempdir().unwrap();
+    let fl = ws.path().join("forge").join("learn");
+    // 两个留痕目录（transcript.md + outcome.json 形态）。
+    let a = fl.join("20261124_100000_manual");
+    let b = fl.join("20261124_110000_cycle");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("transcript.md"), "# 学习对话留痕").unwrap();
+    std::fs::write(a.join("outcome.json"), "{}").unwrap();
+    std::fs::write(b.join("transcript.md"), "# 学习对话留痕").unwrap();
+    std::fs::write(b.join("outcome.json"), "{}").unwrap();
+
+    // 时钟拨 40 天：forge_learn(30d) 两目录都删；锁文件 learn.lock 若在
+    // 场（运行态文件）不在族射程——族只扫 learn/ 子树。
+    std::fs::write(ws.path().join("forge").join("learn.lock"), "pid=1").unwrap();
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(40 * 86400),
+    );
+    let fl_stats = stats
+        .iter()
+        .find(|(f, _)| f.name() == "forge_learn")
+        .unwrap()
+        .1;
+    assert_eq!(fl_stats.deleted, 2, "留痕目录整删: {stats:?}");
+    assert!(fl_stats.bytes_freed > 0);
+    assert_eq!(names(&fl), Vec::<String>::new(), "learn/ 子树清空");
+    assert!(
+        ws.path().join("forge").join("learn.lock").exists(),
+        "锁文件不在族射程"
+    );
 }

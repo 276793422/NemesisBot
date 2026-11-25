@@ -799,8 +799,15 @@ impl SkillsHandler {
         match install_result {
             Ok(v) => {
                 // 装成功：备份退役（best-effort；遗孤由下次安装的恢复式清扫收编）。
+                // BUG-20261125-063：remove_dir_all_resilient 退避最坏 ~4.4s，
+                // async 上下文直调卡死 tokio worker（BUG-20261118-172 同族纪律），
+                // 移 spawn_blocking（等待保序：备份清理先于 guard disarm）。
                 if let Some(b) = &backup {
-                    nemesis_utils::fsutil::remove_dir_all_resilient(b);
+                    let b = b.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        nemesis_utils::fsutil::remove_dir_all_resilient(&b)
+                    })
+                    .await;
                 }
                 if let Some(g) = &mut rollback_guard {
                     g.disarm();

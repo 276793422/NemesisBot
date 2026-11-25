@@ -315,6 +315,27 @@ impl VmInstance {
     /// spawn QEMU + 等 QMP 就绪 + 状态核验（真启动裁决——静态探针只是
     /// 必要条件，这里才是最终闸）。
     pub async fn start(p: VmStartParams) -> Result<Self, VmError> {
+        // BUG-20261125-016：run_dir 逗号闸（先于 create_dir_all——拒绝零副作用）。
+        // run_dir 以 `file:<路径>` 形态嵌进两处 QEMU 单 argv：serial.log
+        // （下方 `-serial file:`）与睡眠 vm.state（`sleep_via_qmp` 的
+        // migrate URI）——逗号是 QEMU 子选项分隔符（`-incoming file:`
+        // 支持 `,offset=` 子选项，validate_launch_spec 闸的就是这个形态；
+        // sleep 与 wake 是同一 vm.state 文件的两条流，闸了一头漏另一头）。
+        // serial/migrate 位点是闸（assembly）之后在 lifecycle 侧新增的，
+        // 逃出了 validate_launch_spec 的校验面（同 BUG-20261125-015 的
+        // 「后加位点漏同步既有闸」漂移族）。run_dir 由 workspace 派生
+        // （vm_runtime::vm_run_dir）——workspace 路径用户任意、可含逗号，
+        // 正是闸 rationale 声明的路径类。闸在 start 一处 = 两位点（含未来
+        // run_dir 派生嵌入值）单点全覆盖：VmInstance 只能经 start 构造，
+        // 睡眠路径自动被罩住；wake 的 incoming_file 既有闸照旧（纵深非替代）。
+        if p.run_dir.to_string_lossy().contains(',') {
+            return Err(VmError::Launch(format!(
+                "run_dir 含逗号（{}）——serial.log/vm.state 以 file:<路径> 形态嵌入 \
+                 QEMU 单 argv（逗号是子选项分隔符，各解析点转义语义无法本地验证），\
+                 无法安全装配：请改用不含逗号的工作区/项目目录",
+                p.run_dir.display()
+            )));
+        }
         std::fs::create_dir_all(&p.run_dir).map_err(|e| {
             VmError::Launch(format!("run_dir 创建失败 {}: {e}", p.run_dir.display()))
         })?;

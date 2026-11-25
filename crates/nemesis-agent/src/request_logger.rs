@@ -234,17 +234,23 @@ impl RequestLogger {
         }
     }
 
-    /// Create a logger whose session directory carries a fixed prefix
-    /// （压缩杂务隔离， BUG-3：sender_id="summarizer" 的事件改落
-    /// `aux_` 前缀目录，不再伪装成普通对话）。base_dir 派生同 [`Self::new`]
-    /// （resolve_log_path）；目录名 = `{prefix}_{微秒时间戳}`——微秒后缀防
-    /// 同秒碰撞（multipart 连发三次摘要调用是常态）。
-    pub fn new_with_session_prefix(config: LoggingConfig, workspace: &Path, prefix: &str) -> Self {
+    /// Create a logger whose session directory carries a fixed tag suffix
+    /// （压缩杂务隔离， BUG-3：sender_id="summarizer" 的事件不再伪装成
+    /// 普通对话）。base_dir 派生同 [`Self::new`]（resolve_log_path）；
+    /// 目录名 = `{秒.微秒}_{rand}_{tag}`——与常规目录同形（时间戳段可被
+    /// dashboard 解析进时间线），`_aux` 尾缀供前端识别「杂务」分组；
+    /// rand 防同秒碰撞（multipart 连发三次摘要调用是常态）。
+    pub fn new_with_session_suffix(config: LoggingConfig, workspace: &Path, tag: &str) -> Self {
         if !config.enabled {
             return Self::new(config, workspace);
         }
         let base_dir = resolve_log_path(&config.log_dir, workspace);
-        let name = format!("{prefix}_{}", Local::now().format("%Y-%m-%d_%H-%M-%S%.6f"));
+        let name = format!(
+            "{}_{:03x}_{}",
+            Local::now().format("%Y-%m-%d_%H-%M-%S%.6f"),
+            rand_u16(),
+            tag
+        );
         Self {
             config,
             base_dir,
@@ -329,7 +335,9 @@ impl RequestLogger {
         let session_dir_name = match self.session_name_override.as_ref() {
             Some(name) => Self::sanitize_filename(name),
             None => {
-                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                // 微秒进目录名：同秒多次对话不再只靠 3 hex rand 区分，
+                // 且与 aux 目录（new_with_session_suffix）时间线粒度一致。
+                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S%.6f").to_string();
                 let suffix = format!("_{:03x}", rand_u16());
                 format!("{}{}", timestamp, suffix)
             }
@@ -359,13 +367,21 @@ impl RequestLogger {
 
         let index = self.next_index();
         let filename = format!("{}.request.md", index);
+        // 正文包自适应反引号围栏（见 md_fence_len）：消息本身可能含 markdown
+        // 标题（# 行）与任意反引号行，裸插或定长围栏都会被正文打碎
+        // （dashboard read_md_section 在标题行断节 →「用户消息全文」被截）。
+        // 定长 4 反引号对正文里的 ``` 永不失步，但正文贴 4+ 反引号行
+        // （复制粘贴本系统日志片段回聊即触发）仍会闭栏失步——围栏长度
+        // 取正文最长纯反引号行 +1，渲染器语义下永不失步。与 log_llm_request
+        // 的 Messages 段同一处理逻辑（那边读端不走此路径）。
+        let fence = "`".repeat(md_fence_len(&info.content));
         let content = format!(
             "# User Request\n\n\
              **Timestamp**: {}\n\
              **Channel**: {}\n\
              **Sender ID**: {}\n\
              **Chat ID**: {}\n\n\
-             ## Message\n\n{}\n",
+             ## Message\n\n{fence}text\n{}\n{fence}\n",
             info.timestamp.to_rfc3339(),
             info.channel,
             info.sender_id,
@@ -407,7 +423,7 @@ impl RequestLogger {
 
         // HTTP Headers section (mirrors Go's formatHeaders).
         if !info.http_headers.is_empty() {
-            content.push_str("\n## HTTP Headers\n\n```\n");
+            let mut body = String::new();
             for (key, value) in &info.http_headers {
                 let masked_val =
                     if key.to_lowercase().contains("auth") || key.to_lowercase().contains("key") {
@@ -415,9 +431,11 @@ impl RequestLogger {
                     } else {
                         value.clone()
                     };
-                content.push_str(&format!("{}: {}\n", key, masked_val));
+                body.push_str(&format!("{}: {}\n", key, masked_val));
             }
-            content.push_str("```\n");
+            // 自适应围栏（同 md_fence_len）：header 值含反引号行也不失步。
+            let fence = "`".repeat(md_fence_len(&body));
+            content.push_str(&format!("\n## HTTP Headers\n\n{fence}\n{body}{fence}\n"));
         }
 
         // Full Config section (mirrors Go's FullConfig).
@@ -476,13 +494,22 @@ impl RequestLogger {
                 } else {
                     msg.content.clone()
                 };
+                // 自适应围栏（同 md_fence_len）：会话史（系统提示/工具输出）
+                // 含任意反引号行是常态，定长三反引号被正文打碎——同族横扫
+                // 一并加固。
+                let fence = "`".repeat(md_fence_len(&msg_preview));
                 content.push_str(&format!(
-                    "\n## [{}] {}\n\n```text\n{}\n```\n",
+                    "\n## [{}] {}\n\n{fence}text\n{}\n{fence}\n",
                     i, msg.role, msg_preview
                 ));
                 if let Some(ref tool_calls) = msg.tool_calls {
                     for tc in tool_calls {
-                        let args_preview = if tc.arguments.len() > TRUNCATE_ARGS_LIMIT {
+                        // 与上方消息正文同一闸门：只在 truncated 档截断。
+                        // full 档（默认）此前漏了这层守卫，tool_call args
+                        // 被无条件砍到 200 字符——本地记录不能少。
+                        let args_preview = if self.config.detail_level == DetailLevel::Truncated
+                            && tc.arguments.len() > TRUNCATE_ARGS_LIMIT
+                        {
                             utils::truncate(&tc.arguments, TRUNCATE_ARGS_LIMIT)
                         } else {
                             tc.arguments.clone()
@@ -795,6 +822,29 @@ fn mask_api_key(key: &str) -> String {
     let end = utils::floor_char_boundary(key, 3);
     let start = utils::ceil_char_boundary(key, key.len() - 3);
     format!("{}***{}", &key[..end], &key[start..])
+}
+
+/// 包正文围栏的反引号长度（自适应，渲染器语义下永不失步）。
+///
+/// CommonMark：围栏被「≥开栏长度的同字符 + 行内再无其他字符（首尾空白
+/// 可容忍）」的行闭合。正文里任何纯反引号行都是潜在闭栏候选，围栏必须
+/// 比最长候选长一；无候选 = 4（对正文里的 ``` 永不失步——dcb0db68 基线；
+/// 正文贴 4+ 反引号行——复制粘贴本系统日志片段回聊即触发——自适应加长）。
+/// ````abc 形态行（反引号后带非空白）不是合法闭栏，不计入候选。
+fn md_fence_len(content: &str) -> usize {
+    let mut max_run = 3usize; // 无候选 → 返回 4
+    for line in content.lines() {
+        let t = line.trim();
+        let run = t.chars().take_while(|&c| c == '`').count();
+        if run == 0 {
+            continue;
+        }
+        let rest = &t[run..];
+        if rest.chars().all(|c| c == '`' || c.is_whitespace()) {
+            max_run = max_run.max(run);
+        }
+    }
+    max_run + 1
 }
 
 /// Format an operation type for display.

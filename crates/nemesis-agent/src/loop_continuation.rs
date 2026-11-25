@@ -1232,6 +1232,13 @@ impl ContinuationManager {
                     .collect();
                 for k in &doomed {
                     conts.remove(k);
+                    // 相位记录一并清理（remove_continuation 同款不变量：条目
+                    // 消亡 = 相位消亡。TTL 清扫绕过 remove_continuation 直删，
+                    // 漏清会让重启恢复过（mark_restored 已插入 Restored）却
+                    // 等不到回调的任务在 restore_phases 里永久泄漏——
+                    // finish_handling 注释明示陈旧相位是「Confirmed → *」
+                    // 非法转移陷阱，此处为同族收口。
+                    self.clear_phase(k);
                 }
             }
             store.delete_by_stem(stem);
@@ -1786,6 +1793,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // 5. Run the continuation LLM + tool loop.
     let max_iterations = 20;
     let mut final_content = String::new();
+    // 实际执行的 LLM 轮数（ConversationEnd.total_rounds 实报——旧形态恒报
+    // max_iterations 上限值，预算未耗尽/estop 中止时是假数据）。
+    let mut rounds_executed: u32 = 0;
     // 连续空内容撞 cap 计数（主循环器官 6 同款守卫，阈值复用
     // MAX_EMPTY_LENGTH_CONTINUATIONS）。
     let mut empty_length_streak: u32 = 0;
@@ -1818,6 +1828,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             "[Continuation] Continuation LLM iteration {}/{}: task_id={}",
             iteration, max_iterations, task_id
         );
+        rounds_executed = iteration as u32;
 
         // Emit LLM request observer event.
         if let Some(ref mgr) = observer_manager {
@@ -2097,6 +2108,15 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     }
 
     // 6. Send final response.
+    // 空终文兜底（BUG-20261125-066）：LLM 空回复且无工具调用（break 落空
+    // content）或迭代预算耗尽全程带工具调用（未 break）时 final_content
+    // 为空——旧形态 !is_empty() 守卫整段跳过持久化+出站+打标，而下方
+    // finish_handling 照常回收快照：用户静默收不到回复且无法重试。新主路
+    // 同形态有兜底终文（turn.rs default_response 同文），legacy 迷你循环
+    // 对齐（兜底后守卫恒真，保留 if 结构最小 diff）。
+    if final_content.is_empty() {
+        final_content = "I've completed processing but have no response to give.".to_string();
+    }
     if !final_content.is_empty() {
         // Persist final reply to chat_log and session_store before sending
         // outbound. Skip when session_key is empty (legacy on-disk snapshots
@@ -2174,7 +2194,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         let event = crate::loop_executor::ObserverEvent::ConversationEnd {
             trace_id: trace_id.clone(),
             session_key: format!("continuation-{}", task_id),
-            total_rounds: max_iterations as u32,
+            total_rounds: rounds_executed,
             duration_ms,
             content: final_content.clone(),
             channel: cont_data.channel.clone(),

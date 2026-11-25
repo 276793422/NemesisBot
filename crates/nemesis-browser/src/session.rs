@@ -261,8 +261,10 @@ impl BrowserSession {
         // pid 未知，树杀兜底（kill_profile_tree）补原始 pid 刀够不着的洞。
         macro_rules! fail {
             ($msg:expr) => {{
-                kill_process(pid);
-                kill_profile_tree(&profile_dir);
+                // BUG-20261125-063：树杀是秒级阻塞外部命令（PowerShell WMI
+                // 全表枚举），经 spawn_blocking 下沉（见 kill_*_async 注释）。
+                kill_process_async(pid).await;
+                kill_profile_tree_async(&profile_dir).await;
                 return Err($msg);
             }};
         }
@@ -571,19 +573,20 @@ impl BrowserSession {
         };
         let graceful = graceful.await;
 
-        // 等退出。
+        // 等退出（process_alive 经 spawn_blocking——BUG-20261125-063）。
         let deadline = std::time::Instant::now() + Duration::from_secs(CLOSE_WAIT_SECS);
         while std::time::Instant::now() < deadline {
-            if self.exited.load(Ordering::Acquire) || !process_alive(self.pid) {
+            if self.exited.load(Ordering::Acquire) || !process_alive_async(self.pid).await {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
         // 仍活着 → 强杀兜底（信息性：优雅关闭失败才走）。
-        let killed = if self.exited.load(Ordering::Acquire) || !process_alive(self.pid) {
+        let killed = if self.exited.load(Ordering::Acquire) || !process_alive_async(self.pid).await
+        {
             false
         } else {
-            kill_process(self.pid);
+            kill_process_async(self.pid).await;
             true
         };
         Ok(json!({
@@ -774,6 +777,26 @@ fn kill_profile_tree(profile_dir: &Path) {
             .args(["-f", &target])
             .output();
     }
+}
+
+// BUG-20261125-063 async 包装：process_alive（tasklist，百毫秒级）/kill_process
+// （taskkill /F）/kill_profile_tree（PowerShell Get-CimInstance WMI 全表枚举，
+// 秒级）都是阻塞外部命令，而 close()/spawn() 运行在 gateway tokio runtime 上，
+// 直调会卡死 worker 线程（BUG-20261118-172 同族纪律：外呼不占 worker）——
+// 统一经 spawn_blocking 下沉阻塞池。
+async fn process_alive_async(pid: u32) -> bool {
+    tokio::task::spawn_blocking(move || process_alive(pid))
+        .await
+        .unwrap_or(false)
+}
+
+async fn kill_process_async(pid: u32) {
+    let _ = tokio::task::spawn_blocking(move || kill_process(pid)).await;
+}
+
+async fn kill_profile_tree_async(profile_dir: &std::path::Path) {
+    let pd = profile_dir.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || kill_profile_tree(&pd)).await;
 }
 
 /// stderr 尾部 + 历史语境注记（2026-11-23 relaunch 修复 C）。

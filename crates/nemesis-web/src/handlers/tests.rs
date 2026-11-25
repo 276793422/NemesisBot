@@ -5503,6 +5503,152 @@ fn test_parse_request_dir_name_invalid() {
 }
 
 #[test]
+fn test_parse_request_dir_name_micros_and_aux_suffix() {
+    // 微秒形态（request_logger 常规目录新命名 `{秒.微秒}_{rand}`）。
+    let (ts, suffix) =
+        crate::handlers::logs::parse_request_dir_name("2026-11-25_10-30-05.123456_7ab").unwrap();
+    assert_eq!(ts, "2026-11-25_10-30-05.123456");
+    assert_eq!(suffix, "7ab");
+    // `_aux` 尾缀形态（压缩杂务目录）：时间戳段同形可解析进时间线。
+    let (ts2, suffix2) =
+        crate::handlers::logs::parse_request_dir_name("2026-11-25_10-30-05.123456_7ab_aux")
+            .unwrap();
+    assert_eq!(ts2, "2026-11-25_10-30-05.123456");
+    assert_eq!(suffix2, "7ab_aux");
+    // 旧 `aux_` 前缀目录 parse 不通过 = 列表不可见（不迁移）。
+    assert!(
+        crate::handlers::logs::parse_request_dir_name("aux_2026-11-19_14-30-05.161509").is_none()
+    );
+}
+
+#[test]
+fn test_extract_md_message_fence_and_cap() {
+    // 新写盘形态（````text 围栏，4+ 反引号）：围栏内的 '#' 行不打断节，
+    // 围栏边界行不进预览。
+    let content = "# User Request\n\n## Message\n\n````text\n[压缩摘要 · aux · 3 条消息 · 对话体约50字符]\n\n## 摘要指令（本次请求全文）\n\n正文含 # 标题 行\n````\n\n## Other\n\nx\n";
+    let full = crate::handlers::logs::extract_md_message_full(content);
+    assert!(full.contains("## 摘要指令"), "全文含封面后续节: {full}");
+    assert!(full.contains("正文含 # 标题 行"));
+    assert!(!full.contains("````"), "围栏边界行剥除: {full}");
+    let first = crate::handlers::logs::extract_md_first_message(content);
+    assert!(first.contains("[压缩摘要"));
+    assert!(first.contains("正文含 # 标题 行"));
+
+    // 用户正文里的 ``` 代码块（3 反引号）+ 后续 '#' 注释行：4+ 反引号
+    // 围栏不受 3 反引号影响（CommonMark），全文完整不截断；``` 行原样保留。
+    let with_code = "# User Request\n\n## Message\n\n````text\n看这段：\n```rust\nfn main() {}\n```\n# 这是注释\n之后还有内容\n````\n";
+    let full_code = crate::handlers::logs::extract_md_message_full(with_code);
+    assert!(
+        full_code.contains("# 这是注释"),
+        "代码块后 '#' 行不截断: {full_code}"
+    );
+    assert!(full_code.contains("之后还有内容"));
+    assert!(
+        full_code.contains("```rust"),
+        "用户代码块行原样保留: {full_code}"
+    );
+
+    // 超 2000 字符：列表预览裁断 + 字符量注记；fullMessage 不截断。
+    let long = "啊".repeat(3000);
+    let md = format!("## Message\n\n````text\n{}\n````\n", long);
+    let first2 = crate::handlers::logs::extract_md_first_message(&md);
+    assert!(first2.starts_with("啊"));
+    assert!(first2.contains("…（全文共 3000 字符"));
+    assert_eq!(
+        crate::handlers::logs::extract_md_message_full(&md)
+            .chars()
+            .count(),
+        3000
+    );
+
+    // 旧文件（无围栏）行为不变：'#' 行仍断节；正文中的 ``` 行不被误剥。
+    let legacy = "## Message\n\n旧正文带\n```rust\nx = 1\n```\n\n## Next\n\nx\n";
+    assert_eq!(
+        crate::handlers::logs::extract_md_message_full(legacy),
+        "旧正文带\n```rust\nx = 1\n```"
+    );
+}
+
+#[tokio::test]
+async fn test_logs_requests_lists_aux_suffix_dirs_with_isaux() {
+    let handler = logs::LogsHandler;
+    let dir = tempfile::tempdir().unwrap();
+    let log_dir = dir.path().join("logs/request_logs");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    // 常规目录（微秒形态）。
+    std::fs::create_dir_all(log_dir.join("2026-01-01_00-00-00.000001_aaa")).unwrap();
+    // 杂务目录（_aux 尾缀）带封面正文。
+    let aux = log_dir.join("2026-01-01_00-00-00.000002_bbb_aux");
+    std::fs::create_dir_all(&aux).unwrap();
+    std::fs::write(
+        aux.join("00.request.md"),
+        "# User Request\n\n## Message\n\n````text\n[压缩摘要 · aux · 2 条消息 · 对话体约9字符]\n\n## 摘要指令（本次请求全文）\n\n折我\n````\n",
+    )
+    .unwrap();
+    // 旧 aux_ 前缀目录：保持不可见。
+    std::fs::create_dir_all(log_dir.join("aux_2026-01-01_00-00-03.000003")).unwrap();
+
+    let ctx = make_ctx(&dir);
+    let result = handler
+        .handle_cmd("requests", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["total"], 2, "旧前缀目录不可见: {result}");
+    let entries = result["entries"].as_array().unwrap();
+    let aux_entry = entries
+        .iter()
+        .find(|e| e["id"].as_str().unwrap_or("").ends_with("_aux"))
+        .expect("aux entry present");
+    assert_eq!(aux_entry["isAux"], true);
+    assert!(
+        aux_entry["firstMessage"]
+            .as_str()
+            .unwrap_or("")
+            .contains("折我"),
+        "aux 封面全文进预览"
+    );
+    let regular = entries
+        .iter()
+        .find(|e| !e["id"].as_str().unwrap_or("").ends_with("_aux"))
+        .expect("regular entry present");
+    assert_eq!(regular["isAux"], false);
+}
+
+#[tokio::test]
+async fn test_logs_request_detail_full_message_uncapped() {
+    let handler = logs::LogsHandler;
+    let dir = tempfile::tempdir().unwrap();
+    let log_dir = dir.path().join("logs/request_logs");
+    let sub = log_dir.join("2026-01-01_00-00-00.000001_aaa");
+    std::fs::create_dir_all(&sub).unwrap();
+    let long = "字".repeat(2500);
+    std::fs::write(
+        sub.join("00.request.md"),
+        format!("# User Request\n\n## Message\n\n````text\n{long}\n````\n"),
+    )
+    .unwrap();
+
+    let ctx = make_ctx(&dir);
+    let result = handler
+        .handle_cmd(
+            "request_detail",
+            Some(serde_json::json!({ "id": "2026-01-01_00-00-00.000001_aaa" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let full = result["fullMessage"].as_str().unwrap_or_default();
+    assert_eq!(full.chars().count(), 2500, "详情 fullMessage 不截断");
+    let preview = result["firstMessage"].as_str().unwrap_or_default();
+    assert!(
+        preview.contains("…（全文共 2500 字符"),
+        "预览裁断注记: {preview}"
+    );
+}
+
+#[test]
 fn test_parse_cluster_dir_name_with_ms() {
     let (ts, task) =
         crate::handlers::logs::parse_cluster_dir_name("2026-06-17_14-23-45-123_taskABC").unwrap();

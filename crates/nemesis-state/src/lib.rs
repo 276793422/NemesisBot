@@ -1,4 +1,4 @@
-//! Bot state machine and persistent workspace state.
+//! Persistent workspace state.
 
 pub mod workspace_state;
 

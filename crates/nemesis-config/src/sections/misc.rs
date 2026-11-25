@@ -376,12 +376,12 @@ impl Default for WorkflowRuntimeConfig {
     }
 }
 
-/// 日志十六族 TTL 清扫（`config.json` 的 `logs` 段；M7/M8 统一清扫器，
+/// 日志十七族 TTL 清扫（`config.json` 的 `logs` 段；M7/M8 统一清扫器，
 /// 2026-10-27 整改批次三；2026-11-06 三轮横扫补 gateway/cluster_logs/eval、
 /// capture/dreaming/calibration/deliveries 与 heartbeat/ziwei/
-/// exec_checkpoints 十族）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
-/// 全默认。清扫器（nemesisbot logs_sweeper）启动扫一次 + 每 6h 一拍，
-/// 每族每拍限量 200 件防 IO 尖峰。
+/// exec_checkpoints 十族；2026-11-24 自学习留痕补 forge_learn 第十七族）。
+/// 每族 = 保留天数，`0 = 该族关闭清扫`；缺键 = 全默认。清扫器（nemesisbot
+/// logs_sweeper）启动扫一次 + 每 6h 一拍，每族每拍限量 200 件防 IO 尖峰。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LogsTtlConfig {
@@ -439,6 +439,10 @@ pub struct LogsTtlConfig {
     /// 执行体检查点崩溃孤儿（`logs/exec_checkpoints/{task_id}.git`；
     /// 正常路径全有 cleanup，仅崩溃窗口残留，短闸快清）。默认 1。
     pub exec_checkpoints: u64,
+    /// 学习对话留痕目录（`forge/learn/{ts}_{trigger}/`，transcript.md +
+    /// outcome.json 整目录删；**不在 logs/ 根下**——写端 forge.rs 的
+    /// trace_dir 落 forge 域，清扫端按写端形态进族）。默认 30。
+    pub forge_learn: u64,
 }
 
 impl Default for LogsTtlConfig {
@@ -460,6 +464,7 @@ impl Default for LogsTtlConfig {
             heartbeat: 30,
             ziwei: 30,
             exec_checkpoints: 1,
+            forge_learn: 30,
         }
     }
 }

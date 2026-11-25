@@ -160,8 +160,16 @@ mod flow_live_tests;
 /// `max_tool_iterations: 20`；onboard 复制模板且**不覆盖已有文件**——老实例
 /// 永远带着 20，长任务 20 轮即暂停（模板后来改 0 不限、typed serde default
 /// 100，都只帮到新实例/缺键实例，部署态无人为其升级）。此处做一次性文件
-/// 迁移：**精确匹配 20**（旧模板指纹，非用户自选值）→ 改写 0（不限，对齐
+/// 迁移：**精确匹配旧缺省值指纹**（非用户自选值）→ 改写 0（不限，对齐
 /// 现行模板意图）+ WARN 留痕；其他任何值（用户自选）不碰。
+///
+/// 指纹集 `{20, 100}`（BUG-20261125-045 横向排查扩项）：
+/// - `20` = 早期 onboard 模板值（模板历史 `git log -S` 考证：20 → 0，
+///   从未有 100）；
+/// - `100` = 旧 OpenClaw 迁移骨架（nemesis-migrate convert_config）遗留——
+///   typed serde default 100 时代不落盘，模板也从未是 100，config.json 里
+///   显式 100 的唯一生产来源就是修复前的迁移骨架（BUG 形态产物，非用户
+///   自选）。迁移器立论「部署态无人为其升级」对它同样成立。
 ///
 /// 为什么改**文件**而非 typed 内存：AgentLoop 的轮顶预算每轮新鲜读 raw
 /// config.json（热读，config_watch::current_max_tool_iterations），
@@ -179,7 +187,7 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
         .and_then(|a| a.get("defaults"))
         .and_then(|d| d.get("max_tool_iterations"))
         .and_then(|x| x.as_i64());
-    if current != Some(20) {
+    if !matches!(current, Some(20) | Some(100)) {
         return;
     }
     v["agents"]["defaults"]["max_tool_iterations"] = serde_json::json!(0);
@@ -192,10 +200,16 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
         });
     match write {
         Ok(()) => tracing::warn!(
-            "[Config] 已迁移旧模板值 agents.defaults.max_tool_iterations: 20 → 0（不限）。\
-             此值为早期模板遗留，长任务 20 轮即暂停（2026-10-19 用户报告）；如确需限轮请手动改回。"
+            "[Config] 已迁移旧缺省值 agents.defaults.max_tool_iterations: {} → 0（不限）。\
+             20=早期 onboard 模板遗留（长任务 20 轮即暂停，2026-10-19 用户报告）；\
+             100=旧 OpenClaw 迁移骨架遗留（BUG-20261125-045）。\
+             如确需限轮请手动改回。",
+            current.unwrap_or_default()
         ),
-        Err(e) => tracing::warn!("[Config] 旧模板值迁移写盘失败（忽略，按原值 20 运行）: {e}"),
+        Err(e) => tracing::warn!(
+            "[Config] 旧缺省值迁移写盘失败（忽略，按原值 {} 运行）: {e}",
+            current.unwrap_or_default()
+        ),
     }
 }
 

@@ -214,8 +214,10 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
     );
 
     // --- Step 4: Cluster config (system params + UDP discovery token) ---
-    // config.cluster.json 不再含身份字段（name/role/node_id 等），
-    // 身份信息全部由 peers.toml 的 [node] 段承载。
+    // config.cluster.json 身份权威源在 peers.toml 的 [node] 段
+    // （id/name/role 等）；本文件的 `node_name` 是可选覆写位（模板恒空串，
+    // 非空时经 resolve_node_name_from_env 参与 name 解析），`worker_discipline`
+    // 是 B 端 worker 行为契约开关——两者均非身份权威字段。
     // [ 死码处置·简化] from_str 对编译期嵌入常量不可能失败
     // （见 Step 1 注）。
     let cluster_cfg_path = common::cluster_config_path(home);

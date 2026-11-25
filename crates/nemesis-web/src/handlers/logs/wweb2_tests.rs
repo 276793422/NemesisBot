@@ -419,17 +419,26 @@ fn read_md_section_direct_variants() {
 }
 
 #[test]
-fn extract_md_first_message_truncates_at_200_chars() {
-    // ASCII 300 字 → 截 200
-    let md = format!("## Message\n\n{}\n", "a".repeat(300));
+fn extract_md_first_message_truncates_at_2000_chars() {
+    // 上限 2000（此前 200）：ASCII 2500 字 → 截 2000 + 字符量注记
+    let md = format!("## Message\n\n{}\n", "a".repeat(2500));
     let got = extract_md_first_message(&md);
-    assert_eq!(got.chars().count(), 200);
-    assert!(got.chars().all(|c| c == 'a'));
-    // 中文 300 字 → 按字符截 200（不panic、不出半个字）
-    let md_cn = format!("## Message\n\n{}\n", "中".repeat(300));
+    assert_eq!(
+        got.chars().count(),
+        2000 + "…（全文共 2500 字符，见详情）".chars().count()
+    );
+    assert!(got.starts_with(&"a".repeat(2000)));
+    assert!(got.contains("…（全文共 2500 字符"));
+    // 中文 2500 字 → 按字符截（不 panic、不出半个字）
+    let md_cn = format!("## Message\n\n{}\n", "中".repeat(2500));
     let got = extract_md_first_message(&md_cn);
-    assert_eq!(got.chars().count(), 200);
-    assert!(got.chars().all(|c| c == '中'));
+    assert!(got.starts_with(&"中".repeat(2000)));
+    assert!(got.contains("…（全文共 2500 字符"));
+    // 限内不截断、无注记
+    let md_ok = format!("## Message\n\n{}\n", "好".repeat(300));
+    let got_ok = extract_md_first_message(&md_ok);
+    assert_eq!(got_ok.chars().count(), 300);
+    assert!(!got_ok.contains('…'));
     // 无 Message 节 → 空串
     assert_eq!(extract_md_first_message("# nothing\n"), "");
 }
@@ -464,4 +473,74 @@ fn parse_security_audit_file_bug071_neutralized_pipes_align_columns() {
     );
     assert_eq!(e["reason"], "reason \u{00a6} with pipe second line");
     assert_eq!(e["policy"], "policy-rule-1");
+}
+
+/// 围栏判定按 CommonMark 精确跟踪（BUG-20261125-064 读端半）：闭栏 = ≥开栏
+/// 长度的纯反引号行（首尾空白可容忍）——正文里 ````abc（带非空白尾巴）与
+/// 短于开栏的反引号行都不闭栏。
+#[test]
+fn read_md_section_commonmark_accurate_fence_tracking() {
+    let hostile = "# 内嵌标题\n```rust\ncode\n```\n````\n裸四反引号\n````text\ninfo串\n# 再嵌标题\n正文尾行\n";
+
+    // 旧写盘形态（定长 4 反引号）：正文裸 ```` 行按 CommonMark 闭栏，其后
+    // "````text" 重新开栏——"# 再嵌标题" 落在新栏内不是节边界；读者与渲染器
+    // 逐行一致（不丢字、不吞节），写端闭栏行收住后 "## Next" 照常可读。
+    let old_style = format!("## Message\n\n````text\n{hostile}````\n\n## Next\n\nother\n");
+    let got_old = read_md_section(&old_style, "Message").unwrap();
+    assert!(got_old.contains("裸四反引号"));
+    assert!(got_old.contains("# 再嵌标题"), "重开栏后的 # 行不是节边界");
+    assert!(!got_old.contains("other"), "节必须止于写端闭栏行");
+    assert!(
+        read_md_section(&old_style, "Next")
+            .unwrap()
+            .contains("other")
+    );
+
+    // 新写盘形态（自适应 5 反引号）：正文里全部反引号行（裸 ````、````text、
+    // ```，都短于开栏）都不闭栏，# 行也不是边界——节内容一字不漏。
+    let new_style = format!("## Message\n\n`````text\n{hostile}`````\n\n## Next\n\nother\n");
+    let got_new = read_md_section(&new_style, "Message").unwrap();
+    for needle in [
+        "# 内嵌标题",
+        "裸四反引号",
+        "````text",
+        "# 再嵌标题",
+        "正文尾行",
+    ] {
+        assert!(
+            got_new.contains(needle),
+            "自适应围栏内不得失步丢行: {needle}"
+        );
+    }
+    assert!(!got_new.contains("other"), "自适应围栏必须在写端闭栏行收住");
+    assert!(
+        read_md_section(&new_style, "Next")
+            .unwrap()
+            .contains("other")
+    );
+}
+
+/// 闭栏语义三分支：≥开栏长度才闭（6 开栏时 4/5 反引号纯行不闭，栏内 #
+/// 行不断节）；````abc（反引号后非空白）永不闭；行尾空格的纯反引号行照
+/// 常闭。
+#[test]
+fn read_md_section_fence_close_requires_pure_tick_line_at_least_open_len() {
+    // needle 用 ZZEND（"x" 会撞上开栏行 "text" 里的字母 x——子串断言陷阱）。
+    let md =
+        "## Message\n\n``````text\n````\n`````\n# 内嵌标题\n尾行\n``````\n\n## Next\n\nZZEND\n";
+    let got = read_md_section(md, "Message").unwrap();
+    assert!(got.contains("# 内嵌标题"));
+    assert!(got.contains("尾行"));
+    assert!(!got.contains("ZZEND"));
+    assert!(read_md_section(md, "Next").unwrap().contains("ZZEND"));
+
+    let md2 = "## Message\n\n`````text\n````abc\n# 内嵌标题\n`````\n\n## Next\n\nZZEND\n";
+    let got2 = read_md_section(md2, "Message").unwrap();
+    assert!(got2.contains("# 内嵌标题"));
+    assert!(!got2.contains("ZZEND"));
+
+    let md3 = "## Message\n\n`````text\nabc\n`````   \n# 尾注\n";
+    let got3 = read_md_section(md3, "Message").unwrap();
+    assert!(got3.contains("abc"));
+    assert!(!got3.contains("# 尾注"));
 }

@@ -2688,28 +2688,43 @@ where
     // Emit ConversationStart + LlmRequest before the call (await, no block_in_place).
     if let Some(mgr) = observer_manager {
         // 00.request.md 的 Message 段此前恒空——aux 流没有「用户消息」概念，
-        // 真实请求全量在 LlmRequest 事件（raw envelope）。填一次性预览
-        // （首条 user 消息截断），打开 aux 目录不必翻 raw json 就知道这次
-        // 摘要折的是什么。
-        let preview = messages
+        // 真实请求全量在 LlmRequest 事件（raw envelope）。封面带元信息头
+        // （label/条数/对话体字符量）+ 摘要指令全文（末条 user 消息=本次
+        // 调用真实请求）+ 被压缩对话首条 user 消息全文——**一律不截断**
+        // （本地记录不能少；此前「首条 user 消息前 200 字」的硬编码预览
+        // 两种失败形态：长会话首条寒暄=零信息、大指令=明晃晃截断）。
+        // 对话体全量仍在 LlmRequest（raw json），封面不重复。
+        let body_chars: usize = messages
             .iter()
-            .find(|m| m.role == "user")
-            .map(|m| {
-                let total = m.content.chars().count();
-                let mut c: String = m.content.chars().take(200).collect();
-                if total > 200 {
-                    c.push('…');
-                }
-                format!("[摘要任务 · {} 条消息预览]\n{}", messages.len(), c)
-            })
-            .unwrap_or_default();
+            .filter(|m| m.role != "system")
+            .map(|m| m.content.chars().count())
+            .sum();
+        let first_user_idx = messages.iter().position(|m| m.role == "user");
+        let last_user_idx = messages.iter().rposition(|m| m.role == "user");
+        let mut cover = format!(
+            "[压缩摘要 · {} · {} 条消息 · 对话体约{}字符]",
+            label,
+            messages.len(),
+            body_chars
+        );
+        if let Some(idx) = last_user_idx {
+            cover.push_str("\n\n## 摘要指令（本次请求全文）\n\n");
+            cover.push_str(&messages[idx].content);
+        }
+        // 首条与指令同一条（单消息合并调用）时不重复贴。
+        if let (Some(f), Some(l)) = (first_user_idx, last_user_idx)
+            && f != l
+        {
+            cover.push_str("\n\n## 被压缩对话首条\n\n");
+            cover.push_str(&messages[f].content);
+        }
         let start_event = ObserverEvent::ConversationStart {
             trace_id: trace_id.clone(),
             session_key: label.to_string(),
             channel: String::new(),
             chat_id: String::new(),
             sender_id: "summarizer".to_string(),
-            content: preview,
+            content: cover,
         };
         mgr.emit(start_event.to_conversation_event()).await;
 

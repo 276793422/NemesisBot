@@ -103,6 +103,63 @@ fn test_tool_to_operation_inventory_complete() {
         tool_to_operation("board_evidence_read"),
         Some(OperationType::FileRead)
     );
+    // BUG-20261125-050 回归锁：2026-11-17 后新增工具族漏登记静态表——
+    // 未知名 fail-closed CRITICAL 误档（每调用 WARN + guardian 烧 token）
+    // + Plan 模式 declared_write 兜底臂对写类工具失明。14 名逐一钉档，
+    // 新增工具登记此表或装配点 declare 任一失配即红。
+    // 看板 worker 三件：RPC/HTTP 出站 → NetworkRequest（cluster_rpc 同档）。
+    assert_eq!(
+        tool_to_operation("board_claim"),
+        Some(OperationType::NetworkRequest)
+    );
+    assert_eq!(
+        tool_to_operation("board_discuss"),
+        Some(OperationType::NetworkRequest)
+    );
+    assert_eq!(
+        tool_to_operation("board_asset"),
+        Some(OperationType::NetworkRequest)
+    );
+    // goal/loop 排程/插件提案：工作区/配置写 → FileWrite。
+    assert_eq!(tool_to_operation("goal"), Some(OperationType::FileWrite));
+    assert_eq!(
+        tool_to_operation("loop_wakeup"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("loop_finish"),
+        Some(OperationType::FileWrite)
+    );
+    assert_eq!(
+        tool_to_operation("plugin_propose"),
+        Some(OperationType::FileWrite)
+    );
+    // mcp_call HTTP 臂（stdio 臂经 operation_override 投影 process_exec）。
+    assert_eq!(
+        tool_to_operation("mcp_call"),
+        Some(OperationType::NetworkRequest)
+    );
+    // 纯读/静态查询/纯声明面 → Internal。
+    for name in [
+        "loop_status",
+        "plugin_search",
+        "present_files",
+        "present_plan",
+        "tools_schema_get",
+    ] {
+        assert_eq!(
+            tool_to_operation(name),
+            Some(OperationType::Internal),
+            "tool `{name}` should be Internal"
+        );
+    }
+    // subagent_steer：消息队列注入（claim_steer_messages，非进程 stdin）
+    // → 与 delegate_send 同档 Internal，刻意不同于 background_steer 的
+    // ProcessExec（原始进程 stdin 操控）。
+    assert_eq!(
+        tool_to_operation("subagent_steer"),
+        Some(OperationType::Internal)
+    );
     // 例外语义显式化（不再靠未知名兜底）。
     assert_eq!(
         tool_to_operation("background_start"),

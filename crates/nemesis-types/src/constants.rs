@@ -4,7 +4,9 @@
 //! 镜像副本（曾镜像 14 个零消费死常量并被 lib.rs 以
 //! 「常用常量」名义再出口，其中多个值/注释与真相源相悖——peer chat 超时标注
 //! 59 分钟而真值 = `peer_chat_handler::llm_timeout_from_config_secs` 默认 2h
-//! 可配 0=不限；迭代上限标注 60 而真值 = `max_tool_iterations` 默认 100；
+//! 可配 0=不限；迭代上限标注 60 而真值 = `max_tool_iterations` 默认 100
+//! （写注释当时的真值；2026-11-23 起拍板改 0=不限，见
+//! `capability::DEFAULT_MAX_TOOL_ITERATIONS`）；
 //! `SKILLS_DIR="Skills"` 而实际目录为小写 `skills`）。需要运行参数时直接从
 //! 真相源取，勿在此回填「备用」常量。
 

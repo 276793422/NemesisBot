@@ -179,10 +179,9 @@ fn shared_secret(keys: &NostrKeys, peer_x_only: &str) -> Result<[u8; 32]> {
         .into_option()
         .ok_or_else(|| NemesisError::Channel("nostr pubkey 不在曲线上".to_string()))?;
 
-    let shared =
-        k256::elliptic_curve::ecdh::diffie_hellman(&keys.secret.to_nonzero_scalar(), &point);
+    let shared = k256::elliptic_curve::ecdh::diffie_hellman(keys.secret.to_nonzero_scalar(), point);
     let mut out = [0u8; 32];
-    out.copy_from_slice(&shared.raw_secret_bytes());
+    out.copy_from_slice(shared.raw_secret_bytes());
     Ok(out)
 }
 

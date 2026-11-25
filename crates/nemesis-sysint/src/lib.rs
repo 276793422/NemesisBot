@@ -27,8 +27,9 @@
 //!   （调用方自行决定呈现）；全零成功 + 零警告 = 完整成功；
 //! - unregister 幂等：条目缺席也回成功（卸载链先 unregister 后删文件，
 //!   必须容忍「装的时候注册就失败了」的既往态）；
-//! - 零 tokio/async、零 nemesis-* 依赖（只 anyhow/sha2/hex/base64 +
-//!   平台 crate）——不依赖 gateway 装配，CLI 轻路径毫秒级返回。
+//! - 零 tokio/async、零重量级 nemesis-* 依赖（anyhow/sha2/hex/base64 +
+//!   nemesis-utils 只用其 fsutil 文件删除韧性包装（BUG-20261116-036）+ 平台
+//!   crate）——不依赖 gateway 装配，CLI 轻路径毫秒级返回。
 
 pub mod certdata;
 pub mod content;

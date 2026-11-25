@@ -1889,7 +1889,14 @@ impl SelfUpdateManager {
             return Err("急停（estop）生效中：更新下载被冻结。释放急停后重试。".to_string());
         }
         let exe_path = std::env::current_exe().map_err(|e| format!("取 current_exe 失败：{e}"))?;
-        if !force && let Some(p) = load_pending(&exe_path) {
+        // BUG-20261125-063：load_pending 含整包 sha256 对账（几十 MB 哈希），
+        // async 上下文直调卡死 tokio worker（BUG-20261118-172 同族纪律），
+        // 移 spawn_blocking。JoinError 按无 pending 处理（best-effort 探测）。
+        let exe_path_sb = exe_path.clone();
+        let pending_probe = tokio::task::spawn_blocking(move || load_pending(&exe_path_sb))
+            .await
+            .unwrap_or(None);
+        if !force && let Some(p) = pending_probe {
             return Ok(format!(
                 "待装包已就绪（{}，commit {}，{}MB）：直接【开始更新】即可。",
                 p.release_tag,
@@ -2197,7 +2204,13 @@ impl SelfUpdateManager {
         // 持锁窗口内清扫历史 staging 残留（`.old-{pid}`/`.new-{pid}` 死进程
         // 遗留；best-effort，删除失败=仍在被占用，留给下次）。锁独占保证无
         // 并发 apply，不存在误删在途 staging 的窗口。
-        let swept = sweep_stale_staging(&exe_path);
+        // BUG-20261125-063：sweep 内含 remove_dir_all_resilient（退避最坏
+        // ~4.4s），async 上下文直调卡死 tokio worker（BUG-20261118-172 同族
+        // 纪律），移 spawn_blocking。JoinError 按 0 清扫处理（best-effort）。
+        let exe_path_sweep = exe_path.clone();
+        let swept = tokio::task::spawn_blocking(move || sweep_stale_staging(&exe_path_sweep))
+            .await
+            .unwrap_or(0);
         if swept > 0 {
             self.audit_event(
                 "staging",
@@ -2212,12 +2225,21 @@ impl SelfUpdateManager {
         //    不构成死锁环）。
         let pending = {
             let _df = self.download_flight.lock().await;
-            let mut pending = load_pending(&exe_path);
+            // BUG-20261125-063：load_pending 含整包 sha256 对账（几十 MB 哈希），
+            // async 上下文直调卡死 tokio worker（BUG-20261118-172 同族纪律），
+            // 移 spawn_blocking。JoinError 按 None 处理走自动下载臂。
+            let exe_path_lp = exe_path.clone();
+            let mut pending = tokio::task::spawn_blocking(move || load_pending(&exe_path_lp))
+                .await
+                .unwrap_or(None);
             if pending.is_none() {
                 self.audit_event("selfupdate", "allowed", "no pending: auto-download");
                 self.download_to_pending(&exe_path, current_commit, force)
                     .await?;
-                pending = load_pending(&exe_path);
+                let exe_path_lp2 = exe_path.clone();
+                pending = tokio::task::spawn_blocking(move || load_pending(&exe_path_lp2))
+                    .await
+                    .unwrap_or(None);
             }
             pending
         }
@@ -3021,7 +3043,11 @@ fn extract_tar_gz_bundle(pkg_bytes: &[u8]) -> Result<ExtractedBundle, String> {
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn spawn_new_version(new_exe: &Path) -> Result<u32, String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // args_os+lossy：非 UTF-8 参数 panic 面（argv 原样接力给新版本进程）。
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let mut cmd = std::process::Command::new(new_exe);
     cmd.args(&args).env(
         "NEMESISBOT_SELFUPDATE_WAIT_PID",

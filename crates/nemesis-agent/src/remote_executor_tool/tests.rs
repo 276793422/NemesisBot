@@ -558,6 +558,35 @@ fn filter_env_allowlist_keeps_baseline_drops_the_rest() {
     assert!(!serde_json::to_string(&kept).unwrap().contains("sk-leak"));
 }
 
+/// BUG-20261125-014 横向回归锁：宿主 env 收集必须 vars_os + lossy——
+/// 构造一个会让裸 `std::env::vars()` 当场 panic 的非 Unicode 变量**值**
+/// （Windows=非配对高代理项码元 / Unix=非法 UTF-8 字节），收集不得
+/// panic（persistent spawn 曾用裸 vars()，网关 env 一旦混入即反复炸）。
+/// 变量在场断言同时防真空通过（set_var 失败 = 毒未注入 = 锁不住）。
+#[test]
+fn env_vars_lossy_survives_non_unicode_env() {
+    const NAME: &str = "NEMESIS_AGENT_LOSSY_PROBE";
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        let bad = std::ffi::OsString::from_wide(&[0xD8_00u16]);
+        unsafe { std::env::set_var(NAME, &bad) };
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let bad = std::ffi::OsString::from_vec(vec![0xFF]);
+        unsafe { std::env::set_var(NAME, &bad) };
+    }
+    let pairs: Vec<(String, String)> = env_vars_lossy().collect();
+    assert!(
+        pairs.contains(&(NAME.to_string(), "\u{FFFD}".to_string())),
+        "非 Unicode 值必须 lossy 降级而非 panic，实际: {:?}",
+        pairs.iter().find(|(k, _)| k == NAME)
+    );
+    unsafe { std::env::remove_var(NAME) };
+}
+
 #[test]
 fn home_redirect_points_every_home_family_var_into_agent_home() {
     let home = Path::new("/agent-homes/a1");

@@ -5,7 +5,11 @@ import SessionSidebar from '../components/SessionSidebar.vue'
 import FileTreePanel from '../components/chat/FileTreePanel.vue'
 import BrowserPickPanel from '../components/chat/BrowserPickPanel.vue'
 import SessionResourcesPanel from '../components/chat/SessionResourcesPanel.vue'
-import { RESOURCES_PANEL_CTL } from '../composables/useResourcesPanel'
+import {
+  RESOURCES_PANEL_CTL,
+  RESOURCES_OPEN_AT,
+  resolveResourcesWide,
+} from '../composables/useResourcesPanel'
 import { useSessionStore } from '../stores/session'
 import { skinHasSlot } from '../composables/useSkin'
 
@@ -39,10 +43,9 @@ let userClosedManually = localStorage.getItem('nb_resources_panel') === '0'
 let resizeObserver: ResizeObserver | null = null
 const layoutEl = ref<HTMLElement | null>(null)
 
-// 并排下限 = ChatPanel 上限 944（含滚动条余量）+ 面板最小 340；
-// 滞后带下缘低于它一截——拖动穿越阈值时不会在临界点反复翻转。
-const RESOURCES_OPEN_AT = 1284
-const RESOURCES_CLOSE_AT = 1180
+// 并排/悬浮判宽阈值与滞后带纯函数在 useResourcesPanel（单一真相源，含
+// 2026-11-25 首屏带间硬判修复——初值 true 误判带间宽度走并排，挤压无保护
+// 列的实录与回归锁见彼处注释 + ChatView.resources-panel.spec.ts）。
 
 /** 首屏判宽哨兵：首次 applyViewport 前为 true（窄窗口静默收起只此一次）。 */
 let firstViewportCheck = true
@@ -50,8 +53,8 @@ let firstViewportCheck = true
 function applyViewport(): void {
   const w = layoutEl.value?.clientWidth ?? 0
   const prev = viewportWide.value
-  // 滞后带：≥OPEN_AT 判宽、<CLOSE_AT 判窄、带间保持原值。
-  const wide = w >= RESOURCES_OPEN_AT ? true : w < RESOURCES_CLOSE_AT ? false : prev
+  // 滞后带判定（首屏无历史态，带间按并排下限硬判——见 resolveResourcesWide）。
+  const wide = resolveResourcesWide(w, prev, firstViewportCheck)
   viewportWide.value = wide
   // 首屏：窄窗口 + 展开态 → 静默收起（不写偏好、不算手动关）——抽屉不该
   // 在首屏盖住对话列；转宽时边缘触发自动开会把它带回来。

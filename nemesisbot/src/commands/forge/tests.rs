@@ -729,7 +729,7 @@ fn test_cmd_reflect_forge_not_enabled() {
 
     // Should print "not enabled" and return Ok
     // This doesn't need tokio runtime since it returns early
-    cmd_reflect(&home, &cfg_path, &forge_dir, false).unwrap();
+    cmd_reflect(&home, &cfg_path, &forge_dir).unwrap();
 }
 
 #[test]
@@ -742,7 +742,7 @@ fn test_cmd_reflect_forge_dir_not_exists() {
     let cfg = serde_json::json!({"forge": {"enabled": true}});
     std::fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
     // forge_dir doesn't exist - should print error and return Ok
-    cmd_reflect(&home, &cfg_path, &forge_dir, false).unwrap();
+    cmd_reflect(&home, &cfg_path, &forge_dir).unwrap();
 }
 
 // -------------------------------------------------------------------------
@@ -1164,13 +1164,13 @@ mod r7_cmd_paths {
         // 臂 1：config 存在但 forge.enabled=false → 提示先 enable。
         let (_t1, h1) = env_home();
         write_config(&h1, Some(false));
-        let r1 = run(ForgeAction::Reflect { auto_skill: false }, false);
+        let r1 = run(ForgeAction::Reflect, false);
         clear_env();
 
         // 臂 2：enabled=true 但 forge 目录不存在。
         let (_t2, h2) = env_home();
         write_config(&h2, Some(true));
-        let r2 = run(ForgeAction::Reflect { auto_skill: false }, false);
+        let r2 = run(ForgeAction::Reflect, false);
         clear_env();
 
         // 臂 3：目录在但 experiences 空（0 文件）。
@@ -1178,7 +1178,7 @@ mod r7_cmd_paths {
         write_config(&h3, Some(true));
         let forge_dir = h3.join("workspace").join("forge");
         std::fs::create_dir_all(forge_dir.join("experiences")).unwrap();
-        let r3 = run(ForgeAction::Reflect { auto_skill: false }, false);
+        let r3 = run(ForgeAction::Reflect, false);
         clear_env();
 
         r1.expect("reflect disabled-guard returns Ok");
@@ -1196,7 +1196,7 @@ mod r7_cmd_paths {
         write_config(&home, Some(true));
         let forge_dir = home.join("workspace").join("forge");
         seed_experiences(&forge_dir);
-        let r = run(ForgeAction::Reflect { auto_skill: false }, false);
+        let r = run(ForgeAction::Reflect, false);
         clear_env();
         r.expect("reflect with seeded experiences ok");
         // 报告写入 reflections 目录（write_report 成功臂）。
@@ -1208,153 +1208,6 @@ mod r7_cmd_paths {
             has_report,
             "reflection report must be written to {:?}",
             reflect_dir
-        );
-    }
-
-    /// 回归锁（自查修复）：cmd_reflect 消费注册表前必须先从盘
-    /// 回载——Registry::new 是空内存注册表，不回载则 find_by_name 去重失效、
-    /// registry.add 会往 registry.json **追加同 id 重复条目**（CLI 每次新起
-    /// 进程必踩；gateway 路径 ctx.rs 启动即 load 无此问题）。本用例：预置同名
-    /// Skill 草稿 + mock LLM 返回同名蒸馏产物 → 断言注册表不出现第二条、
-    /// 既有 SKILL.md 哨兵不被覆盖（修复前双红：2 条同 id + 哨兵被蒸馏稿覆盖）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn run_reflect_auto_skill_dedup_uses_registry_loaded_from_disk() {
-        // mock LLM（openai 协议 chat/completions）：所有 POST 都回同一条
-        // 合法蒸馏 JSON——语义反思解析不合契约走诚实降级，蒸馏解析命中。
-        // 起服/挂桩在 GLOBAL_STATE_LOCK 之外（同步锁不得跨 await，clippy
-        // await_holding_lock）；锁内只做纯同步的环境写盘与 CLI 调用。
-        let server = wiremock::MockServer::start().await;
-        let distill_json = serde_json::json!({
-            "has_skill": true,
-            "name": "install-http-mcp",
-            "skill_md": "---\nname: install-http-mcp\ndescription: distilled\nversion: \"1.0\"\n---\n\n# 配方\n1. 步骤\n",
-            "rationale": "converged sequence"
-        })
-        .to_string();
-        let content_json = serde_json::json!({
-            "id": "chatcmpl-1",
-            "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": distill_json}, "finish_reason": "stop"}
-            ]
-        });
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/v1/chat/completions"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(content_json))
-            .mount(&server)
-            .await;
-        let server_uri = server.uri();
-
-        let (dupes, on_disk) = {
-            let _g = crate::GLOBAL_STATE_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let (_tmp, home) = env_home();
-
-            // config.json：forge 开 + 默认模型指 mock（judge 链臂 3 默认模型解析到它）。
-            std::fs::write(
-                home.join("config.json"),
-                serde_json::json!({
-                    "version": "1.0",
-                    "forge": {"enabled": true},
-                    "model_list": [{
-                        "model": "mock/distill-model",
-                        "api_base": format!("{server_uri}/v1"),
-                        "api_key": "test-key",
-                        "protocol": "openai",
-                        "model_tier": "big"
-                    }],
-                    "agents": {"defaults": {"llm": "mock/distill-model"}}
-                })
-                .to_string(),
-            )
-            .unwrap();
-            // config.forge.json：LLM 反思 + auto_skill 开（其余字段 serde 默认）。
-            let forge_dir = home.join("workspace").join("forge");
-            std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
-            std::fs::write(
-                home.join("workspace")
-                    .join("config")
-                    .join("config.forge.json"),
-                serde_json::json!({
-                    "reflection": {"use_llm": true},
-                    "artifacts": {"auto_skill": true}
-                })
-                .to_string(),
-            )
-            .unwrap();
-            seed_experiences(&forge_dir);
-
-            // 预置注册表（registry.json，serde 全字段形态）+ 磁盘 SKILL.md 哨兵。
-            let sentinel = "SENTINEL-EXISTING-DRAFT";
-            std::fs::create_dir_all(forge_dir.join("skills").join("install-http-mcp")).unwrap();
-            std::fs::write(
-                forge_dir
-                    .join("skills")
-                    .join("install-http-mcp")
-                    .join("SKILL.md"),
-                sentinel,
-            )
-            .unwrap();
-            let seeded = serde_json::json!([{
-                "id": "skill-install-http-mcp",
-                "name": "install-http-mcp",
-                "kind": "Skill",
-                "version": "1.0",
-                "status": "Draft",
-                "content": sentinel,
-                "tool_signature": [],
-                "created_at": "2026-10-15T00:00:00+08:00",
-                "updated_at": "2026-10-15T00:00:00+08:00",
-                "usage_count": 0,
-                "success_rate": 0.0,
-                "last_degraded_at": null,
-                "consecutive_observing_rounds": 0
-            }]);
-            std::fs::write(
-                forge_dir.join("registry.json"),
-                serde_json::to_string_pretty(&seeded).unwrap(),
-            )
-            .unwrap();
-
-            let r = run(ForgeAction::Reflect { auto_skill: false }, false);
-            clear_env();
-            r.expect("reflect with auto_skill + preexisting draft ok");
-
-            let reg: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(forge_dir.join("registry.json")).unwrap(),
-            )
-            .unwrap();
-            let dupes = reg
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|a| a["kind"] == "Skill" && a["name"] == "install-http-mcp")
-                .count();
-            let on_disk = std::fs::read_to_string(
-                forge_dir
-                    .join("skills")
-                    .join("install-http-mcp")
-                    .join("SKILL.md"),
-            )
-            .unwrap();
-            (dupes, on_disk)
-        };
-
-        // LLM 链路必须真被走过（防空转绿：蒸馏失败/未触发时下面的去重断言
-        // 会因「无写入」假绿）。
-        let reqs = server.received_requests().await.unwrap_or_default();
-        assert!(
-            !reqs.is_empty(),
-            "mock LLM must receive at least one chat request (use_llm + auto_skill path)"
-        );
-        assert_eq!(
-            dupes, 1,
-            "dedup must not append a duplicate registry entry (registry loaded from disk)"
-        );
-        assert_eq!(
-            on_disk, "SENTINEL-EXISTING-DRAFT",
-            "dedup must not overwrite the existing draft file"
         );
     }
 
@@ -1584,92 +1437,6 @@ mod r7_cmd_paths {
         assert_eq!(cfg2["learning"]["enabled"], false);
         clear_env();
     }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn run_reflect_auto_skill_flag_overrides_config_off() {
-        // --auto-skill flag 是当次意志——config.forge.json 的
-        // artifacts.auto_skill 缺省（false）时 flag=true 仍必须跑蒸馏
-        // （交付报告口径：forge reflect --auto-skill）。
-        let server = wiremock::MockServer::start().await;
-        let distill_json = serde_json::json!({
-        "has_skill": true,
-        "name": "flag-distilled-skill",
-        "skill_md": "---\nname: flag-distilled-skill\ndescription: flag distilled\nversion: \"1.0\"\n---\n\n# 配方\n1. 步骤\n",
-        "rationale": "converged sequence"
-    })
-    .to_string();
-        let content_json = serde_json::json!({
-            "id": "chatcmpl-1",
-            "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": distill_json}, "finish_reason": "stop"}
-            ]
-        });
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/v1/chat/completions"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(content_json))
-            .mount(&server)
-            .await;
-        let server_uri = server.uri();
-
-        let draft_on_disk = {
-            let _g = crate::GLOBAL_STATE_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let (_tmp, home) = env_home();
-
-            std::fs::write(
-                home.join("config.json"),
-                serde_json::json!({
-                    "version": "1.0",
-                    "forge": {"enabled": true},
-                    "model_list": [{
-                        "model": "mock/distill-model",
-                        "api_base": format!("{server_uri}/v1"),
-                        "api_key": "test-key",
-                        "protocol": "openai",
-                        "model_tier": "big"
-                    }],
-                    "agents": {"defaults": {"llm": "mock/distill-model"}}
-                })
-                .to_string(),
-            )
-            .unwrap();
-            // config.forge.json：LLM 反思开但 auto_skill 缺省（serde default false）
-            // ——蒸馏只能由 flag 触发。
-            let forge_dir = home.join("workspace").join("forge");
-            std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
-            std::fs::write(
-                home.join("workspace")
-                    .join("config")
-                    .join("config.forge.json"),
-                serde_json::json!({"reflection": {"use_llm": true}}).to_string(),
-            )
-            .unwrap();
-            seed_experiences(&forge_dir);
-
-            let r = run(ForgeAction::Reflect { auto_skill: true }, false);
-            clear_env();
-            r.expect("reflect with flag override ok");
-
-            std::fs::read_to_string(
-                forge_dir
-                    .join("skills")
-                    .join("flag-distilled-skill")
-                    .join("SKILL.md"),
-            )
-            .unwrap_or_default()
-        };
-
-        let reqs = server.received_requests().await.unwrap_or_default();
-        assert!(
-            !reqs.is_empty(),
-            "flag must force the distillation LLM call despite config auto_skill off"
-        );
-        assert!(
-            draft_on_disk.contains("flag-distilled-skill"),
-            "flag-triggered draft must be persisted to disk"
-        );
-    }
 }
 
 // ===========================================================================
@@ -1886,8 +1653,7 @@ mod wave_b {
         // forge 目录本身存在（过 uninitialized 守卫），但没有 experiences 子目录
         // → exp_count 走 else 0 值臂 → 提示采集为空后返回。
         std::fs::create_dir_all(g.forge_dir()).unwrap();
-        run(ForgeAction::Reflect { auto_skill: false }, false)
-            .expect("reflect without experiences ok");
+        run(ForgeAction::Reflect, false).expect("reflect without experiences ok");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
@@ -1913,8 +1679,7 @@ mod wave_b {
         )
         .unwrap();
         wb_seed_experience_rows(&g.forge_dir(), &[wb_row("wbj1", "exec", true, 10)]);
-        run(ForgeAction::Reflect { auto_skill: false }, false)
-            .expect("reflect succeeds despite monthly-layout junk");
+        run(ForgeAction::Reflect, false).expect("reflect succeeds despite monthly-layout junk");
         assert!(
             g.forge_dir()
                 .join("reflections")
@@ -1939,8 +1704,7 @@ mod wave_b {
         //（区别于 store 层 Err）。keep.txt 保证目录非空、能过第一道存在性闸。
         std::fs::create_dir_all(g.forge_dir().join("experiences")).unwrap();
         std::fs::write(g.forge_dir().join("experiences").join("keep.txt"), "-").unwrap();
-        run(ForgeAction::Reflect { auto_skill: false }, false)
-            .expect("empty raw store early-return ok");
+        run(ForgeAction::Reflect, false).expect("empty raw store early-return ok");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
@@ -1962,8 +1726,7 @@ mod wave_b {
                 wb_row("wbh4", "read_file", true, 5),
             ],
         );
-        run(ForgeAction::Reflect { auto_skill: false }, false)
-            .expect("reflect with failing tool ok");
+        run(ForgeAction::Reflect, false).expect("reflect with failing tool ok");
         // 报告仍应正常落盘（write_report 成功臂并行自证）。
         assert!(
             g.forge_dir()
@@ -1989,8 +1752,7 @@ mod wave_b {
         // → write_report Err → 只告警，统计照常打印，整体 Ok。
         std::fs::create_dir_all(g.forge_dir()).unwrap();
         std::fs::write(g.forge_dir().join("reflections"), "not a dir").unwrap();
-        run(ForgeAction::Reflect { auto_skill: false }, false)
-            .expect("report failure must degrade to warning");
+        run(ForgeAction::Reflect, false).expect("report failure must degrade to warning");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
@@ -2369,7 +2131,7 @@ mod cov_f {
         std::fs::remove_dir(exp.parent().unwrap()).unwrap();
         std::fs::write(exp.parent().unwrap(), "dir hijacked").unwrap();
 
-        run(ForgeAction::Reflect { auto_skill: false }, false).unwrap();
+        run(ForgeAction::Reflect, false).unwrap();
     }
 
     /// Replay 四臂（空库形态）：extract（无 WAL = 0 条）、list（空区）、

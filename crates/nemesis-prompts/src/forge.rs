@@ -46,55 +46,154 @@ pub const SEMANTIC_ANALYSIS_SYSTEM_PROMPT: &str = "你是智能系统分析员�
         聚焦可自动化、可改进或可沉淀为可复用组件的模式。\
         回复控制在 500 字以内。";
 
-/// 技能定义生成器 system prompt（`learning_engine::generate_skill_draft`）。
-pub const SKILL_GENERATOR_SYSTEM_PROMPT: &str =
-    "你是技能定义生成器。生成带 YAML frontmatter 的合法 SKILL.md 内容。";
-
-/// 技能修复 system prompt（`learning_engine::refine_skill_draft`）。
+/// 技能修复 system prompt（自学习铺路批次四装前 tests 闸 refine 环节：
+/// `skill_gate::refine_once` 喂失败明细要修正稿；批次四前为保留件）。
 pub const SKILL_FIXER_SYSTEM_PROMPT: &str =
     "你是技能定义生成器。修复未通过校验的技能，返回完整修正后的 SKILL.md。";
 
-/// 程序性知识蒸馏 system prompt（`reflector_llm::distill_skill_draft`，
-/// artifacts.auto_skill 生成面）。
-pub const SKILL_DISTILLATION_SYSTEM_PROMPT: &str = "你是程序性知识蒸馏器。从工具使用经验序列中识别\
-        「同场景下工具序列多次成功收敛」的模式，产出可直接执行的步骤化 SKILL.md 草稿——\
-        不是泛化建议，是别人拿着就能一步步照做的操作配方。只回复合法 JSON。";
-
-/// 程序性知识蒸馏 user prompt 构造（`artifacts.auto_skill` 生成面）。
+/// 学习对话引擎 system prompt（自学习铺路批次三）。
 ///
-/// 输入是已脱敏的时序经验摘要（`build_experience_digest` 产出）与现有
-/// Forge 产物清单；输出 JSON 契约（解析端按 `has_skill`/`name`/`skill_md`
-/// 取数，任何一侧不得单方面改动）：
-/// `{"has_skill": bool, "name": "...", "skill_md": "...", "rationale": "..."}`
-pub fn skill_distillation_prompt(experiences_digest: &str, artifacts_list: &str) -> String {
+/// 「LLM 当脑子、Rust 当路」：Rust 摆证据、运对话、落载体、跑护栏；学
+/// 什么、学成什么形态、内容怎么写全部由本对话里的 LLM 判断。四个阶段各
+/// 输出一个合法 JSON 对象（引擎侧 lenient 解析 + 单次重试，第二次仍非
+/// 法 = 该项诚实丢弃）。
+pub const LEARN_DIALOGUE_SYSTEM_PROMPT: &str = "你是自学习引擎：从会话证据中识别值得长期沉淀的知识，\
+        决定它的载体形态并写出最终内容。全程四个阶段（提议→定形→对账→定稿），每阶段只回复一个合法 JSON 对象，\
+        不写 JSON 之外的散文。\n\
+        「没有值得学的」是一等答案：证据是噪声、一次性环境问题或已被覆盖时，诚实说没有，不硬编产出。\n\
+        载体选择唯一判据是注入经济学：insight = 常驻注入，一句话说得清且每次对话都受益，值得每轮占字节；\
+        skill = 按需拉取，内容大/步骤多/低频使用，不值得常驻。\n\
+        主语分型是必要判定：每条结论的主语是助手/流程（对 agent 行为的要求）还是用户本人（用户的习惯/偏好）——\
+        用户主语的结论不是 agent 资产：不产出 skill，类别改从画像词表选。\n\
+        安全红线：不产出任何绕过安全闸门的建议；洞察是 soft 判断倾向，硬约束归安全层，二者不得混淆。";
+
+/// 学习对话阶段 1/4（提议）user prompt：证据包注入。
+///
+/// JSON 契约（解析端按 `proposals`/`empty_reason` 取数）：
+/// `{"proposals": [{"id","title","observation","lesson"}], "empty_reason": "..."}`
+/// proposals 为空时 `empty_reason` 必填（「没有值得学的」的一等出口）。
+pub fn learn_phase1_prompt(pack_text: &str) -> String {
     let mut sb = String::new();
-    sb.push_str("以下是一段时间内按时间排序的工具使用经验（已脱敏）。\n\n");
-    sb.push_str("## 经验序列\n");
-    sb.push_str(experiences_digest);
-    sb.push_str("\n\n## 已有 Forge 产物（勿重复产出同题材）\n");
-    if artifacts_list.trim().is_empty() {
-        sb.push_str("（无）\n");
+    sb.push_str("# 学习对话阶段 1/4：提议\n\n");
+    sb.push_str("以下是本批学习证据包：\n\n");
+    sb.push_str(pack_text);
+    sb.push_str(
+        "\n\n请判断：这批证据里有什么值得沉淀为长期知识的教训？\n\
+         - 证据中的「agent 停下问→用户答复」可能是正常咨询也可能是被纠正，语义真假由你判断；\n\
+         - 失败经验是流程级噪声还是暴露了可泛化的教训，也由你判断；\n\
+         - 没有值得学的（证据全是噪声/一次性环境/已被覆盖）就返回空 proposals 并给出 empty_reason。\n\n\
+         只回复一个 JSON 对象：\n\
+         {\"proposals\": [{\"id\": \"p1\", \"title\": \"一句话主题\", \"observation\": \"证据里看到了什么\", \
+         \"lesson\": \"值得学什么\"}], \"empty_reason\": \"proposals 为空时必填：为什么没有值得学的\"}",
+    );
+    sb
+}
+
+/// 学习对话阶段 2/4（定形）user prompt：形态决策（注入经济学）。
+///
+/// JSON 契约：`{"items": [{"id","form","reason"}]}`，form ∈
+/// `insight|skill|both|none`（none 合法——有教训但不值得沉淀）。
+pub fn learn_phase2_prompt(transcript: &str) -> String {
+    let mut sb = String::new();
+    sb.push_str("# 学习对话阶段 2/4：定形\n\n");
+    sb.push_str("以下是前几轮对话记录：\n\n");
+    sb.push_str(transcript);
+    sb.push_str(
+        "\n\n对每个 proposal 决定交付形态。唯一判据是注入经济学：\n\
+         - \"insight\"（常驻洞察）：一句话说得清且每次对话都受益，值得每轮占字节；\n\
+         - \"skill\"（按需技能）：内容大/步骤多/低频使用，按需拉取全文而非常驻；\n\
+         - \"both\"：既有常驻准则又有完整配方，两边都要；\n\
+         - \"none\"：有教训但不值得沉淀（一次性环境问题、通用常识等）。\n\n\
+         只回复一个 JSON 对象：\n\
+         {\"items\": [{\"id\": \"p1\", \"form\": \"insight|skill|both|none\", \"reason\": \"一句话\"}]}",
+    );
+    sb
+}
+
+/// 学习对话阶段 3/4（对账）user prompt：对照现有台账与技能库去重。
+///
+/// JSON 契约：`{"items": [{"id","verdict","target","note"}]}`，verdict ∈
+/// `keep|duplicate|conflict_drop|supersede`；duplicate/supersede 时
+/// `target` 指向现有条目（洞察 id 或技能名）。
+pub fn learn_phase3_prompt(transcript: &str, ledger_digest: &str, skills_digest: &str) -> String {
+    let mut sb = String::new();
+    sb.push_str("# 学习对话阶段 3/4：对账\n\n");
+    sb.push_str("以下是前几轮对话记录，以及现有洞察台账与技能库清单：\n\n## 对话记录\n\n");
+    sb.push_str(transcript);
+    sb.push_str("\n\n## 现有洞察台账\n\n");
+    if ledger_digest.trim().is_empty() {
+        sb.push_str("（空——还没有任何条目）\n");
     } else {
-        sb.push_str(artifacts_list);
+        sb.push_str(ledger_digest);
+        sb.push('\n');
+    }
+    sb.push_str("\n## 现有技能库\n\n");
+    if skills_digest.trim().is_empty() {
+        sb.push_str("（空）\n");
+    } else {
+        sb.push_str(skills_digest);
         sb.push('\n');
     }
     sb.push_str(
-        "\n请判断：是否存在某个「同场景工具序列多次成功收敛」的模式，值得沉淀为\
-         可复用的程序性技能（操作配方）？判断标准：\n\
-         - 该序列在同场景中反复出现且最终成功（失败-修正-成功的收敛也算，\
-         修正经验本身就是配方的一部分）；\n\
-         - 步骤可泛化到其他机器/工作区（不绑定特定路径或一次性环境）；\n\
-         - 是程序性知识（怎么做），不是统计观察（用了多少）。\n\n\
-         若存在，生成完整 SKILL.md 草稿。形式要求：\n\
-         - 以 --- 定界的 YAML frontmatter（字段：name、description、version:\"1.0\"）；\n\
-         - 步骤直接可执行（具体命令/具体判断），不写「建议」「可以考虑」；\n\
-         - 路径一律相对/占位符形态（如 <workspace>），不出现真实机器路径；\n\
-         - 不含任何真实凭据（引用凭据时写「通过 vault/环境变量注入」）；\n\
-         - 失败学费写成显式禁忌/注意事项，让读者不再付一遍。\n\n\
-         若不存在（或已有产物覆盖同题材），has_skill 填 false，name/skill_md 留空串。\n\n\
+        "\n对照现有条目逐项去重，只保留真正新增的知识：\n\
+         - \"keep\"：新知识，现有条目没有覆盖；\n\
+         - \"duplicate\"：现有条目已覆盖同样内容；\n\
+         - \"conflict_drop\"：与现有条目矛盾但没有足够证据推翻它；\n\
+         - \"supersede\"：与现有条目矛盾且新证据更可信，应取代旧条目。\n\n\
          只回复一个 JSON 对象：\n\
-         {\"has_skill\": true, \"name\": \"kebab-case-技能名\", \"skill_md\": \"完整SKILL.md内容\", \
-         \"rationale\": \"一句话说明沉淀理由\"}",
+         {\"items\": [{\"id\": \"p1\", \"verdict\": \"keep|duplicate|conflict_drop|supersede\", \
+         \"target\": \"duplicate/supersede 时指向的现有洞察 id 或技能名\", \"note\": \"一句话\"}]}",
+    );
+    sb
+}
+
+/// 学习对话阶段 4/4（定稿）user prompt：最终条目 + skill 草稿（含 tests 段）。
+///
+/// JSON 契约（解析端按 `insights`/`skills` 取数；双缝互通 2026-11-25 起
+/// 带主语分型）：
+/// - `{"insights": [{"id","subject","statement","category","evidence","confidence"}],`
+/// - `"skills": [{"id","subject","slug","skill_md"}]}`
+///
+/// subject ∈ `assistant|user`：assistant 条目 category 从行为词表选；
+/// user 条目 category 从画像词表选（workflow|correction|tool_preference|
+/// style|environment|quality_bar），且只进 insights 数组（用户习惯不是
+/// agent 技能——Rust 侧对 subject=user 的 skill 诚实丢弃）。
+///
+/// `skill_md` = SKILL.md 全文，frontmatter 可带 `tests` 段——格式即
+/// `skill_tests.rs` 的 `SkillTestsSpec`（name/turns≤6/fixtures≤8 且单文件
+/// ≤64KB/expect 至少一断言或 judge），批次四装前实跑按此消费。
+pub fn learn_phase4_prompt(transcript: &str, kept_items: &str) -> String {
+    let mut sb = String::new();
+    sb.push_str("# 学习对话阶段 4/4：定稿\n\n");
+    sb.push_str("以下是前几轮对话记录与对账后保留的条目清单：\n\n## 对话记录\n\n");
+    sb.push_str(transcript);
+    sb.push_str("\n\n## 对账保留清单\n\n");
+    sb.push_str(kept_items);
+    sb.push_str(
+        "\n\n请为每个 keep/supersede 条目产出最终内容（duplicate/conflict_drop/none 不产出）。\n\n\
+         洞察条目要求：\n\
+         - statement ≤ 120 字：一句话准则，可执行可判断，不是泛泛建议；\n\
+         - subject 判定条目主语：\"assistant\"（对助手/流程的要求——默认）\
+         或 \"user\"（对用户本人习惯/偏好的发现）；\n\
+         - category 按 subject 分词表：assistant 从 \
+         behavior|process_constraint|error_signature|user_preference|efficiency 中选；\n\
+           user 从 workflow|correction|tool_preference|style|environment|quality_bar 中选（画像词表）；\n\
+         - evidence ≤ 300 字证据摘要；\n\
+         - confidence 0.0-1.0。\n\n\
+         技能条目要求（skill_md = 完整 SKILL.md 全文）：\n\
+         - subject 恒 \"assistant\"：主语为用户的结论只产出洞察条目，不产出技能；\n\
+         - 以 --- 定界的 YAML frontmatter（字段：name、description、version: \"1.0\"）；\n\
+         - frontmatter 可带 tests 段（行为用例，装前实跑验证）：\n\
+           tests: [{name, turns: [{user}], fixtures: [{path, content}], expect: {...}, judge: {rubric, threshold}}]；\n\
+           turns ≤ 6 轮；fixtures ≤ 8 个且单文件 ≤ 64KB；每条用例至少一个断言\n\
+           （expect 的 tools_called/contains/files_exist 等任一，或 judge.rubric）；\n\
+         - 步骤直接可执行，不写「建议」「可以考虑」；路径一律相对/占位符形态；不含真实凭据；\n\
+         - 失败学费写成显式禁忌/注意事项。\n\n\
+         只回复一个 JSON 对象：\n\
+         {\"insights\": [{\"id\": \"p1\", \"subject\": \"assistant|user\", \"statement\": \"...\", \"category\": \"...\", \
+         \"evidence\": \"...\", \"confidence\": 0.8}],\n\
+          \"skills\": [{\"id\": \"p2\", \"subject\": \"assistant\", \"slug\": \"kebab-case-name\", \"skill_md\": \"完整SKILL.md全文\"}]}\n\n\
+         不产出对应形态时对应数组留空数组。",
     );
     sb
 }

@@ -575,3 +575,42 @@ fn test_read_gateway_state_out_of_domain_pid_is_none() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ============================================================
+// BUG-20261125-011 回归锁：read_gateway_state_or_err 两形态区分。
+// 「文件不存在」与「文件存在但无法解析」此前共享同一条
+// 「找不到 state 文件」消息，损坏文件误导排查方向。
+// ============================================================
+
+#[test]
+fn test_read_gateway_state_or_err_distinguishes_missing_vs_corrupt() {
+    let dir = std::env::temp_dir().join(format!("nb-dash-orerr-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("gateway_state.json");
+
+    // 形态一：文件不存在 → 「未运行」文案。
+    let missing = read_gateway_state_or_err(&path).expect_err("不存在必须报错");
+    assert!(
+        missing.contains("未运行"),
+        "缺失文件必须报「未运行」: {missing}"
+    );
+
+    // 形态二：文件存在但内容损坏 → 「存在但无法解析」文案（不再谎称找不到）。
+    std::fs::write(&path, r#"{"pid":"not-a-number","web_port":49000}"#).expect("write");
+    let corrupt = read_gateway_state_or_err(&path).expect_err("损坏文件必须报错");
+    assert!(
+        corrupt.contains("存在但无法解析"),
+        "损坏文件必须报「存在但无法解析」: {corrupt}"
+    );
+
+    // 合法文件 → Ok，行为不变。
+    std::fs::write(
+        &path,
+        r#"{"pid":7,"web_host":"127.0.0.1","web_port":49000}"#,
+    )
+    .expect("write");
+    let info = read_gateway_state_or_err(&path).expect("合法文件必须成功");
+    assert_eq!(info.web_port, 49000);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

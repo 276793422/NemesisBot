@@ -1022,7 +1022,14 @@ fn memory_data_dir_gate_disabled_is_none_enabled_is_some() {
         "增强内存总开关关 → 项目域必须不旁路（恒 None）"
     );
     // 总开关开：项目域 manager 在位。
+    // home 必须显式给 temp（BUG-20261125-075）：`..Default::default()` 的
+    // home/workspace 都是空 PathBuf，memory_manager_for_data_dir 内部
+    // with_config_dir 的 config_dir = workspace_dir().join("config") 会退化成
+    // 纯相对 `workspace/config`——load_embedding_config 的缺省臂 create-if-
+    // missing 当场写盘，CWD=包根（cargo test 语义）= 源码树模板目录被运行时
+    // 产物污染。空 home 不会先炸（PathBuf 空 join 不 panic），污染完全静默。
     let shared_on = Arc::new(SharedResources {
+        home: home.to_path_buf(),
         memory_manager: Some(Arc::new(nemesis_memory::manager::MemoryManager::new(
             &nemesis_memory::manager::Config::new(home.join("memory").join("memory_vector")),
         ))),

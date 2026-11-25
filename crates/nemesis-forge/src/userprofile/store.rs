@@ -21,6 +21,7 @@
 //!   [`AUTO_MAX_ENTRIES`]，不再与反思通道细粒度习惯挤同一批名额（G8）；
 //! - 渲染升级：带 steps 条目 = 步骤清单块（步骤同样过安全边界 + 单行折叠）。
 
+use nemesis_types::safety::violates_security_boundary;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -277,25 +278,9 @@ pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfil
     Ok(profile)
 }
 
-/// 渲染层过滤：拒绝任何含权限/安全语义的习惯内容（硬边界防御性双保险）。
-pub(crate) fn violates_security_boundary(content: &str) -> bool {
-    let lower = content.to_lowercase();
-    const FORBIDDEN: &[&str] = &[
-        "自动批准",
-        "自动放行",
-        "免审批",
-        "跳过审批",
-        "自动 approve",
-        "auto approve",
-        "auto-approve",
-        "降档",
-        "降低安全",
-        "绕过审批",
-        "skip approval",
-        "bypass approval",
-    ];
-    FORBIDDEN.iter().any(|k| lower.contains(k))
-}
+// 渲染层过滤 `violates_security_boundary`：2026-11-24 单一真相源上收
+// `nemesis_types::safety`（自学习铺路批次一——洞察台账共用同一份禁词表，
+// 原私有 const 本模块副本退役；画像迁入 forge 后同源引用不变）。
 
 /// 上榜前清洗：剔除 expired + 安全违规条目；**vetoed 条目保留驻留**（二轮
 /// 复查根修：负样本压制语义——vetoed 一旦被 prune 删除，规则通道的固定

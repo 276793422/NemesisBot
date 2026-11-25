@@ -114,9 +114,20 @@ struct DingTalkConversationMessage {
 }
 
 /// DingTalk access token response.
+///
+/// BUG-20261125-027：wire 字段名权威真相源 = 钉钉官方 Go SDK
+/// （alibabacloud-go/dingtalk `oauth2_1_0/client.go` GetAccessTokenResponseBody
+/// json tag）——v1.0 `/v1.0/oauth2/accessToken` 响应为 camelCase
+/// `accessToken`/`expireIn`。原 snake_case 无 rename → serde 精确匹配字段名，
+/// 线上键静默忽略 → `access_token` 恒 None → refresh_token() 报
+/// "no access_token in response"、流 loop Step 1 取 `unwrap_or_default()`
+/// 空串 → "auth returned empty token, backing off" 死循环，通道永远无法上线。
+/// alias 保留 snake_case 形态兼容（同文件身份字段双形态惯例）。
 #[derive(Debug, Deserialize)]
 struct AccessTokenResponse {
+    #[serde(rename = "accessToken", alias = "access_token")]
     access_token: Option<String>,
+    #[serde(rename = "expireIn", alias = "expire_in")]
     expire_in: Option<i64>,
 }
 

@@ -2057,3 +2057,26 @@ fn cors_config_path_migrates_legacy_home_config_copy_once() {
         "existing target must win"
     );
 }
+
+/// BUG-20261125-046 回归锁：run_command 的 Dossier 臂必须装 default
+/// logger。它曾是全部命令臂中唯一漏 `ensure_default_logger` 的（其余臂
+/// 全家族纪律在位）：dossier 路径上 `BoardStore::open` 的 msg_dedup 清扫
+/// info/warn 与 archive_writer 的失败 warn 全部静默丢弃（tracing 无
+/// subscriber 时事件不可逆丢失）。用 rfind 取 match 臂（clap enum 定义处
+/// 的首次命中在文件前部，match 臂恒在其后）。
+#[test]
+fn test_run_command_dossier_arm_installs_default_logger() {
+    let src = include_str!("main.rs");
+    let arm_start = src
+        .rfind("Commands::Dossier")
+        .expect("Commands::Dossier match arm must exist in main.rs");
+    let rest = &src[arm_start + "Commands::Dossier".len()..];
+    // 臂体 = 从此处到下一个同缩进命令臂（或文件尾）。
+    let body = &rest[..rest.find("\n        Commands::").unwrap_or(rest.len())];
+    assert!(
+        body.contains("ensure_default_logger"),
+        "Commands::Dossier arm must call common::ensure_default_logger() — \
+         tracing events on the dossier path are silently dropped otherwise \
+         (BUG-20261125-046)"
+    );
+}

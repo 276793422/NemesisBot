@@ -11,11 +11,13 @@ use super::collection::append_event;
 use super::store::{self, UserProfile};
 
 /// 否决（按内容子串匹配 → vetoed 驻留抑制）+ 负反馈事件落盘。
-pub fn veto(workspace: &Path, content_sub: &str) -> Result<bool, String> {
+/// `home` = append_event 总闸（复查 2026-11-25 批 F3，学习关闭时不落）。
+pub fn veto(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result<bool, String> {
     let hit = store::veto_habit(workspace, content_sub)?;
     if hit {
         append_event(
             workspace,
+            home,
             &serde_json::json!({
                 "kind": "veto",
                 "content": content_sub,
@@ -27,11 +29,12 @@ pub fn veto(workspace: &Path, content_sub: &str) -> Result<bool, String> {
 }
 
 /// 忘记（按内容子串整条删除）+ 负反馈事件落盘。
-pub fn forget(workspace: &Path, content_sub: &str) -> Result<bool, String> {
+pub fn forget(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result<bool, String> {
     let removed = store::forget_habit(workspace, content_sub)?;
     if removed {
         append_event(
             workspace,
+            home,
             &serde_json::json!({
                 "kind": "forget",
                 "content": content_sub,
@@ -54,7 +57,20 @@ pub fn pin(workspace: &Path, content_sub: &str, pinned: bool) -> Result<bool, St
 /// 反思观察」；stats 归 external 桶）。id 不存在 / 已裁决 = Ok(None)。
 /// 确认走 ingest 而非直写 = 安全边界过滤（security 语义内容照拒）与
 /// 合并语义与 Forge 抛入同源。
+///
+/// 安全禁词预检（BUG-20261125-053）：含禁词的观察在 resolve **之前**
+/// loud 报错拒绝——resolve 是不可逆裁决，先 resolve 再让 upsert 层静默
+/// 丢弃 = 观察被消费、画像无条目、UI 显示成功三方失配（BUG-20261125-052
+/// 同族）。拒绝时条目留 pending，人工走「忽略」转负样本回流。
 pub fn confirm_observation(workspace: &Path, id: &str) -> Result<Option<()>, String> {
+    if let Some(o) = super::bridge::peek_pending_observation(workspace, id)
+        && nemesis_types::safety::violates_security_boundary(&o.content)
+    {
+        return Err(format!(
+            "观察 {} 含安全边界禁词，拒绝入画像（审批放行语义只走 approval 机制；可改用「忽略」转为负样本）",
+            id
+        ));
+    }
     let Some(o) = super::bridge::resolve_observation(workspace, id, true)? else {
         return Ok(None);
     };
@@ -83,12 +99,17 @@ pub fn confirm_observation(workspace: &Path, id: &str) -> Result<Option<()>, Str
 /// `kind="dismiss"` 行——反思通道下轮当「勿重提同类」注记回灌（与
 /// veto/forget 同族纪律）；忽略的结论同时进 Forge 语义分析的负样本面。
 /// id 不存在 / 已裁决 = Ok(None)。
-pub fn dismiss_observation(workspace: &Path, id: &str) -> Result<Option<String>, String> {
+pub fn dismiss_observation(
+    workspace: &Path,
+    home: Option<&str>,
+    id: &str,
+) -> Result<Option<String>, String> {
     let Some(o) = super::bridge::resolve_observation(workspace, id, false)? else {
         return Ok(None);
     };
     append_event(
         workspace,
+        home,
         &serde_json::json!({
             "kind": "dismiss",
             "content": o.content,

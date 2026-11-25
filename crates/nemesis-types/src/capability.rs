@@ -334,6 +334,16 @@ pub fn resolve_max_output_ceiling(cfg: &serde_json::Value) -> u64 {
 /// per-model `max_output_tokens` 覆盖。
 pub const DEFAULT_MAX_TOKENS: i64 = 65_536;
 
+/// `agents.defaults.max_tool_iterations` 迭代闸缺省值。2026-11-23 拍板：
+/// 缺省 **0 = 不限**（原缺省 100——长任务撞顶 grace+暂停中断现场，用户
+/// 裁决改为不限）。注意与 [`DEFAULT_MAX_TOKENS`] 的 0/负=无效语义相反：
+/// 迭代闸的 0 是合法的「不限」形态，无界护栏由 turn_guard 循环检测 +
+/// estop + 各预算保险丝承担。单一真相源：`nemesis-config` 的 serde
+/// default 与 nemesis-migrate 迁移骨架（fresh-write 路径）均引用本常量，
+/// 两条全新安装路径（onboard 模板 / OpenClaw 迁移）不得分叉
+/// （BUG-20261120-016 同族——迁移骨架 100 旧值在拍板后漏同步）。
+pub const DEFAULT_MAX_TOOL_ITERATIONS: i64 = 0;
+
 /// `agents.defaults.max_tokens` 解析（主轮回退链第二级：条目
 /// `max_output_tokens` > 本键 > [`DEFAULT_MAX_TOKENS`]）。缺席 / 0 / 负数
 /// = 未声明（None），由调用方继续回退。
