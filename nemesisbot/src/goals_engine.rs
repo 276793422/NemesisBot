@@ -12,7 +12,9 @@
 //! 并发防护：进程级评估互斥锁 + chat_log total 行数单调 cursor（同一
 //! turn 的多条终局帧只评第一次；人在场的新消息推进 cursor → 下一轮
 //! 评估）。estop 冻结期跳过评估（goal 状态不动，release 后下一 turn
-//! 照常）；注入前二次检查（评估途中急停则丢弃本轮 CONTINUE）。
+//! 照常）；评估途中急停在预算落账**之前**拦截（丢弃本轮 CONTINUE：
+//! 不扣轮数预算、不注入——enable 只解 blocked 不重置 rounds_used，
+//! 先扣后弃等于预算永久虚耗）。
 //!
 //! 会话 → AgentLoop 解析复刻 `resolve_session_loop` 单一裁决序（agents
 //! bridge → projects bridge → 主槽 Weak-style 引用），评估用 LLM 走
@@ -475,6 +477,20 @@ impl GoalsEngine {
             nemesis_goals::EvalVerdict::Continue => {
                 self.record_eval(entry, "continue", gap.as_deref(), model_label, started, raw);
                 let next_round = entry.rounds_used + 1;
+                // estop 途中急停：在预算落账之前拦截——丢弃本轮 CONTINUE
+                // 且不动注册表（rounds_used 不 bump、不注入）。评估 LLM
+                // 链路（chore_completion_ex）无 estop 闸，窗口（秒~分钟
+                // 级，含 3 次重试）内用户可触发急停；enable 只解 blocked
+                // 不重置 rounds_used，先 bump 后丢弃 = 丢弃轮的预算永久
+                // 虚耗，与模块头「estop 冻结期 goal 状态不动」一致。
+                // 评估留痕（record_eval）照常——审计面记录「评过、结论
+                // continue、被急停丢弃」，无活动产生。
+                if self.estop.is_engaged() {
+                    tracing::info!(
+                        "[Goals] estop engaged during eval window, drop CONTINUE without budget"
+                    );
+                    return;
+                }
                 // 状态机闸（同 Done 臂，BUG-20261118-154）：评估窗口内人
                 // pause 的 goal 不占轮数预算也不注入——paused goal 本不
                 // 该触发评估，无声 rounds+1 等于偷扣预算。
@@ -499,12 +515,6 @@ impl GoalsEngine {
                     return;
                 }
                 if !bumped {
-                    return;
-                }
-                // estop 途中急停：丢弃本轮 CONTINUE（状态已 +1 无害——下一
-                // turn 评估闸照常，轮号语义连续）。
-                if self.estop.is_engaged() {
-                    tracing::info!("[Goals] estop engaged before injection, drop round");
                     return;
                 }
                 let content = nemesis_goals::build_round_message(
