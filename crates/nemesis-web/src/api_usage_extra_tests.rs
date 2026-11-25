@@ -927,3 +927,27 @@ async fn log_detail_found_missing_and_no_store() {
             .await;
     assert_eq!(v["error"], "DataStore not configured");
 }
+
+// ---------------------------------------------------------------------------
+// default_window_start —— BUG-20261126-082 回归锁：用户可控 end 饱和减
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_window_start_saturates_on_huge_negative_end() {
+    use crate::api_usage::default_window_start;
+
+    // 用户 start 优先，end 任意值不参与缺省算术。
+    assert_eq!(default_window_start(5, Some(100)), 100);
+    assert_eq!(default_window_start(i64::MIN, Some(0)), 0);
+
+    // 常规缺省：end − 86400。
+    assert_eq!(default_window_start(2_000_000_000, None), 1_999_913_600);
+
+    // i64::MIN：旧裸减形态此处 debug panic / release 回绕成巨大正值
+    // （start > end 恒空窗假象）；现在饱和为 i64::MIN 不炸。
+    assert_eq!(default_window_start(i64::MIN, None), i64::MIN);
+
+    // 邻界：i64::MIN + 86400 是裸减恰好不再溢出的第一点。
+    assert_eq!(default_window_start(i64::MIN + 86_400, None), i64::MIN);
+    assert_eq!(default_window_start(i64::MIN + 86_401, None), i64::MIN + 1);
+}

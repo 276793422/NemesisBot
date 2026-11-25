@@ -2468,3 +2468,35 @@ fn copy_skill_dir_rejects_hostile_subject() {
     copy_skill_dir(&real, &ws, "# Skill: weather\n\nbody").unwrap();
     assert!(!ws.join("skills").exists());
 }
+
+// ---------------------------------------------------------------------------
+// eval_fuses —— BUG-20261126-081 回归锁：--observe-secs 巨值导出熔断不溢出
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eval_fuses_saturates_on_huge_observe_secs() {
+    // 常规值精确：+600/+660 slack 原样。
+    let (env_s, fuse) = eval_fuses(1800);
+    assert_eq!(env_s, "2400");
+    assert_eq!(fuse.as_secs(), 2460);
+
+    // u64::MAX：旧裸加形态此处 debug panic / release 回绕成 659/659s
+    // （熔断提前，与语义相反）；现在饱和不炸。
+    let (env_s, fuse) = eval_fuses(u64::MAX);
+    assert_eq!(env_s, "18446744073709551615");
+    // from_secs(u64::MAX)：secs 打满、subsec_nanos=0（注意 Duration::MAX
+    // 还带 1_999_999_999ns 余数，比 from_secs(u64::MAX) 更大，两者不等）。
+    assert_eq!(fuse, std::time::Duration::from_secs(u64::MAX));
+    assert_eq!(fuse.subsec_nanos(), 0);
+
+    // 邻界：u64::MAX - 660 是 fuse 恰好不饱和的最后精确点；
+    // u64::MAX - 661 起进入饱和区（env +600 侧邻界对齐验证）。
+    let (_, fuse) = eval_fuses(u64::MAX - 660);
+    assert_eq!(fuse.as_secs(), u64::MAX);
+    let (env_s, _) = eval_fuses(u64::MAX - 601);
+    assert_eq!(env_s, "18446744073709551614");
+    let (env_s, _) = eval_fuses(u64::MAX - 600);
+    assert_eq!(env_s, "18446744073709551615");
+    let (env_s, _) = eval_fuses(u64::MAX - 599);
+    assert_eq!(env_s, "18446744073709551615");
+}
