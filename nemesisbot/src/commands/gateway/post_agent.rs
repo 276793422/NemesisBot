@@ -996,7 +996,7 @@ pub(crate) async fn init_post_agent(
                         let mut rx = estop.subscribe();
                         while rx.changed().await.is_ok() {
                             if *rx.borrow() {
-                                nemesis_web::pty::kill_all_for_estop();
+                                let _ = nemesis_web::pty::kill_all_sessions();
                             }
                         }
                     });

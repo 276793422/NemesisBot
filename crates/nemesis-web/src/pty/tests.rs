@@ -237,9 +237,16 @@ fn manager_register_cap_and_kill_all() {
     assert_eq!(mgr.session_count(), 1);
     let c = mgr.register(mk(), 2).expect("after unregister");
     assert_ne!(b, c, "ids monotonic");
-    // kill_all 清场。
-    mgr.kill_all();
+    // kill_all 清场（返回收杀数；BUG-20261126-098 回归锁：usize 计数
+    // 供停机链日志消费，幂等二连杀第二发=0）。
+    let killed = mgr.kill_all();
+    assert_eq!(killed, 2, "kill_all must report killed session count");
     assert_eq!(mgr.session_count(), 0);
+    assert_eq!(
+        mgr.kill_all(),
+        0,
+        "second kill_all on empty registry = idempotent zero"
+    );
     assert!(
         mgr.register(mk(), 2).is_some(),
         "registry empty after kill_all"
@@ -391,8 +398,9 @@ async fn capacity_reject_delivers_limit_message_and_leaves_no_zombie() {
 /// 急停必须杀掉「stalled client」会话：会话任务的
 /// estop watch 在 select 循环里，而循环在 `socket.send().await`（客户端
 /// TCP 背压——网络挂起/浏览器休眠是常态）期间不被轮询——自醒路径失效，
-/// 宿主侧 `kill_all_for_estop()` 挂点是唯一兜底（vm_display 同款纪律，
-/// post_agent.rs estop watcher）。红证（修复前）：灌满输出缓冲把任务
+/// 宿主侧 `kill_all_sessions()` 挂点是唯一兜底（vm_display 同款纪律，
+/// post_agent.rs estop watcher + run_runtime Step 24 停机收尾）。红证
+/// （修复前）：灌满输出缓冲把任务
 /// 停进 send，estop 触发后注册表仍持有该会话；绿证：宿主侧直杀子进程，
 /// 注册表即时清空。
 ///
@@ -426,7 +434,7 @@ async fn bug234_estop_kills_stalled_client_session() {
     let addr = start_server(make_state("", Some(estop.clone()))).await;
 
     // 生产 watcher 形态复刻（post_agent.rs 修复同款主体
-    // 三行）：estop 触发 → 宿主侧 kill_all_for_estop() 直杀。测试环境无
+    // 三行）：estop 触发 → 宿主侧 kill_all_sessions() 直杀。测试环境无
     // gateway 装配，watcher 在此自装；红证（poll-only 形态，修复前函数
     // 不存在不可能带 watcher 编译）已先行捕获：estop 触发后 5s 注册表
     // 仍持 stalled 会话。
@@ -436,7 +444,7 @@ async fn bug234_estop_kills_stalled_client_session() {
             let mut rx = estop_w.subscribe();
             while rx.changed().await.is_ok() {
                 if *rx.borrow() {
-                    crate::pty::kill_all_for_estop();
+                    let _ = crate::pty::kill_all_sessions();
                 }
             }
         });

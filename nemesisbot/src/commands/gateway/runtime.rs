@@ -2055,6 +2055,24 @@ pub(crate) async fn run_runtime(
         lsp_closed
     );
 
+    // PTY 终端会话收尸（BUG-20261126-098，停机链执行体收口家族）：会话
+    // 任务的收尾 tail（child.kill + reap 线程）只在 select 循环正常 break
+    // 时执行——runtime 收掉会话 future 时 tail 根本不运行（SessionGuard
+    // Drop 只摘牌不 kill），estop watcher 的 kill 链又只认 estop 触发。
+    // 普通停机此前对 PTY 会话零收口，shell 只能靠 ConPTY close/SIGHUP
+    // 平台副作用兜底——与模块自身纪律（其余每条退出路径都显式 kill，
+    // 含失败臂「不得泄漏子进程」注释）不一致。语义同 estop：进程终态 =
+    // 收杀一切执行体（先例：上方 LSP C5「child processes never outlive
+    // the gateway」）。无会话/manager 未装 = 0，幂等 no-op。
+    #[cfg(feature = "terminal")]
+    {
+        let pty_killed = nemesis_web::pty::kill_all_sessions();
+        info!(
+            "[Gateway] PTY shutdown: {} terminal session(s) killed",
+            pty_killed
+        );
+    }
+
     // Abort background tasks
     web_handle.abort();
     agent_adapter.stop().ok();
