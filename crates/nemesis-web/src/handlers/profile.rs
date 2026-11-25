@@ -304,9 +304,11 @@ fn content_sub(data: Option<&Value>) -> Result<String, String> {
 }
 
 /// `profile.prune_queue` 的 cutoff 计算（复查 2026-11-24 抽出纯函数便于单
-/// 测）：`now − days×86400×1000`，两级饱和——乘法饱和到 i64::MAX、减法饱
-/// 和到 i64::MIN，极端大天数不 panic，cutoff 退化为极早时间 = 什么都不清
-///（诚实降级；配置面 i64 算术纪律同 decay_sweep/stale 安全网族）。
+/// 测）：`now − days×86400×1000`，两级饱和（BUG-20261125-006；同族纪律
+/// BUG-20261107-025 decay_sweep——入参来源 i64 裸乘溢出在 debug panic /
+/// release 环绕）——乘法饱和到 i64::MAX、减法饱和到 i64::MIN，极端大天数
+/// 不 panic，cutoff 退化为极早时间 = 什么都不清（诚实降级；配置面 i64
+/// 算术纪律同 decay_sweep/stale 安全网族）。
 pub(crate) fn prune_cutoff_ms(days: i64) -> i64 {
     chrono::Utc::now()
         .timestamp_millis()
@@ -362,5 +364,5 @@ impl ModuleHandler for ProfileHandler {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "forge"))]
 mod tests;

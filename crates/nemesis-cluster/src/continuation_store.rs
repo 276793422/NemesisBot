@@ -230,7 +230,16 @@ impl ContinuationStore {
         &self,
         max_age: std::time::Duration,
     ) -> Result<usize, ContinuationError> {
-        let cutoff = std::time::SystemTime::now() - max_age;
+        // BUG-20261124-047：时钟早于 epoch+max_age（无 RTC 虚机/容器时钟
+        // 漂移、CMOS 电池归零）时裸减 panic——checked_sub 拿不到 cutoff 则
+        // 诚实跳过本轮清扫（保守不删，与 skills installer 同款防御先例）。
+        let Some(cutoff) = std::time::SystemTime::now().checked_sub(max_age) else {
+            return Ok(0);
+        };
+        // tmp-orphan 臂的固定宽限同样裸减会 panic（BUG-20261124-047）：
+        // 循环外一次性 checked_sub，拿不到则 None=全部按新鲜处理（不删）。
+        let tmp_cutoff =
+            std::time::SystemTime::now().checked_sub(nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE);
         let mut removed = 0;
 
         if !self.cache_dir.exists() {
@@ -258,10 +267,9 @@ impl ContinuationStore {
                 .is_some_and(|n| n.starts_with(nemesis_utils::ATOMIC_TMP_PREFIX));
             if is_tmp_orphan {
                 let stale = if let Ok(metadata) = entry.metadata().await {
-                    metadata.modified().is_ok_and(|modified| {
-                        modified
-                            < std::time::SystemTime::now() - nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE
-                    })
+                    metadata
+                        .modified()
+                        .is_ok_and(|modified| tmp_cutoff.is_some_and(|c| modified < c))
                 } else {
                     false
                 };

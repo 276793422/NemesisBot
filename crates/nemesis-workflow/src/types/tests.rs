@@ -1008,13 +1008,18 @@ fn w4a_parse_duration_suffix_with_non_numeric_body_is_none() {
 }
 
 // ---------------------------------------------------------------------------
-// Workflow::hash 跨进程不稳定
+// Workflow::hash 跨进程稳定性回归闸
 // ---------------------------------------------------------------------------
 
 /// 构造 hash 稳定性探针工作流：单个节点、config 带 12 个键。
-/// HashMap 迭代序跨进程不同（RandomState 每进程随机种子），
-/// 12 键两次进程迭代序完全相同的概率 ~1/12!——bug 存在时
-/// 断言「两次 hash 相等」几乎必然失败（稳定红）。
+/// 键数够多以放大任何键序敏感性。稳定性真实来源：`Workflow::hash()` 经
+/// `json!` 宏把全部值物化为 serde_json::Value，`Value::Object` 在
+/// serde_json 无 `preserve_order` feature 时是 BTreeMap——键序被字典序
+/// 归一，NodeDef.config（HashMap）的迭代序被吸收，hash 天然跨进程稳定
+/// （考古：json! 形态自 Phase 1 初始提交即存在，hash 从未依赖迭代序）。
+/// 本测试是回归闸：若未来 workspace 开启 `preserve_order`（Object 变
+/// IndexMap 保插入序 = HashMap 迭代序）或 hash() 改为手拼字节流绕过
+/// json! 物化，跨进程稳定性即刻破坏，此处必红。
 fn hash_probe_workflow() -> Workflow {
     let mut config = HashMap::new();
     for i in 0..12 {
@@ -1044,12 +1049,15 @@ fn hash_probe_workflow() -> Workflow {
 fn test_workflow_hash_stable_across_processes() {
     // 消费点：engine::restore_incomplete_executions 用当前进程重算的
     // Workflow::hash() 匹配磁盘 checkpoint 的 workflow_hash（gateway
-    // 启动恢复链路）。canonical JSON 直接序列化 NodeDef.config
-    // （HashMap）→ serde 按 HashMap 迭代序输出 → 跨进程不稳定 →
-    // 重启后全部中断执行被误判 "config drift" 静默放弃恢复。
+    // 启动恢复链路）。稳定性来源：hash() 的 canonical JSON 经 `json!`
+    // 宏物化为 serde_json::Value——`Value::Object` 默认 BTreeMap 把
+    // NodeDef.config（HashMap）的迭代序归一为字典序，同一定义在任何
+    // 进程产出同一字节串。
     //
-    // 红证形态：spawn 测试二进制自身两次（WF_HASH_PROBE=1 走探针
-    // 分支，--exact 只跑本测试），两次 hash 必须逐字节一致。
+    // 回归闸形态：spawn 测试二进制自身两次（WF_HASH_PROBE=1 走探针
+    // 分支，--exact 只跑本测试），两次 hash 必须逐字节一致——守护
+    // 「json! 物化 + BTreeMap 键序归一」这一隐含前提不被后续改动
+    // （feature 开关 / hash 实现重写）静默破坏。
     const SELF_TEST_PATH: &str = "types::tests::test_workflow_hash_stable_across_processes";
 
     if std::env::var("WF_HASH_PROBE").is_ok() {
@@ -1079,7 +1087,9 @@ fn test_workflow_hash_stable_across_processes() {
     let _ = std::fs::remove_dir_all(&tmp);
     assert_eq!(
         hashes[0], hashes[1],
-        "同一定义两次进程 hash 不一致：canonical JSON 依赖 HashMap 迭代序，\
-         restore_incomplete_executions 的 checkpoint 匹配在重启后必然漂移"
+        "同一定义两次进程 hash 不一致：canonical 化前提被破坏（如开启 \
+         serde_json preserve_order 使 Object 保插入序=HashMap 迭代序，\
+         或 hash() 改手拼字节流绕过 json! 物化）——\
+         restore_incomplete_executions 的 checkpoint 匹配将随键序漂移"
     );
 }

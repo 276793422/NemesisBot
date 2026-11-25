@@ -8,7 +8,14 @@
     "budget_tokens": 2000
   },
   "collection": {
-    "sanitize_fields": ["api_key", "token", "password", "secret", "credential", "key"],
+    "sanitize_fields": [
+      "api_key",
+      "token",
+      "password",
+      "secret",
+      "credential",
+      "key"
+    ],
     "max_experiences": 10000
   },
   "storage": {
@@ -24,7 +31,6 @@
     "max_report_age_days": 30
   },
   "artifacts": {
-    "auto_skill": false,
     "max_skills": 50,
     "max_scripts": 100,
     "default_status": "draft"
@@ -43,13 +49,14 @@
   "learning": {
     "enabled": false,
     "min_pattern_frequency": 5,
-    "high_conf_threshold": 0.8,
-    "max_auto_creates": 3,
-    "max_refine_rounds": 3,
     "min_outcome_samples": 5,
     "monitor_window_days": 7,
     "degrade_threshold": -0.2,
-    "degradation_cooldown_days": 7,
-    "llm_budget_tokens": 2000
+    "degradation_cooldown_days": 7
+  },
+  "learn": {
+    "enabled": false,
+    "budget_tokens": 8192,
+    "activation_recurrence": 3
   }
 }

@@ -12,7 +12,7 @@
 //!   正文字段恒等透传（代码块/粗斜体/列表双端原生支持）；格式映射只做
 //!   方言差异的必要部分——入站剥离 `@botname` 提及（见 `strip_bot_mention`）。
 //! - config：`base_url` + `bot_token` + `allow_from`（用户白名单，空=全放行）
-//!   + `channels`（监听频道 ID/名称映射过滤，空=全部），token 只进 config
+//!   与 `channels`（监听频道 ID/名称映射过滤，空=全部），token 只进 config
 //!   结构，绝不硬编码。
 
 #![allow(dead_code)] // channel API client — 完整 schema 镜像自 Mattermost API，部分字段暂未消费
@@ -38,6 +38,12 @@ const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 /// WS 鉴权 challenge 的序号（Mattermost 协议要求请求带递增 seq）。
 const AUTH_SEQ: u64 = 1;
+/// WS 鉴权应答等待上限（秒）。服务端收 challenge 后不回帧也不关连接
+/// （挂起的网关/半开代理）会让鉴权等待无限挂起——重连循环卡死、入站
+/// 静默死亡而 running 旗标照常（状态面失真）。超时走重连臂（
+/// BUG-20261115-016 写超时同族语义的读侧对齐，BUG-20261125-036）；只
+/// 约束鉴权阶段——事件流阶段空闲长连接合法，不做读超时。
+const AUTH_WAIT_TIMEOUT_SECS: u64 = 30;
 
 // ---------------------------------------------------------------------------
 // Mattermost API 类型
@@ -194,19 +200,55 @@ impl MattermostChannel {
         }
     }
 
-    /// 剥离文本中对 bot 的 `@username` 提及（slack `strip_bot_mention` 同款做法）。
+    /// 剥离文本中对 bot 的 `@username` 提及。
     ///
-    /// 优先按「提及 + 尾随空格」整段剥离（避免句中残留双空格），
-    /// 紧贴标点等形态回退裸提及。
+    /// **边界感知**（BUG-20261125-034）：Mattermost 提及形态是裸 `@username`
+    /// （无 slack `<@UID>` 括号定界），朴素 `replace` 会发生前缀吞并——
+    /// bot 名 `nem` 时 `@nemesis check`（提及别的用户）被剥成 `esis check`、
+    /// `email@nem to you` 被剥成 `email to you`（词中吞并），静默腐蚀喂给
+    /// 模型的正文。现只在提及两侧都不是 username 字符时剥离；命中时连带
+    /// 吃掉一个尾随空格（防双空格残留）。`.` 计入 username 字符：宁可有
+    /// 少见残留（`@bot.` 句尾提及不剥，透明可见），不腐蚀同前缀用户名
+    /// （`@bot.doe` 是另一个用户）。
     pub fn strip_bot_mention(text: &str, bot_username: &str) -> String {
         if bot_username.is_empty() {
             return text.to_string();
         }
         let mention = format!("@{bot_username}");
-        text.replace(&format!("{mention} "), "")
-            .replace(&mention, "")
-            .trim()
-            .to_string()
+        let is_username_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(pos) = rest.find(&mention) {
+            // 前沿：mention 前一字符仍是 username 字符（如 x@nem）= 非独立提及
+            let prev_ok = rest[..pos]
+                .chars()
+                .next_back()
+                .map(|c| !is_username_char(c))
+                .unwrap_or(true);
+            // 后沿：mention 后一字符仍是 username 字符（如 @nemesis）= 非本 bot 提及
+            let after = pos + mention.len();
+            let next_ok = rest[after..]
+                .chars()
+                .next()
+                .map(|c| !is_username_char(c))
+                .unwrap_or(true);
+            if prev_ok && next_ok {
+                out.push_str(&rest[..pos]);
+                // 吃掉一个尾随空格（mention+space 整段剥离，防双空格）
+                let after = if rest[after..].starts_with(' ') {
+                    after + 1
+                } else {
+                    after
+                };
+                rest = &rest[after..];
+            } else {
+                // 保留 '@'，从下一字节继续找（pos 处是 ASCII '@'，字节边界安全）
+                out.push_str(&rest[..=pos]);
+                rest = &rest[pos + 1..];
+            }
+        }
+        out.push_str(rest);
+        out.trim().to_string()
     }
 
     /// 入站格式映射：Mattermost markdown → bot 内部 markdown。
@@ -385,20 +427,30 @@ impl MattermostChannel {
             }
         }
 
-        // —— 等鉴权应答：status=OK 才进入事件流；FAIL 通常是 token 失效
+        // —— 等鉴权应答：status=OK 才进入事件流；FAIL 通常是 token 失效。
+        // 整个鉴权阶段有总 deadline（BUG-20261125-036）：服务端不回帧的
+        // 挂起连接此前会无限挂起（重连循环卡死）。
+        let auth_deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(AUTH_WAIT_TIMEOUT_SECS);
         loop {
-            let text = match ws_rx.next().await {
-                Some(Ok(Message::Text(t))) => t.to_string(),
-                Some(Ok(Message::Close(_))) => {
+            let text = match tokio::time::timeout_at(auth_deadline, ws_rx.next()).await {
+                Err(_) => {
+                    warn!(
+                        "[MattermostChannel] 鉴权应答等待超时（{AUTH_WAIT_TIMEOUT_SECS}s 无帧），重连"
+                    );
+                    return true;
+                }
+                Ok(Some(Ok(Message::Text(t)))) => t.to_string(),
+                Ok(Some(Ok(Message::Close(_)))) => {
                     info!("[MattermostChannel] 鉴权期间被服务端关闭");
                     return true;
                 }
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => {
+                Ok(Some(Ok(_))) => continue,
+                Ok(Some(Err(e))) => {
                     warn!("[MattermostChannel] WebSocket 鉴权阶段错误: {e}");
                     return true;
                 }
-                None => {
+                Ok(None) => {
                     info!("[MattermostChannel] 鉴权期间连接关闭");
                     return true;
                 }
@@ -525,7 +577,16 @@ impl MattermostChannel {
 
         let data = &payload["data"];
         let post: serde_json::Value = match data.get("post") {
-            Some(serde_json::Value::String(s)) => serde_json::from_str(s).ok()?,
+            Some(serde_json::Value::String(s)) => match serde_json::from_str(s) {
+                Ok(v) => v,
+                Err(e) => {
+                    // data.post 应为序列化 JSON 字符串；解析失败 = 协议违规帧，
+                    // 诚实告警不留静默丢失（BUG-20261125-031 静默吞同族口径，
+                    // BUG-20261125-035）。
+                    warn!(error = %e, "[MattermostChannel] posted data.post parse failed, message dropped");
+                    return None;
+                }
+            },
             Some(v @ serde_json::Value::Object(_)) => v.clone(),
             _ => return None,
         };

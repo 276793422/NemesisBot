@@ -184,9 +184,18 @@ impl EventSource for UsbEventSource {
                         // 杀死监控（永久停摆零日志），且无字节闸。现在：
                         // 非 UTF-8 lossy 收敛（属性值 mojibake 降级为最佳
                         // 努力，监控存活）；真 IO 错误 loud warn 后收尾。
+                        // BUG-20261124-038：Err 路径 loud 之后，EOF/下游关闭
+                        // 收尾仍零日志——udevadm 被外部杀死（OOM/管理员/
+                        // 升级替换）时 stdout 关闭、pump 返回 Ok、线程静默
+                        // 退场，USB 监控死亡无任何观测面。stop()-kill 的正常
+                        // 收尾也走这里，info 一行无害。
                         if let Err(e) = pump_monitor_lines(&mut reader, &mut emit) {
                             tracing::warn!(
                                 "udevadm monitor read failed, USB monitoring stopped: {e}"
+                            );
+                        } else {
+                            tracing::info!(
+                                "udevadm stdout closed (EOF or downstream closed), USB monitoring ended"
                             );
                         }
                     }

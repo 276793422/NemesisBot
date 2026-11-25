@@ -9,7 +9,10 @@
 //! **heartbeat / ziwei / exec_checkpoints + cluster_logs legacy 平铺**
 //! （心跳日志单文件不删 / 紫微诊断产物不删 / 交付门影子库崩溃孤儿 /
 //! 二层清扫「意外平铺文件保守不动」规则漏掉的 `cluster_{date}.log`
-//! 每日事件流）——十六族覆盖 logs/ 子树全部生产写方。本模块按
+//! 每日事件流）——十六族覆盖 logs/ 子树全部生产写方。2026-11-24 自学习
+//! 洞察链路补第十七族 **forge_learn**（学习对话留痕 `forge/learn/
+//! {ts}_{trigger}/`，写端在 forge 域不在 logs/ 根下——ziwei 跨根先例）。
+//! 本模块按
 //! `config.logs`（[`nemesis_config::LogsTtlConfig`]）逐族保留天数清扫：
 //! 启动扫一次 + 每 6h 一拍（与 uploads sweeper 同拍），每族每拍限量
 //! [`MAX_DELETIONS_PER_SWEEP`] 件防 IO 尖峰（扫不完下次周期继续）。
@@ -98,7 +101,7 @@ const SWEEP_INTERVAL_SECS: u64 = 6 * 3600;
 /// 一天的秒数。
 const DAY_SECS: u64 = 86400;
 
-/// 十六族 TTL 值集（清扫循环每拍从 config 现读——2026-11-20 热生效语义，
+/// 十七族 TTL 值集（清扫循环每拍从 config 现读——2026-11-20 热生效语义，
 /// 改键下拍生效无需重启；struct 本身仍是值快照，热度在读侧 `read_logs_ttl`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogsTtl {
@@ -141,6 +144,10 @@ pub struct LogsTtl {
     /// 天数（0=族关；默认 1 天短闸——正常路径即用即清，此族只收崩溃
     /// 窗口残留）。
     pub exec_checkpoints: u64,
+    /// `forge/learn/{ts}_{trigger}/` 学习对话留痕目录保留天数（0=族关；
+    /// **不在 logs/ 根下**——写端 forge.rs trace_dir 落 forge 域，清扫端
+    /// 按写端形态进族，ziwei 跨根先例）。
+    pub forge_learn: u64,
 }
 
 impl Default for LogsTtl {
@@ -165,6 +172,7 @@ impl Default for LogsTtl {
             heartbeat: 30,
             ziwei: 30,
             exec_checkpoints: 1,
+            forge_learn: 30,
         }
     }
 }
@@ -190,12 +198,13 @@ impl LogsTtl {
                 heartbeat: c.heartbeat,
                 ziwei: c.ziwei,
                 exec_checkpoints: c.exec_checkpoints,
+                forge_learn: c.forge_learn,
             },
             None => Self::default(),
         }
     }
 
-    /// 十六族全 0 = 完全不装配清扫任务。
+    /// 十七族全 0 = 完全不装配清扫任务。
     pub fn all_disabled(&self) -> bool {
         self.session_logs == 0
             && self.boundary == 0
@@ -213,6 +222,7 @@ impl LogsTtl {
             && self.heartbeat == 0
             && self.ziwei == 0
             && self.exec_checkpoints == 0
+            && self.forge_learn == 0
     }
 }
 
@@ -235,6 +245,7 @@ enum Family {
     Heartbeat,
     Ziwei,
     ExecCheckpoints,
+    ForgeLearn,
 }
 
 impl Family {
@@ -256,12 +267,14 @@ impl Family {
             Family::Heartbeat => "heartbeat",
             Family::Ziwei => "ziwei",
             Family::ExecCheckpoints => "exec_checkpoints",
+            Family::ForgeLearn => "forge_learn",
         }
     }
 
     /// request_logs / trash / eval / calibration 的条目是目录（整目录删）；
-    /// exec_checkpoints（`{task_id}.git/`）与 ziwei 的 profile 报告树
-    /// （`{profile}/`）同构目录族（ziwei 的 notify.jsonl 走
+    /// exec_checkpoints（`{task_id}.git/`）、ziwei 的 profile 报告树
+    /// （`{profile}/`）与 forge_learn（`{ts}_{trigger}/` 学习对话留痕）
+    /// 同构目录族（ziwei 的 notify.jsonl 走
     /// [`sweep_single_file`]，不经此判定）；其余族是文件（cluster_logs /
     /// capture 双层走专用函数，不经此判定）。
     fn entries_are_dirs(&self) -> bool {
@@ -273,6 +286,7 @@ impl Family {
                 | Family::Calibration
                 | Family::Ziwei
                 | Family::ExecCheckpoints
+                | Family::ForgeLearn
         )
     }
 }
@@ -711,7 +725,7 @@ fn sweep_ziwei(ws: &Path, ttl_days: u64, now: SystemTime) -> SweepStats {
     stats
 }
 
-/// 十六族全量扫一轮（纯文件系统操作，无全局态——测试直接打临时 workspace）。
+/// 十七族全量扫一轮（纯文件系统操作，无全局态——测试直接打临时 workspace）。
 /// 返回每族统计（零删除的族也在列，调用方决定日志口径）。
 fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Family, SweepStats)> {
     let logs_root = nemesis_path::logs_dir_in_workspace(ws);
@@ -734,6 +748,10 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
     let exec_checkpoints_dir = logs_root.join("exec_checkpoints");
     let gateway_dir = nemesis_path::resolve_gateway_logs_dir_in_workspace(ws);
     let cluster_logs_dir = nemesis_path::resolve_cluster_logs_dir_in_workspace(ws);
+    // forge_learn 族**不在 logs/ 根下**：写端 forge.rs trace_dir =
+    // `<ws>/forge/learn/{ts}_{trigger}/`（forge 域自留痕），清扫端按写端
+    // 形态进族（ziwei 跨根先例）。
+    let forge_learn_dir = ws.join("forge").join("learn");
     // trash 族删除走 chat_trash::trash_purge_in 单点（与手动 purge 同一
     // 收敛：清单在 = 先清 sessions/ 下 live todo 孤儿再删条目）。寻址面
     // 用 with_dirs 按 ws 真相源拼装（sweeper 无全局态，测试打临时 ws），
@@ -772,6 +790,7 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
             exec_checkpoints_dir,
             ttl.exec_checkpoints,
         ),
+        (Family::ForgeLearn, forge_learn_dir, ttl.forge_learn),
     ]
     .into_iter()
     .map(|(family, dir, days)| {
@@ -785,7 +804,7 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
         (family, stats)
     })
     .collect();
-    // 非目录形态的三族后补（单文件 / 混合根），保持十六族统计齐全。
+    // 非目录形态的三族后补（单文件 / 混合根），保持十七族统计齐全。
     swept.push((
         Family::Heartbeat,
         sweep_single_file(
@@ -827,6 +846,7 @@ fn run_sweep_once(ttl: &LogsTtl) {
                     Family::Heartbeat => ttl.heartbeat,
                     Family::Ziwei => ttl.ziwei,
                     Family::ExecCheckpoints => ttl.exec_checkpoints,
+                    Family::ForgeLearn => ttl.forge_learn,
                 },
                 "[LogsSweeper] 清扫完成"
             );
@@ -848,7 +868,7 @@ fn run_sweep_once(ttl: &LogsTtl) {
 pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
     let initial = read_logs_ttl(&config_path);
     if initial.all_disabled() {
-        info!("[LogsSweeper] logs 十六族 TTL 全 0 —— 清扫待命（每拍现读 config，改键下拍生效）");
+        info!("[LogsSweeper] logs 十七族 TTL 全 0 —— 清扫待命（每拍现读 config，改键下拍生效）");
     } else {
         info!(
             session_logs_days = initial.session_logs,
@@ -867,12 +887,13 @@ pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
             heartbeat_days = initial.heartbeat,
             ziwei_days = initial.ziwei,
             exec_checkpoints_days = initial.exec_checkpoints,
+            forge_learn_days = initial.forge_learn,
             interval_secs = SWEEP_INTERVAL_SECS,
-            "[LogsSweeper] logs 十六族 TTL 清扫装配（每拍现读 config，改键下拍生效）"
+            "[LogsSweeper] logs 十七族 TTL 清扫装配（每拍现读 config，改键下拍生效）"
         );
     }
     tokio::spawn(async move {
-        // BUG-20261118-172：run_sweep_once 是重阻塞 sync 清扫（十六族遍历，
+        // BUG-20261118-172：run_sweep_once 是重阻塞 sync 清扫（十七族遍历，
         // Trash 族经 trash_purge_in → fsutil::remove_file_retry /
         // remove_dir_all_retry 的 thread::sleep 退避最坏 ~4.4s/条目）——
         // 直跑 tokio worker 会阻塞 executor。fsutil.rs LOW-5 家族纪律：
@@ -905,7 +926,7 @@ pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
     });
 }
 
-/// 现读 config `logs` 段解析十六族 TTL（热生效语义的读侧）。读失败 /
+/// 现读 config `logs` 段解析十七族 TTL（热生效语义的读侧）。读失败 /
 /// 缺文件 = 默认值兜底 + warn——诚实降级不中断清扫（与缺键=全默认的
 /// 解析语义同源；坏 config 不清空既有保留策略）。
 fn read_logs_ttl(config_path: &std::path::Path) -> LogsTtl {

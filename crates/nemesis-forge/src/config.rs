@@ -58,6 +58,10 @@ pub struct ForgeConfig {
     /// Learning configuration (closed-loop).
     #[serde(default)]
     pub learning: LearningConfig,
+
+    /// 学习对话配置（自学习铺路批次三）：四阶段对话引擎总闸与预算。
+    #[serde(default)]
+    pub learn: LearnConfig,
 }
 
 /// Collection subsystem configuration.
@@ -164,8 +168,10 @@ pub struct ReflectionConfig {
     pub min_experiences: usize,
 
     /// Whether to use LLM in the reflection cycle (semantic analysis AND
-    /// auto_skill distillation). `false` = 纯统计反思，循环内零 LLM 调用；
-    /// gateway 与 CLI 同语义（CLI 侧该键决定是否挂 provider）。
+    /// the learning dialogue). `false` = 纯统计反思，循环内零 LLM 调用
+    /// （learn.enabled 开而此键关时自动对话跳过并 warn——语义分析关而
+    /// 对话开会自相矛盾）；gateway 与 CLI 同语义（CLI 侧该键决定是否挂
+    /// provider）。auto_skill 蒸馏已退役（2026-11-24 批次三）。
     #[serde(default = "default_true")]
     pub use_llm: bool,
 
@@ -212,10 +218,6 @@ fn default_llm_budget() -> u32 {
 /// Artifact management configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactsConfig {
-    /// Whether to automatically create skills from patterns.
-    #[serde(default)]
-    pub auto_skill: bool,
-
     /// Maximum number of skills to maintain.
     #[serde(default = "default_max_skills")]
     pub max_skills: usize,
@@ -232,7 +234,6 @@ pub struct ArtifactsConfig {
 impl Default for ArtifactsConfig {
     fn default() -> Self {
         Self {
-            auto_skill: false,
             max_skills: default_max_skills(),
             max_scripts: default_max_scripts(),
             default_status: default_status(),
@@ -380,7 +381,15 @@ fn default_min_traces() -> usize {
     0 // 护栏默认关（0=不限）； 验证轮四接线——此前该键零消费者
 }
 
-/// Learning configuration for closed-loop learning.
+/// Learning configuration for the closed-loop 实效层（F 线：实效评估 +
+/// 置信度调整 + 降级摘除）。
+///
+/// 线 A generate/execute 决策表已随自学习铺路批次三退役——六个决策表键
+/// （high_conf_threshold / max_auto_creates / max_refine_rounds /
+/// llm_budget_tokens / success_template_skill_threshold /
+/// error_recovery_suggest_min）从结构体删除，存量盘上配置里的旧键由
+/// serde 默认容忍（未知字段忽略不炸）；学什么、学成什么形态归学习对话
+/// 引擎（`learn` 段），路由权不再在 Rust 决策表。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningConfig {
     /// Whether learning is enabled.
@@ -390,18 +399,6 @@ pub struct LearningConfig {
     /// Minimum pattern frequency to trigger action (default 5).
     #[serde(default = "default_min_freq")]
     pub min_pattern_frequency: u32,
-
-    /// High confidence threshold for auto-creation (default 0.8).
-    #[serde(default = "default_high_conf")]
-    pub high_conf_threshold: f64,
-
-    /// Maximum auto-creates per cycle (default 3).
-    #[serde(default = "default_max_auto")]
-    pub max_auto_creates: u32,
-
-    /// Maximum refine iterations (default 3).
-    #[serde(default = "default_max_refine")]
-    pub max_refine_rounds: u32,
 
     /// Minimum samples for evaluation (default 5).
     #[serde(default = "default_min_samples")]
@@ -418,31 +415,6 @@ pub struct LearningConfig {
     /// Cooldown before re-deprecating (default 7 days).
     #[serde(default = "default_degradation_cooldown")]
     pub degradation_cooldown_days: u32,
-
-    /// Token budget for Skill draft generation (default 2000).
-    ///
-    /// ⚠ 保留键（核实未消费）：实际预算统一走
-    /// `reflector_llm::AUX_FORGE_MAX_TOKENS`（8192， 事故后上调
-    /// ——低预算被 thinking 系模型烧穿、真机两稿全空），接线会重引该风险。
-    #[serde(default = "default_learning_llm_budget")]
-    pub llm_budget_tokens: u32,
-
-    /// success_template 建技能的频率闸（默认 5）。
-    ///
-    /// 决策表（缺陷整改批次 B2）：success_template 频率 ≥ 此值 →
-    /// create_skill，其余全部 → suggest_prompt。置信度不再是闸
-    /// （conversation 检测器的 success_template confidence 恒 1.0，
-    /// 频率过滤才是真闸）。
-    #[serde(default = "default_success_template_skill_threshold")]
-    pub success_template_skill_threshold: u32,
-
-    /// error_recovery 进入 suggest_prompt 的最低置信度（默认 0.2）。
-    ///
-    /// 决策表（缺陷整改批次 B2）：conf ≥ high_conf_threshold → create，
-    /// conf ≥ 此值 → suggest，低于此值 → 无动作（完整分区，
-    /// 旧 `_` 静默丢弃臂消灭）。
-    #[serde(default = "default_error_recovery_suggest_min")]
-    pub error_recovery_suggest_min: f64,
 }
 
 impl Default for LearningConfig {
@@ -450,42 +422,16 @@ impl Default for LearningConfig {
         Self {
             enabled: false,
             min_pattern_frequency: default_min_freq(),
-            high_conf_threshold: default_high_conf(),
-            max_auto_creates: default_max_auto(),
-            max_refine_rounds: default_max_refine(),
             min_outcome_samples: default_min_samples(),
             monitor_window_days: default_monitor_window(),
             degrade_threshold: default_degrade_threshold(),
             degradation_cooldown_days: default_degradation_cooldown(),
-            llm_budget_tokens: default_learning_llm_budget(),
-            success_template_skill_threshold: default_success_template_skill_threshold(),
-            error_recovery_suggest_min: default_error_recovery_suggest_min(),
         }
     }
 }
 
-fn default_success_template_skill_threshold() -> u32 {
-    5
-}
-
-fn default_error_recovery_suggest_min() -> f64 {
-    0.2
-}
-
 fn default_min_freq() -> u32 {
     5
-}
-
-fn default_high_conf() -> f64 {
-    0.8
-}
-
-fn default_max_auto() -> u32 {
-    3
-}
-
-fn default_max_refine() -> u32 {
-    3
 }
 
 fn default_min_samples() -> u32 {
@@ -504,8 +450,47 @@ fn default_degradation_cooldown() -> u32 {
     7
 }
 
-fn default_learning_llm_budget() -> u32 {
-    2000
+/// 学习对话配置（自学习铺路批次三）：四阶段对话引擎（提议→定形→对账→
+/// 定稿）的总闸与预算。模型解析链 = judge 链同构新臂（`learn.model` 显式
+/// → `agents.small_model` → 主模型），见 nemesis-web `resolve_learn_caller`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearnConfig {
+    /// 学习对话总闸（forge.enabled 之上二级闸；默认关 = 交付后行为零变化
+    /// ——自动周期不跑对话；CLI/WSAPI 手动触发是显式意志，不受此闸约束）。
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// 单次对话 token 预算：作为每阶段 LLM 调用的 max_tokens 下传；证据
+    /// 包体积另由证据包组装器字符预算封顶（超限截证据包不截轮次）。
+    #[serde(default = "default_learn_budget")]
+    pub budget_tokens: u32,
+
+    /// 同指纹复现转 active 阈值（InsightStore::with_recurrence 接线点）。
+    #[serde(default = "default_activation_recurrence")]
+    pub activation_recurrence: u32,
+
+    /// 对话引擎显式模型别名；空 = `agents.small_model` → 主模型回落链。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl Default for LearnConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            budget_tokens: default_learn_budget(),
+            activation_recurrence: default_activation_recurrence(),
+            model: None,
+        }
+    }
+}
+
+fn default_learn_budget() -> u32 {
+    8192
+}
+
+fn default_activation_recurrence() -> u32 {
+    3
 }
 
 // ----- File I/O (matching Go's LoadForgeConfig / SaveForgeConfig) -----

@@ -46,7 +46,9 @@ use nemesis_agent::context::RequestContext;
 use nemesis_agent::executor_transport::{
     ExecutorResponseWire, PersistentExecutorSession, TransportError, new_call_id,
 };
-use nemesis_agent::remote_executor_tool::{filter_env_allowlist, home_redirect_env_pairs};
+use nemesis_agent::remote_executor_tool::{
+    env_vars_lossy, filter_env_allowlist, home_redirect_env_pairs,
+};
 use nemesis_config::ExecutorPersistentConfig;
 use nemesis_path::resolve_agent_home_in_workspace;
 
@@ -881,7 +883,7 @@ impl AgentRuntimeSupervisor {
             .map_err(|e| format!("create agent browser-profile dir: {e}"))?;
         let mut cmd = tokio::process::Command::new(&self.exe_path);
         cmd.env_clear();
-        cmd.envs(filter_env_allowlist(std::env::vars()));
+        cmd.envs(filter_env_allowlist(env_vars_lossy()));
         cmd.envs(home_redirect_env_pairs(&home));
         cmd.envs(base_executor_env(exec_root, &home, agent_id));
         // PLAN Linux 项：`executor.sandbox=true` 时挂 标记——子进程
@@ -1009,7 +1011,7 @@ impl AgentRuntimeSupervisor {
         cmd.arg("/hide_window");
         cmd.arg(&self.exe_path);
         cmd.env_clear();
-        cmd.envs(filter_env_allowlist(std::env::vars()));
+        cmd.envs(filter_env_allowlist(env_vars_lossy()));
         cmd.envs(home_redirect_env_pairs(home));
         cmd.envs(base_executor_env(exec_root, home, agent_id));
         cmd.env("NEMESISBOT_EXECUTOR_PIPE", &pipe);

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
@@ -33,7 +33,17 @@ pub struct SignalEnvelope {
 }
 
 /// Inner envelope data.
+///
+/// BUG-20261125-025：wire 字段名权威真相源 = signal-cli-rest-api swagger
+/// `receive.MessageEnvelope`（camelCase：`sourceNumber`/`sourceUuid`/
+/// `dataMessage`/`syncMessage`...）。本结构体曾用 snake_case 且无
+/// `rename_all`——serde 精确匹配字段名，线上全部 camelCase 键静默忽略：
+/// `data_message` 恒 None → receive loop 每条消息 `continue` → 通道 100%
+/// 静默丢消息；`source_number` 恒 None → sender 恒 "unknown"（allow_from
+/// 配置时所有真实消息被过滤 / 未配置时跨发送者会话键塌缩）。
+/// 测试 fixture 自建 snake_case JSON 与线上格式脱锚 = 假绿实证。
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalEnvelopeInner {
     pub source: Option<String>,
     pub source_number: Option<String>,
@@ -45,6 +55,7 @@ pub struct SignalEnvelopeInner {
 
 /// Signal data message.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalDataMessage {
     pub timestamp: Option<i64>,
     pub message: Option<String>,
@@ -53,9 +64,52 @@ pub struct SignalDataMessage {
 
 /// Signal group info.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalGroupInfo {
     pub group_id: Option<String>,
-    pub name: Option<String>,
+    pub group_name: Option<String>,
+}
+
+/// Sender 身份提取单一真相源：优先手机号（sourceNumber），回落 source，
+/// 再回落 sourceUuid（隐藏号码账户只有 UUID 形态身份），全缺 = "unknown"。
+fn envelope_sender(inner: &SignalEnvelopeInner) -> String {
+    inner
+        .source_number
+        .as_deref()
+        .or(inner.source.as_deref())
+        .or(inner.source_uuid.as_deref())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Processes a received envelope → (sender, chat_id, content, timestamp)。
+///
+/// 模块级自由函数：receive loop 与测试共用同一提取逻辑（此前 loop 内联
+/// 副本与 pub 方法双路径，测试锚不到生产路径——025 假绿的结构性成因之一）。
+pub fn process_envelope(envelope: &SignalEnvelopeInner) -> Option<(String, String, String, i64)> {
+    let data_msg = envelope.data_message.as_ref()?;
+    let content = data_msg.message.as_deref().unwrap_or("");
+    if content.is_empty() {
+        return None;
+    }
+
+    let sender = envelope_sender(envelope);
+
+    let chat_id = if let Some(ref group_info) = data_msg.group_info {
+        group_info
+            .group_id
+            .clone()
+            .unwrap_or_else(|| sender.clone())
+    } else {
+        sender.clone()
+    };
+
+    Some((
+        sender,
+        chat_id,
+        content.to_string(),
+        data_msg.timestamp.unwrap_or(0),
+    ))
 }
 
 /// Signal send request.
@@ -72,7 +126,11 @@ pub struct SignalChannel {
     config: SignalConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    processed_timestamps: parking_lot::RwLock<HashMap<i64, bool>>,
+    /// 已处理时间戳去重表（Arc 槽位：spawn 闭包与实例方法共享同一张表）。
+    /// BUG-20261125-038：signal-cli REST 长轮询 at-least-once（消费超时/
+    /// 服务重启等场景重复投递同一 envelope），此前表存在但 receive loop
+    /// 零调用（死代码，与 qq BUG-20261125-032 同构），重复消息原样喂 agent。
+    processed_timestamps: Arc<parking_lot::RwLock<HashMap<i64, bool>>>,
     bus_sender: broadcast::Sender<InboundMessage>,
 }
 
@@ -109,7 +167,7 @@ impl SignalChannel {
                 .build()
                 .map_err(|e| NemesisError::Channel(format!("HTTP client creation failed: {e}")))?,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            processed_timestamps: parking_lot::RwLock::new(HashMap::new()),
+            processed_timestamps: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             bus_sender,
         })
     }
@@ -122,46 +180,37 @@ impl SignalChannel {
         )
     }
 
-    /// Processes a received envelope.
-    pub fn process_envelope(
-        &self,
-        envelope: &SignalEnvelopeInner,
-    ) -> Option<(String, String, String)> {
-        let data_msg = envelope.data_message.as_ref()?;
-        let content = data_msg.message.as_deref().unwrap_or("");
-        if content.is_empty() {
-            return None;
-        }
-
-        let sender_id = envelope.source_number.as_deref().unwrap_or("unknown");
-
-        let chat_id = if let Some(ref group_info) = data_msg.group_info {
-            group_info.group_id.as_deref().unwrap_or(sender_id)
-        } else {
-            sender_id
-        };
-
-        Some((
-            sender_id.to_string(),
-            chat_id.to_string(),
-            content.to_string(),
-        ))
-    }
-
     /// Checks if a timestamp has already been processed.
     pub fn is_duplicate(&self, timestamp: i64) -> bool {
-        let mut map = self.processed_timestamps.write();
-        if map.contains_key(&timestamp) {
+        Self::dedup_check(&self.processed_timestamps, timestamp)
+    }
+
+    /// 去重查表核心（静态形态：spawn 闭包持有的 Arc 槽位与实例方法同源）。
+    /// 重复返回 `true`（is_duplicate 语义），首见登记后返回 `false`。
+    fn dedup_check(map: &parking_lot::RwLock<HashMap<i64, bool>>, timestamp: i64) -> bool {
+        let mut m = map.write();
+        if m.contains_key(&timestamp) {
             return true;
         }
-        map.insert(timestamp, true);
-        if map.len() > 10000 {
-            let keys: Vec<i64> = map.keys().take(5000).copied().collect();
+        m.insert(timestamp, true);
+
+        // Simple cleanup: limit map size
+        if m.len() > 10000 {
+            let keys: Vec<i64> = m.keys().take(5000).copied().collect();
             for key in keys {
-                map.remove(&key);
+                m.remove(&key);
             }
         }
+
         false
+    }
+
+    /// 分派前去重判定（BUG-20261125-038 接线点）：timestamp 非零查表——首见
+    /// 放行并登记、重复丢弃；timestamp 为 0 恒放行——process_envelope 对缺失
+    /// timestamp 落 0（unwrap_or(0)），无键可查；若把 0 也登记，所有缺时间戳
+    /// 消息会被折叠成一条（每批只活一条），与 qq 空 msg_id 恒放行同语义。
+    fn should_publish(map: &parking_lot::RwLock<HashMap<i64, bool>>, timestamp: i64) -> bool {
+        timestamp == 0 || !Self::dedup_check(map, timestamp)
     }
 
     /// Sends a message to a number or group.
@@ -213,8 +262,18 @@ impl Channel for SignalChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261125-019（BUG-20261121-050 同构家族横向扫漏网补齐）：
+        // 幂等双启守卫 + base running 旗标接线——无守卫的重复 start 会
+        // spawn 多个并行 receive loop 每条消息 N 倍喂 agent；trait
+        // is_running()（读 base 旗标）恒 false 使 manager 运行中守卫
+        // （start_all / any_channel_running / status 上报三消费点）失真。
+        if self.base.is_running() {
+            info!("[SignalChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
         info!("[SignalChannel] starting Signal channel");
         *self.running.write() = true;
+        self.base.set_running(true);
         self.base.set_enabled(true);
 
         let bus = self.bus_sender.clone();
@@ -222,6 +281,7 @@ impl Channel for SignalChannel {
         let receive_url = self.receive_url();
         let running = self.running.clone();
         let allow_from = self.config.allow_from.clone();
+        let processed_timestamps = self.processed_timestamps.clone();
 
         tokio::spawn(async move {
             let poll_interval = std::time::Duration::from_secs(5);
@@ -269,38 +329,33 @@ impl Channel for SignalChannel {
                         None => continue,
                     };
 
-                    let sender = inner.source_number.as_deref().unwrap_or("unknown");
+                    // BUG-20261125-025：提取逻辑与测试共用模块级自由函数
+                    // （单一真相源；此前此处内联副本与 pub 方法双路径漂移，
+                    // 测试锚不到生产路径）。
+                    let (sender, chat_id, content, timestamp) = match process_envelope(&inner) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+
+                    // 去重接线（BUG-20261125-038）：长轮询重复投递同一
+                    // envelope（同 timestamp）在此拦截
+                    if !Self::should_publish(&processed_timestamps, timestamp) {
+                        debug!(timestamp = %timestamp, "[SignalChannel] duplicate message dropped");
+                        continue;
+                    }
 
                     // Filter by allow_from
                     if !allow_from.is_empty()
-                        && !crate::base::allow_list_contains(&allow_from, sender)
+                        && !crate::base::allow_list_contains(&allow_from, &sender)
                     {
                         continue;
                     }
 
-                    let data_msg = match inner.data_message.as_ref() {
-                        Some(m) => m,
-                        None => continue,
-                    };
-
-                    let content = match data_msg.message.as_deref() {
-                        Some(t) if !t.is_empty() => t,
-                        _ => continue,
-                    };
-
-                    let timestamp = data_msg.timestamp.unwrap_or(0);
-
-                    let chat_id = if let Some(ref group_info) = data_msg.group_info {
-                        group_info.group_id.as_deref().unwrap_or(sender).to_string()
-                    } else {
-                        sender.to_string()
-                    };
-
                     let inbound = InboundMessage::user_ingress(
                         "signal".to_string(),
-                        sender.to_string(),
+                        sender,
                         chat_id.clone(),
-                        content.to_string(),
+                        content,
                     )
                     .with_session_key(chat_id)
                     .with_metadata_map({
@@ -325,6 +380,8 @@ impl Channel for SignalChannel {
     async fn stop(&self) -> Result<()> {
         info!("[SignalChannel] stopping Signal channel");
         *self.running.write() = false;
+        // BUG-20261125-019：对称清 base 旗标（契约面见 start 内注释）。
+        self.base.set_running(false);
         self.base.set_enabled(false);
         Ok(())
     }

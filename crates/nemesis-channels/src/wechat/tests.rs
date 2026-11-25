@@ -382,7 +382,8 @@ fn test_unsupported_method_is_405() {
 #[test]
 fn test_inbound_mapping_aliases_and_contacts() {
     let config = WeChatConfig {
-        contacts: HashMap::from([("wxid_bob".to_string(), "老王".to_string())]),
+        // BUG-20261122-045 后 contacts 是 BTreeMap（config 确定性序列化）
+        contacts: BTreeMap::from([("wxid_bob".to_string(), "老王".to_string())]),
         ..test_config(19996)
     };
     let (ch, mut rx) = test_channel(config);

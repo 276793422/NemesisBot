@@ -445,3 +445,100 @@ fn prune_observations_only_resolved_before_cutoff() {
     let content = std::fs::read_to_string(observations_path(ws)).unwrap();
     assert!(content.contains("悬而未决"), "pending 不受清理影响");
 }
+
+// ---- BUG-20261125-004 回归锁：全量重写族 RMW 全程持锁 ----
+
+/// 教训队列：ack 整文件写回与 sweep 并发 append 交错——读在锁外的旧形态
+/// 会把读→写窗内追加的行静默吃掉（pending 教训消失）。锁内 RMW 串行化后
+/// 4 追加线程 × 4 ack 重写线程全交错，盘上行数必须 == 追加总数（零丢失）。
+#[test]
+fn concurrent_append_and_ack_no_lost_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_path_buf();
+    append_lessons(&ws, &[lesson("种子")]); // 建文件
+    let appenders: Vec<_> = (0..4)
+        .map(|i| {
+            let p = ws.clone();
+            std::thread::spawn(move || {
+                for j in 0..10 {
+                    append_lessons(&p, &[lesson(&format!("t{i}-{j}"))]);
+                }
+            })
+        })
+        .collect();
+    let ackers: Vec<_> = (0..4)
+        .map(|_| {
+            let p = ws.clone();
+            std::thread::spawn(move || {
+                for _ in 0..10 {
+                    let ids: Vec<String> = read_pending_lessons(&p, 200)
+                        .into_iter()
+                        .map(|l| l.id)
+                        .collect();
+                    let _ = ack_lessons(&p, &ids);
+                }
+            })
+        })
+        .collect();
+    for h in appenders.into_iter().chain(ackers) {
+        h.join().unwrap();
+    }
+    let all = std::fs::read_to_string(outbound_lessons_path(&ws)).unwrap();
+    assert_eq!(
+        all.lines().count(),
+        1 + 40,
+        "并发追加 × ack 重写必须零丢行: {}",
+        all.lines().count()
+    );
+}
+
+/// 观察队列同族：resolve 整文件写回 vs append 并发——零丢行。注意观察
+/// 队列有 pending cap（OBS_PENDING_CAP=20），超限追加被**合法拒收**
+/// （返回 0，不写盘）——零丢失断言只对被收下的行成立：盘上行数必须
+/// == 1 种子 + admitted 总数（若重写族读在锁外，已收下的行会被旧快照
+/// 写回吃掉，行数 < admitted + 1 即红）。
+#[test]
+fn concurrent_append_observation_and_resolve_no_lost_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_path_buf();
+    append_observations(&ws, &[observation("种子", 0.6)]);
+    let appenders: Vec<_> = (0..4)
+        .map(|i| {
+            let p = ws.clone();
+            std::thread::spawn(move || {
+                let mut admitted = 0usize;
+                for j in 0..10 {
+                    admitted += append_observations(&p, &[observation(&format!("t{i}-{j}"), 0.6)]);
+                }
+                admitted
+            })
+        })
+        .collect();
+    let resolvers: Vec<_> = (0..4)
+        .map(|_| {
+            let p = ws.clone();
+            std::thread::spawn(move || {
+                for _ in 0..10 {
+                    for o in read_pending_observations(&p, 200) {
+                        let _ = resolve_observation(&p, &o.id, false);
+                    }
+                }
+            })
+        })
+        .collect();
+    let mut admitted_total = 0usize;
+    for h in appenders {
+        admitted_total += h.join().unwrap();
+    }
+    for h in resolvers {
+        h.join().unwrap();
+    }
+    let all = std::fs::read_to_string(observations_path(&ws)).unwrap();
+    assert_eq!(
+        all.lines().count(),
+        1 + admitted_total,
+        "并发追加（超 cap 拒收除外）× resolve 重写必须零丢行: 盘上 {} vs admitted {}",
+        all.lines().count(),
+        admitted_total
+    );
+}

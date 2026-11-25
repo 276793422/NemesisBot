@@ -947,7 +947,10 @@ fn extract_zip_archive_capped(
                 total_uncompressed += n as u64;
                 if total_uncompressed > total_cap {
                     drop(outfile);
-                    let _ = std::fs::remove_file(&outpath);
+                    // 韧性删除（BUG-20261124-045）：刚 drop 写句柄的文件是
+                    // Defender/索引器瞬时句柄的最高危窗口，裸单发 remove
+                    // 失败 = 半写的疑似炸弹载荷静默残留磁盘且零留痕。
+                    nemesis_utils::fsutil::remove_file_resilient(&outpath);
                     return Err(format!(
                         "解压总量超上限（>{total_cap} 字节）：疑似解压炸弹，已中止并清理部分文件"
                     ));

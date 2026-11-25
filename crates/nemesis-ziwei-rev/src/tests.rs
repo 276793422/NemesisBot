@@ -253,7 +253,7 @@ fn disasm_nopsled_length() {
 #[test]
 fn funcs_recursive_descent_finds_call_target_and_nopsled() {
     let img = test_image();
-    let set = funcs::recover(Arch::X64, &img, &[0x1000, 0x1020], (0x1000, 0x1100));
+    let set = funcs::recover(Arch::X64, &img, &[0x1000, 0x1020], &[], (0x1000, 0x1100));
     let rvas: Vec<u32> = set.functions.iter().map(|f| f.rva).collect();
     assert!(rvas.contains(&0x1000), "入口函数：{rvas:?}");
     assert!(rvas.contains(&0x1020), "nopsled 种子函数");
@@ -265,12 +265,64 @@ fn funcs_recursive_descent_finds_call_target_and_nopsled() {
     assert!(set.find_by_rva(0x1008).is_none());
 }
 
+/// 权威种子降序边界收口：导出/符号声明的函数起点（0x1008）不被低地址
+/// 函数的线性扫描吞并——0x1008 先注册独立函数，0x1000 在其边界收口
+/// （call + nop×2；0x1007 nop 的 next=0x1008 撞界不入 insns）。
+#[test]
+fn funcs_authoritative_seeds_desc_frontier_closes_at_export() {
+    let img = test_image();
+    let set = funcs::recover(Arch::X64, &img, &[0x1000, 0x1008], &[], (0x1000, 0x1100));
+    let f1 = set.find_by_rva(0x1008).expect("导出种子独立注册");
+    assert_eq!(f1.end_rva, 0x101B, "mov/mov/call/ret 完整体");
+    let f0 = set.find_by_rva(0x1000).expect("入口函数在册");
+    assert_eq!(f0.end_rva, 0x1007, "线性体在 0x1008 边界收口");
+    assert_eq!(f0.insns.len(), 3, "call + nop×2：{f0:#?}");
+    assert!(f0.calls.contains(&0x1008), "call 目标入 calls");
+}
+
+/// BUG-20261124-043 回归锁：nopsled 启发式种子必须尾批接力让位。函数
+/// 体内嵌 sled 种子（0x1040）与权威种子混同降序时先注册，真实函数在
+/// sled 处被截断（end 提前、sled 之后的立即数全丢、sled 误立为函数）。
+/// 分层后权威函数先注册全身体，sled 种子被 contains 让位。
+#[test]
+fn funcs_heuristic_nopsled_seeds_yield_to_registered_body() {
+    // .text（base rva 0x1000）：
+    // 0x1000: mov eax,0x11111111; 0x1005-0x1047: nop×67（含 0x1040 体内
+    // sled 种子位）; 0x1048: mov eax,0x22222222; 0x104D: ret
+    let mut text = vec![0x90u8; 0x100];
+    text[0..5].copy_from_slice(&[0xB8, 0x11, 0x11, 0x11, 0x11]);
+    text[0x48..0x4D].copy_from_slice(&[0xB8, 0x22, 0x22, 0x22, 0x22]);
+    text[0x4D] = 0xC3;
+    let file = test_pe_file();
+    let pe = pe::PeInfo::parse(&file).expect("夹具 PE 头可解析");
+    let img = ImageMap::new(
+        pe,
+        vec![
+            (".text".to_string(), text),
+            (".rdata".to_string(), rdata_blob()),
+        ],
+    )
+    .expect("ImageMap 组装");
+    let set = funcs::recover(Arch::X64, &img, &[0x1000], &[0x1040], (0x1000, 0x1100));
+    assert!(
+        set.find_by_rva(0x1040).is_none(),
+        "体内 sled 启发式种子必须让位：{set:?}"
+    );
+    let f0 = set.find_by_rva(0x1000).expect("真实函数在册");
+    assert_eq!(f0.end_rva, 0x104E, "函数完整到 ret（未被 sled 截断）");
+    assert!(
+        f0.imms.contains(&0x22222222),
+        "sled 之后的立即数在册：{:?}",
+        f0.imms
+    );
+}
+
 // ── xref ──────────────────────────────────────────────────────────────
 
 #[test]
 fn xref_attribs_import_call_and_string() {
     let img = test_image();
-    let set = funcs::recover(Arch::X64, &img, &[0x1000], (0x1000, 0x1100));
+    let set = funcs::recover(Arch::X64, &img, &[0x1000], &[], (0x1000, 0x1100));
     let file = test_pe_file();
     let pe = pe::PeInfo::parse(&file).unwrap();
     let imports = pe::parse_imports_file(&file, &pe).unwrap();
@@ -337,7 +389,7 @@ fn crtsigs_signature_match_and_fold() {
 #[test]
 fn candidates_nopsled_imm_and_str() {
     let img = test_image();
-    let set = funcs::recover(Arch::X64, &img, &[0x1000, 0x1020], (0x1000, 0x1100));
+    let set = funcs::recover(Arch::X64, &img, &[0x1000, 0x1020], &[], (0x1000, 0x1100));
     let file = test_pe_file();
     let pe = pe::PeInfo::parse(&file).unwrap();
     let imports = pe::parse_imports_file(&file, &pe).unwrap();
@@ -391,7 +443,7 @@ fn diff_pages_and_ranges() {
 #[test]
 fn package_prompt_and_annotations() {
     let img = test_image();
-    let set = funcs::recover(Arch::X64, &img, &[0x1000], (0x1000, 0x1100));
+    let set = funcs::recover(Arch::X64, &img, &[0x1000], &[], (0x1000, 0x1100));
     let file = test_pe_file();
     let pe = pe::PeInfo::parse(&file).unwrap();
     let imports = pe::parse_imports_file(&file, &pe).unwrap();

@@ -560,6 +560,52 @@ pub(crate) fn apply_security_layer_switches(
     }
 }
 
+/// 解析一个规则数组（`{pattern, action, comment}` 条目）为 SecurityRule
+/// 列表（[`load_security_rules`] 各段共用助手）。
+///
+/// BUG-20261124-039：旧形态 `filter_map` + `?` 对畸形条目（缺 pattern /
+/// action 或非字符串）静默丢弃、零日志——deny 规则不生效的 fail-open
+/// 缺口零信号（条目级先例补齐：键级 = dir_rules/directory_rules 别名
+/// WARN，文件级 = scanner 配置读失败 loud）。现在逐条目检查，被丢弃的
+/// 条目 WARN 带段名与数组下标（`section[i]`），合法兄弟条目照常存活；
+/// value 非数组（含 Null 占位）= 空规则集，维持旧行为。
+#[cfg(feature = "security")]
+pub(crate) fn parse_rules(
+    section: &str,
+    value: &serde_json::Value,
+) -> Vec<nemesis_security::types::SecurityRule> {
+    use nemesis_security::types::SecurityRule;
+
+    let Some(arr) = value.as_array() else {
+        return Vec::new();
+    };
+    let mut rules = Vec::new();
+    for (idx, item) in arr.iter().enumerate() {
+        let Some(pattern) = item.get("pattern").and_then(|v| v.as_str()) else {
+            warn!(
+                "[Security] {section}[{idx}] 规则条目缺少 pattern 字符串字段，已跳过（deny 规则静默失效方向，请修正 config.security.json）"
+            );
+            continue;
+        };
+        let Some(action) = item.get("action").and_then(|v| v.as_str()) else {
+            warn!(
+                "[Security] {section}[{idx}] 规则条目缺少 action 字符串字段，已跳过（deny 规则静默失效方向，请修正 config.security.json）"
+            );
+            continue;
+        };
+        rules.push(SecurityRule {
+            pattern: pattern.to_string(),
+            action: action.to_string(),
+            comment: item
+                .get("comment")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        });
+    }
+    rules
+}
+
 /// Load security rules from `config.security.json` and apply to the SecurityPlugin.
 ///
 /// Parses the JSON config file's `file_rules`, `dir_rules`, `process_rules`, etc.
@@ -573,7 +619,7 @@ pub(crate) fn load_security_rules(
     plugin: &Arc<nemesis_security::pipeline::SecurityPlugin>,
     config_path: &std::path::Path,
 ) {
-    use nemesis_security::types::{OperationType, SecurityRule};
+    use nemesis_security::types::OperationType;
 
     if !config_path.exists() {
         // 之后此处只在 ensure_security_config 自愈写入失败时可达——
@@ -634,36 +680,24 @@ pub(crate) fn load_security_rules(
         info!("[Security] guardian_mode: {}", mode);
     }
 
-    // Helper: parse rules from JSON array of {pattern, action}
-    fn parse_rules(value: &serde_json::Value) -> Vec<SecurityRule> {
-        value
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        Some(SecurityRule {
-                            pattern: item.get("pattern")?.as_str()?.to_string(),
-                            action: item.get("action")?.as_str()?.to_string(),
-                            comment: item
-                                .get("comment")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     // File rules
     if let Some(file_rules) = config.get("file_rules") {
-        let read_rules = parse_rules(file_rules.get("read").unwrap_or(&serde_json::Value::Null));
-        let write_rules = parse_rules(file_rules.get("write").unwrap_or(&serde_json::Value::Null));
-        let delete_rules =
-            parse_rules(file_rules.get("delete").unwrap_or(&serde_json::Value::Null));
-        let append_rules =
-            parse_rules(file_rules.get("append").unwrap_or(&serde_json::Value::Null));
+        let read_rules = parse_rules(
+            "file_rules.read",
+            file_rules.get("read").unwrap_or(&serde_json::Value::Null),
+        );
+        let write_rules = parse_rules(
+            "file_rules.write",
+            file_rules.get("write").unwrap_or(&serde_json::Value::Null),
+        );
+        let delete_rules = parse_rules(
+            "file_rules.delete",
+            file_rules.get("delete").unwrap_or(&serde_json::Value::Null),
+        );
+        let append_rules = parse_rules(
+            "file_rules.append",
+            file_rules.get("append").unwrap_or(&serde_json::Value::Null),
+        );
 
         plugin.set_rules(OperationType::FileRead, read_rules);
         plugin.set_rules(OperationType::FileWrite, write_rules.clone());
@@ -692,9 +726,18 @@ pub(crate) fn load_security_rules(
         legacy
     });
     if let Some(dir_rules) = dir_rules_value {
-        let read_rules = parse_rules(dir_rules.get("read").unwrap_or(&serde_json::Value::Null));
-        let create_rules = parse_rules(dir_rules.get("create").unwrap_or(&serde_json::Value::Null));
-        let delete_rules = parse_rules(dir_rules.get("delete").unwrap_or(&serde_json::Value::Null));
+        let read_rules = parse_rules(
+            "dir_rules.read",
+            dir_rules.get("read").unwrap_or(&serde_json::Value::Null),
+        );
+        let create_rules = parse_rules(
+            "dir_rules.create",
+            dir_rules.get("create").unwrap_or(&serde_json::Value::Null),
+        );
+        let delete_rules = parse_rules(
+            "dir_rules.delete",
+            dir_rules.get("delete").unwrap_or(&serde_json::Value::Null),
+        );
 
         plugin.set_rules(OperationType::DirRead, read_rules);
         plugin.set_rules(OperationType::DirCreate, create_rules);
@@ -704,10 +747,20 @@ pub(crate) fn load_security_rules(
 
     // Process rules
     if let Some(proc_rules) = config.get("process_rules") {
-        let exec_rules = parse_rules(proc_rules.get("exec").unwrap_or(&serde_json::Value::Null));
-        let spawn_rules = parse_rules(proc_rules.get("spawn").unwrap_or(&serde_json::Value::Null));
-        let kill_rules = parse_rules(proc_rules.get("kill").unwrap_or(&serde_json::Value::Null));
+        let exec_rules = parse_rules(
+            "process_rules.exec",
+            proc_rules.get("exec").unwrap_or(&serde_json::Value::Null),
+        );
+        let spawn_rules = parse_rules(
+            "process_rules.spawn",
+            proc_rules.get("spawn").unwrap_or(&serde_json::Value::Null),
+        );
+        let kill_rules = parse_rules(
+            "process_rules.kill",
+            proc_rules.get("kill").unwrap_or(&serde_json::Value::Null),
+        );
         let suspend_rules = parse_rules(
+            "process_rules.suspend",
             proc_rules
                 .get("suspend")
                 .unwrap_or(&serde_json::Value::Null),
@@ -722,14 +775,20 @@ pub(crate) fn load_security_rules(
 
     // Network rules
     if let Some(net_rules) = config.get("network_rules") {
-        let request_rules =
-            parse_rules(net_rules.get("request").unwrap_or(&serde_json::Value::Null));
+        let request_rules = parse_rules(
+            "network_rules.request",
+            net_rules.get("request").unwrap_or(&serde_json::Value::Null),
+        );
         let download_rules = parse_rules(
+            "network_rules.download",
             net_rules
                 .get("download")
                 .unwrap_or(&serde_json::Value::Null),
         );
-        let upload_rules = parse_rules(net_rules.get("upload").unwrap_or(&serde_json::Value::Null));
+        let upload_rules = parse_rules(
+            "network_rules.upload",
+            net_rules.get("upload").unwrap_or(&serde_json::Value::Null),
+        );
 
         plugin.set_rules(OperationType::NetworkRequest, request_rules);
         plugin.set_rules(OperationType::NetworkDownload, download_rules);
@@ -739,9 +798,18 @@ pub(crate) fn load_security_rules(
 
     // Hardware rules
     if let Some(hw_rules) = config.get("hardware_rules") {
-        let i2c_rules = parse_rules(hw_rules.get("i2c").unwrap_or(&serde_json::Value::Null));
-        let spi_rules = parse_rules(hw_rules.get("spi").unwrap_or(&serde_json::Value::Null));
-        let gpio_rules = parse_rules(hw_rules.get("gpio").unwrap_or(&serde_json::Value::Null));
+        let i2c_rules = parse_rules(
+            "hardware_rules.i2c",
+            hw_rules.get("i2c").unwrap_or(&serde_json::Value::Null),
+        );
+        let spi_rules = parse_rules(
+            "hardware_rules.spi",
+            hw_rules.get("spi").unwrap_or(&serde_json::Value::Null),
+        );
+        let gpio_rules = parse_rules(
+            "hardware_rules.gpio",
+            hw_rules.get("gpio").unwrap_or(&serde_json::Value::Null),
+        );
 
         plugin.set_rules(OperationType::HardwareI2C, i2c_rules);
         plugin.set_rules(OperationType::HardwareSPI, spi_rules);
@@ -751,9 +819,18 @@ pub(crate) fn load_security_rules(
 
     // Registry rules
     if let Some(reg_rules) = config.get("registry_rules") {
-        let read_rules = parse_rules(reg_rules.get("read").unwrap_or(&serde_json::Value::Null));
-        let write_rules = parse_rules(reg_rules.get("write").unwrap_or(&serde_json::Value::Null));
-        let delete_rules = parse_rules(reg_rules.get("delete").unwrap_or(&serde_json::Value::Null));
+        let read_rules = parse_rules(
+            "registry_rules.read",
+            reg_rules.get("read").unwrap_or(&serde_json::Value::Null),
+        );
+        let write_rules = parse_rules(
+            "registry_rules.write",
+            reg_rules.get("write").unwrap_or(&serde_json::Value::Null),
+        );
+        let delete_rules = parse_rules(
+            "registry_rules.delete",
+            reg_rules.get("delete").unwrap_or(&serde_json::Value::Null),
+        );
 
         plugin.set_rules(OperationType::RegistryRead, read_rules);
         plugin.set_rules(OperationType::RegistryWrite, write_rules);

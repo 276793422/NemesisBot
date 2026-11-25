@@ -579,18 +579,28 @@ impl SetupManager {
 
         // 种子装配（P0 供给器化：入口/导出/pdata/CFG/TLS/nopsled 六源全部
         // 可选，缺席来源诚实缺席；界内过滤在供给器内完成）。
+        // 分层（BUG-20261124-043）：权威源（entry/export/pdata/cfg/tls）
+        // 先降序处理保边界收口（导出/符号起点不被低地址扫描吞并）；nopsled
+        // 字节启发式尾批接力——真实函数已全部在册，体内 sled 让位不再截断。
         let contribs = container::pe_seed_contribs(&img, &exe_file);
         let mut seeds: Vec<u32> = Vec::new();
+        let mut sled_seeds: Vec<u32> = Vec::new();
         for c in &contribs {
-            seeds.extend_from_slice(&c.rvas);
+            if c.source == "nopsled" {
+                sled_seeds.extend_from_slice(&c.rvas);
+            } else {
+                seeds.extend_from_slice(&c.rvas);
+            }
         }
         seeds.sort_unstable();
         seeds.dedup();
-        if seeds.is_empty() {
+        sled_seeds.sort_unstable();
+        sled_seeds.dedup();
+        if seeds.is_empty() && sled_seeds.is_empty() {
             return Err("无分析种子（入口与导出都不在可执行节内）".to_string());
         }
 
-        let set = funcs::recover(arch, &img, &seeds, bounds);
+        let set = funcs::recover(arch, &img, &seeds, &sled_seeds, bounds);
         let mut imports = pe::parse_imports_file(&exe_file, &img.pe).unwrap_or_default();
         // 延迟导入并入同形清单：xref 的 call [iat] 归因与 import_dlls 计数
         // 自动覆盖 dd[13]（B2 失名补全）。

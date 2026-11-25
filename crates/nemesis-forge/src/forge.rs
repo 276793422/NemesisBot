@@ -24,8 +24,7 @@ use crate::sanitizer::Sanitizer;
 use crate::syncer::Syncer;
 use crate::trace::TraceEvent;
 use crate::trace_store::TraceStore;
-use crate::types::{CollectedExperience, CollectorConfig, RegistryConfig};
-use nemesis_types::forge::ArtifactStatus;
+use crate::types::{CollectorConfig, RegistryConfig};
 
 /// The main Forge struct that owns and coordinates all subsystems.
 pub struct Forge {
@@ -44,6 +43,14 @@ pub struct Forge {
     learning_engine: Option<LearningEngine>,
     deployment_monitor: Option<Arc<DeploymentMonitor>>,
     cycle_store: Option<CycleStore>,
+    /// 学习对话 LLM caller 槽（自学习铺路批次三）：`set_provider` 级联 +
+    /// `set_learn_caller` 独立注入双入口。None = 学习对话诚实跳过
+    /// （warn）。学习对话不走 learning_engine——其 provider/pipeline
+    /// 注入面已随线 A 退役。
+    learn_caller: Mutex<Option<std::sync::Arc<dyn crate::reflector_llm::LLMCaller>>>,
+    /// 学习对话 estop 检查闭包槽：gateway 装配注入（SharedEstopState
+    /// 现读）。None = 不设闸（引擎侧仍按急停契约在入口与每阶段前检查）。
+    learn_estop: Mutex<Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>>,
     running: Mutex<bool>,
     bridge: Mutex<Option<Arc<dyn ClusterForgeBridge>>>,
     /// Background task handles (reflector_loop, cleanup_loop).
@@ -116,6 +123,8 @@ impl Forge {
             learning_engine: None,
             deployment_monitor: None,
             cycle_store: None,
+            learn_caller: Mutex::new(None),
+            learn_estop: Mutex::new(None),
             running: Mutex::new(false),
             bridge: Mutex::new(None),
             bg_tasks: Mutex::new(Vec::new()),
@@ -355,18 +364,21 @@ impl Forge {
             None => Vec::new(),
         };
 
-        // Step 1.6（批 D，用户行为学习扩展）：用户会话教训 + veto 负样本
-        // 消费——userprofile 反思分流（批 A 接口一）落 outbound_lessons
-        // pending 队列的助手教训，Forge 侧消费形态 = **反思输入 + 报告
-        // 留痕 + 消费确认**：lesson 内容进语义分析提示词（洞察吸收）、
-        // 进报告「用户会话教训」节（人读留痕）、报告落盘成功后 ack
-        // （at-least-once：写报告失败 = 留 pending 下轮再来）。veto 回传
-        // （批 A 挂账项）= events.jsonl veto/forget 行作语义分析负样本
-        // 注记（「勿重提同类」）。**lessons 永不进用户画像注入面**（主语
-        // = 助手，userprofile upsert 硬拒双保险）。队列缺失/损坏 = 空
-        // Vec 诚实降级，不炸反思循环。消费面唯一 = 本周期循环；Dashboard
-        // 手动反思 / CLI reflect 只做只读展示，不 ack（避免 UI 点一下就
-        // 消费掉队列）。
+        // Step 1.6（批 D，用户行为学习扩展；2026-11-25 双缝互通修订 ack
+        // 责任）：用户会话教训 + veto 负样本消费——userprofile 反思分流
+        // （批 A 接口一）落 outbound_lessons pending 队列的助手教训，
+        // Forge 侧消费形态 = **反思输入 + 报告留痕**：lesson 内容进语义
+        // 分析提示词（洞察吸收）、进报告「用户会话教训」节（人读留痕）。
+        // **ack 责任随 learn.enabled 分流**（单一消费方纪律）：深学对话
+        // 开启（learn.enabled 且 use_llm——use_llm=false 时对话被关）→
+        // 对话侧是唯一 ack 责任人，本处只读展示不 ack；否则保持批 D 原
+        // 行为（报告落盘成功后 ack——报告消化即消费，防 pending 永积）。
+        // veto 回传（批 A 挂账项）= events.jsonl veto/forget 行作语义
+        // 分析负样本注记（「勿重提同类」）。**lessons 永不进用户画像注入
+        // 面**（主语 = 助手，userprofile upsert 硬拒双保险）。队列缺失/
+        // 损坏 = 空 Vec 诚实降级，不炸反思循环。Dashboard 手动反思 /
+        // CLI reflect 不走本循环，天然只读。
+        let dialogue_owns_lesson_ack = self.config.learn.enabled && self.config.reflection.use_llm;
         let (user_lessons, lesson_ids, veto_notes) = match self.forge_dir.parent() {
             Some(ws) => {
                 let lessons = crate::userprofile::bridge::read_pending_lessons(ws, 20);
@@ -451,10 +463,14 @@ impl Forge {
         if let Ok(path) = reflector.write_report(&report) {
             tracing::info!(path = %path.display(), "[Forge] reflection report written");
 
-            // Step 3.5（批 D）：教训消费确认——报告落盘成功后 ack（失败
-            // 留 pending，下轮反思重新消费，at-least-once）。ack 按精确
-            // id 确认（bridge 纪律），失败 loud warn 不炸循环。
+            // Step 3.5（批 D；2026-11-25 双缝互通修订）：教训消费确认——
+            // 责任随 learn.enabled 分流：深学对话开启时对话侧是唯一 ack
+            // 责任人（本处只读展示，防双消费方竞写）；关闭时报告落盘成
+            // 功后 ack 兜底（报告消化即消费，失败留 pending 下轮重新消
+            // 费，at-least-once）。ack 按精确 id 确认（bridge 纪律），失
+            // 败 loud warn 不炸循环。
             if !lesson_ids.is_empty()
+                && !dialogue_owns_lesson_ack
                 && let Some(ws) = self.forge_dir.parent()
             {
                 match crate::userprofile::bridge::ack_lessons(ws, &lesson_ids) {
@@ -485,193 +501,258 @@ impl Forge {
             tracing::warn!("[Forge] failed to write reflection report (see prior errors)");
         }
 
-        // Step 5: auto_skill 蒸馏（生成面）。`learning.enabled`
-        // 保持关（自动部署闭环风险面不动）；本步只产出 **draft** 状态草稿
-        // （落 forge skills 目录 + 注册表），不自动启用——启用/部署是人工
-        // 评审后的显式动作。Arc 锁内取即放（guard 不跨 await，F- 同款）。
-        // use_llm=false 时蒸馏一并关：蒸馏是 LLM 工作，
-        // 与 CLI 同语义（CLI use_llm=false 不挂 provider → 蒸馏诚实报
-        // no LLM provider）——语义分析关而蒸馏开会自相矛盾；caller=None
-        // 从静默跳过改诚实 WARN（配置陷阱此前不可）。
-        let caller = self.reflector.as_ref().and_then(|r| r.llm_caller().clone());
-        if self.config.artifacts.auto_skill {
+        // Step 5: 学习对话（批次三生成面，替代已退役的 auto_skill 蒸馏：
+        // LLM 当脑子多轮对话决定学什么，Rust 只铺路——证据扫描/组包/预算/
+        // 闸门全是确定性形状工作）。`learn.enabled` 门控自动对话（手动入口
+        // WSAPI learn.run / CLI forge learn run 是显式意志，不受此门控）；
+        // use_llm=false 一并关：对话是 LLM 工作（同旧蒸馏语义——语义分析
+        // 关而对话开会自相矛盾）。失败只 warn 不炸反思循环（对话是本轮
+        // 增益，非关键路径）；「没有值得学的」是引擎一等答案（empty_reason
+        // 收场），info 留痕即可。
+        if self.config.learn.enabled {
             if !self.config.reflection.use_llm {
                 tracing::warn!(
-                    "[Forge] auto_skill enabled but reflection.use_llm=false — distillation requires LLM, skipping"
+                    "[Forge] learn.enabled but reflection.use_llm=false — learn dialogue requires LLM, skipping"
                 );
-            } else if let Some(caller) = caller {
-                match crate::reflector_llm::distill_skill_draft(
-                    caller.as_ref(),
-                    &experiences,
-                    &self.merged_artifacts_for_reflection(),
-                    Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
-                )
-                .await
-                {
-                    Ok(Some(distilled)) => {
-                        self.store_distilled_draft(&distilled);
-                    }
-                    Ok(None) => {
-                        tracing::info!("[Forge] auto_skill: no distillable pattern this cycle");
+            } else {
+                match self.run_learn_dialogue("cycle").await {
+                    Ok(outcome) => {
+                        if let Some(reason) = &outcome.empty_reason {
+                            tracing::info!(
+                                reason = %reason,
+                                "[Forge] learn dialogue: nothing worth learning this cycle"
+                            );
+                        } else {
+                            tracing::info!(
+                                insights = outcome.insights.len(),
+                                skills = outcome.skills.len(),
+                                user_findings = outcome.user_findings.len(),
+                                dropped = outcome.dropped.len(),
+                                "[Forge] learn dialogue completed"
+                            );
+                        }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "[Forge] auto_skill distillation failed, skipping");
+                        tracing::warn!(error = %e, "[Forge] learn dialogue failed, skipping");
                     }
                 }
-            } else {
-                tracing::warn!(
-                    "[Forge] auto_skill enabled but reflector has no LLM provider — skipping distillation"
+            }
+        }
+    }
+
+    /// 学习对话共享入口（自学习铺路批次三）：证据扫描（确定性形状匹配）
+    /// → 组包（候选/洞察台账/模式高亮/失败经验/报告摘录/技能库摘要）→
+    /// 四阶段对话（引擎侧 DIALOGUE_BUSY 互斥 + estop 闸 + 留痕）→ 成功
+    /// 后推进候选消费游标。cycle 路径（`learn.enabled` 门控）与手动入口
+    /// （WSAPI `learn.run` / CLI `forge learn run`，不受门控——显式用户
+    /// 动作即用户意志）共用此路径；触发来源进留痕目录名便于回查。
+    pub async fn run_learn_dialogue(
+        &self,
+        trigger: &str,
+    ) -> Result<crate::learn_dialogue::LearnDialogueOutcome, String> {
+        let caller = self.learn_caller.lock().clone();
+        let Some(caller) = caller else {
+            return Err("学习对话未配置 LLM caller（set_learn_caller / forge provider）".into());
+        };
+        let estop_slot = self.learn_estop.lock().clone();
+        let is_stopped = move || estop_slot.as_ref().map(|f| f()).unwrap_or(false);
+        if is_stopped() {
+            return Err("急停中：学习对话拒绝启动".into());
+        }
+
+        // ① 证据扫描：session_logs 确定性形状匹配 → 候选台账 ingest
+        // （失败只 warn——包继续用既有候选，扫描是增量不是关键路径）。
+        // 路径单一真相源 nemesis-path（2026-11-24 修复：此前指 logs/ 顶层
+        // ——会话日志在 logs/session_logs/ 子目录，生产扫描恒空）。
+        let store = crate::session_evidence::CandidateStore::from_forge_dir(&self.forge_dir);
+        let drafts = crate::session_evidence::scan_workspace_logs(
+            &nemesis_path::resolve_session_logs_dir_in_workspace(&self.workspace),
+        );
+        match store.ingest(drafts) {
+            Ok(n) if n > 0 => {
+                tracing::info!(
+                    new = n,
+                    "[Forge] learn: candidate scan ingested new candidates"
                 );
             }
-        }
-    }
-
-    /// Run the auto_skill distillation standalone and return the draft slug.
-    ///
-    /// CLI `forge reflect` 消费（网关外重放通道）：与
-    /// [`Self::run_reflection_cycle`] Step 5 同一蒸馏+落盘路径，但要求
-    /// reflector 已挂 LLM provider（未挂 = Err 诚实报因）。
-    pub async fn distill_and_store_draft(
-        &self,
-        experiences: &[CollectedExperience],
-    ) -> Result<Option<String>, String> {
-        let caller = self.reflector.as_ref().and_then(|r| r.llm_caller().clone());
-        let Some(caller) = caller else {
-            return Err("forge reflector has no LLM provider configured".into());
-        };
-        match crate::reflector_llm::distill_skill_draft(
-            caller.as_ref(),
-            experiences,
-            &self.merged_artifacts_for_reflection(),
-            Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
-        )
-        .await?
-        {
-            Some(distilled) => Ok(self.store_distilled_draft(&distilled)),
-            None => Ok(None),
-        }
-    }
-
-    /// Persist a distilled skill draft: write `{forge_dir}/skills/<slug>/SKILL.md`
-    /// + register as Draft (dedup by name, slug-normalized). Returns the slug.
-    ///
-    /// 落盘/注册失败只 warn 不炸反思循环（产物是本轮增益，不是关键路径）；
-    /// 返回 None 表示被跳过（名字非法或同题材已存在）。
-    fn store_distilled_draft(
-        &self,
-        distilled: &crate::reflector_llm::DistilledSkill,
-    ) -> Option<String> {
-        let slug = slugify_skill_name(&distilled.name);
-        if slug.is_empty() {
-            tracing::warn!(name = %distilled.name, "[Forge] auto_skill: draft name slugified to empty, skipping");
-            return None;
-        }
-        // Windows 保留设备名闸（BUG-20261123-035）：与 create_skill/工具
-        // 入口同一判定——保留名按既定语义「名字非法 → 跳过」warn 留痕
-        // 返回 None（6h 后下轮反思可能产出不同草稿）。
-        if valid_skill_dir_name(&slug).is_err() {
-            tracing::warn!(name = %slug, "[Forge] auto_skill: draft name is a reserved Windows device name, skipping");
-            return None;
-        }
-        // dedup：同名**非降级**产物已存在则跳过（反思 6h 一轮，同题材不
-        // 重复出草稿）。 复查（F）：此前 find_by_name 匹配任意
-        // 状态——Degraded/Archived 的旧产物也会挡住重蒸馏，与
-        // disable_degraded_skills 的「降级产物应能被替代品顶替」语义矛盾
-        // （旧技能已被禁用却永远阻止新版本诞生）。现对齐
-        // LearningEngine::find_artifact_by_fingerprint 口径：只挡
-        // Draft/Active/Observing/Negative 活跃产物。
-        if let Some(existing) = self
-            .registry()
-            .find_by_name(&slug, nemesis_types::forge::ArtifactKind::Skill)
-        {
-            if !matches!(
-                existing.status,
-                ArtifactStatus::Degraded | ArtifactStatus::Archived
-            ) {
-                tracing::info!(name = %slug, "[Forge] auto_skill: artifact already exists, skipping");
-                return None;
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "[Forge] learn: candidate ingest failed, pack continues with existing candidates");
             }
+        }
+        let candidates = store.unconsumed(crate::session_evidence::CONSUMER_DIALOGUE);
+
+        // ①.5 缝一（2026-11-25 双缝互通）：pending 用户会话教训并入证据
+        // 包（独立节深学）。读上限 20 与反思循环对齐；lessons 队列缺失/
+        // 损坏 = 空 Vec 诚实降级（bridge 宽容读）。教训队列尾部取数（最
+        // 新 N 条）是 bridge 既有语义。
+        let lessons = crate::userprofile::bridge::read_pending_lessons(&self.workspace, 20);
+        if !lessons.is_empty() {
             tracing::info!(
-                name = %slug,
-                status = ?existing.status,
-                "[Forge] auto_skill: existing artifact is {} — allowing re-distillation",
-                if existing.status == ArtifactStatus::Degraded {
-                    "degraded"
-                } else {
-                    "archived"
-                }
+                pending = lessons.len(),
+                "[Forge] learn: packing pending user-session lessons into evidence pack"
             );
         }
-        // 跨注册表同名防线（BUG 批次 2026-11-14）：ctx.rs 装配刻意分库——
-        // 本库 registry.json 之外，闭环引擎另持 learning_registry.json，
-        // 两侧都写 `forge/skills/{slug}/SKILL.md`。若只在库内去重，蒸馏
-        // 提名撞上闭环侧同名活跃技能会静默覆盖对方磁盘文件（两库各自
-        // 声称拥有同一目录、一方 content 字段变 stale）。peek 只读、缺失
-        // = 空库不阻塞；活跃态语义与库内 dedup 同口径（Degraded/Archived
-        // 放行 = 替代品顶替）。
-        if let Some(existing) = self
-            .peek_learning_registry()
-            .find_by_name(&slug, nemesis_types::forge::ArtifactKind::Skill)
-            && !matches!(
-                existing.status,
-                ArtifactStatus::Degraded | ArtifactStatus::Archived
+
+        // ② 组包原料（全部失败诚实降级为空节，不阻塞对话）。
+        let insights_store = crate::insights::InsightStore::with_recurrence(
+            &self.workspace,
+            self.config.learn.activation_recurrence,
+        );
+        let insights = insights_store.list(None).unwrap_or_default();
+        let exp_store = crate::experience_store::ExperienceStore::from_forge_dir(&self.forge_dir);
+        let limit = self.config.collection.max_experiences.max(1);
+        let collected = exp_store.read_recent(limit).await.unwrap_or_default();
+        let experiences: Vec<crate::types::Experience> =
+            collected.iter().map(|c| c.experience.clone()).collect();
+        let patterns_digest = self.patterns_digest(&collected);
+        let latest_report = self
+            .reflector
+            .as_ref()
+            .and_then(|r| r.get_latest_report_content().ok());
+        let skills_digest = self.skills_digest();
+
+        let pack = crate::session_evidence::build_evidence_pack(
+            None,
+            &candidates,
+            &lessons,
+            Some(&insights),
+            patterns_digest.as_deref(),
+            &experiences,
+            latest_report.as_deref(),
+            skills_digest.as_deref(),
+        );
+
+        // 场景归属（洞察页与场景拆分 2026-11-24）：批内候选全为同一非 None
+        // 项目戳 → 本轮洞察继承该项目；混合/全对话 = 对话（None）。
+        let dialogue_scope = unanimous_scope(&candidates);
+
+        // ③ 四阶段对话（留痕目录带时间戳 + 触发来源；锁文件 = learn/
+        // 平级 learn.lock——跨进程互斥面，CLI 与 gateway 双进程共守）。
+        let trace_dir = self.forge_dir.join("learn").join(format!(
+            "{}_{}",
+            chrono::Local::now().format("%Y%m%d_%H%M%S%3f"),
+            trigger
+        ));
+        let lock_path = self.forge_dir.join("learn.lock");
+        let mut outcome = crate::learn_dialogue::run(
+            caller.as_ref(),
+            &pack,
+            &insights_store,
+            skills_digest.as_deref().unwrap_or(""),
+            &is_stopped,
+            &trace_dir,
+            &lock_path,
+            self.config.learn.budget_tokens,
+            dialogue_scope.as_deref(),
+            // 缝二：画像工作区根——subject=user 结论回抛目标（接口二）。
+            Some(self.workspace.as_path()),
+        )
+        .await?;
+
+        // ⑤ 装前 tests 闸（自学习铺路批次四）：带 tests 草稿 → A 线实跑
+        // → refine ≤N → 过闸落 workspace/skills/{slug}-forge/。执行器
+        // 缺席 = fail-closed 全拒（草稿只在 outcome.gate 留痕，不落盘）。
+        if !outcome.skills.is_empty() {
+            let runner = self.pipeline.as_ref().and_then(|p| p.skill_test_runner());
+            outcome.gate = crate::skill_gate::gate_skill_drafts(
+                runner.as_ref(),
+                Some(&caller),
+                &self.workspace,
+                &outcome.skills,
+                &is_stopped,
+                self.config.learn.budget_tokens,
+                self.config.test.judge_threshold,
+            )
+            .await;
+            let installed = outcome
+                .gate
+                .iter()
+                .filter(|r| matches!(r.verdict, crate::skill_gate::GateVerdict::Installed))
+                .count();
+            tracing::info!(
+                drafts = outcome.skills.len(),
+                installed,
+                "[Forge] learn: skill draft gate completed"
+            );
+        }
+
+        // ④ 成功才推进消费游标（失败重试时同批候选重进包——诚实重放）。
+        // 推进数 = pack.candidate_count（≡实际进包条数），**不是**
+        // candidates.len()——候选节封顶后没进包的候选不被标记消费
+        // （凡标记消费的候选必须真实进过包），留待下一轮（BUG-1）。
+        if pack.candidate_count > 0
+            && let Err(e) = store.mark_consumed(
+                crate::session_evidence::CONSUMER_DIALOGUE,
+                pack.candidate_count,
             )
         {
-            tracing::info!(
-                name = %slug,
-                "[Forge] auto_skill: same-name active skill exists in learning registry, skipping (cross-registry guard)"
-            );
+            tracing::warn!(error = %e, "[Forge] learn: mark_consumed failed (same batch may replay)");
+        }
+
+        // ④.5 缝一（2026-11-25 双缝互通）：教训消费确认——与游标推进同
+        // 位（对话成功才 ack；estop/传输失败已在上方 `?` 收场，自然不
+        // ack）。按 pack.lesson_ids 精确确认（≡实际进包 ids——凡确认的
+        // 教训必须真实进过包；超容量/超预算未进包的留 pending 下轮重
+        // 放）。此时本函数是唯一 ack 责任人（learn.enabled 且 use_llm
+        // 时反思循环 Step 3.5 不 ack；learn.enabled=false 的手动对话也
+        // ack——对话真实消化了内容，ack 幂等无竞害）。
+        if !pack.lesson_ids.is_empty()
+            && let Err(e) =
+                crate::userprofile::bridge::ack_lessons(&self.workspace, &pack.lesson_ids)
+        {
+            tracing::warn!(error = %e, "[Forge] learn: lesson ack failed (stay pending)");
+        }
+
+        // ⑥ 实效统计刷新（自学习铺路批次四）：纠正率 delta 前后窗口对照
+        // 落 insights.json `stats` 字段。失败只 warn——统计是只读推导
+        // 非关键路径，不阻塞对话结果返回。
+        if let Err(e) = insights_store.refresh_stats() {
+            tracing::warn!(error = %e, "[Forge] learn: insight stats refresh failed");
+        }
+        Ok(outcome)
+    }
+
+    /// 监控闭环模式高亮 digest（证据包 ④ 节原料）：learning engine 的
+    /// 结构化模式检出（证据块已脱敏），封顶 6 条防单节吃穿证据包预算；
+    /// 无引擎 / 无模式 = None（节省略）。
+    fn patterns_digest(&self, collected: &[crate::types::CollectedExperience]) -> Option<String> {
+        let engine = self.learning_engine.as_ref()?;
+        let patterns = engine.extract_patterns(collected);
+        if patterns.is_empty() {
             return None;
         }
-        // F- 安全闸（缺陷 20）：LLM 蒸馏产物写盘前过
-        // security_errors——蒸馏提示词喂的是经验摘要（外部交互的衍生物，
-        // 潜在注入面），产出的 SKILL.md 可能被引导写入危险命令/硬编码密钥。
-        // 与 `create_skill` 同一闸同一规则（F- 承诺覆盖所有 artifact kind
-        // 的写盘点，此前本路径漏配）。拦下 = 本轮放弃（与名字非法/skip 同面，
-        // 6h 后下轮反思可能产出不同草稿）。
-        let sec_errors =
-            crate::validator::StaticValidator::new().security_errors(&distilled.skill_md);
-        if !sec_errors.is_empty() {
-            tracing::warn!(name = %slug, errors = ?sec_errors, "[Forge] auto_skill: draft failed security gate, skipping");
+        let mut s = String::new();
+        for p in patterns.iter().take(6) {
+            s.push_str(&format!(
+                "- [{}] {}（频次 {}，置信 {:.2}）\n",
+                p.pattern_type, p.description, p.frequency, p.confidence
+            ));
+            if let Some(ev) = &p.evidence
+                && !ev.trim().is_empty()
+            {
+                let cut: String = ev.trim().chars().take(300).collect();
+                s.push_str(&format!("  证据：{cut}\n"));
+            }
+        }
+        Some(s)
+    }
+
+    /// 技能库摘要（证据包 ⑦ 节原料 + 对话阶段 3 对账清单）：合并注册表
+    /// （手动 ∪ 闭环）的 kind/name/version/status 行，封顶 40 行。
+    fn skills_digest(&self) -> Option<String> {
+        let arts = self.merged_artifacts_for_reflection();
+        if arts.is_empty() {
             return None;
         }
-        let artifact_dir = self.forge_dir.join("skills").join(&slug);
-        // 原子落盘（BUG-20261123-007）：SKILL.md 是 registry 引用的权威载荷，
-        // 裸写撕裂 = 注册指向半截文件；走家族唯一真相源 write_file_atomic。
-        let draft_write = std::fs::create_dir_all(&artifact_dir)
-            .map_err(|e| e.to_string())
-            .and_then(|_| {
-                nemesis_utils::file::write_file_atomic(
-                    &artifact_dir.join("SKILL.md").to_string_lossy(),
-                    distilled.skill_md.as_bytes(),
-                    0o644,
-                )
-            });
-        if let Err(e) = draft_write {
-            tracing::warn!(error = %e, name = %slug, "[Forge] auto_skill: failed to write draft SKILL.md");
-            return None;
+        let mut s = String::new();
+        for a in arts.iter().take(40) {
+            s.push_str(&format!(
+                "- [{:?}] {} v{}（{:?}）\n",
+                a.kind, a.name, a.version, a.status
+            ));
         }
-        let artifact_id = format!("skill-{}", slug);
-        let now = chrono::Local::now().to_rfc3339();
-        self.registry().add(nemesis_types::forge::Artifact {
-            id: artifact_id.clone(),
-            name: slug.clone(),
-            kind: nemesis_types::forge::ArtifactKind::Skill,
-            version: "1.0".to_string(),
-            status: nemesis_types::forge::ArtifactStatus::Draft,
-            content: distilled.skill_md.clone(),
-            tool_signature: Vec::new(),
-            created_at: now.clone(),
-            updated_at: now,
-            usage_count: 0,
-            last_degraded_at: None,
-            success_rate: 0.0,
-            consecutive_observing_rounds: 0,
-            deployed_at: None,
-            last_efficacy: None,
-        });
-        tracing::info!(name = %slug, rationale = %distilled.rationale, "[Forge] auto_skill: draft skill created");
-        Some(slug)
+        Some(s)
     }
 
     /// Run a single cleanup cycle for old data.
@@ -763,7 +844,7 @@ impl Forge {
     }
 
     /// Cascade-set the LLM provider to all subsystems that need it:
-    /// reflector, pipeline, and learning engine (all via LLMCaller).
+    /// reflector, pipeline, and the learn-dialogue slot (all via LLMCaller).
     pub fn set_provider(&self, provider: Arc<dyn crate::reflector_llm::LLMCaller>) {
         tracing::info!("[Forge] Setting LLM provider on subsystems");
         // Reflector gets the LLM caller for semantic analysis (Stage 2 LLM).
@@ -774,11 +855,8 @@ impl Forge {
         if let Some(ref pipeline) = self.pipeline {
             pipeline.set_provider(provider.clone());
         }
-        // Learning engine gets the LLM caller for skill draft generation.
-        if let Some(ref le) = self.learning_engine {
-            le.set_provider(provider.clone());
-        }
-        drop(provider);
+        // 学习对话槽（批次三：旧 learning engine 注入臂已随线 A 退役）。
+        *self.learn_caller.lock() = Some(provider);
     }
 
     // ----- Accessor methods (mirrors Go Forge.GetXxx) -----
@@ -828,16 +906,17 @@ impl Forge {
         Registry::peek_sync(&self.forge_dir.join(crate::LEARNING_REGISTRY_FILE))
     }
 
-    /// Reflection/distillation input universe: manual registry ∪ learning
+    /// Reflection input universe: manual registry ∪ learning
     /// registry (dedup by id).
     ///
-    /// 「全量 artifacts」四个注入点（reflect_with_llm 调度循环 /
-    /// run_reflection_cycle Step 5 蒸馏 / CLI distill_and_store_draft /
-    /// CLI forge reflect）此前只传 registry.json——闭环侧已部署技能对反思
-    /// LLM 不可见 → 重复提名（A4 防线在跨库面失效）。按 id 去重：历史
-    /// 撞车形态（两库各自持有 skill-{slug}）防御。合并语义单一真相源 =
-    /// [`merge_artifacts_by_id`]（pub 自由函数：web 手动反思 handler 无
-    /// Forge 实例，经 peek_sync + 本函数复用同一合并规则）。
+    /// 「全量 artifacts」注入点（reflect_with_llm 调度循环 / CLI forge
+    /// reflect / web 手动反思 handler）此前只传 registry.json——闭环侧已
+    /// 部署技能对反思 LLM 不可见 → 重复提名（A4 防线在跨库面失效）。按 id
+    /// 去重：历史撞车形态（两库各自持有 skill-{slug}）防御。合并语义单一
+    /// 真相源 = [`merge_artifacts_by_id`]（pub 自由函数：web 手动反思
+    /// handler 无 Forge 实例，经 peek_sync + 本函数复用同一合并规则）。
+    /// 旧蒸馏消费点（run_reflection_cycle Step 5 / CLI distill_and_store_draft）
+    /// 已随线 B 蒸馏退役（2026-11-24 批次三），生成面改道学习对话。
     pub fn merged_artifacts_for_reflection(&self) -> Vec<nemesis_types::forge::Artifact> {
         let learning = self.peek_learning_registry().list(None, None);
         merge_artifacts_by_id(self.registry.list(None, None), learning)
@@ -893,6 +972,19 @@ impl Forge {
         if let Some(ref pipeline) = self.pipeline {
             pipeline.set_judge_caller(caller);
         }
+    }
+
+    /// 学习对话 LLM caller 注入（自学习铺路批次三）。`set_provider` 级联
+    /// 之外独立注入面：允许学习对话用专门模型（`learn.model` 回落链在
+    /// bot 侧装配后经此槽传入，不影响主模型/杂务链）。
+    pub fn set_learn_caller(&self, caller: std::sync::Arc<dyn crate::reflector_llm::LLMCaller>) {
+        *self.learn_caller.lock() = Some(caller);
+    }
+
+    /// 学习对话 estop 检查闭包注入（gateway 装配：SharedEstopState 现读；
+    /// 引擎侧入口 + 每阶段前双检查的信号源）。
+    pub fn set_learn_estop_check(&self, check: std::sync::Arc<dyn Fn() -> bool + Send + Sync>) {
+        *self.learn_estop.lock() = Some(check);
     }
 
     /// Get the pipeline (if initialized).
@@ -1001,13 +1093,10 @@ impl Forge {
         monitor: Arc<DeploymentMonitor>,
         store: CycleStore,
     ) {
-        // Inject pipeline + monitor into the learning engine so the
-        // closed loop (learn -> validate -> deploy -> monitor -> feedback)
-        // actually runs. Previously never injected (F-).（skill_creator
-        // 注入已随 write-only 死接线删除，无需补线。）
-        if let Some(p) = &self.pipeline {
-            engine.set_pipeline(p.clone());
-        }
+        // Monitor injection only（自学习铺路批次三收窄）：pipeline 注入
+        // 臂已随线 A 退役（engine 的 refine 循环删除，批次四对话产
+        // tests 闭环在 bot 侧装配面重新消费 Pipeline）；学习动作改由
+        // `learn_dialogue` 多轮对话引擎承担（Forge::run_learn_dialogue）。
         engine.set_monitor(monitor.clone());
         tracing::info!("[Forge] Learning subsystem initialized (engine + monitor + cycle store)");
         self.learning_engine = Some(engine);
@@ -1239,6 +1328,22 @@ impl Forge {
                 }
             }
         }
+    }
+}
+
+/// 批内候选场景一致性判定（洞察页与场景拆分 2026-11-24）：**全部**候选
+/// 都带同一非 None 项目戳 → Some(该项目)；任一 None（对话会话混入）/
+/// 混合项目 / 全对话 / 空批 = None（对话）。纯函数，单测在
+/// [`crate::forge::tests`]。
+fn unanimous_scope(candidates: &[crate::session_evidence::CorrectionCandidate]) -> Option<String> {
+    let mut scopes = candidates.iter().map(|c| c.draft.scope.clone());
+    let Some(Some(first)) = scopes.next() else {
+        return None;
+    };
+    if scopes.all(|s| s.as_deref() == Some(first.as_str())) {
+        Some(first)
+    } else {
+        None
     }
 }
 

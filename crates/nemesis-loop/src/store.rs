@@ -96,8 +96,11 @@ pub fn list_loops(dir: &Path) -> Vec<LoopState> {
     out
 }
 
-/// 删除状态文件（返回是否确实存在）。
+/// 删除状态文件（返回是否确实存在）。进程锁内执行（BUG-20261125-003）：
+/// 与 [`update_loop`] 的 load→save 串行——否则并发交错下 remove 删掉文件后
+/// update 的 save 又把它写回（已删 loop 复活）。
 pub fn remove_loop(dir: &Path, id: &str) -> Result<bool, String> {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let path = loop_path(dir, id)?;
     if !path.exists() {
         return Ok(false);
@@ -131,15 +134,19 @@ pub fn alloc_id(dir: &Path) -> String {
     format!("L{}", max + 1)
 }
 
-/// 进程级创建串行锁。`alloc_id`（扫目录）与 `save_loop`（落盘）是两步，
-/// 并发创建者都在对方落盘前扫到同一 max → 同 id 互覆（后写者赢，先建的
-/// loop 状态静默丢失——Dashboard 双击连发两请求即可触发）。goals store
-/// 的 REGISTRY_LOCK + update_registry 闭包纪律是同款先例；BUG-20261118-152
-/// 修了本文件族的原子写（固定临时名互踩）、分配串行化是同族漏网面。
-/// 跨 workspace 串行无害（临界区毫秒级文件读写）；跨进程（CLI vs gateway
-/// 同时创建）不在本锁射程——与 goals 同款诚实边界（进程级锁换消费方
-/// 零接线成本，文件锁属更大改动）。
-static CREATE_LOCK: Mutex<()> = Mutex::new(());
+/// 进程级状态互斥锁（BUG-20261125-003）：全部「读→改→写」状态文件的操作
+/// （create 的 alloc+save、update_loop 的 load+mutate+save、remove 的
+/// 删除）在本锁内串行。缺本锁时并发写者（gateway 驱动器每 10s sweep、
+/// WSAPI/CLI pause·resume·update、agent 三工具 wakeup·finish）各自持快照
+/// 交错落盘 = 丢失更新：人 pause 的 loop 被驱动器旧快照写回静默复活继续
+/// 消耗 token、agent finish 置 done 被写回 active 再被唤醒、预算改动被
+/// 覆盖——同族前案 BUG-20261118-152（原子写临时名互踩）与
+/// BUG-20261119-186（并发创建同 id 互覆）修了写原子性与分配串行化，本锁
+/// 补上第三漏网面（RMW 丢失更新）。goals store 的 REGISTRY_LOCK +
+/// update_registry 闭包纪律是同款先例。跨 workspace 串行无害（临界区
+/// 毫秒级文件读写）；跨进程（CLI vs gateway）不在本锁射程——与 create
+/// 同款诚实边界（进程级锁换消费方零接线成本，文件锁属更大改动）。
+static STATE_LOCK: Mutex<()> = Mutex::new(());
 
 /// 创建新 loop（锁内 alloc+save 串行化，防并发创建同 id 互覆）。`build`
 /// 在锁内以已分配 id 构造状态；返回 Err = 放弃不落盘（id 作废——id 单调
@@ -148,9 +155,30 @@ pub fn create_loop(
     dir: &Path,
     build: impl FnOnce(String) -> Result<LoopState, String>,
 ) -> Result<LoopState, String> {
-    let _guard = CREATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let id = alloc_id(dir);
     let st = build(id.clone())?;
     save_loop(dir, &st)?;
+    Ok(st)
+}
+
+/// 锁内 load→mutate→save（RMW 串行化，BUG-20261125-003）。`f` 在锁内以
+/// **盘上最新**状态裁决并原地修改；返回 `Ok(true)` = 已改动，写盘落盘；
+/// `Ok(false)` = 无需落盘（无改动/幂等命中，省写——驱动器 sweep 未命中
+/// 时不产生每 10s 无意义重写）；`Err` = 放弃不写盘（状态机校验失败等，
+/// 校验必须用锁内状态重做——快照预检只作提前失败优化）。不存在 = Err。
+/// 返回锁内终态（调用方按返回值生成消息，勿用预检快照）。
+pub fn update_loop(
+    dir: &Path,
+    id: &str,
+    f: impl FnOnce(&mut LoopState) -> Result<bool, String>,
+) -> Result<LoopState, String> {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(mut st) = load_loop(dir, id)? else {
+        return Err(format!("loop {id} 不存在"));
+    };
+    if f(&mut st)? {
+        save_loop(dir, &st)?;
+    }
     Ok(st)
 }

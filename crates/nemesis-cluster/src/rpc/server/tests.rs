@@ -1144,3 +1144,66 @@ async fn test_audit_row_action_rendered_lowercase() {
         "不应再出现 PascalCase 形态，实际：{row}"
     );
 }
+
+#[tokio::test]
+async fn test_handler_panic_releases_conn_slot() {
+    // BUG-20261125-013 回归锁：per-connection 槽位释放必须 panic-safe。
+    // 修复前 spawn 体是 `handle_connection(...).await; fetch_sub` 顺序
+    // 结构——handler（dispatch_wire_request 直接调 RpcHandlerFn，无
+    // catch_unwind）panic 沿调用栈撕掉任务、跳过 fetch_sub：conn_count
+    // 泄漏 +1；重放型 panic（同 peer 反复触发同型 handler 崩）爬到
+    // max_conns 后 accept 闸拒绝一切新连接 = RPC 服务静默锁死到重启。
+    // 修复 = Drop guard 在正常退出与 unwind 双路径释放槽位。
+    let server = make_server();
+    server.register_handler(
+        "SlotLeakPanic",
+        Box::new(|_payload| panic!("intentional handler panic for slot-leak regression")),
+    );
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let req = WireMessage::new_request(
+        "slot-leak-tester",
+        "server",
+        "SlotLeakPanic",
+        serde_json::json!({}),
+    );
+    let body = req.to_bytes().unwrap();
+    let mut framed = (body.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&body);
+    use tokio::io::AsyncWriteExt;
+    stream.write_all(&framed).await.unwrap();
+
+    // EOF 本身即「accept→dispatch→panic→任务撕毁」全链完成的确定性证据：
+    // 服务端没有其他主动关闭本连接的路径（panic 形态下响应永远不来）。
+    // 10s 上限防接受臂异常时的悬挂假死。
+    let mut buf = [0u8; 16];
+    use tokio::io::AsyncReadExt;
+    let eof = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let _ = stream.read(&mut buf).await;
+    })
+    .await;
+    assert!(
+        eof.is_ok(),
+        "connection never closed after handler panic (no EOF in 10s)"
+    );
+
+    // 阶段二：槽位必须回吐（修复前泄漏恒卡 1，此处 5s 轮询必超时）。
+    let mut released = false;
+    for _ in 0..50 {
+        if server.connection_count() == 0 {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        released,
+        "conn slot leaked after handler panic: count={}",
+        server.connection_count()
+    );
+    server.stop().unwrap();
+}

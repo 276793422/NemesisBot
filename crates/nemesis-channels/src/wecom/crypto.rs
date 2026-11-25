@@ -85,7 +85,7 @@ pub fn aes_key_from_encoding(encoding_aes_key: &str) -> Result<[u8; 32]> {
 
 /// AES-256-CBC 解密（裸 CBC，不做填充校验——去填充由 `strip_wecom_pad` 负责）。
 fn aes256_cbc_decrypt(key: &[u8; 32], iv: &[u8; 16], ciphertext: &mut [u8]) -> Result<()> {
-    if ciphertext.len() % AES_BLOCK != 0 || ciphertext.is_empty() {
+    if !ciphertext.len().is_multiple_of(AES_BLOCK) || ciphertext.is_empty() {
         return Err(NemesisError::Channel(format!(
             "wecom: 密文长度 {} 不是 16 字节块的整数倍",
             ciphertext.len()

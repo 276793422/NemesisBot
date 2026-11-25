@@ -137,19 +137,35 @@ pub fn backup_before_migrate(conn: &rusqlite::Connection, db_path: &Path, store_
     }
 }
 
-/// ④ WAL 降级：`journal_mode = WAL` 失败（网络盘 / FAT / 只读句柄）
-/// warn 不崩——journal 模式回落 SQLite 默认（delete），功能不受损。
+/// ④ WAL 降级：`journal_mode = WAL` 失败 warn 不崩——journal 模式回落
+/// SQLite 默认（delete），功能不受损。
+///
+/// ⚠️ 不能用裸 `pragma_update`（BUG-20261124-020）：rusqlite 走
+/// `execute_batch`，显式容忍 PRAGMA 返回行（ExecuteReturnedResults 分支
+/// 被禁用，"Some PRAGMA may return rows"）；而 SQLite 对「无法激活 WAL」
+/// 的形态——无共享内存支持的文件系统（网络盘/exFAT/FAT）、`:memory:` 库
+/// ——的标准行为是**返回旧模式行**而非报错。Err 臂在这些形态上不可达，
+/// 回落 delete 完全静默，模块动机场景（网络盘/FAT）恰好全部落空（只读
+/// 连接/BUSY 才走 Err，既有测试恰好只钉了这两型）。改用
+/// `pragma_update_and_check` 读回实际模式比对，非 wal 显式 warn——
+/// 功能照旧回落可用，只补可观测性。
 ///
 /// 与语义性 PRAGMA（`foreign_keys` / `busy_timeout`）刻意分离：那些
 /// 保持调用方的硬闸（execute_batch 失败 = Err），journal 模式是性能
 /// 优化不是语义。
 pub fn set_wal_lenient(conn: &rusqlite::Connection, store_label: &str) {
-    if let Err(e) = conn.pragma_update(None, "journal_mode", "WAL") {
-        tracing::warn!(
+    match conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0)) {
+        Ok(mode) if mode.eq_ignore_ascii_case("wal") => {}
+        Ok(mode) => tracing::warn!(
+            store = store_label,
+            actual_mode = %mode,
+            "journal_mode=WAL 未被接受（实际 journal_mode={mode}，文件系统/库形态不支持共享内存），回落继续（功能不受损）"
+        ),
+        Err(e) => tracing::warn!(
             store = store_label,
             error = %e,
             "journal_mode=WAL 不可用（文件系统/句柄限制），回落默认 journal 模式继续（功能不受损）"
-        );
+        ),
     }
 }
 

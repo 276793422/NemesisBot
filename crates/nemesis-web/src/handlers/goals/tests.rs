@@ -174,6 +174,31 @@ async fn create_get_list_roundtrip() {
 }
 
 #[tokio::test]
+async fn create_md_write_failure_leaves_registry_untouched() {
+    // BUG-20261124-037：内容先于登记提交（与 goal_tool::add 同源同序）——
+    // md 写失败（workspace/goals 被同名文件占位 → atomic write
+    // create_dir_all 必败，确定性注入）时闭包 Err = update_registry 整表
+    // 放弃不落盘，注册表不留无内容 Active 条目（旧序楔死：评估永久
+    // skip "md file missing" + create 拒新建，需人工删）。
+    let home = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(home.path());
+    let _g = isolate(home.path(), SESSION_KEY);
+    let ws = home.path().join("workspace");
+    std::fs::write(ws.join("goals"), b"not a directory").unwrap();
+    let err = create_goal(&ctx, "bench-goal-a").await.unwrap_err();
+    assert!(err.contains("goal.md"), "unexpected: {err}");
+    assert!(
+        !ws.join("config").join("goals.json").exists(),
+        "md 写失败后注册表不得落盘（楔死形态残留）"
+    );
+    // 恢复占位后可正常建（无楔死残留，id 从 G1 起）。
+    std::fs::remove_file(ws.join("goals")).unwrap();
+    let out = create_goal(&ctx, "bench-goal-a").await.unwrap();
+    assert_eq!(out["created"].as_bool(), Some(true));
+    assert_eq!(out["id"].as_str(), Some("G1"));
+}
+
+#[tokio::test]
 async fn create_rejects_unoccupied_session() {
     let home = tempfile::tempdir().unwrap();
     let ctx = make_ctx(home.path());

@@ -323,8 +323,22 @@ impl AgentLoop {
         // 自 no-op。注册表未命中 = 本 turn 的 hook 追加零写（detached 子
         // 代理不进本函数）。
         let wip_root = self.session_homes_root();
-        self.wip_journal.consume_previous(&wip_root, session_key);
-        self.wip_journal.register(&wip_root, session_key);
+        // 删除重试不占 worker 线程（BUG-20261124-046）：fsutil 同步版韧性
+        // 包装内含 thread::sleep 退避（最坏 ~4.4s），在 async 流程直接调用
+        // 会阻塞 tokio executor worker——spawn_blocking 移入阻塞线程池
+        // （仓内先例 task_result_store/pair/continuation_store 同款），await
+        // 保时序：register 截断完成后本 turn 的 hook append 才开写，两步
+        // 不与写入竞争。
+        let wip_journal = self.wip_journal.clone();
+        let wip_sk = session_key.to_string();
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            wip_journal.consume_previous(&wip_root, &wip_sk);
+            wip_journal.register(&wip_root, &wip_sk);
+        })
+        .await
+        {
+            tracing::warn!("[WipJournal] turn 起点 spawn_blocking 失败（现场消费/注册跳过）: {e}");
+        }
 
         // （聊天切会话竞态）：user 行落盘职责已上移到调用方——
         // process_admitted 在预处理链之前落原始文本（「接纳即落盘」，消除
@@ -638,8 +652,14 @@ impl AgentLoop {
         // 已持久化进会话记录 → 删 wip 文件 + pending 兜底清理。本函数是
         // turn 收尾单一收口：正常/错误/急停收尾都到达（错误轮上方已先冲刷
         // 中间正文，现场不丢）；turn-end hook 续轮走 Continue 提前返回、
-        // 永远到不了这里（结构保证续轮不折叠）。
-        self.wip_journal.fold(session_key);
+        // 永远到不了这里（结构保证续轮不折叠）。折叠删除同样走
+        // spawn_blocking（BUG-20261124-046，register 同款——韧性包装的
+        // thread::sleep 退避不占 worker 线程）。
+        let wip_journal = self.wip_journal.clone();
+        let wip_sk = session_key.to_string();
+        if let Err(e) = tokio::task::spawn_blocking(move || wip_journal.fold(&wip_sk)).await {
+            tracing::warn!("[WipJournal] turn 收尾折叠 spawn_blocking 失败: {e}");
+        }
 
         // 交付物实时面——落盘**之后**发布（与 emit_session_created 同一
         // 纪律：persisted 先于 pushed）。web pump → SSE `deliverables` + WS

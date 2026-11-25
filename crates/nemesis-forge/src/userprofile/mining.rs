@@ -1251,11 +1251,17 @@ const CMD_NOISE: &[&str] = &[
 ];
 
 /// 首命令 token（首 token = 程序名；**参数不采集**——参数里可能出现路径/
-/// 主机名/密钥等敏感面，挖掘器只看「用什么命令」）。
+/// 主机名/密钥等敏感面，挖掘器只看「用什么命令」）。路径形态 argv[0]
+/// （绝对路径/UNC/`./x.sh`）降为文件名（BUG-20261125-005）：首 token
+/// 本身是路径时携带用户名/主机名/目录结构，与「参数含路径」同一敏感面
+/// ——原样进条目 content 会落盘画像并注入全部会话、随每次 LLM 请求上云。
+/// 引号含空格路径退化为目录尾段（split_whitespace 拆不了带空格路径），
+/// 敏感面（盘符+目录）已剥，程序名失真是可接受退化。
 fn first_token(line: &str) -> Option<&str> {
     let t = line.split_whitespace().next()?;
     let t = t.trim_matches(|c: char| matches!(c, '"' | '\'' | '`'));
-    if t.is_empty() { None } else { Some(t) }
+    let base = t.rsplit(['/', '\\']).next().unwrap_or(t);
+    if base.is_empty() { None } else { Some(base) }
 }
 
 /// shell 偏好挖掘（T 批）：≥3 个用过终端的会话且主导 shell 占比 ≥70%

@@ -899,9 +899,12 @@ fn cmd_template_create(
 fn cmd_validate(path: &str) -> Result<()> {
     println!("Validating workflow: {}", path);
     let wf_path = std::path::Path::new(path);
+    // 裁决型命令：校验失败必须以非零退码上抛（BUG-20261125-010）——与 run
+    // 路径的 validate 失败语义（print + return Err）对齐；此前三个失败分支
+    // 全部 rc=0，脚本/CI 无法用退码区分「校验通过」与「校验否决」。
     if !wf_path.exists() {
         println!("  Error: File not found.");
-        return Ok(());
+        return Err(anyhow::anyhow!("Workflow file not found: {}", path));
     }
 
     // Parse
@@ -922,11 +925,13 @@ fn cmd_validate(path: &str) -> Result<()> {
                 Err(e) => {
                     println!("  Validation: FAILED");
                     println!("    {}", e);
+                    return Err(anyhow::anyhow!("Workflow validation failed"));
                 }
             }
         }
         Err(e) => {
             println!("  Error: Parse failed - {}", e);
+            return Err(anyhow::anyhow!("Workflow parse failed: {}", e));
         }
     }
     Ok(())

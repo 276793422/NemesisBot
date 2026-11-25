@@ -169,17 +169,33 @@ impl Allowlist {
             return Vec::new();
         }
         match nemesis_utils::fsutil::read_config_string(&self.path) {
-            Ok(content) => match serde_json::from_str::<AllowlistFile>(&content) {
-                Ok(f) => f.entries,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        path = %self.path.display(),
-                        "装前扫描 allowlist 文件损坏——按空表处理（需重新确认）"
-                    );
-                    Vec::new()
+            Ok(content) => {
+                // 形状闸前置（`ensure_object`，BUG-20261125-008）：
+                // AllowlistFile 全字段 default 无 flatten，`[]` 曾走 serde
+                // visit_seq 零元素臂 = 静默空表零诊断；object 闸后违形进
+                // 既有「损坏」WARN 臂。
+                let parsed = serde_json::from_str::<serde_json::Value>(&content)
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| {
+                        nemesis_utils::json_shape::ensure_object(&v, "mcp_scan_allowlist.json")
+                            .map(|_| v)
+                            .map_err(|e| e.to_string())
+                    })
+                    .and_then(|v| {
+                        serde_json::from_value::<AllowlistFile>(v).map_err(|e| e.to_string())
+                    });
+                match parsed {
+                    Ok(f) => f.entries,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            path = %self.path.display(),
+                            "装前扫描 allowlist 文件损坏/形状非法——按空表处理（需重新确认）"
+                        );
+                        Vec::new()
+                    }
                 }
-            },
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,

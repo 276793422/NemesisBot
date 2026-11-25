@@ -1,4 +1,5 @@
-//! `profile.prune_queue` cutoff 纯函数测试（复查 2026-11-24 饱和算术纪律）。
+//! `profile.prune_queue` cutoff 纯函数测试（复查 2026-11-24 饱和算术纪律，
+//! BUG-20261125-006）。
 //!
 //! Handler 级载荷/路由测试见前端 spec 与 l1 注册表；这里只钉 cutoff 计算
 //! 的纯函数面（配置面 i64 算术：极端天数不 panic，饱和退化 = 什么都不清）。
@@ -24,8 +25,9 @@ fn prune_cutoff_normal_days_is_in_the_past() {
 /// 极早时间 = 什么都不清。
 #[test]
 fn prune_cutoff_huge_days_saturates_without_panic() {
-    let cutoff = prune_cutoff_ms(i64::MAX);
-    assert!(cutoff < 0, "饱和后 cutoff 退化为极早时间，实际 {cutoff}");
+    assert!(prune_cutoff_ms(i64::MAX) < 0, "饱和后 cutoff 退化为极早时间");
+    assert!(prune_cutoff_ms(i64::MAX / 2) <= 0, "半量程同样饱和");
+    assert!(prune_cutoff_ms(1_000_000_000) <= 0, "~27 亿天同饱和");
 }
 
 /// 边界：days=1 合法（≥1 闸由 handler 负责，这里只验数值形）。

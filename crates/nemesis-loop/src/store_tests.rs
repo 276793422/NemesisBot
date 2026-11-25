@@ -219,3 +219,105 @@ fn status_terminal_and_str_roundtrip() {
         assert_eq!(s.as_str(), name);
     }
 }
+
+// ── BUG-20261125-003 回归锁：update_loop 锁内 RMW ──────────────────
+
+use crate::store::{create_loop, update_loop};
+
+#[test]
+fn update_loop_normal_rm_writes_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let created = create_loop(dir.path(), |id| Ok(st(&id, "k"))).unwrap();
+    let updated = update_loop(dir.path(), &created.id, |s| {
+        s.status = LoopStatus::Paused;
+        s.push_progress(2000, "[paused] test".to_string());
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(updated.status, LoopStatus::Paused);
+    let on_disk = load_loop(dir.path(), &created.id).unwrap().unwrap();
+    assert_eq!(on_disk.status, LoopStatus::Paused);
+    assert_eq!(on_disk.progress_log.len(), 1);
+}
+
+#[test]
+fn update_loop_err_skips_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let created = create_loop(dir.path(), |id| Ok(st(&id, "k"))).unwrap();
+    let err = update_loop(dir.path(), &created.id, |s| {
+        s.status = LoopStatus::Done; // mutate 先发生
+        Err("状态机校验失败".to_string()) // 但裁决失败
+    })
+    .unwrap_err();
+    assert!(err.contains("状态机校验失败"));
+    // 盘上未变：mutate 不落盘（裁决失败 = 放弃整个临界区）。
+    let on_disk = load_loop(dir.path(), &created.id).unwrap().unwrap();
+    assert_eq!(on_disk.status, LoopStatus::Active);
+    assert!(on_disk.progress_log.is_empty());
+}
+
+#[test]
+fn update_loop_false_skips_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let created = create_loop(dir.path(), |id| Ok(st(&id, "k"))).unwrap();
+    let updated = update_loop(dir.path(), &created.id, |_s| Ok(false)).unwrap();
+    // 返回锁内终态但未落盘（幂等命中省写）。
+    assert_eq!(updated.status, LoopStatus::Active);
+    let on_disk = load_loop(dir.path(), &created.id).unwrap().unwrap();
+    assert_eq!(on_disk.status, LoopStatus::Active);
+}
+
+#[test]
+fn update_loop_missing_id_errs() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = update_loop(dir.path(), "L99", |_s| Ok(true)).unwrap_err();
+    assert!(err.contains("不存在"), "诚实报错：{err}");
+}
+
+#[test]
+fn remove_then_update_errs_no_resurrect() {
+    // remove 与 update_loop 同锁串行：删除后 RMW 不复活已删文件。
+    let dir = tempfile::tempdir().unwrap();
+    let created = create_loop(dir.path(), |id| Ok(st(&id, "k"))).unwrap();
+    assert!(remove_loop(dir.path(), &created.id).unwrap());
+    let err = update_loop(dir.path(), &created.id, |s| {
+        s.status = LoopStatus::Done;
+        Ok(true)
+    })
+    .unwrap_err();
+    assert!(err.contains("不存在"), "remove 后 RMW 必须诚实报错：{err}");
+    assert!(
+        load_loop(dir.path(), &created.id).unwrap().is_none(),
+        "已删 loop 不得被 update 写回复活"
+    );
+}
+
+#[test]
+fn update_loop_concurrent_threads_serialize_no_lost_update() {
+    // 双写者并发 RMW：8 线程各 push 一条 progress——锁串行化后全部
+    // 16 条（每线程 2 条）都在盘上；裸 RMW 会丢到只剩部分。
+    let dir = tempfile::tempdir().unwrap();
+    let created = create_loop(dir.path(), |id| Ok(st(&id, "k"))).unwrap();
+    let dir_path = dir.path().to_path_buf();
+    let id = created.id.clone();
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let p = dir_path.clone();
+            let id = id.clone();
+            std::thread::spawn(move || {
+                for j in 0..2 {
+                    update_loop(&p, &id, |s| {
+                        s.push_progress(1000 + (i * 2 + j) as i64, format!("t{i}-j{j}"));
+                        Ok(true)
+                    })
+                    .unwrap();
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let on_disk = load_loop(dir.path(), &created.id).unwrap().unwrap();
+    assert_eq!(on_disk.progress_log.len(), 16, "锁内 RMW 下并发写入零丢失");
+}

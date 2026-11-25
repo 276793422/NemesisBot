@@ -272,6 +272,16 @@ pub fn reconstruct_traces(log_dir: &Path) -> Vec<RpcTrace> {
             .to_string();
         let ts = entry.ts.clone();
 
+        // BUG-20261124-032：事件自带 success 字段（format_event 已消费），
+        // trace 视图此前恒 false——前端 TopologyCanvas 失败 badge 永不亮
+        // （失败 RPC 显示「完成」）。缺省 false：旧事件无该字段不误标。
+        let failed = entry
+            .data
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .map(|s| !s)
+            .unwrap_or(false);
+
         traces.push(RpcTrace {
             id: request_id,
             hops: vec![
@@ -286,7 +296,7 @@ pub fn reconstruct_traces(log_dir: &Path) -> Vec<RpcTrace> {
                     ts,
                 },
             ],
-            failed: false,
+            failed,
         });
     }
 
@@ -343,10 +353,17 @@ pub fn read_rpc_connections(log_dir: &Path) -> Vec<RpcConnection> {
 // ---------------------------------------------------------------------------
 
 /// Read log entries from the last `days` days (1 = today, 2 = today + yesterday, etc.).
+///
+/// 拼接序 = 全局时间升序：旧天先读、今天最后（BUG-20261124-032）。单文件
+/// 内本就按追加时间升序，此前 `0..days` 顺序拼接出 `[今天, 昨天]` 乱序，
+/// 三个消费方受害——`read_recent_events` 的 `rev().take(limit)` 取到昨天
+/// 的旧事件（今天的最新事件反而取不到）、`reconstruct_traces` 的「尾 50」
+/// 截错端（保留最旧 RPC）、`read_rpc_connections` 的 last_seen 被旧条目
+/// 覆盖（HashMap 后写覆盖）。聚合类消费方（aggregate_*）顺序无关。
 fn read_log_entries(log_dir: &Path, days: u32) -> Vec<ClusterLogEvent> {
     let mut all_entries = Vec::new();
 
-    for offset in 0..days {
+    for offset in (0..days).rev() {
         let date = chrono::Local::now() - chrono::Duration::days(offset as i64);
         let filename = format!("cluster_{}.log", date.format("%Y-%m-%d"));
         let path = log_dir.join(&filename);

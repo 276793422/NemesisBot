@@ -1608,7 +1608,7 @@ mod r9_process_boundary {
 //
 // 覆盖目标与手法：
 // -272 executor 角色短路 —— env 注入直起真 exe（无子命令），子进程干净
-//   rc=0（stdio_loop 见 EOF 正常收尾）→ main 早退行被真实覆盖。
+//   rc=0（transport_loop 见 EOF 正常收尾）→ main 早退行被真实覆盖。
 // - Gateway 臂 --debug/--quiet/--no-console push 行 —— 坏 JSON config 触发
 //   ConfigStore::load Err → anyhow 干净传播（不走 process::exit(1)，计数
 //   能落盘）。注意：flag push 行在 load 之前执行，三个 flag 一起喂全命中。

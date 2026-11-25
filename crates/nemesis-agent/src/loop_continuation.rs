@@ -508,7 +508,12 @@ impl ContinuationStore {
     /// and the in-memory twin. Mtime (not the in-file `created_at` field) is
     /// the clock: every save rewrites the file, so mtime == last write.
     pub fn stale_task_ids(&self, max_age: Duration) -> Vec<String> {
-        let cutoff = std::time::SystemTime::now() - max_age;
+        // BUG-20261124-047：时钟早于 epoch+max_age（无 RTC 虚机/容器时钟漂移、
+        // CMOS 电池归零）时裸减 panic——checked_sub 拿不到 cutoff 保守返回空
+        // （不判 stale，不逐出），与 skills installer 同款防御先例一致。
+        let Some(cutoff) = std::time::SystemTime::now().checked_sub(max_age) else {
+            return Vec::new();
+        };
         let mut stale = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
             return stale;
@@ -540,7 +545,11 @@ impl ContinuationStore {
     /// 临时文件；刚崩出来的新鲜孤儿留到下一轮 sweep。单文件失败
     /// warn-and-continue：卫生清扫不因单文件中断。返回删除数。
     pub fn sweep_stale_tmp_orphans(&self, grace: std::time::Duration) -> usize {
-        let cutoff = std::time::SystemTime::now() - grace;
+        // BUG-20261124-047 同族：时钟漂移到 epoch 前时裸减 panic——
+        // checked_sub 拿不到 cutoff 则跳过本轮清扫（保守不删）。
+        let Some(cutoff) = std::time::SystemTime::now().checked_sub(grace) else {
+            return 0;
+        };
         let mut removed = 0;
         let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
             return 0;
@@ -1223,6 +1232,13 @@ impl ContinuationManager {
                     .collect();
                 for k in &doomed {
                     conts.remove(k);
+                    // 相位记录一并清理（remove_continuation 同款不变量：条目
+                    // 消亡 = 相位消亡。TTL 清扫绕过 remove_continuation 直删，
+                    // 漏清会让重启恢复过（mark_restored 已插入 Restored）却
+                    // 等不到回调的任务在 restore_phases 里永久泄漏——
+                    // finish_handling 注释明示陈旧相位是「Confirmed → *」
+                    // 非法转移陷阱，此处为同族收口。
+                    self.clear_phase(k);
                 }
             }
             store.delete_by_stem(stem);

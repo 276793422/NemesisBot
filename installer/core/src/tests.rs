@@ -857,3 +857,63 @@ fn commit_window_locked_target_file_fails_clean_and_record_survives() -> Result<
     );
     Ok(())
 }
+
+// ===== Fresh 提交中途失败就地回滚（BUG-20261124-023）：target 进门不存在
+// 时 target 全部内容都是本次产物——commit 循环失败 = 删已提交文件（含
+// uninstall 副本）+ 摘整目录，「零残留」对 Fresh 真正闭环。修复前：已
+// rename 进 target 的文件无人清理，外层 remove_dir 只能删空目录 → 半套
+// 产物 + 目录壳永残磁盘。失败注入 = 把 uninstall 副本的提交目标预置成同
+// 名目录（rename file→目录两平台皆败），经最后一条释放进度回调插入（此刻
+// commit 尚未开始）。升级/修复场景不回滚是测试钉死的设计语义（见
+// commit_window_locked_target_file_fails_clean_and_record_survives）。=====
+#[test]
+fn fresh_commit_failure_rolls_back_committed_files() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let (payload_dir, target) = (tmp.path().join("payload"), tmp.path().join("target"));
+    make_payload(&payload_dir, "rollback")?;
+    let pkg = pack_into(tmp.path(), &payload_dir, "1.0.0", None, "rollback.pkg")?;
+    let total_files = pkgfile::inspect(&pkg)?.manifest.files.len();
+
+    let inject = std::sync::atomic::AtomicBool::new(true);
+    let err = install::perform(
+        &pkg,
+        &InstallOptions {
+            target_dir: target.clone(),
+            force_downgrade: false,
+            sig_policy: SigPolicy::Enforce { accept_risk: false },
+            keep_uninstall_copy: true,
+        },
+        Some(&|p| {
+            // 最后一条释放进度（n==total==manifest 文件数）= 全部条目已落
+            // staging、commit 尚未开始——此刻把 uninstall 副本提交目标预置
+            // 成同名目录，使 commit 首个 rename（file→目录）失败。
+            if let Progress::Extracting(n, total) = &p
+                && *n == *total
+                && *total == total_files
+                && inject.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                let _ = std::fs::create_dir_all(target.join("uninstall.exe"));
+            }
+        }),
+    )
+    .expect_err("提交目标被目录占位必须失败");
+
+    // 失败是提交流 IO 错误，不是 Integrity 域（退出码 1 域）。
+    assert!(typed_of(&err).is_none(), "非 Integrity 域: {err:#}");
+
+    // Fresh 回滚闭环：target 必须被整体摘除（已提交文件全删 + 目录壳摘除）。
+    assert!(
+        !target.exists(),
+        "Fresh 提交失败必须整体回滚摘除 target（半套产物零残留）"
+    );
+
+    // 自愈路径：残留清干净后重试 Fresh 安装成功。
+    let res = install::perform(
+        &pkg,
+        &install_opts(&target, SigPolicy::Enforce { accept_risk: false }),
+        None,
+    )?;
+    assert_eq!(res.bot_version, "1.0.0");
+    assert!(target.join("install.json").exists());
+    Ok(())
+}

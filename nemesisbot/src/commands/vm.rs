@@ -271,9 +271,8 @@ async fn sync_via_gateway(home: &std::path::Path, cmd: &str, project: &str) -> R
 
     let state_path =
         nemesis_path::resolve_gateway_state_path_in_workspace(&crate::common::workspace_path(home));
-    let info = crate::commands::dashboard::read_gateway_state(&state_path).ok_or_else(|| {
-        anyhow::anyhow!("Gateway 未运行（找不到 state 文件）。先用 `nemesisbot gateway` 启动它。")
-    })?;
+    let info = crate::commands::dashboard::read_gateway_state_or_err(&state_path)
+        .map_err(|e| anyhow::anyhow!(e))?;
     if info.web_port <= 0 {
         bail!("Gateway state 无效（web_port=0）");
     }

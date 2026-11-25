@@ -945,6 +945,75 @@ fn terminal_command_candidates_gates() {
     assert!(terminal_command_candidates(&spammy, now()).is_empty());
 }
 
+/// BUG-20261125-005：路径形态 argv[0]（绝对路径/UNC/相对路径）降为文件名
+/// ——首 token 本身是路径时携带用户名/主机名/目录结构，与「参数不采集」
+/// 同一敏感面，不得原样进挖掘面。
+#[test]
+fn first_token_reduces_path_form_to_basename() {
+    // 普通命令不受影响。
+    assert_eq!(first_token("git status"), Some("git"));
+    assert_eq!(first_token("cargo build --release"), Some("cargo"));
+    // 绝对路径 → 文件名（用户名/目录结构不入）。
+    assert_eq!(
+        first_token(r"C:\Users\alice\tools\scan.exe --all"),
+        Some("scan.exe")
+    );
+    // UNC 路径 → 文件名（主机名不入）。
+    assert_eq!(first_token(r"\\nas\share\deploy.bat"), Some("deploy.bat"));
+    // 相对路径 → 文件名。
+    assert_eq!(first_token("./scripts/check.sh --fast"), Some("check.sh"));
+    assert_eq!(first_token("/usr/bin/git push"), Some("git"));
+    // 引号含空格路径：split_whitespace 拆不了，退化为目录尾段（盘符+
+    // 目录已剥，程序名失真是可接受退化——见 first_token 文档）。
+    assert_eq!(
+        first_token(r#""C:\Program Files\foo\run.exe" -x"#),
+        Some("Program")
+    );
+    // 裸分隔符 → None（该命令行被跳过，保守方向）。
+    assert_eq!(first_token(r"\ "), None);
+    assert_eq!(first_token("   "), None);
+}
+
+/// BUG-20261125-005 端到端：路径形态命令反复出现 → 命令族条目只含
+/// 文件名，绝不含用户名/盘符/主机名/目录段。
+#[test]
+fn terminal_command_candidates_path_form_leaks_no_directories() {
+    let s1 = term(
+        "pwsh",
+        &[
+            r"C:\Users\alice\tools\build.exe --rel",
+            r"\\nas\share\build.exe",
+            "./build.exe quick",
+        ],
+    );
+    let s2 = term(
+        "pwsh",
+        &[r"C:\Users\alice\tools\build.exe", "build.exe", "build.exe"],
+    );
+    let s3 = term(
+        "pwsh",
+        &[
+            r"\\nas\share\build.exe",
+            "./build.exe",
+            r"C:\tools\build.exe",
+        ],
+    );
+    let out = terminal_command_candidates(&[s1, s2, s3], now());
+    assert_eq!(out.len(), 1, "路径形态归一后 build.exe 9 次/3 会话达标");
+    assert!(out[0].content.contains("build.exe"), "{}", out[0].content);
+    assert!(
+        !out.iter().any(|e| {
+            e.content.contains("alice")
+                || e.content.contains("c:")
+                || e.content.contains("nas")
+                || e.content.contains("users")
+                || e.content.contains("tools")
+        }),
+        "路径敏感面必须被剥除: {:?}",
+        out.iter().map(|e| &e.content).collect::<Vec<_>>()
+    );
+}
+
 /// top-K 排序：次数多的命令排前 + 未达标命令不出（确定性断言）。
 /// 每个命令都跨 3 会话（spread 达标），按总数区分高低。
 #[test]

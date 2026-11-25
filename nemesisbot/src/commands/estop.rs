@@ -29,11 +29,8 @@ pub async fn run(
     // 2. 读 gateway state 拿 web_host/web_port
     let state_path =
         nemesis_path::resolve_gateway_state_path_in_workspace(&crate::common::workspace_path(home));
-    let info = crate::commands::dashboard::read_gateway_state(&state_path).ok_or_else(
-        || -> Box<dyn std::error::Error> {
-            "Gateway 未运行（找不到 state 文件）。先用 `nemesisbot gateway` 启动它。".into()
-        },
-    )?;
+    let info = crate::commands::dashboard::read_gateway_state_or_err(&state_path)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     if info.web_port <= 0 {
         return Err("Gateway state 无效（web_port=0）。".into());
     }

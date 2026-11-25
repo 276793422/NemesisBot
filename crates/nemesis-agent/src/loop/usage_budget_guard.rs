@@ -19,7 +19,7 @@
 //! 委派任务的预算归 master（board.budget.max_tokens_per_parent，E1
 //! 二期）——两闸独立，不互相替代。
 use super::*;
-use chrono::{Datelike, TimeZone};
+use chrono::TimeZone;
 
 /// 单窗口用量聚合（tokens = 完整输入+output 直和；cost_usd = 折算直和）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,8 +91,7 @@ fn window_aggs(ds: &nemesis_data::DataStore) -> (UsageWindowAgg, UsageWindowAgg)
         );
         return zero;
     };
-    let month_first = now.date_naive().with_day(1).unwrap_or(now.date_naive());
-    let Some(month_start) = unix_secs_at_local_midnight(month_first) else {
+    let Some(month_start) = nemesis_data::month_start_unix_secs(now) else {
         tracing::warn!(
             "[AgentLoop] usage budget: 本地月窗口起点不可判定（DST 间隙），本窗口按 0 放行"
         );

@@ -1286,3 +1286,51 @@ async fn test_s4_non_request_msg_type_is_not_dispatched() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     server.stop().unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261124-026：RpcServerConfig.send_timeout 装配脱钩（声明零消费）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_inbound_conn_config_passthrough() {
+    // 非空 token：三参数全部透传到 TcpConnConfig——server 层配置字段必须
+    // 真正生效（此前 send_timeout 恒为 TcpConnConfig 默认 10s，配置声明
+    // 从未接到生效机制上；pool.rs dial 路径同字段早已正确透传，对照铁证）。
+    let cfg = RpcServer::inbound_conn_config(
+        "peer-a:1234".to_string(),
+        "shared-token".to_string(),
+        Duration::from_secs(65 * 60),
+        Duration::from_secs(3),
+    );
+    assert_eq!(cfg.address, "peer-a:1234");
+    assert_eq!(cfg.send_timeout, Duration::from_secs(3));
+    assert_eq!(cfg.idle_timeout, Duration::from_secs(65 * 60));
+    assert_eq!(cfg.auth_token.as_deref(), Some("shared-token"));
+
+    // 空 token = None（明文帧既有语义），超时参数照常透传。
+    let plain = RpcServer::inbound_conn_config(
+        "peer-b:1".to_string(),
+        String::new(),
+        Duration::from_secs(30),
+        Duration::from_secs(7),
+    );
+    assert!(plain.auth_token.is_none());
+    assert_eq!(plain.send_timeout, Duration::from_secs(7));
+    assert_eq!(plain.idle_timeout, Duration::from_secs(30));
+}
+
+#[test]
+fn test_inbound_conn_config_default_matches_rpc_server_config() {
+    // 默认值对齐不变式：RpcServerConfig::default() 与 TcpConnConfig::default()
+    // 的 send_timeout 一致（修复前两层默认恰好相同掩盖了脱钩——本测试把
+    // 「配置字段必须透传」钉死，未来任一侧改默认值时先想清楚对齐关系）。
+    let server_cfg = RpcServerConfig::default();
+    let conn_cfg = RpcServer::inbound_conn_config(
+        "x".to_string(),
+        String::new(),
+        server_cfg.idle_timeout,
+        server_cfg.send_timeout,
+    );
+    assert_eq!(conn_cfg.send_timeout, server_cfg.send_timeout);
+    assert_eq!(conn_cfg.idle_timeout, server_cfg.idle_timeout);
+}

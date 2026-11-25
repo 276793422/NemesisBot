@@ -677,3 +677,69 @@ async fn bug145_cleanup_continues_past_unremovable_entry_and_trims_flat() {
         "recent flat entry must survive: {remaining}"
     );
 }
+
+// ---- BUG-20261125-004 同族回归锁：cleanup 平文件修剪 × append 并发 ----
+
+fn fresh_collected(tag: &str) -> CollectedExperience {
+    CollectedExperience {
+        experience: Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: tag.into(),
+            input_summary: "x".into(),
+            output_summary: "y".into(),
+            success: true,
+            duration_ms: 1,
+            timestamp: chrono::Local::now().to_rfc3339(),
+            session_key: "s".into(),
+        },
+        dedup_hash: uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+/// 确定性锁纪律测试（collector 持久化 append 与 cleanup 修剪共用静态锁）：
+/// 手动持 EXPERIENCES_FLAT_WRITE_LOCK 后 spawn append 与 cleanup，持锁下
+/// 给足 100ms 完成预算——若任一侧未被锁挡（锁纪律破坏），微秒级即完成
+/// → timeout Ok = 红；正确阻塞 → Err = 绿。追加族与整文件写回族在同一
+/// 把互斥上串行化，丢失窗在结构上不存在。
+///
+/// 为什么不用并发冒烟测：窗口是 µs 级同步段，多线程形态阳性对照实证
+/// 撤锁 5/5 假绿——锁纪律本身才是可确定性断言的面。为什么不用
+/// is_finished 探测：append 自身多段 async IO 未跑完同样 is_finished=false，
+/// 阳性对照实证撤锁后仍假绿——只有「给足预算仍未完成」才是阻塞证据。
+#[tokio::test]
+async fn append_and_cleanup_serialize_on_flat_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(ExperienceStore::new(dir.path().join("experiences")));
+    store.append(&fresh_collected("seed")).await.unwrap();
+
+    // 外部持锁（模拟清理侧已进入临界区；collector append 同锁）。
+    let guard = EXPERIENCES_FLAT_WRITE_LOCK.lock().await;
+
+    let mut append_task = {
+        let s = store.clone();
+        tokio::spawn(async move { s.append(&fresh_collected("x")).await })
+    };
+    let mut cleanup_task = {
+        let s = store.clone();
+        tokio::spawn(async move { s.cleanup(365).await })
+    };
+    let budget = std::time::Duration::from_millis(100);
+    assert!(
+        tokio::time::timeout(budget, &mut append_task)
+            .await
+            .is_err(),
+        "append 必须在静态平文件写锁释放前阻塞"
+    );
+    assert!(
+        tokio::time::timeout(budget, &mut cleanup_task)
+            .await
+            .is_err(),
+        "cleanup 必须在静态平文件写锁释放前阻塞"
+    );
+
+    drop(guard);
+    append_task.await.unwrap().unwrap();
+    cleanup_task.await.unwrap().unwrap();
+    let n = store.count().await.unwrap();
+    assert_eq!(n, 2, "锁释放后两侧都必须完成且零丢失: {n}");
+}

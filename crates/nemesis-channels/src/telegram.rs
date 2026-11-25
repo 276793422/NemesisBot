@@ -304,6 +304,10 @@ struct SendMessageResponse {
 #[derive(Debug, Deserialize)]
 struct EditMessageResponse {
     ok: bool,
+    /// Telegram 错误响应自带 `description`（如 "Bad Request: message to
+    /// edit not found"）——上抛 Err 时带回现场（失败信息自带现场纪律）。
+    #[serde(default)]
+    description: Option<String>,
 }
 
 /// Parameters for sendMessage.
@@ -1205,8 +1209,19 @@ impl TelegramChannel {
         })?;
 
         if !body.ok {
-            // Edit can fail if message hasn't changed, treat as non-fatal
-            debug!("[TelegramChannel] editMessageText returned not ok (may be non-fatal)");
+            // BUG-20261125-001：API 拒收必须上抛 Err。send() 的 placeholder
+            // 路径靠 is_ok() 判定编辑成败决定是否 fall-through 全量补发；
+            // 此前拒收（用户删掉 "Thinking..." 占位 → "message to edit not
+            // found"、病理性 HTML parse 400）被吞成 Ok → 外层误判编辑成功
+            // → 首块内容静默丢失（单块消息 = 整条丢失，且 send 整体返回
+            // Ok 零错误零日志）。注释「non-fatal」的正确语义 = 不炸 send
+            // （由调用方 fall-through 臂承接补发），不是谎报成功。
+            return Err(NemesisError::Channel(format!(
+                "editMessageText rejected: {}",
+                body.description
+                    .as_deref()
+                    .unwrap_or("ok=false (no description)")
+            )));
         }
 
         Ok(())

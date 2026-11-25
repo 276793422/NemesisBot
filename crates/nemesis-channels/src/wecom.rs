@@ -571,10 +571,10 @@ async fn callback_message(
 /// 从 POST 请求体提取 `encrypt` 密文：JSON `{"encrypt": "..."}` 优先，
 /// XML `<Encrypt><![CDATA[...]]></Encrypt>` 兜底（覆盖企业微信经典回调形态）。
 fn extract_encrypt_from_body(body: &str) -> Option<String> {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(e) = v.get("encrypt").and_then(|e| e.as_str()) {
-            return Some(e.to_string());
-        }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(e) = v.get("encrypt").and_then(|e| e.as_str())
+    {
+        return Some(e.to_string());
     }
 
     // XML 形态（不做完整 XML 解析，按标签定位足够）

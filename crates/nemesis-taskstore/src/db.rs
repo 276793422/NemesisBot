@@ -195,6 +195,20 @@ impl TaskDb {
             match conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;") {
                 Ok(()) => {
                     switched = true;
+                    // BUG-20261124-020 横向：execute_batch 容忍 PRAGMA 返回行
+                    //（rusqlite 0.41 显式禁用 ExecuteReturnedResults）——WAL
+                    // 在无共享内存支持的文件系统上静默返回旧模式而非报错，
+                    // Ok(()) ≠ 切成，上面的 BUSY 重试全被绕过。读回实际模式
+                    // 留痕（不改控制流：回落 delete 功能可用）。
+                    if let Ok(actual) =
+                        conn.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+                        && !actual.eq_ignore_ascii_case("wal")
+                    {
+                        tracing::warn!(
+                            actual_mode = %actual,
+                            "tasks.db WAL 切换未被接受（实际 journal_mode={actual}，文件系统可能不支持），回落继续（功能可用）"
+                        );
+                    }
                     break;
                 }
                 Err(e) if attempt < 9 && e.to_string().contains("locked") => {

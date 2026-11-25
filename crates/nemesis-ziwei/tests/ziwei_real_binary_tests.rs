@@ -87,17 +87,28 @@ fn real_pe_file_domain_full_chain() {
     let img = ImageMap::new(info.clone(), blobs).expect("ImageMap 组装");
     let bounds = container::pe_text_bounds(&img).expect("应有 .text 可执行节界");
 
-    // 六源种子装配（entry/export/pdata/cfg/tls/nopsled，缺席来源诚实缺席）
+    // 六源种子装配（entry/export/pdata/cfg/tls/nopsled，缺席来源诚实缺席）；
+    // nopsled 启发式与权威源分层（BUG-20261124-043 尾批让位语义）
     let contribs = container::pe_seed_contribs(&img, &file);
     let mut seeds: Vec<u32> = Vec::new();
+    let mut sleds: Vec<u32> = Vec::new();
     for c in &contribs {
-        seeds.extend_from_slice(&c.rvas);
+        if c.source == "nopsled" {
+            sleds.extend_from_slice(&c.rvas);
+        } else {
+            seeds.extend_from_slice(&c.rvas);
+        }
     }
     seeds.sort_unstable();
     seeds.dedup();
-    assert!(!seeds.is_empty(), "真实系统 PE 不应零种子");
+    sleds.sort_unstable();
+    sleds.dedup();
+    assert!(
+        !seeds.is_empty() || !sleds.is_empty(),
+        "真实系统 PE 不应零种子"
+    );
 
-    let set = funcs::recover(arch, &img, &seeds, bounds);
+    let set = funcs::recover(arch, &img, &seeds, &sleds, bounds);
     // 递归下降从 entry 出发必收 entry 自身
     assert!(
         set.find_by_rva(info.entry_rva).is_some(),

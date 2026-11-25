@@ -523,6 +523,16 @@ async fn git_check_ignore(
     Some(ignored)
 }
 
+/// 清理臂统一走阻塞线程池（LOW-5 家族纪律，BUG-20261124-046）：fsutil
+/// 同步版韧性删除内含 thread::sleep 退避（最坏 ~4.4s），不得直接在 async
+/// 流程调用占住 tokio worker 线程——与 telegram 语音临时件（BUG-20261118-172）
+/// / commit_project 删除循环同款 spawn_blocking 包装。
+async fn remove_resilient_blocking(p: impl AsRef<Path>) {
+    let p = p.as_ref().to_path_buf();
+    let _ =
+        tokio::task::spawn_blocking(move || nemesis_utils::fsutil::remove_file_resilient(&p)).await;
+}
+
 /// JSON 原子写（唯一临时名 + 改名；Windows 侧 rename 覆盖已存在目标可行）。
 /// 临时名带 pid+序号：此前固定 `*.json.tmp` 依赖「所有调用方持 INFLIGHT
 /// 闸」的隐式不变式（同路径双写方互踩临时文件 = 后写方 rename 走先写方
@@ -544,14 +554,14 @@ async fn write_json_atomic(path: &Path, json: &str) -> Result<(), String> {
         std::process::id(),
         WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    tokio::fs::write(&tmp, json).await.map_err(|e| {
-        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp); // 错误清理臂：同步 fs（async 版未 await 即 drop 等于没清）
-        format!("写临时文件失败: {e}")
-    })?;
-    tokio::fs::rename(&tmp, path).await.map_err(|e| {
-        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
-        format!("原子改名失败: {e}")
-    })?;
+    if let Err(e) = tokio::fs::write(&tmp, json).await {
+        remove_resilient_blocking(&tmp).await;
+        return Err(format!("写临时文件失败: {e}"));
+    }
+    if let Err(e) = tokio::fs::rename(&tmp, path).await {
+        remove_resilient_blocking(&tmp).await;
+        return Err(format!("原子改名失败: {e}"));
+    }
     Ok(())
 }
 
@@ -820,11 +830,11 @@ async fn pack_tar(
     match packed {
         Ok(Ok((hashes, payload_bytes))) => Ok((out, hashes, payload_bytes)),
         Ok(Err(e)) => {
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&out);
+            remove_resilient_blocking(&out).await;
             Err(e)
         }
         Err(e) => {
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&out);
+            remove_resilient_blocking(&out).await;
             Err(format!("打包任务失败: {e}"))
         }
     }
@@ -1428,7 +1438,7 @@ async fn push_files_to_vm(
         .collect();
     let (tmp_tar, hashes, _bytes) = pack_tar(project_path, &files).await?;
     let result = send_tar_chunks(sup, agent_id, &tmp_tar, false).await;
-    let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_tar);
+    remove_resilient_blocking(&tmp_tar).await;
     result?;
 
     // 定点复核（增量推送的完整性闸——只对推过的路径核指纹）。
@@ -1569,7 +1579,7 @@ async fn full_sync(
 
     let (tmp_tar, expected, payload_bytes) = pack_tar(project_path, &files).await?;
     let result = send_and_verify(sup, agent_id, &tmp_tar, &expected, payload_bytes).await;
-    let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_tar); // 成败都清打包临时件
+    remove_resilient_blocking(&tmp_tar).await; // 成败都清打包临时件
     let skipped_symlinks = 0usize; // v1 打包只含普通文件（symlink 选择阶段已不进清单）
     let report = FullSyncReport {
         files: files.len(),

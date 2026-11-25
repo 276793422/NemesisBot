@@ -541,12 +541,15 @@ fn retention_sweep_rollups_trims_and_noops() {
         .unwrap();
 
     // noop：不传任何阈值 → 0 行删除。
-    assert_eq!(store.retention_sweep(None, None).expect("noop"), 0);
+    assert_eq!(store.retention_sweep(None, None, None).expect("noop"), 0);
     // retention_days=0 的 Some 也视为跳过（filter 语义）。
-    assert_eq!(store.retention_sweep(Some(0), Some(0)).expect("zero"), 0);
+    assert_eq!(
+        store.retention_sweep(Some(0), Some(0), None).expect("zero"),
+        0
+    );
 
     // 按天：旧 2 行进 daily_rollups 后删除，新 1 行不动。
-    let deleted = store.retention_sweep(Some(1), None).expect("by day");
+    let deleted = store.retention_sweep(Some(1), None, None).expect("by day");
     assert_eq!(deleted, 2);
     let (left, total) = store
         .query_logs(0, now + 86400, 1, 10, &LogFilter::default())
@@ -574,13 +577,114 @@ fn retention_sweep_rollups_trims_and_noops() {
             .insert_request_log(&w4_log("m/c", now + 10 + i, "s3", 200))
             .unwrap();
     }
-    let trimmed = store.retention_sweep(None, Some(3)).expect("trim");
+    let trimmed = store.retention_sweep(None, Some(3), None).expect("trim");
     assert_eq!(trimmed, 3, "6→3 裁掉最旧 3 行");
     let (_, total) = store
         .query_logs(0, now + 86400, 1, 10, &LogFilter::default())
         .expect("after trim");
     assert_eq!(total, 3);
     let _ = std::fs::remove_file(path);
+}
+
+/// BUG-20261125-002：min_keep_since 豁免（按天分支）——月预算窗口起点
+/// 之后的明细行不被 sweep 删除（月保险丝只查明细表，删窗内行 = 漏计
+/// fail-open）；rollup 聚合范围 = 删除范围不变量保持（豁免行不进
+/// daily_rollups，不产生双计）。
+#[test]
+fn retention_sweep_min_keep_exempts_budget_window_by_day() {
+    let (store, path) = open_store("w4_sweep_minkeep_day");
+    let now = chrono::Local::now().timestamp();
+    let ancient = now - 10 * 86400; // 远超 retention 1 天
+    let in_window = now - 3600; // min_keep 之后（月窗内）
+    store
+        .insert_request_log(&w4_log("m/a", ancient, "s1", 200))
+        .unwrap();
+    store
+        .insert_request_log(&w4_log("m/a", in_window, "s2", 200))
+        .unwrap();
+
+    // min_keep 钉在 ancient 与 in_window 之间：只有 ancient 被删。
+    let min_keep = now - 5 * 86400;
+    let deleted = store
+        .retention_sweep(Some(1), None, Some(min_keep))
+        .expect("sweep");
+    assert_eq!(deleted, 1, "只删 min_keep 之前的行");
+    let (left, total) = store
+        .query_logs(0, now + 86400, 1, 10, &LogFilter::default())
+        .expect("after sweep");
+    assert_eq!(total, 1);
+    assert_eq!(left[0].session_key, "s2", "月窗内行豁免");
+
+    // rollup 只聚合被删行（豁免行不进 daily_rollups）。
+    {
+        let raw = rusqlite::Connection::open(path.to_string_lossy().as_ref()).unwrap();
+        let requests: i64 = raw
+            .query_row(
+                "SELECT COALESCE(SUM(request_count),0) FROM daily_rollups",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(requests, 1, "rollup 只含被删的 1 行");
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+/// BUG-20261125-002：min_keep_since 豁免（裁剪分支）——行数超限但候选
+/// 全在预算窗口内 = 裁剪让位（防膨胀在预算正确性冲突时退让）；无保护
+/// 时同 cap 正常裁（对照臂钉住豁免语义只由第三参驱动）。
+#[test]
+fn retention_sweep_min_keep_exempts_budget_window_trim() {
+    let (store, path) = open_store("w4_sweep_minkeep_trim");
+    let now = chrono::Local::now().timestamp();
+    for i in 0..5 {
+        store
+            .insert_request_log(&w4_log("m/a", now - 100 + i, "s1", 200))
+            .unwrap();
+    }
+    let min_keep = now - 86400; // 全部行都在保护窗内
+    let trimmed = store
+        .retention_sweep(None, Some(3), Some(min_keep))
+        .expect("trim");
+    assert_eq!(trimmed, 0, "候选全在保护窗内 → 裁剪让位");
+    let (_, total) = store
+        .query_logs(0, now + 86400, 1, 10, &LogFilter::default())
+        .expect("after trim");
+    assert_eq!(total, 5, "5 行全保留");
+
+    let trimmed2 = store
+        .retention_sweep(None, Some(3), None)
+        .expect("trim no guard");
+    assert_eq!(trimmed2, 2, "无保护时同 cap 正常裁最旧 2 行");
+    let _ = std::fs::remove_file(path);
+}
+
+/// month_start_unix_secs：固定本地时刻 → 当月 1 日 00:00 的 epoch 秒
+/// （月预算窗口起点单一真相源；预算闸与 sweep 豁免共用）。DST-None
+/// 分支（该时刻不存在）在固定时区不可注入（测试机时区无 DST），诚实
+/// 跳过不设用例——三态 match 静态覆盖该臂。
+#[test]
+fn month_start_unix_secs_resolves_local_first_of_month() {
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 11, 15, 14, 30, 0)
+        .single()
+        .unwrap();
+    let got = crate::usage_store::month_start_unix_secs(now).expect("normal date");
+    let expected = chrono::Local
+        .with_ymd_and_hms(2026, 11, 1, 0, 0, 0)
+        .single()
+        .unwrap()
+        .timestamp();
+    assert_eq!(got, expected);
+    // 月首当天任意时刻 → 同月 1 日 00:00。
+    let first_day = chrono::Local
+        .with_ymd_and_hms(2026, 11, 1, 8, 0, 0)
+        .single()
+        .unwrap();
+    assert_eq!(
+        crate::usage_store::month_start_unix_secs(first_day),
+        Some(expected)
+    );
 }
 
 /// 边界日不部分 rollup（回归锁）：cutoff 未按 UTC 日界对齐时，
@@ -609,7 +713,7 @@ fn retention_sweep_boundary_day_not_partially_rolled_up() {
             .unwrap();
     }
 
-    let deleted = store.retention_sweep(Some(1), None).expect("sweep");
+    let deleted = store.retention_sweep(Some(1), None, None).expect("sweep");
     assert_eq!(
         deleted, 2,
         "只有前日 2 行被 rollup+删除；边界日与近期行不动（旧行为 cutoff 未对齐时 UTC 时间 > 01:00 会误删边界日行）"
@@ -806,7 +910,9 @@ fn retention_sweep_trim_rows_are_rolled_up_before_delete() {
         }
         store.insert_request_log(&log).unwrap();
     }
-    let deleted = store.retention_sweep(None, Some(1)).expect("trim sweep");
+    let deleted = store
+        .retention_sweep(None, Some(1), None)
+        .expect("trim sweep");
     assert_eq!(deleted, 3, "cap=1：4 行裁掉最旧 3 行");
     let (_, total) = store
         .query_logs(0, now + 86400, 1, 10, &LogFilter::default())
@@ -851,14 +957,18 @@ fn retention_sweep_multi_batch_rollups_accumulate() {
         log.latency_ms = 100;
         store.insert_request_log(&log).unwrap();
     }
-    let d1 = store.retention_sweep(None, Some(1)).expect("batch 1 trim");
+    let d1 = store
+        .retention_sweep(None, Some(1), None)
+        .expect("batch 1 trim");
     assert_eq!(d1, 2, "批 1 裁掉最旧 2 行");
     // 批 2：插 1 行 input=50 / latency=300，比批 1 保留行更旧 → cap=1 时被裁。
     let mut b = w4_log("m/a", now - 70, "s", 200);
     b.input_tokens = 50;
     b.latency_ms = 300;
     store.insert_request_log(&b).unwrap();
-    let d2 = store.retention_sweep(None, Some(1)).expect("batch 2 trim");
+    let d2 = store
+        .retention_sweep(None, Some(1), None)
+        .expect("batch 2 trim");
     assert_eq!(d2, 1, "批 2 裁掉更旧的 b 行");
 
     // 加法合并守恒：input 100+100 + 50 = 250；success 3；
@@ -889,7 +999,7 @@ fn retention_sweep_multi_batch_rollups_accumulate() {
 #[test]
 fn r735_retention_sweep_i64_max_no_overflow() {
     let (store, path) = open_store("r735_retention");
-    let r = store.retention_sweep(Some(i64::MAX), None);
+    let r = store.retention_sweep(Some(i64::MAX), None, None);
     assert!(r.is_ok(), "got: {:?}", r);
     let _ = std::fs::remove_file(path);
 }

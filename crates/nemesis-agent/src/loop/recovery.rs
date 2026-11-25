@@ -218,6 +218,11 @@ impl AgentLoop {
                     // error_history_content），防 flag 文本成为后续轮次的
                     // 连带触发物。
                     Some(nemesis_utils::llm_error_class::LlmErrorClass::Forbidden) => {
+                        // 会话级封禁分支（2026-11-24 用户事故批）：封的是
+                        // 上游会话身份不是请求——删除本轮/重发/改内容都解
+                        // 不开，用户面提示直接给可行动出路（换会话身份），
+                        // 避免死会话里反复删轮重试。普通 403 文案维持不变。
+                        let hint = forbidden_user_hint(&err);
                         return Err(self
                             .finish_llm_error_no_retry(
                                 instance,
@@ -226,7 +231,7 @@ impl AgentLoop {
                                 turns_used,
                                 round_start,
                                 err,
-                                "上游拒绝访问（403）：多为内容风控/权限/区域限制，重试无意义，已停止重试",
+                                hint,
                                 request_had_images,
                             )
                             .await);
@@ -1669,4 +1674,17 @@ fn append_vision_fallback_hint(err_text: String, request_had_images: bool) -> St
          设置 \"vision\": \"no\" 后重试。]",
         err_text
     )
+}
+
+/// Forbidden 类错误的用户面提示选择（2026-11-24 用户事故批）。会话级
+/// 封禁（[`nemesis_utils::llm_error_class::is_session_scoped_block`] 命中
+/// ）与普通 403 必须区分：前者封的是上游会话身份——删除本轮/重发/改
+/// 内容都解不开，提示直接给可行动出路（换会话身份）；后者换内容可解。
+/// 词表黑名单制非穷举，单一真相源在 [`nemesis_utils::llm_error_class`]。
+pub(crate) fn forbidden_user_hint(err: &str) -> &'static str {
+    if nemesis_utils::llm_error_class::is_session_scoped_block(err) {
+        "上游拒绝访问（403）：该会话已被上游安全策略封禁（会话级），删除本轮或重发都无法解除，请新建会话（或清空当前会话）后继续"
+    } else {
+        "上游拒绝访问（403）：多为内容风控/权限/区域限制，重试无意义，已停止重试"
+    }
 }

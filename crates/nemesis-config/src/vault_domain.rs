@@ -74,7 +74,15 @@ impl VaultDomainConfig {
         // 读取统一走 BOM 剥离 helper。
         let raw = nemesis_utils::fsutil::read_config_string(path)
             .map_err(|e| format!("绑定配置读取失败（{}）: {e}", path.display()))?;
-        let cfg: VaultDomainConfig = serde_json::from_str(&raw)
+        // 形状闸前置（`ensure_object`，BUG-20261125-008）：VaultDomainConfig
+        // 全字段 default 无 flatten，`[]` 曾走 serde visit_seq 零元素臂 =
+        // 静默 Ok(Some(空))——绕开文档化「损坏 → Err → 调用方 WARN +
+        // fail-secure」路径（免卡松弛全部静默失效零诊断）。
+        let value: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("绑定配置解析失败（{}）: {e}", path.display()))?;
+        nemesis_utils::json_shape::ensure_object(&value, "config.vault.json")
+            .map_err(|e| format!("绑定配置形状非法（{}）: {e}", path.display()))?;
+        let cfg: VaultDomainConfig = serde_json::from_value(value)
             .map_err(|e| format!("绑定配置解析失败（{}）: {e}", path.display()))?;
         Ok(Some(cfg))
     }

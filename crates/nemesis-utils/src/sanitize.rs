@@ -222,39 +222,57 @@ pub fn escape_like(needle: &str) -> String {
 }
 
 /// 闭合标签逃逸（ASCII 大小写折叠）：content 中出现 `</{tag}>`（**大小写
-/// 不敏感**）→ 在 `<` 后插 `\` 变成 `<\/{tag}>`，防外部/仓库可控内容伪造
-/// 闭合标签提前逃出标记区（模型解析 HTML 形标记时大小写变体同样构成
-/// 闭合——untrusted_content 防御的同款结论，此处提升为跨面统一定义）。
+/// 不敏感**；标签名与 `>` 之间允许 ASCII 空白 run，如 `</{tag} >`）→ 在
+/// `<` 后插 `\` 变成 `<\/{tag}>`，防外部/仓库可控内容伪造闭合标签提前逃出
+/// 标记区（模型解析 HTML 形标记时大小写变体同样构成闭合——untrusted_content
+/// 防御的同款结论，此处提升为跨面统一定义；BUG-20261125-007：`>` 前空白
+/// 变体同理——HTML 规范中标签名与 `>` 之间的空白合法（token 仍是 end tag），
+/// 宽松解析器与真实闭合无差别，只挡精确形态 = 同族严谨度缺口）。
 ///
 /// 逐字节 ASCII 大小写折叠比对——不用 `to_lowercase()`：全 Unicode 小写
 /// 映射会改变字节长度（如 İ → i̇ 展开为两字节），破坏与原串的偏移对齐。
-/// 匹配起点/终点恒为 ASCII 字节（`<`/`>`），切片安全；保留原始大小写
-/// 形态（只插转义符，不改写内容本身）。
+/// 匹配起点/终点恒为 ASCII 字节（`<`/`>`/ASCII 空白），切片安全；保留原始
+/// 形态（只插转义符，不改写内容本身）。已逃逸形态（`<\/{tag}>`）的 `\`
+/// 使头部 `</` 不成立，双层逃逸不会叠加。
+///
+/// 诚实边界：`</{tag} attr>` 形态（名字与 `>` 之间夹非空白属性文本）不转义
+/// ——HTML tokenzier 对带属性的 end tag 是 parse-error 但仍识别，LLM 感知
+/// 则有歧义（多了可见文本，不再与真实闭合视觉无差别）；本函数只挡「与真实
+/// 闭合视觉无差别」的形态（精确 + 纯空白变体）。`</ {tag}>`（`/` 与名字间
+/// 空白）在 HTML 是 bogus comment 非标签，不转义。
 ///
 /// 消费方：nemesis-agent chat_guard（`</untrusted_content>`）与
 /// workspace_instructions / 合并 system-reminder 帧（`</system-reminder>`）
 /// 同源共用（单一真相源，防严谨度漂移——BUG-20261123-006 口径）。
 pub fn escape_closing_tag(content: &str, tag: &str) -> String {
-    let needle = format!("</{tag}>");
-    let needle_bytes = needle.as_bytes();
+    // 匹配头 = `</{tag}`（大小写不敏感）；命中后扫 ASCII 空白 run，必须
+    // 以 `>` 收口才算闭合形态（零宽空白 = 精确形态）。
+    let head = format!("</{tag}");
+    let head_bytes = head.as_bytes();
     let bytes = content.as_bytes();
     let mut out = String::with_capacity(content.len());
     let mut i = 0;
     let mut copied = 0;
-    while i + needle_bytes.len() <= bytes.len() {
-        if bytes[i..i + needle_bytes.len()]
+    while i + head_bytes.len() <= bytes.len() {
+        if bytes[i..i + head_bytes.len()]
             .iter()
-            .zip(needle_bytes)
+            .zip(head_bytes)
             .all(|(a, b)| a.eq_ignore_ascii_case(b))
         {
-            out.push_str(&content[copied..i]);
-            out.push_str("<\\");
-            out.push_str(&content[i + 1..i + needle_bytes.len()]);
-            i += needle_bytes.len();
-            copied = i;
-        } else {
-            i += 1;
+            let mut j = i + head_bytes.len();
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'>' {
+                out.push_str(&content[copied..i]);
+                out.push_str("<\\");
+                out.push_str(&content[i + 1..j + 1]);
+                i = j + 1;
+                copied = i;
+                continue;
+            }
         }
+        i += 1;
     }
     out.push_str(&content[copied..]);
     out
