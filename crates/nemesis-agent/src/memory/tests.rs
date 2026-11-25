@@ -218,6 +218,38 @@ fn memory_store_read_write_long_term() {
     assert!(content.contains("Some notes."));
 }
 
+/// BUG-20261125-079 回归锁：非 NotFound 读错误必须诚实降级——不 panic、
+/// 返回空串（行为兼容），且与「文件不存在=没记忆」语义可区分（WARN 留痕
+/// 在日志层，此处断言降级面）。把 memory/ 目录位置替换成普通文件：
+/// 其下所有读路径（MEMORY.md / 今日笔记）的父级都是文件，读错误为非
+/// NotFound 形态（Windows=路径无效 / Unix=NotADirectory），跨平台稳定
+/// 命中 WARN 分支。
+#[test]
+fn memory_store_read_graceful_on_non_notfound_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    // memory 位置 = 普通文件（MemoryStore::new 不建目录时才不会覆盖；
+    // 若 new 会 mkdir 则改为先 new 后替换）。
+    let store = MemoryStore::new(ws.to_str().unwrap());
+    let mem_dir = store.memory_dir().to_path_buf();
+    // new() 可能已把 memory/ 建成目录——删掉后重建为文件。
+    if mem_dir.is_dir() {
+        std::fs::remove_dir(&mem_dir).unwrap();
+    } else if mem_dir.is_file() {
+        std::fs::remove_file(&mem_dir).unwrap();
+    }
+    std::fs::write(&mem_dir, b"not a directory").unwrap();
+
+    let long_term = store.read_long_term();
+    assert_eq!(
+        long_term, "",
+        "非 NotFound 读错误必须按空串诚实降级，不 panic"
+    );
+    let today = store.read_today();
+    assert_eq!(today, "", "同族降级面");
+}
+
 #[test]
 fn memory_store_overwrite_long_term() {
     let tmp = tempfile::tempdir().unwrap();

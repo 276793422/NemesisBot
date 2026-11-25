@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::types::ConversationTurn;
 
@@ -211,8 +211,24 @@ impl MemoryStore {
     /// Read the long-term memory file (`MEMORY.md`).
     ///
     /// Returns an empty string if the file does not exist.
+    ///
+    /// BUG-20261125-079：NotFound（尚未建文件）是合法空串；其他读错误
+    /// （Windows AV/索引器瞬时句柄、权限、盘错误——项目文档明示瞬时句柄
+    /// 是常态）不能与「没有记忆」无痕混淆——WARN 留痕后仍空串返回（行为
+    /// 兼容，可观测性补齐：记忆静默消失至少能在日志里定性）。
     pub fn read_long_term(&self) -> String {
-        fs::read_to_string(&self.memory_file).unwrap_or_default()
+        match fs::read_to_string(&self.memory_file) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                warn!(
+                    "[MemoryStore] MEMORY.md 读取失败（按空记忆降级）: {} ({})",
+                    self.memory_file.display(),
+                    e
+                );
+                String::new()
+            }
+        }
     }
 
     /// Write content to the long-term memory file.
@@ -239,9 +255,23 @@ impl MemoryStore {
     /// Read today's daily note.
     ///
     /// Returns an empty string if the file does not exist.
+    ///
+    /// 同 `read_long_term`（BUG-20261125-079）：非 NotFound 读错误 WARN
+    /// 留痕，不与「今天没写过」无痕混淆。
     pub fn read_today(&self) -> String {
         let path = self.today_file();
-        fs::read_to_string(&path).unwrap_or_default()
+        match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                warn!(
+                    "[MemoryStore] 今日笔记读取失败（按空降级）: {} ({})",
+                    path.display(),
+                    e
+                );
+                String::new()
+            }
+        }
     }
 
     /// Append content to today's daily note.
