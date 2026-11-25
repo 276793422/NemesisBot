@@ -234,17 +234,23 @@ impl RequestLogger {
         }
     }
 
-    /// Create a logger whose session directory carries a fixed prefix
-    /// （压缩杂务隔离， BUG-3：sender_id="summarizer" 的事件改落
-    /// `aux_` 前缀目录，不再伪装成普通对话）。base_dir 派生同 [`Self::new`]
-    /// （resolve_log_path）；目录名 = `{prefix}_{微秒时间戳}`——微秒后缀防
-    /// 同秒碰撞（multipart 连发三次摘要调用是常态）。
-    pub fn new_with_session_prefix(config: LoggingConfig, workspace: &Path, prefix: &str) -> Self {
+    /// Create a logger whose session directory carries a fixed tag suffix
+    /// （压缩杂务隔离， BUG-3：sender_id="summarizer" 的事件不再伪装成
+    /// 普通对话）。base_dir 派生同 [`Self::new`]（resolve_log_path）；
+    /// 目录名 = `{秒.微秒}_{rand}_{tag}`——与常规目录同形（时间戳段可被
+    /// dashboard 解析进时间线），`_aux` 尾缀供前端识别「杂务」分组；
+    /// rand 防同秒碰撞（multipart 连发三次摘要调用是常态）。
+    pub fn new_with_session_suffix(config: LoggingConfig, workspace: &Path, tag: &str) -> Self {
         if !config.enabled {
             return Self::new(config, workspace);
         }
         let base_dir = resolve_log_path(&config.log_dir, workspace);
-        let name = format!("{prefix}_{}", Local::now().format("%Y-%m-%d_%H-%M-%S%.6f"));
+        let name = format!(
+            "{}_{:03x}_{}",
+            Local::now().format("%Y-%m-%d_%H-%M-%S%.6f"),
+            rand_u16(),
+            tag
+        );
         Self {
             config,
             base_dir,
@@ -329,7 +335,9 @@ impl RequestLogger {
         let session_dir_name = match self.session_name_override.as_ref() {
             Some(name) => Self::sanitize_filename(name),
             None => {
-                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                // 微秒进目录名：同秒多次对话不再只靠 3 hex rand 区分，
+                // 且与 aux 目录（new_with_session_suffix）时间线粒度一致。
+                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S%.6f").to_string();
                 let suffix = format!("_{:03x}", rand_u16());
                 format!("{}{}", timestamp, suffix)
             }
@@ -359,13 +367,17 @@ impl RequestLogger {
 
         let index = self.next_index();
         let filename = format!("{}.request.md", index);
+        // 正文包 ```text 围栏：消息本身可能含 markdown 标题（# 开头行），
+        // 裸插会把 00.request.md 自身的分节结构打碎（dashboard
+        // read_md_section 在标题行断节→「用户消息全文」被截）。与
+        // log_llm_request 的 Messages 段同一处理逻辑。
         let content = format!(
             "# User Request\n\n\
              **Timestamp**: {}\n\
              **Channel**: {}\n\
              **Sender ID**: {}\n\
              **Chat ID**: {}\n\n\
-             ## Message\n\n{}\n",
+             ## Message\n\n```text\n{}\n```\n",
             info.timestamp.to_rfc3339(),
             info.channel,
             info.sender_id,
@@ -482,7 +494,12 @@ impl RequestLogger {
                 ));
                 if let Some(ref tool_calls) = msg.tool_calls {
                     for tc in tool_calls {
-                        let args_preview = if tc.arguments.len() > TRUNCATE_ARGS_LIMIT {
+                        // 与上方消息正文同一闸门：只在 truncated 档截断。
+                        // full 档（默认）此前漏了这层守卫，tool_call args
+                        // 被无条件砍到 200 字符——本地记录不能少。
+                        let args_preview = if self.config.detail_level == DetailLevel::Truncated
+                            && tc.arguments.len() > TRUNCATE_ARGS_LIMIT
+                        {
                             utils::truncate(&tc.arguments, TRUNCATE_ARGS_LIMIT)
                         } else {
                             tc.arguments.clone()

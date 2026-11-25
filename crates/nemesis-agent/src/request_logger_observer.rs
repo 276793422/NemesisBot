@@ -189,10 +189,11 @@ impl RequestLoggerObserver {
         // emit_observer_events_around_llm 发出的 observer 事件）此前照常落成
         // `{timestamp}_{rand}` 对话目录——消息与回复皆空、时长秒级，看着像
         // 「bot 在跟谁说话」（BUG-3 4 个空 summarizer 目录
-        // 混进对话档案）。识别该身份改落 aux_ 前缀目录（杂务隔离，一眼可辨；
+        // 混进对话档案）。识别该身份改落 `{秒.微秒}_{rand}_aux` 尾缀目录
+        // （杂务隔离一眼可辨，时间戳段与常规目录同形可进 dashboard 时间线；
         // 内容照常记录不丢证据）。
         let logger = if data.sender_id == "summarizer" {
-            RequestLogger::new_with_session_prefix(self.config.clone(), &self.workspace, "aux")
+            RequestLogger::new_with_session_suffix(self.config.clone(), &self.workspace, "aux")
         } else {
             RequestLogger::new(self.config.clone(), &self.workspace)
         };

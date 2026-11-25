@@ -795,14 +795,20 @@ pub(crate) fn extract_md_header(content: &str, key: &str) -> Option<String> {
 }
 
 /// Read the content between `## {header}` and the next `#`-prefixed line.
+/// ``` 围栏内的行不算节边界——消息正文可能含 markdown 标题行（新写盘形态
+/// 把正文包进 ```text 围栏；旧文件靠这里的围栏态跟踪少截，正文自身含
+/// 三反引号时会失步，属诚实边界）。
 pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
     let prefix = format!("## {}", header);
     let mut in_section = false;
+    let mut in_fence = false;
     let mut out = String::new();
     for line in content.lines() {
         let trimmed = line.trim();
         if in_section {
-            if trimmed.starts_with('#') {
+            if trimmed.starts_with("```") {
+                in_fence = !in_fence;
+            } else if !in_fence && trimmed.starts_with('#') {
                 break;
             }
             out.push_str(line);
@@ -814,27 +820,51 @@ pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// Pull the first user message under `## Message` (truncated to 200 chars).
+/// Strip the ```text / ``` fence lines produced by the writers.
+fn strip_md_fence_lines(body: &str) -> String {
+    body.lines()
+        .filter(|l| !l.trim_start().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Pull the first user message under `## Message`（列表行预览：上限 2000
+/// 字符，超出裁断并附全文字符量注记——本地记录不少的是落盘与详情页
+/// fullMessage，列表预览保留可读上限即可）。
 pub(crate) fn extract_md_first_message(content: &str) -> String {
-    let body = read_md_section(content, "Message").unwrap_or_default();
+    let body = strip_md_fence_lines(&read_md_section(content, "Message").unwrap_or_default());
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return String::new();
     }
-    let limit = 200.min(trimmed.chars().count());
+    let limit = 2000;
+    let total = trimmed.chars().count();
+    if total <= limit {
+        return trimmed.to_string();
+    }
     let end = trimmed
         .char_indices()
         .nth(limit)
         .map(|(i, _)| i)
         .unwrap_or(trimmed.len());
-    trimmed[..end].to_string()
+    format!("{}…（全文共 {} 字符，见详情）", &trimmed[..end], total)
+}
+
+/// 用户消息全文（不截断）：request_detail 的 fullMessage 字段。
+pub(crate) fn extract_md_message_full(content: &str) -> String {
+    let body = strip_md_fence_lines(&read_md_section(content, "Message").unwrap_or_default());
+    body.trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
 // Filename helpers
 // ---------------------------------------------------------------------------
 
-/// Parse a request_logs dir name `{YYYY-MM-DD_HH-MM-SS}_{rand}` into (timestamp, suffix).
+/// Parse a request_logs dir name `{YYYY-MM-DD_HH-MM-SS[.微秒]}_{rand}[_aux]`
+/// into (timestamp, suffix)。微秒形态与 `_aux` 尾缀（压缩杂务目录，
+/// request_logger `new_with_session_suffix`）都接受——时间戳段同形可进
+/// 时间线排序，尾缀由调用方以 `name.ends_with("_aux")` 识别打「杂务」
+/// 徽标。旧 `aux_` 前缀目录 parse 不通过=保持不可见（不迁移）。
 pub(crate) fn parse_request_dir_name(name: &str) -> Option<(String, String)> {
     // 防穿越前置闸（BUG-20261123-033）：本函数的返回值会被调用方拿去
     // `request_log_dir(workspace).join(name)`（logs.replay 的 request_id 是
@@ -842,14 +872,16 @@ pub(crate) fn parse_request_dir_name(name: &str) -> Option<(String, String)> {
     // suffix 段此前完全放行——`"2026-01-01_00-00-00_../../x"` 会以 index
     // 19 的 `_` 分割让 ts 段 parse 成功、`../../x` 原样回传，join 后相对
     // 组件逃出 request_logs 目录。合法目录名由 request_logger 生成
-    // （`ts_{:03x}` 十六进制后缀 / sanitize 后的 `{prefix}_{微秒ts}`），永
-    // 不含路径分隔符与 `..`，这里拒绝不影响任何合法形态。
+    // （`ts[.微秒]_{:03x}[_aux]` 十六进制 rand + 固定尾缀），永不含路径
+    // 分隔符与 `..`，这里拒绝不影响任何合法形态。
     if name.contains('/') || name.contains('\\') || name.contains("..") {
         return None;
     }
     for split_pos in name.rmatch_indices('_').map(|(i, _)| i) {
         let candidate = &name[..split_pos];
-        if NaiveDateTime::parse_from_str(candidate, "%Y-%m-%d_%H-%M-%S").is_ok() {
+        let ok_micros = NaiveDateTime::parse_from_str(candidate, "%Y-%m-%d_%H-%M-%S%.6f").is_ok();
+        let ok_plain = NaiveDateTime::parse_from_str(candidate, "%Y-%m-%d_%H-%M-%S").is_ok();
+        if ok_micros || ok_plain {
             return Some((candidate.to_string(), name[split_pos + 1..].to_string()));
         }
     }
@@ -1088,10 +1120,13 @@ impl LogsHandler {
                 Some(n) => n,
                 None => continue,
             };
-            let Some((ts, suffix)) = parse_request_dir_name(name) else {
+            let Some((ts, _suffix)) = parse_request_dir_name(name) else {
                 continue;
             };
-            let entry = build_request_entry(sub, name, &ts, &suffix);
+            // `{秒.微秒}_{rand}_aux` 尾缀 = 压缩杂务目录，前端据 isAux
+            // 打「杂务」徽标；旧 aux_ 前缀目录 parse 不通过保持不可见。
+            let is_aux = name.ends_with("_aux");
+            let entry = build_request_entry(sub, name, &ts, is_aux);
             entries.push(entry);
         }
 
@@ -1119,13 +1154,25 @@ impl LogsHandler {
         }
 
         let name = id.to_string();
-        let (ts, suffix) = parse_request_dir_name(&name).unwrap_or((String::new(), String::new()));
-        let mut entry = build_request_entry(&dir, &name, &ts, &suffix);
+        let (ts, _suffix) = parse_request_dir_name(&name).unwrap_or((String::new(), String::new()));
+        let is_aux = name.ends_with("_aux");
+        let mut entry = build_request_entry(&dir, &name, &ts, is_aux);
 
         let iterations = parse_request_iterations(&dir);
         entry
             .as_object_mut()
             .map(|m| m.insert("iterations".into(), iterations));
+        // 用户消息全文（不截断）：00.request.md Message 段原样回传——列表
+        // firstMessage 是 2000 字符预览，全文在详情页独立成节。
+        let full_message = std::fs::read_to_string(dir.join("00.request.md"))
+            .map(|c| extract_md_message_full(&c))
+            .unwrap_or_default();
+        entry.as_object_mut().map(|m| {
+            m.insert(
+                "fullMessage".into(),
+                serde_json::Value::String(full_message),
+            )
+        });
         Ok(Some(entry))
     }
 
@@ -2128,7 +2175,7 @@ fn spill_retention_days() -> u64 {
 // ---------------------------------------------------------------------------
 
 /// Build a top-level LlmRequestEntry summary from a request_logs/{ts}_{rand}/ dir.
-fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_json::Value {
+fn build_request_entry(dir: &Path, id: &str, ts: &str, is_aux: bool) -> serde_json::Value {
     let files = sorted_files(dir);
 
     let mut model = String::new();
@@ -2223,6 +2270,7 @@ fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_j
         "toolCallCount": total_tool_calls,
         "messageCount": message_count,
         "firstMessage": first_message,
+        "isAux": is_aux,
         "iterations": [],
     })
 }

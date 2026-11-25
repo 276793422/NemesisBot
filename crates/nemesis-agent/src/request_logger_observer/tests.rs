@@ -849,11 +849,11 @@ fn llm_response_skips_tool_calls_without_name() {
 }
 
 /// 压缩杂务目录隔离（BUG-3）回归锁：sender_id="summarizer"
-/// 的 observer 事件落 aux_ 前缀会话目录（此前照常落 `{timestamp}_{rand}`
-/// 对话目录——空消息空回复看着像「bot 在跟谁说话」）；普通用户对话照旧
-/// 默认命名不受影响。
+/// 的 observer 事件落 `{秒.微秒}_{rand}_aux` 尾缀会话目录（此前照常落
+/// `{timestamp}_{rand}` 对话目录——空消息空回复看着像「bot 在跟谁说话」）；
+/// 普通用户对话照旧默认命名（带微秒、不带 _aux 尾缀）不受影响。
 #[test]
-fn summarizer_events_land_in_aux_prefixed_dir() {
+fn summarizer_events_land_in_aux_tagged_dir() {
     let tmp = TempDir::new().unwrap();
     let observer = RequestLoggerObserver::new(test_config(), tmp.path());
 
@@ -871,11 +871,11 @@ fn summarizer_events_land_in_aux_prefixed_dir() {
         .collect();
     assert_eq!(entries.len(), 1, "恰一个会话目录: {entries:?}");
     assert!(
-        entries[0].starts_with("aux_"),
-        "summarizer 会话目录应带 aux_ 前缀: {entries:?}"
+        entries[0].ends_with("_aux"),
+        "summarizer 会话目录应带 _aux 尾缀: {entries:?}"
     );
 
-    // 对照：普通用户对话照旧默认命名（不带前缀）。
+    // 对照：普通用户对话照旧默认命名（时间戳段带微秒、不带 _aux 尾缀）。
     let tmp2 = TempDir::new().unwrap();
     let observer2 = RequestLoggerObserver::new(test_config(), tmp2.path());
     observer2.on_event(&make_start_event("user-trace", "hello"));
@@ -887,7 +887,12 @@ fn summarizer_events_land_in_aux_prefixed_dir() {
         .collect();
     assert_eq!(entries2.len(), 1, "恰一个会话目录: {entries2:?}");
     assert!(
-        !entries2[0].starts_with("aux_"),
+        !entries2[0].ends_with("_aux"),
         "普通对话不受影响: {entries2:?}"
+    );
+    let ts_part = entries2[0].split('_').nth(1).unwrap_or_default();
+    assert!(
+        ts_part.contains('.'),
+        "常规目录时间戳段应带微秒: {entries2:?}"
     );
 }
