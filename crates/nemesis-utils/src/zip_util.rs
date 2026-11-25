@@ -213,11 +213,17 @@ fn is_windows_reserved_stem(comp: &str) -> bool {
 /// 前缀 `_`），供「内容必须照收不能拒绝」的位点（scanner 扫描提取）
 /// 使用：拒绝/跳过会给恶意归档留「坏名字条目逃过扫描」的口子，净化
 /// 落盘名则内容照扫、不进 ADS、不静默缺件。
+///
+/// SAN-05 豁免（行内锚 `SAN-05-EXEMPT`，登记于
+/// `scripts/check-sanitize-discipline.sh` 头部）：本函数是净化器本体，
+/// 黑名单制映射系**有意分歧**——只 `:`→`_`、保留非 ASCII/空格；真相源
+/// `sanitize_path_segment` 白名单制会把非 ASCII 条目名整体映射成 `_`，
+/// 破坏「内容照收照扫」契约（与 D-5 episodic blacklist 形态同类）。
 pub fn sanitize_windows_entry_name(rel: &Path) -> PathBuf {
     rel.components()
         .map(|c| match c {
             std::path::Component::Normal(os) => {
-                let s = os.to_string_lossy().replace(':', "_");
+                let s = os.to_string_lossy().replace(':', "_"); // SAN-05-EXEMPT
                 if is_windows_reserved_stem(&s) {
                     PathBuf::from(format!("_{s}"))
                 } else {
