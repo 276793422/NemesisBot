@@ -299,7 +299,7 @@ describe('BrowserPickPanel（ChatPanel 点名面板）', () => {
     expect(w.findAll('.browserpick-row')).toHaveLength(0)
   })
 
-  it('无实例空态提供打开按钮 → browser.spawn', async () => {
+  it('无实例空态提供打开按钮 → browser.spawn；空态不渲染 footer（避免双按钮）', async () => {
     setActivePinia(createPinia())
     useBrowserPanel().setOpen(true)
     wsapiRequest.mockImplementation(async (_m: string, cmd: string) =>
@@ -309,8 +309,54 @@ describe('BrowserPickPanel（ChatPanel 点名面板）', () => {
     await flushPromises()
     const btn = w.find('.browserpick-empty button')
     expect(btn.exists()).toBe(true)
+    // 批 A：footer 常驻按钮仅非空态渲染——空态有自己的居中 CTA。
+    expect(w.find('[data-test="browser-pick-open"]').exists()).toBe(false)
     await btn.trigger('click')
     await flushPromises()
     expect(wsapiRequest.mock.calls.some((c) => c[1] === 'spawn')).toBe(true)
+  })
+
+  it('批 A：非空态 footer 常驻「打开浏览器」→ browser.spawn（死实例在场也可见——旧实现按钮只在空态，死会话不清册 = 永无入口）', async () => {
+    setActivePinia(createPinia())
+    useBrowserPanel().setOpen(true)
+    wsapiRequest.mockImplementation(async (_m: string, cmd: string, data?: any) =>
+      cmd === 'sessions'
+        ? { sessions: [sessionSummary({ alive: false })] }
+        : cmd === 'spawn'
+          ? { session: sessionSummary({ id: 's2', seq: 2, alive: true }) }
+          : { session_id: data?.session_id },
+    )
+    const w = mount(BrowserPickPanel, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+    // 死实例在场 → 旧实现此形态下无任何启动入口。
+    const btn = w.find('[data-test="browser-pick-open"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('disabled')).toBeUndefined()
+    await btn.trigger('click')
+    await flushPromises()
+    const spawnCall = wsapiRequest.mock.calls.find((c) => c[1] === 'spawn')
+    expect(spawnCall).toEqual(['browser', 'spawn', {}])
+  })
+
+  it('批 B：死实例卡「重新打开」→ spawn 带同 kind', async () => {
+    setActivePinia(createPinia())
+    useBrowserPanel().setOpen(true)
+    wsapiRequest.mockImplementation(async (_m: string, cmd: string, data?: any) =>
+      cmd === 'sessions'
+        ? { sessions: [sessionSummary({ alive: false, kind: 'edge', kind_name: 'Microsoft Edge' })] }
+        : cmd === 'spawn'
+          ? { session: sessionSummary({ id: 's2', seq: 2, alive: true }) }
+          : { session_id: data?.session_id },
+    )
+    const w = mount(BrowserPickPanel, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+    expect(w.text()).toContain('浏览器已退出')
+    const btn = w.find('[data-test="browser-pick-reopen"]')
+    expect(btn.exists()).toBe(true)
+    await btn.trigger('click')
+    await flushPromises()
+    // 同 kind 重开（F16 闸在后端兜底防同 kind 活体重复）。
+    const spawnCall = wsapiRequest.mock.calls.find((c) => c[1] === 'spawn')
+    expect(spawnCall).toEqual(['browser', 'spawn', { kind: 'edge' }])
   })
 })

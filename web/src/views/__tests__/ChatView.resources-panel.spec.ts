@@ -5,6 +5,9 @@ import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 
 // ChatView 资源看板壳层交互（2026-11-19 改造回归锁）：
 // - 滞后带双阈值：≥1284 判宽 / <1180 判窄 / 带间保持原值（拖动防抖）；
+//   首屏例外（2026-11-25 挤压修复）：无历史态可「保持」，带间宽度按
+//   OPEN_AT 硬判——否则宽判定初值 true 把 1180~1283 误判成宽屏走并排，
+//   行内无缩窄保护的点名面板列被挤成 0 宽（1440 视口实录）；
 // - 边缘触发自动开：窄→宽穿越那一刻开一次；用户手动收起后不再自动开
 //   （意志优先；复位资格 = 手动开，但无自动关场景下不可观测，不单测）；
 // - 首屏窄窗口静默收起（不写偏好、不算手动关）——抽屉不盖首屏对话列；
@@ -25,9 +28,19 @@ class FakeRO {
   }
   observe(el: HTMLElement) {
     FakeRO.observed.push(el)
+    // 首帧宽度注入队列（2026-11-25 挤压修复集成锁）：jsdom clientWidth 恒 0，
+    // 挂载直调的首屏判宽只能见到 0（恒窄）；生产首屏读到的是真实布局宽。
+    // 预置宽度 = observe 时写入并同步触发首帧回调（真实 RO observe 后也会
+    // 派发首帧），让「首屏即带间宽度」这条修复路径可测。
+    const w = FakeRO.firstWidths.pop()
+    if (w !== undefined) {
+      Object.defineProperty(el, 'clientWidth', { value: w, configurable: true })
+      this.cb([] as any, this as any)
+    }
   }
   disconnect() {}
   static observed: HTMLElement[] = []
+  static firstWidths: number[] = []
 }
 
 const requestMock = vi.fn()
@@ -58,7 +71,7 @@ vi.mock('vue-router', () => ({
 }))
 
 import ChatView from '../ChatView.vue'
-import { RESOURCES_PANEL_CTL } from '../../composables/useResourcesPanel'
+import { RESOURCES_PANEL_CTL, resolveResourcesWide } from '../../composables/useResourcesPanel'
 import { useSessionStore } from '../../stores/session'
 
 // 注入消费桩：模拟 ChatPanel 的资源窗开关按钮（提案 C 接线验证对象，
@@ -101,6 +114,7 @@ beforeEach(() => {
   void useSessionStore().fetchList?.()
   roInstances.length = 0
   FakeRO.observed.length = 0
+  FakeRO.firstWidths.length = 0
   vi.stubGlobal('ResizeObserver', FakeRO)
 })
 
@@ -183,6 +197,41 @@ describe('ChatView 资源看板 · 滞后带与自动开', () => {
     await flushPromises()
     expect(w.find('.chat-resources-panel').exists()).toBe(true)
     expect(w.find('.chat-resources-panel').classes()).not.toContain('chat-resources-overlay')
+    w.unmount()
+  })
+})
+
+describe('ChatView 资源看板 · 首屏带间硬判（2026-11-25 挤压修复回归锁）', () => {
+  it('resolveResourcesWide：首屏带间宽度按并排下限硬判，不保持初值 true', () => {
+    // 1200 落带间 [1180, 1284)（1440 视口可用宽实录）：首屏 → 窄，
+    // 走 overlay 不并排——并排挤压无保护列（点名面板 0 宽）的根修点。
+    expect(resolveResourcesWide(1200, true, true)).toBe(false)
+    expect(resolveResourcesWide(1180, true, true)).toBe(false)
+    expect(resolveResourcesWide(1283, true, true)).toBe(false)
+    // 阈值两侧语义不变：<CLOSE_AT 窄 / ≥OPEN_AT 宽。
+    expect(resolveResourcesWide(1000, true, true)).toBe(false)
+    expect(resolveResourcesWide(1300, true, true)).toBe(true)
+  })
+
+  it('resolveResourcesWide：非首屏滞后带行为不变（≥1284 宽 / <1180 窄 / 带间保持）', () => {
+    expect(resolveResourcesWide(1300, false, false)).toBe(true)
+    expect(resolveResourcesWide(1100, false, false)).toBe(false)
+    expect(resolveResourcesWide(1200, true, false)).toBe(true)
+    expect(resolveResourcesWide(1200, false, false)).toBe(false)
+  })
+
+  it('首屏即带间宽度（1440 视口实录形态）：默认展开态被静默收起，拖宽穿越照常自动开', async () => {
+    FakeRO.firstWidths.push(1200) // observe 首帧即带间宽（生产 = 真实布局宽）
+    const w = mountView(InjectConsumer)
+    await flushPromises()
+    // 首屏硬判窄 → 默认展开态静默收起（不写偏好、不算手动关）。
+    expect(w.find('.chat-resources-panel').exists()).toBe(false)
+    expect(localStorage.getItem('nb_resources_panel')).toBe(null)
+    // 之后拖宽穿越 OPEN_AT → 边缘触发自动开照常（滞后带语义未伤）。
+    setLayoutWidth(1300)
+    await flushPromises()
+    expect(w.find('.chat-resources-panel').exists()).toBe(true)
+    expect(localStorage.getItem('nb_resources_panel')).toBe('1')
     w.unmount()
   })
 })
