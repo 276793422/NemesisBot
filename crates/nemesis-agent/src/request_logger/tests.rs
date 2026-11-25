@@ -1101,3 +1101,106 @@ fn log_llm_response_hostile_usage_no_panic() {
         md
     );
 }
+
+/// 自适应围栏长度（BUG-20261125-064 写端半）：围栏 = 正文最长纯反引号行 +1
+/// （无候选 = 4）。````abc 形态（反引号后非空白）不是合法闭栏候选，不推长。
+#[test]
+fn md_fence_len_adapts_to_content_backtick_lines() {
+    assert_eq!(md_fence_len(""), 4);
+    assert_eq!(md_fence_len("plain text"), 4);
+    assert_eq!(md_fence_len("a\n```rust\ncode\n```\nb"), 4);
+    assert_eq!(md_fence_len("x\n````\n裸四反引号\n"), 5);
+    assert_eq!(md_fence_len("````abc"), 4);
+    assert_eq!(md_fence_len("`````   \n"), 6);
+    assert_eq!(md_fence_len("``\n```` \n```\n"), 5);
+}
+
+/// 用户正文贴 4+ 反引号行（复制粘贴本系统日志片段回聊即触发）时定长 4
+/// 反引号围栏被正文闭栏失步——自适应围栏取 5，正文逐字保留、边界收得住。
+#[test]
+fn log_user_request_adaptive_fence_never_desyncs_hostile_content() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    let hostile = "# 内嵌标题\n```rust\nfn x() {}\n```\n\n````\n裸四反引号行\n````text\ninfo串\n";
+    logger.log_user_request(&UserRequestInfo {
+        timestamp: Local::now(),
+        channel: "web".to_string(),
+        sender_id: "u1".to_string(),
+        chat_id: "c1".to_string(),
+        content: hostile.to_string(),
+    });
+
+    let dir = logger.session_dir().unwrap();
+    let req = find_file_containing(&dir, ".request.md");
+    let content = fs::read_to_string(req).unwrap();
+    // 正文最长候选 = 裸 ```` 与 ````text（run 4）→ 围栏 5。
+    assert!(content.contains("## Message\n\n`````text\n"));
+    assert!(content.contains("\n`````\n"), "闭栏行必须 5 反引号");
+    for needle in ["# 内嵌标题", "```rust", "````", "````text", "info串"] {
+        assert!(content.contains(needle), "正文必须逐字落盘: {needle}");
+    }
+    // 无反引号候选的普通正文回退 4 反引号基线。
+    let logger2 = RequestLogger::new(test_config(), tmp.path());
+    logger2.create_session().unwrap();
+    logger2.log_user_request(&UserRequestInfo {
+        timestamp: Local::now(),
+        channel: "web".to_string(),
+        sender_id: "u1".to_string(),
+        chat_id: "c2".to_string(),
+        content: "普通消息 ``` 代码块\n# 内嵌标题\n".to_string(),
+    });
+    let req2 = find_file_containing(&logger2.session_dir().unwrap(), ".request.md");
+    let content2 = fs::read_to_string(req2).unwrap();
+    assert!(content2.contains("## Message\n\n````text\n"));
+    assert!(content2.contains("\n````\n"));
+}
+
+/// Messages 段（会话史：系统提示/工具输出含任意反引号行是常态）与 HTTP
+/// Headers 段同族横扫：裸三反引号被正文打碎 → 一并自适应加固。
+#[test]
+fn log_llm_request_messages_and_headers_adaptive_fence() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    use crate::r#loop::LlmMessage;
+
+    let msg = LlmMessage {
+        role: "system".to_string(),
+        content: "# 系统提示标题\n```代码块\n````\n裸四反引号\n".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    };
+    logger.log_llm_request(&LLMRequestInfo {
+        round: 1,
+        timestamp: Local::now(),
+        model: "gpt-4".to_string(),
+        provider_name: "openai".to_string(),
+        api_key: "sk-1234567890abcdef".to_string(),
+        api_base: "https://api.openai.com".to_string(),
+        messages_count: 1,
+        tools_count: 0,
+        messages: vec![msg],
+        http_headers: vec![
+            ("x-normal".to_string(), "v".to_string()),
+            ("x-hostile".to_string(), "line1\n````\nline3".to_string()),
+        ],
+        config: std::collections::HashMap::new(),
+        fallback_attempts: Vec::new(),
+    });
+
+    let dir = logger.session_dir().unwrap();
+    let req = find_file_containing(&dir, "AI.Request.md");
+    let content = fs::read_to_string(req).unwrap();
+    // Messages 段：正文最长候选 run 4 → 围栏 5。
+    assert!(content.contains("## [0] system\n\n`````text\n"));
+    assert!(content.contains("# 系统提示标题"));
+    // Headers 段：header 值含裸 ```` → 围栏 5；正常值原样。
+    assert!(content.contains("## HTTP Headers\n\n`````\n"));
+    assert!(content.contains("x-normal: v\n"));
+    assert!(content.contains("line1\n````\nline3\n"));
+}

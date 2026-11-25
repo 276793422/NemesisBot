@@ -795,21 +795,34 @@ pub(crate) fn extract_md_header(content: &str, key: &str) -> Option<String> {
 }
 
 /// Read the content between `## {header}` and the next `#`-prefixed line.
-/// ```` 围栏（4+ 反引号）内的行不算节边界——消息正文可能含 markdown 标题行
-/// 与 ``` 代码块（新写盘形态把正文包进 ````text 围栏；CommonMark 语义下
-/// 4+ 反引号围栏只能被 4+ 反引号闭合，用户内容里的 ``` 行永不失步）。
-/// 旧文件（无写端围栏）无 4+ 反引号行 → 行为与 historic 一致（'#' 行断节）。
+/// 围栏内的行不算节边界——消息正文可能含 markdown 标题行与反引号行
+/// （写盘形态把正文包进自适应反引号围栏，见 request_logger::md_fence_len）。
+/// 围栏判定按 CommonMark：开栏 = ≥4 反引号开头且 info 串不含反引号；
+/// 闭栏 = ≥开栏长度的纯反引号行（首尾空白可容忍）——正文里的 ````abc /
+/// ``` 行都不闭栏。定长 4 反引号写盘的正文若贴 4+ 反引号行同样按此语义
+/// 正确闭栏（与渲染器一致）。旧文件（无 ≥4 反引号行）→ 行为与 historic
+/// 一致（'#' 行断节）。
 pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
     let prefix = format!("## {}", header);
     let mut in_section = false;
-    let mut in_fence = false;
+    // 开栏围栏的反引号长度（None = 不在围栏内）。
+    let mut fence_open: Option<usize> = None;
     let mut out = String::new();
     for line in content.lines() {
         let trimmed = line.trim();
         if in_section {
-            if trimmed.starts_with("````") {
-                in_fence = !in_fence;
-            } else if !in_fence && trimmed.starts_with('#') {
+            let run = trimmed.chars().take_while(|&c| c == '`').count();
+            if run >= 4 {
+                let rest = &trimmed[run..];
+                if let Some(open) = fence_open {
+                    if run >= open && rest.chars().all(char::is_whitespace) {
+                        fence_open = None; // 闭栏（≥开栏长 + 纯反引号行）
+                    }
+                } else if !rest.contains('`') {
+                    fence_open = Some(run); // 开栏（info 串可有，反引号不可有）
+                }
+            }
+            if fence_open.is_none() && trimmed.starts_with('#') {
                 break;
             }
             out.push_str(line);
@@ -821,8 +834,9 @@ pub(crate) fn read_md_section(content: &str, header: &str) -> Option<String> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// Strip the ````text / ```` fence boundary lines produced by the writers.
-/// 只剥首尾边界行（新文件首行恒 ````text、末行恒 ````）；正文内部的
+/// Strip the adaptive-fence boundary lines produced by the writers.
+/// 只剥首尾边界行（新文件首行恒 ≥4 反引号 + `text`、末行恒纯反引号，
+/// 长度随正文自适应——starts_with("````") 对更长围栏同样命中）；正文内部的
 /// ``` 代码块行是用户内容，原样保留。旧无围栏文件首末非空行是正文
 /// 本身 → 不剥，一字不动。
 fn strip_md_fence_lines(body: &str) -> String {
