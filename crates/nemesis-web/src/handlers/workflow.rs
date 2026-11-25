@@ -270,7 +270,8 @@ pub async fn handle_workflow_executions(
 /// **1c hardening**:
 /// - HMAC-SHA256 signature verification via `X-Signature` header (only
 ///   enforced when the workflow defines a webhook `secret` in its trigger
-///   config; unsigned workflows stay open)
+///   config; unsigned workflows stay open). An empty/blank secret is a
+///   config error → fail-closed 500（空密钥 HMAC 人人可算，签名装饰化）
 /// - Per-IP rate limiting (default 60 req/min — see [`WEBHOOK_RATE_MAX`])
 /// - Audit log emitted for every accepted / rejected call
 /// - Body forwarded to the workflow as `input.payload`
@@ -301,11 +302,19 @@ pub async fn handle_workflow_webhook(
     // Signature: only enforced when the workflow defines a webhook `secret`.
     // Look up workflow → find webhook trigger → read `config.secret`.
     let secret = workflow_webhook_secret(&state, &name).await;
-    if let Some(secret) = secret
-        && let Err(reason) = verify_signature(&headers, body_bytes, secret.as_bytes())
-    {
-        audit_webhook(&state, &name, client_ip, "bad_signature", Some(&reason));
-        return Err(unauthorized(&reason));
+    if let Some(secret) = secret {
+        // Fail-closed：声明了 secret 但为空/空白 = 配置错误——空密钥 HMAC
+        // 人人可算，照常验证会把签名要求装饰化（owner 明示要凭据却零保护、
+        // 零警告）。诚实 500 + audit，与 events webhook 空 watch.token 加载期
+        // 剔除 / chat password set 拒空 / asset secret 强制 32 字节同族纪律。
+        if secret.trim().is_empty() {
+            audit_webhook(&state, &name, client_ip, "empty_secret_config", None);
+            return Err(webhook_secret_config_invalid());
+        }
+        if let Err(reason) = verify_signature(&headers, body_bytes, secret.as_bytes()) {
+            audit_webhook(&state, &name, client_ip, "bad_signature", Some(&reason));
+            return Err(unauthorized(&reason));
+        }
     }
 
     let payload: serde_json::Value =
@@ -333,7 +342,8 @@ pub async fn handle_workflow_webhook(
 ///   GET has no body to HMAC, so a signed workflow can never be triggered
 ///   without credentials — silently ignoring the secret (the old behavior)
 ///   turned the signature requirement into decoration. Callers must switch
-///   to POST + `X-Signature`.
+///   to POST + `X-Signature`. An empty/blank secret is a config error →
+///   fail-closed 500 both methods（空密钥等于公开，不放行不装饰）。
 pub async fn handle_workflow_webhook_get(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
@@ -352,8 +362,14 @@ pub async fn handle_workflow_webhook_get(
         return Err(webhook_target_not_found());
     }
 
-    // Signed workflow → GET is not a valid trigger method.
-    if workflow_webhook_secret(&state, &name).await.is_some() {
+    // Signed workflow → GET is not a valid trigger method. An empty/blank
+    // secret is a config error, not "signed" — fail-closed 500（与 POST
+    // 侧同款闸；空密钥 HMAC 人人可算，任何触发路径都不能放行）。
+    if let Some(secret) = workflow_webhook_secret(&state, &name).await {
+        if secret.trim().is_empty() {
+            audit_webhook(&state, &name, client_ip, "empty_secret_config", None);
+            return Err(webhook_secret_config_invalid());
+        }
         audit_webhook(&state, &name, client_ip, "get_on_signed", None);
         return Err((
             StatusCode::METHOD_NOT_ALLOWED,
@@ -454,6 +470,19 @@ fn webhook_target_not_found() -> (StatusCode, Json<serde_json::Value>) {
         Json(serde_json::json!({
             "error": "workflow_not_found",
             "reason": "no webhook-triggered workflow with this name",
+        })),
+    )
+}
+
+/// 500 shared by both webhook methods for an empty/blank webhook secret —
+/// fail-closed config-error response（签名要求存在但空密钥等于公开，
+/// owner 必须读到明确的修复指引）。
+fn webhook_secret_config_invalid() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "error": "webhook_secret_config_invalid",
+            "reason": "workflow declares a webhook secret but it is empty — set a non-empty secret or remove the field to make the webhook public",
         })),
     )
 }

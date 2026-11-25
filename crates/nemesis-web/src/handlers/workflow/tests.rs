@@ -1786,6 +1786,72 @@ async fn webhook_get_on_signed_workflow_returns_405() {
     assert_eq!(status_post, StatusCode::UNAUTHORIZED);
 }
 
+// fail-closed hardening: a workflow that DECLARES a webhook secret but with
+// an empty/blank value is a config error — HMAC with an empty key is
+// computable by anyone, so verifying against it would turn the signature
+// requirement into decoration (owner thinks they have credentials, attacker
+// reads the docs). Both methods answer 500 (config error), never trigger.
+#[tokio::test]
+async fn webhook_empty_secret_config_fails_closed_both_methods() {
+    let engine = build_test_engine();
+    engine
+        .register_workflow(webhook_workflow("hookempty", Some("")))
+        .unwrap();
+    let state = state_with_engine(engine);
+
+    // POST：空 secret → 500 配置错误（不进 HMAC、不触发）。
+    let (status_post, body_post) = handle_workflow_webhook(
+        axum::extract::State(state.clone()),
+        ConnectInfo(local_addr()),
+        headers_with(Some(&hex(&{
+            // 任何人可算的 HMAC("") —— 修复前这个签名会通过验证。
+            type HmacSha256 = Hmac<Sha256>;
+            let mut mac = HmacSha256::new_from_slice(b"").unwrap();
+            mac.update(b"{}");
+            mac.finalize().into_bytes()
+        }))),
+        Path("hookempty".to_string()),
+        axum::body::Bytes::from_static(b"{}"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status_post, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_post["error"], "webhook_secret_config_invalid");
+
+    // GET：空 secret → 同款 500（不是 405「signed 拒 GET」也不是触发）。
+    let (status_get, body_get) = handle_workflow_webhook_get(
+        axum::extract::State(state),
+        ConnectInfo(local_addr()),
+        Path("hookempty".to_string()),
+        Query(serde_json::json!({ "challenge": "abc" })),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status_get, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body_get["error"], "webhook_secret_config_invalid");
+}
+
+// 空白（非空但 trim 后为空）secret 与空串同罪——同样的装饰化面。
+#[tokio::test]
+async fn webhook_blank_secret_config_fails_closed_post() {
+    let engine = build_test_engine();
+    engine
+        .register_workflow(webhook_workflow("hookblank", Some("   ")))
+        .unwrap();
+    let state = state_with_engine(engine);
+    let (status, body) = handle_workflow_webhook(
+        axum::extract::State(state),
+        ConnectInfo(local_addr()),
+        HeaderMap::new(),
+        Path("hookblank".to_string()),
+        axum::body::Bytes::from_static(b"{}"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"], "webhook_secret_config_invalid");
+}
+
 // hardening: the public webhook URL only reaches workflows
 // that declare a webhook trigger. Manual/cron/event-only workflows — and
 // unknown names — answer the same 404 for both HTTP methods, so the route
