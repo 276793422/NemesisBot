@@ -122,6 +122,33 @@ pub mod priority {
     pub const MEDIUM: i32 = 1;
     pub const HIGH: i32 = 2;
     pub const URGENT: i32 = 3;
+
+    /// 入参 priority 解析**单一真相源**（WSAPI / agent 工具 / autopilot 全
+    /// 创建-更新-过滤路径共用）：提供了就必须是 0-3 整数，越界/非整数
+    /// loud 报错；字段缺席或 null = `None`（缺省语义由调用方决定——建单
+    /// 回落 [`MEDIUM`]、patch 不改、过滤不过滤）。
+    ///
+    /// BUG-20261125-080：此前 WSAPI 位点是裸 `as_i64 → as i32`，超 i32
+    /// 值域的输入（如 2^31）静默截断成负优先级入库（store 层无二次校验
+    /// 直通 DB）；board_issue 工具的同名校验是独立手写副本（漂移风险）。
+    /// 两面统一收拢到本函数。
+    pub fn parse_priority(v: Option<&serde_json::Value>) -> Result<Option<i32>, String> {
+        match v {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(other) => {
+                let n = other
+                    .as_i64()
+                    .ok_or_else(|| "priority must be an integer (0-3)".to_string())?;
+                if n >= LOW as i64 && n <= URGENT as i64 {
+                    Ok(Some(n as i32))
+                } else {
+                    Err(format!(
+                        "priority {n} out of range (0=low 1=medium 2=high 3=urgent)"
+                    ))
+                }
+            }
+        }
+    }
 }
 
 /// 派发记录状态（表 `issue_dispatch.state`； 超时/取消策略在此基础上扩展）。

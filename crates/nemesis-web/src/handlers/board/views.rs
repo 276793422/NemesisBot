@@ -89,9 +89,7 @@ pub(super) fn build_filter(data: &serde_json::Value) -> Result<IssueFilter, Stri
     if let Some(p) = data.get("project_id").and_then(|v| v.as_i64()) {
         filter.project_id = Some(p);
     }
-    if let Some(p) = data.get("priority").and_then(|v| v.as_i64()) {
-        filter.priority = Some(p as i32);
-    }
+    filter.priority = nemesis_board::models::priority::parse_priority(data.get("priority"))?;
     // /+（看板项目档案 goal）：用户面列表默认排除——归档项目子单 /
     // 已取消单 / hidden 单。前端两个页签（列表/看板）同走 issue.list，一处
     // 默认两处生效；显式 `include_*: true` 才放行。hidden 没有放行口
@@ -123,20 +121,17 @@ pub(super) fn reject_nested_patch(data: &serde_json::Value) -> Result<(), String
     Ok(())
 }
 
-pub(super) fn build_patch(data: &serde_json::Value) -> IssuePatch {
-    IssuePatch {
+pub(super) fn build_patch(data: &serde_json::Value) -> Result<IssuePatch, String> {
+    Ok(IssuePatch {
         title: get_opt_str(data, "title"),
         description: get_opt_str(data, "description"),
-        priority: data
-            .get("priority")
-            .and_then(|v| v.as_i64())
-            .map(|p| p as i32),
+        priority: nemesis_board::models::priority::parse_priority(data.get("priority"))?,
         project_id: data.get("project_id").and_then(|v| v.as_i64()),
         due_date: data.get("due_date").and_then(|v| v.as_i64()),
         position: data.get("position").and_then(|v| v.as_i64()),
         acceptance_criteria: get_opt_str(data, "acceptance_criteria"),
         parent_issue_id: data.get("parent_issue_id").and_then(|v| v.as_i64()),
-    }
+    })
 }
 
 /// WSAPI issue 载荷 → NewIssue（pub：agent 工具 `board_issue create` 复用
@@ -145,10 +140,7 @@ pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssu
     let mut ni = NewIssue {
         title: get_str(data, "title")?,
         description: get_opt_str(data, "description").unwrap_or_default(),
-        priority: data
-            .get("priority")
-            .and_then(|v| v.as_i64())
-            .map(|p| p as i32)
+        priority: nemesis_board::models::priority::parse_priority(data.get("priority"))?
             .unwrap_or(nemesis_board::models::priority::MEDIUM),
         creator: actor,
         acceptance_criteria: get_opt_str(data, "acceptance_criteria"),

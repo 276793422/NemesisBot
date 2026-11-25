@@ -13283,3 +13283,37 @@ fn aggregate_needs_human_four_groups() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-20261125-080 回归锁：WSAPI 三入口 priority 越界 loud 拒绝——旧形态
+/// 裸 `as_i64 → as i32` 把 2^31 截断成负优先级入库（store 层无二次校验）。
+#[test]
+fn wsapi_priority_out_of_range_rejected_all_entries() {
+    let bad = serde_json::json!(2147483648i64); // 2^31：截断后 = i32::MIN
+
+    // issue.create（build_new_issue，agent 工具复用同一入口）。
+    let err = build_new_issue(
+        &serde_json::json!({ "title": "t", "priority": bad }),
+        Actor::admin("s"),
+    )
+    .unwrap_err();
+    assert!(err.contains("out of range"), "{err}");
+
+    // issue.update（build_patch）。
+    let err = build_patch(&serde_json::json!({ "id": 1, "priority": bad })).unwrap_err();
+    assert!(err.contains("out of range"), "{err}");
+
+    // issue.list 过滤（build_filter）。
+    let err = build_filter(&serde_json::json!({ "priority": bad })).unwrap_err();
+    assert!(err.contains("out of range"), "{err}");
+
+    // autopilot create/update 同域校验（parse_priority 单一真相源侧已在
+    // nemesis-board models/tests 矩阵钉死，此处只钉 WSAPI 三入口拒收）。
+
+    // 缺省语义不变：缺席/null 照旧回落/透传。
+    let ni = build_new_issue(&serde_json::json!({ "title": "t" }), Actor::admin("s")).unwrap();
+    assert_eq!(ni.priority, nemesis_board::models::priority::MEDIUM);
+    let patch = build_patch(&serde_json::json!({ "id": 1 })).unwrap();
+    assert_eq!(patch.priority, None);
+    let f = build_filter(&serde_json::json!({})).unwrap();
+    assert_eq!(f.priority, None);
+}

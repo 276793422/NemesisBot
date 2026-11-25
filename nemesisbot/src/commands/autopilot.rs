@@ -31,7 +31,7 @@ pub enum AutopilotAction {
         #[arg(long, default_value = "")]
         description: String,
         /// Priority: 0=low 1=medium 2=high 3=urgent
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(i32).range(0..=3))]
         priority: i32,
         /// Project id
         #[arg(long)]
@@ -67,7 +67,7 @@ pub enum AutopilotAction {
         title: Option<String>,
         #[arg(long)]
         description: Option<String>,
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(i32).range(0..=3))]
         priority: Option<i32>,
         #[arg(long)]
         project_id: Option<i64>,
