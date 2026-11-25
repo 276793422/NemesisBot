@@ -985,8 +985,14 @@ impl ClusterHandler {
 
     fn runtime_start(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         // Persist enabled=true to config.cluster.json before starting runtime
-        if let Ok(workspace) = require_workspace(ctx) {
-            let _ = Self::update_cluster_config_enabled(workspace, true);
+        // （best-effort 语义：写盘失败不阻断启动，但必须留痕——否则重启后
+        //   集群状态回跳且零线索）。
+        if let Ok(workspace) = require_workspace(ctx)
+            && let Err(e) = Self::update_cluster_config_enabled(workspace, true)
+        {
+            tracing::warn!(
+                "[Cluster] runtime 启动后 config.cluster.json enabled=true 持久化失败（重启后集群不自启）：{e}"
+            );
         }
         let svc = ctx
             .state
@@ -1005,8 +1011,13 @@ impl ClusterHandler {
             .ok_or("cluster service not available")?;
         svc.stop().map_err(|e| format!("stop failed: {}", e))?;
         // Persist enabled=false to config.cluster.json after stopping
-        if let Ok(workspace) = require_workspace(ctx) {
-            let _ = Self::update_cluster_config_enabled(workspace, false);
+        // （同 runtime_start：best-effort 不阻断，但失败留痕）。
+        if let Ok(workspace) = require_workspace(ctx)
+            && let Err(e) = Self::update_cluster_config_enabled(workspace, false)
+        {
+            tracing::warn!(
+                "[Cluster] runtime 停止后 config.cluster.json enabled=false 持久化失败（重启后集群自启）：{e}"
+            );
         }
         Ok(Some(serde_json::json!({ "stopped": true })))
     }

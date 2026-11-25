@@ -1812,8 +1812,19 @@ pub async fn rebalance_queued_to_worker(
         // ① 取消旧排队派发：store 终态（dispatched → cancelled）+ task_cancel
         //    下行（fire-and-forget；竞态窗口=cancel 到达前已出队开跑 → 白跑，
         //    其回写被写回幂等早退丢弃）。
-        if store.cancel_dispatch(&d.task_id, actor).ok().is_none() {
-            continue; // 已被终结（回报/超时先行）→ 跳过。
+        //    Err（锁中毒/SQLite 故障）与 Ok(None)（竞态输了）语义分臂：
+        //    两者都跳过本单重平衡（store 状态未变，保守退化 + 下轮 sweep 兜底），
+        //    但 Err 必须留痕——否则 store 故障期重平衡全体静默空转排查无门。
+        match store.cancel_dispatch(&d.task_id, actor) {
+            Err(ce) => {
+                tracing::warn!(
+                    "[Board] 重平衡取消旧派发 store 失败 task_id={}：{ce}（跳过本单重平衡，留待下轮 sweep）",
+                    d.task_id
+                );
+                continue;
+            }
+            Ok(None) => continue, // 已被终结（回报/超时先行）→ 跳过。
+            Ok(Some(_)) => {}
         }
         let cancel_req = nemesis_cluster::rpc_types::RPCRequest {
             id: format!("rebalance-cancel-{}", d.task_id),
