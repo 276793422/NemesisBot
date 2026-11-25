@@ -189,7 +189,11 @@ fn cmd_activate(workspace: &std::path::Path, name: &str) -> Result<()> {
 }
 
 fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
-    if name == "default" {
+    // 保留名闸（BUG-20261125-069）：ASCII 大小写不敏感，与 web 面
+    // cmd_remove / validate_shop_writable_id 同口径——"Default" 是合法 slug，
+    // Windows 大小写不敏感文件系统上会命中 personas/default 归档目录并整目录
+    // 删除（不可再生）；Linux 诚实报不存在 = 平台分歧。
+    if name.eq_ignore_ascii_case("default") {
         anyhow::bail!("不能删除默认人格。");
     }
     validate_persona_id(name)?;
