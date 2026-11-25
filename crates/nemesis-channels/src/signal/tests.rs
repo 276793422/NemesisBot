@@ -349,3 +349,51 @@ fn b025_sender_chain_priority_and_unknown_fallback() {
         "全缺 = unknown 诚实兜底"
     );
 }
+
+/// BUG-20261125-038 回归锁：去重表接线（修复前表存在但 receive loop 零调用，
+/// signal-cli 长轮询重复投递的 envelope 原样喂 agent）。
+#[test]
+fn b038_should_publish_first_seen_then_duplicate() {
+    let map = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+    assert!(
+        SignalChannel::should_publish(&map, 1700000000000),
+        "首见放行"
+    );
+    assert!(
+        !SignalChannel::should_publish(&map, 1700000000000),
+        "重复丢弃"
+    );
+    assert!(
+        SignalChannel::should_publish(&map, 1700000000001),
+        "另一条放行"
+    );
+    // 表内容：两条登记
+    assert_eq!(map.read().len(), 2);
+}
+
+/// BUG-20261125-038 回归锁：timestamp 0（process_envelope 对缺失 timestamp
+/// 落 0）恒放行且不登记——若登记 0，全部缺时间戳消息折叠成一条。
+#[test]
+fn b038_should_publish_missing_timestamp_always_passes() {
+    let map = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+    assert!(SignalChannel::should_publish(&map, 0));
+    assert!(SignalChannel::should_publish(&map, 0));
+    assert!(SignalChannel::should_publish(&map, 0));
+    // 0 不得污染表
+    assert_eq!(map.read().len(), 0, "缺时间戳不登记");
+}
+
+/// BUG-20261125-038 回归锁：实例方法与静态 helper 必须共享同一张表
+/// （Arc 槽位接线语义——闭包登记实例方法可见）。
+#[test]
+fn b038_is_duplicate_delegates_to_shared_table() {
+    let config = SignalConfig {
+        api_url: "http://127.0.0.1:8080".to_string(),
+        phone_number: "+10000000000".to_string(),
+        allow_from: Vec::new(),
+    };
+    let ch = SignalChannel::new(config, test_bus()).unwrap();
+    assert!(SignalChannel::should_publish(&ch.processed_timestamps, 42));
+    assert!(ch.is_duplicate(42), "静态 helper 登记后实例方法必须可见");
+    assert!(!ch.is_duplicate(43));
+}

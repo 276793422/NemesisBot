@@ -610,10 +610,10 @@ async fn spawn_mock_relay(
 
         // 泵出通道后续下行（EVENT 发布等）。
         while let Some(Ok(msg)) = ws.next().await {
-            if let Message::Text(t) = msg {
-                if out_tx.send(t.to_string()).await.is_err() {
-                    break;
-                }
+            if let Message::Text(t) = msg
+                && out_tx.send(t.to_string()).await.is_err()
+            {
+                break;
             }
         }
     });

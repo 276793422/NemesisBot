@@ -266,8 +266,9 @@ impl WhatsAppChannel {
                                     degraded = false;
                                 }
 
-                                if let Ok(messages) = resp.json::<Vec<WhatsAppInboundMessage>>().await {
-                                    for msg in &messages {
+                                match resp.json::<Vec<WhatsAppInboundMessage>>().await {
+                                    Ok(messages) => {
+                                        for msg in &messages {
                                         // Only process message type
                                         let msg_type = msg.msg_type.as_deref().unwrap_or("");
                                         if msg_type != "message" {
@@ -312,6 +313,14 @@ impl WhatsAppChannel {
                                         if let Err(e) = bus_sender.send(inbound) {
                                             warn!("[WhatsAppChannel] failed to publish inbound message: {e}");
                                         }
+                                    }
+                                    }
+                                    Err(e) => {
+                                        // 解析失败诚实告警（BUG-20261125-033）：200+垃圾体
+                                        // 此前被 `if let Ok` 静默吞——该轮全部消息零信号丢失
+                                        // （静默吞家族，BUG-20261125-031 同族口径）。HTTP 已
+                                        // 成功，不计入 consecutive_errors（不触发退避降级）。
+                                        warn!(error = %e, "[WhatsAppChannel] bridge poll response parse failed, messages in this poll lost");
                                     }
                                 }
                             }
