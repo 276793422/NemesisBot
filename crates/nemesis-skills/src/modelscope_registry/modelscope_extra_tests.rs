@@ -1496,3 +1496,43 @@ async fn test_download_and_install_rejects_file_count_over_limit() {
         "超文件数上限必须在拉取内容前拒绝并说明原因，实际错误：{msg}"
     );
 }
+
+// ===========================================================================
+// BUG-20261125-040 回归锁：镜像走层目录条目闸（059 同族横向补点）。
+//
+// 旧行为（红证）：fetch_full_skill 的 tree 分支零闸——清单返回任意多
+// 空目录（零 blob）时两道既有闸均不触发，逐目录一层一次网络往返的
+// 请求面无界（安装永不终止）。修后必须在发起任何子目录清单请求前
+// 按目录条目数拒绝。
+// ===========================================================================
+
+#[tokio::test]
+async fn test_fetch_full_skill_rejects_dir_count_over_limit() {
+    let server = MockServer::start().await;
+    // 根清单：MAX+1 个 tree、零 blob。仅挂根清单 mock（Root=""）——
+    // 若闸门失灵继续走层，子目录请求（Root=d…）无 mock 命中 404，错误
+    // 形态会变成 file-list HTTP 404；断言「directory count」即证明闸在
+    // 任何子清单请求前触发（红证可辨，不与降级路径混淆）。
+    let n = crate::registry::MAX_SKILL_FILE_COUNT + 1;
+    let dirs_json: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"Path":"d{i:05}","Type":"tree"}}"#))
+        .collect();
+    let listing = format!(
+        r#"{{"Code":200,"Data":{{"Files":[{}]}},"Message":"ok","Success":true}}"#,
+        dirs_json.join(",")
+    );
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .and(query_param("Root", ""))
+        .respond_with(ResponseTemplate::new(200).set_body_string(listing))
+        .mount(&server)
+        .await;
+
+    let reg = make_registry_pointing_at(&server).await;
+    let err = reg.fetch_full_skill("PantherAng", "pdf").await.unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("directory count"),
+        "目录条目超限必须在任何子目录清单请求前拒绝并说明原因，实际错误：{msg}"
+    );
+}

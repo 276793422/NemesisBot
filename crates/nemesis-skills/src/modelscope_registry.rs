@@ -474,11 +474,27 @@ impl ModelScopeRegistry {
         // 仅受 16MB 信封帽约束时 N 文件无界——文件数闸帽住小文件海啸
         // （inode/目录项耗尽），聚合体量闸帽住总字节（内存与后续落盘双面）。
         let mut total_bytes: u64 = 0;
+        // 目录条目闸（BUG-20261125-040，059 同族横向补点）：tree 分支此前
+        // 零闸——被攻陷镜像/恶意发布的技能可编造海量空目录（零 blob，两道
+        // 既有闸均不触发），本函数逐目录一层一次网络往返，请求面无界 =
+        // 安装永不终止（对比：clawhub zip 的条目数闸按**全部**条目计数，
+        // github_tree 是单次 recursive 请求无逐目录放大面，唯本走层循环漏网）。
+        // 目录计入同一 MAX_SKILL_FILE_COUNT 预算，把清单请求数与 roots
+        // 内存双双封顶。
+        let mut dirs_seen: usize = 0;
         let mut roots: Vec<String> = vec![String::new()];
         while let Some(root) = roots.pop() {
             let entries = self.list_repo_files(path, name, &root).await?;
             for e in entries {
                 if e.entry_type == "tree" {
+                    dirs_seen += 1;
+                    if dirs_seen > crate::registry::MAX_SKILL_FILE_COUNT {
+                        return Err(NemesisError::Security(format!(
+                            "skill directory count exceeds limit ({} > {})",
+                            dirs_seen,
+                            crate::registry::MAX_SKILL_FILE_COUNT
+                        )));
+                    }
                     roots.push(e.path);
                 } else {
                     if files.len() >= crate::registry::MAX_SKILL_FILE_COUNT {
