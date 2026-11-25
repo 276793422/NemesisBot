@@ -594,7 +594,9 @@ impl NodeExecutor for HumanReviewNodeExecutor {
 ///   (numeric comparison when both sides parse as numbers,
 ///   otherwise lexicographic string comparison)
 /// - Bare variable name — truthy check against the context value
-///   (numbers: non-zero; strings: non-empty; etc.)
+///   (numbers: non-zero; strings: boolean-spelling-aware — empty and
+///   `"false"`/`"no"`/`"0"`/`"0.0"` falsy, same table as the literal
+///   form; BUG-20261126-086 对齐前是裸 `!is_empty`)
 /// - Literal `"true"` / `"false"` — boolean
 pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json::Value>) -> bool {
     let condition = condition.trim();
@@ -868,8 +870,15 @@ pub(super) fn resolve_operand(
 }
 
 pub(super) fn is_truthy_str(s: &str) -> bool {
+    // BUG-20261126-086：falsy 表与 Step 2 布尔字面量表（"false"/"no"/"0"）
+    // 对齐——"no" 是文档化布尔拼写（能力表+Step 2 同收），缺它则裸名
+    // String("no") 与模板形 `{{flag}}` 结论相反（本 BUG 同族）。
     let t = s.trim();
-    !t.is_empty() && !t.eq_ignore_ascii_case("false") && t != "0" && t != "0.0"
+    !t.is_empty()
+        && !t.eq_ignore_ascii_case("false")
+        && !t.eq_ignore_ascii_case("no")
+        && t != "0"
+        && t != "0.0"
 }
 
 fn is_truthy(val: &serde_json::Value) -> bool {
@@ -877,7 +886,14 @@ fn is_truthy(val: &serde_json::Value) -> bool {
         serde_json::Value::Null => false,
         serde_json::Value::Bool(b) => *b,
         serde_json::Value::Number(n) => n.as_f64().is_some_and(|v| v != 0.0),
-        serde_json::Value::String(s) => !s.is_empty(),
+        // BUG-20261126-086：字符串值改走 is_truthy_str（布尔拼写感知），
+        // 与模板形 `{{flag}}`（字符串化后 Step 2/回退臂同表）和 Step 4
+        // 未知名回退臂对齐。旧形态 `!s.is_empty()` 把 String("false")
+        // 判真——裸名 `flag`（flag="false"）恒真、同数据 `{{flag}}` 恒假，
+        // 两种文档形态给相反路由（BUG-105/195 同族第三例）；LLM 节点输出
+        // 天然是 JSON 字符串（BUG-105 注释自述），布尔字段以 "false" 形态
+        // 进上下文是常态不是边角。
+        serde_json::Value::String(s) => is_truthy_str(s),
         serde_json::Value::Array(a) => !a.is_empty(),
         serde_json::Value::Object(o) => !o.is_empty(),
     }
