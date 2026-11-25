@@ -91,6 +91,7 @@ fn resolve_tool_path_with_and_without_boundary() {
             extra_roots: Vec::new(),
             editor_gate: None,
             goals_guard: None,
+            protect_log_tree: false,
         }),
         FenceOpFamily::WriteDelete,
     )
@@ -109,6 +110,7 @@ fn resolve_tool_path_with_and_without_boundary() {
             extra_roots: Vec::new(),
             editor_gate: None,
             goals_guard: None,
+            protect_log_tree: false,
         }),
         FenceOpFamily::WriteDelete,
     )
@@ -127,6 +129,7 @@ fn resolve_tool_path_with_and_without_boundary() {
             extra_roots: Vec::new(),
             editor_gate: None,
             goals_guard: None,
+            protect_log_tree: false,
         }),
         FenceOpFamily::WriteDelete,
     )

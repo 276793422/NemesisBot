@@ -250,6 +250,12 @@ pub struct ExecutorChannel {
     /// 侧据此放开围栏只读闸；true / 缺省 = 不设 env，子进程按 true 处理
     /// （老网关 spawn 的子进程字节不变）。
     pub restrict_child: bool,
+    /// 审计面日志树保护镜像（2026-11-26）：镜像 gateway 侧
+    /// `WorkspaceBoundary.protect_log_tree`。false 时 `env_pairs()` 写
+    /// `NEMESISBOT_PROTECT_LOG_TREE=0`，子进程侧据此豁免（项目会话形态
+    /// root=项目目录，项目自身 logs/ 是项目内容不设防）；true / 缺省 =
+    /// 不设 env，子进程按 true 处理（老网关/主 ws 形态字节不变）。
+    pub protect_log_tree_child: bool,
     /// exec deny 自定义词表透传（2026-11-08 接线激活）：`Some(patterns)`
     /// 时 `env_pairs()` 写 `NEMESISBOT_EXECUTOR_DENY_PATTERNS`（\x1f 分隔，
     /// executor 分离形态下子进程 deny 词表与主进程同源——不透传则
@@ -289,6 +295,7 @@ impl ExecutorChannel {
             mxc_spawn: None,
             extra_roots: Vec::new(),
             restrict_child: true,
+            protect_log_tree_child: true,
             deny_patterns_child: None,
             timeout: Duration::from_secs(24 * 3600),
         }
@@ -304,6 +311,14 @@ impl ExecutorChannel {
     /// config 读主进程边界开关传入；true = 缺省不设 env，字节不变）。
     pub fn with_restrict_child(mut self, restrict: bool) -> Self {
         self.restrict_child = restrict;
+        self
+    }
+
+    /// 审计面日志树保护镜像（2026-11-26）：项目 loop 装配侧传 false
+    /// （root=项目目录，项目 logs/ 不设防）；主 ws 装配 = true 缺省不设
+    /// env，字节不变。
+    pub fn with_protect_log_tree_child(mut self, protect: bool) -> Self {
+        self.protect_log_tree_child = protect;
         self
     }
 
@@ -416,6 +431,11 @@ impl ExecutorChannel {
         // executor 子进程仍拒写界外」的分叉。
         if !self.restrict_child {
             env.push(("NEMESISBOT_EXECUTOR_RESTRICT".to_string(), "0".to_string()));
+        }
+        // 审计面日志树保护镜像：只在 false 时设（省 env 不含语义，子进程
+        // 缺省 true = 主 ws 形态旧行为）。
+        if !self.protect_log_tree_child {
+            env.push(("NEMESISBOT_PROTECT_LOG_TREE".to_string(), "0".to_string()));
         }
         // 围栏第二根透传（平台原生路径分隔符 join；空 = 不设 env——
         // 子进程缺省空 vec，单根行为与旧版逐字节一致）。join 失败（路径

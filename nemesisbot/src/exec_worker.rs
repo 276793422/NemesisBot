@@ -194,6 +194,14 @@ fn restrict_from_env(v: Option<&std::ffi::OsStr>) -> bool {
     v != Some(std::ffi::OsStr::new("0"))
 }
 
+/// 审计面日志树保护解析（缺省 true；显式 `"0"` = false——镜像 gateway
+/// 侧 `WorkspaceBoundary.protect_log_tree`，其余值视同 true：省 env 不含
+/// 语义，跟 `NEMESISBOT_EXECUTOR_RESTRICT` 同族）。纯函数便于测试，
+/// 不直接摸进程 env。
+fn protect_log_tree_from_env(v: Option<&std::ffi::OsStr>) -> bool {
+    v != Some(std::ffi::OsStr::new("0"))
+}
+
 /// exec deny 自定义词表解析（2026-11-08 接线激活）：gateway 侧只在
 /// 自定义激活形态注入（`ExecutorChannel::env_pairs`），缺席 = None =
 /// 内置默认词表（现状）。分隔符 `\x1f`（unit separator，regex 词表不含
@@ -226,6 +234,13 @@ async fn run_loop(workspace: &str) -> Result<()> {
     // 写死，用户 `restrict_to_workspace=false` 在 executor 分离形态下被
     // 子进程围栏二次收紧（gateway 侧放行、这里仍拒写的分叉）。
     let restrict = restrict_from_env(std::env::var_os("NEMESISBOT_EXECUTOR_RESTRICT").as_deref());
+    // 审计面日志树保护镜像（gateway 装配侧经 `NEMESISBOT_PROTECT_LOG_TREE=0`
+    // 透传 false；env 未设/非 "0" = true 旧行为）。主 ws 形态恒 true（审计
+    // 面不可被剥离执行的写工具触碰）；项目会话形态 root=项目目录——项目
+    // 自身的 logs/（如 node 项目运行日志）是项目内容，gateway 侧项目装配
+    // 传 false，两侧同相（不误伤开发期日志写入）。
+    let protect_log_tree =
+        protect_log_tree_from_env(std::env::var_os("NEMESISBOT_PROTECT_LOG_TREE").as_deref());
     // exec deny 自定义词表（gateway 透传；缺席 = 默认词表，与主进程一致）。
     let deny_patterns =
         deny_patterns_from_env(std::env::var_os("NEMESISBOT_EXECUTOR_DENY_PATTERNS"));
@@ -254,6 +269,9 @@ async fn run_loop(workspace: &str) -> Result<()> {
                 goals_guard: crate::goals_engine::workspace_goals_guard(std::path::Path::new(
                     &workspace,
                 )),
+                // 审计面日志树保护：env 镜像（主 ws 形态=true 审计面不可
+                // 触碰；项目会话形态=false 项目 logs/ 是项目内容）。
+                protect_log_tree,
             },
         )),
         // /：executor 侧租约——gateway 在 spawn 前经

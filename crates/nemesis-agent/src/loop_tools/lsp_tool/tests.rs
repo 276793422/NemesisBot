@@ -466,6 +466,7 @@ fn boundary_at(
         editor_gate: None,
         // goals 批（2026-11-17）新增字段——测试桩一律 None（生产侧才注入闸）
         goals_guard: None,
+        protect_log_tree: false,
     })
 }
 

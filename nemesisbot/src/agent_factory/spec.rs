@@ -631,6 +631,10 @@ pub fn build_agent_loop_from_spec(
         // 项目 loop 不装 goals 守卫：root=项目目录，主 ws goals/ 本就界外
         // （restrict 拒绝）；项目目录内无 goals 面。
         goals_guard: None,
+        // 审计面日志树保护闸（2026-11-26）不设防：root=项目目录，项目自身
+        // 的 logs/（如 node 项目运行日志）是项目内容，agent 开发期写入合法；
+        // 主 ws logs/ 在项目根之外（restrict 拒绝），无需此闸兜底。
+        protect_log_tree: false,
     }));
     // 项目 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
@@ -703,11 +707,16 @@ pub fn build_agent_loop_from_spec(
     // 透传（executor 子进程围栏与 gateway 侧一致，2026-11-19 D 批）。
     let mut executor_extra_roots: Vec<std::path::PathBuf> = agent_home.iter().cloned().collect();
     executor_extra_roots.extend(spec.extra_dirs.iter().cloned());
+    // 审计面日志树保护豁免镜像（2026-11-26）：项目会话 executor 子进程
+    // root=项目目录——项目自身的 logs/（如 node 项目运行日志）是项目内容，
+    // agent 开发期写入合法；gateway 侧项目 boundary 同为 protect_log_tree
+    // =false，两侧同相。
     let executor_channel = crate::exec_world::build_executor_channel_with_extra_roots(
         &shared.home,
         &project_dir,
         shared.config_store.handle(),
         executor_extra_roots,
+        false,
     )?;
     let persistent_route = spec
         .persistent_resolve

@@ -180,7 +180,9 @@ pub fn build_executor_channel(
     workspace_dir: &Path,
     config_handle: ConfigHandle,
 ) -> anyhow::Result<Option<Arc<nemesis_agent::ExecutorChannel>>> {
-    build_executor_channel_with_extra_roots(home, workspace_dir, config_handle, Vec::new())
+    // gateway/主形态：子进程 boundary 日志树保护闸 = true（审计面 logs/
+    // 系统所有，与主 loop boundary 同相；见 protect_log_tree_child 参数注）。
+    build_executor_channel_with_extra_roots(home, workspace_dir, config_handle, Vec::new(), true)
 }
 
 /// （项目 home 收编）：围栏第二根透传形态。`extra_roots` 写进
@@ -188,12 +190,19 @@ pub fn build_executor_channel(
 /// 解析合并进子进程围栏）——exec 分离开关两侧（主进程/子进程）围栏同根，
 /// 不传 = 单根旧行为（主 loop/工作流引擎零变化）。项目 loop 传
 /// `[<agent_home>]`；**不传 gateway home**（过度放行）。
+///
+/// `protect_log_tree_child`（BUG-20261126-096 同族镜像）：子进程 boundary
+/// 的审计面日志树保护闸——经 env `NEMESISBOT_PROTECT_LOG_TREE` 透传给
+/// `exec_worker`（缺省 true=保护，只在 false 时注入 0 值省 env）。主
+/// workspace/集群 worker 形态传 true；项目 loop 传 false（项目自身 logs/
+/// 是项目内容，agent 开发期写入合法）。
 #[cfg_attr(not(feature = "sandbox"), allow(unused_variables))]
 pub fn build_executor_channel_with_extra_roots(
     home: &Path,
     workspace_dir: &Path,
     config_handle: ConfigHandle,
     extra_roots: Vec<std::path::PathBuf>,
+    protect_log_tree_child: bool,
 ) -> anyhow::Result<Option<Arc<nemesis_agent::ExecutorChannel>>> {
     // #2 安全分级（W2，2026-11-20）：enabled 走 raw resolver（键缺席 →
     // 档位缺省，strict 开）。**不走 ConfigHandle typed 读**：typed
@@ -697,6 +706,7 @@ pub fn build_executor_channel_with_extra_roots(
                 .with_strict_gate(strict_gate)
                 .with_lease_child((lease_child_now)())
                 .with_restrict_child(restrict_child)
+                .with_protect_log_tree_child(protect_log_tree_child)
                 .with_deny_patterns(deny_patterns_child.clone());
             // DACL hook 挂载（盒在场时 agent 侧 start_exe 闸保证不咨询）。
             #[cfg(all(feature = "sandbox", windows))]
@@ -756,6 +766,7 @@ pub fn build_executor_channel_with_extra_roots(
         .with_strict_gate(strict_gate)
         .with_lease_child((lease_child_now)())
         .with_restrict_child(restrict_child)
+        .with_protect_log_tree_child(protect_log_tree_child)
         .with_deny_patterns(deny_patterns_child)
         // Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，
         // 判定面不存在 → 现状不变）。

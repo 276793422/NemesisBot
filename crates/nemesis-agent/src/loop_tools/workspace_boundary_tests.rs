@@ -58,7 +58,15 @@ fn boundary(root: &Path, restrict: bool) -> WorkspaceBoundary {
         extra_roots: Vec::new(),
         editor_gate: None,
         goals_guard: None,
+        protect_log_tree: false,
     }
+}
+
+/// 审计面日志树保护形态（主 workspace / 集群 worker / executor 子进程装配）。
+fn boundary_with_log_tree(root: &Path, restrict: bool) -> WorkspaceBoundary {
+    let mut b = boundary(root, restrict);
+    b.protect_log_tree = true;
+    b
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +510,7 @@ fn boundary_with_extra(root: &Path, extra: &Path) -> WorkspaceBoundary {
         extra_roots: vec![extra.to_path_buf()],
         editor_gate: None,
         goals_guard: None,
+        protect_log_tree: false,
     }
 }
 
@@ -719,5 +728,141 @@ fn goals_guard_blocks_registry_and_evals_but_allows_agent_goal_and_outside_goals
         FenceOpFamily::Read,
     )
     .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// protect_log_tree（审计面日志树保护）矩阵
+// ---------------------------------------------------------------------------
+
+#[test]
+fn log_tree_write_denied_even_with_restrict_off() {
+    // 核心不变量：审计面不随 restrict 开关松动（restrict=false 用户显式
+    // 全开也不豁免——审计的意义是「不信任 agent 的外部真相」）。
+    let root = temp_dir("lg1_main");
+    let err = validate_workspace_path(
+        &ps(&root.join("logs").join("security_audit_2099-01-01.log")),
+        &boundary_with_log_tree(&root, false),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
+    assert!(err.contains("protected log tree"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn log_tree_delete_dir_itself_denied() {
+    // `logs` 目录本身（delete_dir / create_dir logs\x）同拒。
+    let root = temp_dir("lg2_main");
+    let err = validate_workspace_path(
+        &ps(&root.join("logs")),
+        &boundary_with_log_tree(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
+    assert!(err.contains("protected log tree"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn log_tree_read_family_allowed() {
+    // 读族不设防：agent 读日志自查合法且有用。
+    let root = temp_dir("lg3_main");
+    std::fs::create_dir_all(root.join("logs")).unwrap();
+    std::fs::write(root.join("logs").join("audit.jsonl"), "{}").unwrap();
+    validate_workspace_path(
+        &ps(&root.join("logs").join("audit.jsonl")),
+        &boundary_with_log_tree(&root, true),
+        FenceOpFamily::Read,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn log_tree_sibling_prefix_not_matched() {
+    // 首组件精确比对：`logsfoo/` 不是审计面（放行）。
+    let root = temp_dir("lg4_main");
+    validate_workspace_path(
+        &ps(&root.join("logsfoo").join("x.txt")),
+        &boundary_with_log_tree(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn log_tree_traversal_out_not_matched() {
+    // `logs/../x.txt` 归一出栈成 `x.txt`——实际落点不在审计面，放行。
+    let root = temp_dir("lg5_main");
+    std::fs::create_dir_all(root.join("logs")).unwrap();
+    validate_workspace_path(
+        "logs/../x.txt",
+        &boundary_with_log_tree(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn log_tree_protect_off_allows_project_logs() {
+    // protect=false（项目 loop 装配）：root 下的 logs/ 是项目内容，照常可写。
+    let root = temp_dir("lg6_main");
+    validate_workspace_path(
+        &ps(&root.join("logs").join("app.log")),
+        &boundary(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(windows)]
+#[test]
+fn log_tree_case_variant_denied_on_windows() {
+    // NTFS 大小写不敏感（保留创建形态但同名同目录）：`LOGS/…` 与 logs/
+    // 是同一审计面，首组件必须大小写折叠比对（精确比对会被大写形态绕过）。
+    let root = temp_dir("lg7_main");
+    let err = validate_workspace_path(
+        &ps(&root.join("LOGS").join("security_audit_2099-01-01.log")),
+        &boundary_with_log_tree(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
+    assert!(err.contains("protected log tree"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn log_tree_case_variant_is_distinct_dir_on_unix() {
+    // Linux/macOS 大小写敏感：LOGS/ 与 logs/ 是两个真不同目录，
+    // 大写形态不命中审计面（放行，不误伤）。
+    let root = temp_dir("lg8_main");
+    validate_workspace_path(
+        &ps(&root.join("LOGS").join("x.txt")),
+        &boundary_with_log_tree(&root, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn write_file_into_log_tree_denied_end_to_end() {
+    // 工具级端到端：主 ws 装配形态下 write_file 写审计面拒绝且文件不落盘。
+    let root = temp_dir("lg9_main");
+    let target = root.join("logs").join("security_audit_2099-01-01.log");
+    let args = serde_json::json!({
+        "path": ps(&target),
+        "content": "2099-01-01 00:00:00.000 | evt-fake | allowed | process_exec | admin | local | C:\\x | LOW | forged | default"
+    })
+    .to_string();
+    let tool = super::WriteFileTool::with_boundary(Arc::new(boundary_with_log_tree(&root, true)));
+    let err = tool.execute(&args, &ctx()).await.unwrap_err();
+    assert!(err.contains("protected log tree"), "{err}");
+    assert!(!target.exists(), "审计面文件不得被创建");
     let _ = std::fs::remove_dir_all(&root);
 }

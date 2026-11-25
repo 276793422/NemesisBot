@@ -355,6 +355,9 @@ pub(super) fn build_shared_tool_config(
             editor_gate,
             // 目标系统文件保护（D-Q3 创建者二分；goals feature 裁剪 = None）。
             goals_guard: crate::goals_engine::workspace_goals_guard(&workspace_dir),
+            // 审计面日志树保护：主 workspace 装配开启（logs/ 是系统观测面，
+            // agent 工具写删族不得触碰）。
+            protect_log_tree: true,
         })),
         // todowrite tool — workspace storage + TodoUpdated
         // broadcast（与 ToolEventHook 共用同一 sender；gateway 建、

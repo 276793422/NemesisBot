@@ -238,6 +238,26 @@ pub struct WorkspaceBoundary {
     /// 进程装守卫，项目 loop（spec.rs）不装（root=项目目录，主 ws
     /// goals/ 不可达）。None = 不设防（feature 裁剪形态）。
     pub goals_guard: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    /// 审计面日志树保护闸：true 时**写删族**路径落在边界根的 `logs/` 子树
+    /// 内 = 拒绝（restrict 短路之前检查，restrict=false 也不豁免）。
+    ///
+    /// 威胁模型：`<workspace>/logs/` 整树是系统观测面（security_logs 审计、
+    /// cluster_logs 请求日志、session_logs 对话历史、boundary、request_logs、
+    /// spill、checkpoints…），全部写手是系统内部 IO（不走工具闸）。消费面
+    /// （Dashboard 安全审计 tab `logs.security` 盲 glob `security_audit_*.log`、
+    /// 集群任务列表 glob 设备目录）对 agent 可创建的文件不做身份校验——
+    /// write_file 写一个 `logs/security_audit_2099-01-01.log` 即可在安全审计
+    /// 视图顶部注入伪造 allowed 行（timestamp 字符串降序排最顶），单方面
+    /// 污染审计可观测面。审计的意义是「不信任 agent 的外部真相」，故本闸
+    /// 不随 restrict 开关松动、不受 editor_gate 旁路。读族不设防（agent
+    /// 读日志自查合法且有用）。
+    ///
+    /// 主 workspace / 集群 worker / executor 子进程 = true（root 是 bot
+    /// workspace，logs/ 是审计面）；项目 loop（spec.rs）= false——root 是
+    /// 用户项目目录，项目自身的 logs/（如 node 项目的运行日志）是项目内容，
+    /// agent 开发期写它完全合法。装配声明制：保护范围由构造点显式定，
+    /// 不按根名猜测。
+    pub protect_log_tree: bool,
 }
 
 impl std::fmt::Debug for WorkspaceBoundary {
@@ -248,6 +268,7 @@ impl std::fmt::Debug for WorkspaceBoundary {
             .field("extra_roots", &self.extra_roots)
             .field("editor_gate", &self.editor_gate.is_some())
             .field("goals_guard", &self.goals_guard.is_some())
+            .field("protect_log_tree", &self.protect_log_tree)
             .finish()
     }
 }
@@ -272,6 +293,43 @@ pub fn validate_workspace_path(
     } else {
         boundary.root.join(target)
     };
+    // 审计面日志树保护：写删族落 `logs/` 子树 = 拒（restrict 短路之前，
+    // protect_log_tree=true 的装配不随边界开关松动）。归一后按**首组件**
+    // 精确比对（`logsfoo/` 不误伤；`logs/../x` 经 canonicalize_for_compare
+    // 出栈成 `x` 天然放行——实际落点不在审计面；悬空 symlink 逃逸标记的
+    // 前导 `..` 使 strip_prefix 失败、不命中本闸，由既有界外语义处理）。
+    // `logs` 本身（delete_dir logs / create_dir logs\x）同拒。Windows 下
+    // 首组件大小写折叠比对——NTFS 大小写不敏感（保留创建形态但同名同
+    // 目录），`LOGS/security_audit_2099.log` 与 logs/ 是同一审计面，精确
+    // 比对会被大写形态绕过（fs_watcher 忽略表 eq_ignore_ascii_case 同域
+    // 先例）；Linux/macOS 大小写敏感是两个真不同目录，精确比对不误伤。
+    if family.is_write_delete() && boundary.protect_log_tree {
+        let resolved_guard = canonicalize_for_compare(&canonical);
+        let ws_guard = canonicalize_for_compare(&boundary.root);
+        if let Ok(rel) = resolved_guard.strip_prefix(&ws_guard) {
+            let hits_log_tree = match rel.components().next() {
+                Some(std::path::Component::Normal(name)) => {
+                    #[cfg(windows)]
+                    {
+                        name.to_string_lossy().eq_ignore_ascii_case("logs")
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        name == std::ffi::OsStr::new("logs")
+                    }
+                }
+                _ => false,
+            };
+            if hits_log_tree {
+                return Err(format!(
+                    "access denied: '{}' is inside the protected log tree (workspace/logs). \
+                     Audit and log files are system-owned and must not be created, modified \
+                     or deleted via tools; write your artifacts elsewhere.",
+                    path
+                ));
+            }
+        }
+    }
     // 目标系统文件保护（D-Q3 创建者二分）：写删族在 restrict 短路**之前**
     // 检查——restrict=false 也保护人配目标（goal.md 是评估的单一真相源，
     // 不随边界开关松动）；读族放行。守卫裁决单一真相源在 nemesis-goals
