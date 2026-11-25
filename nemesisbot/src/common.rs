@@ -765,18 +765,11 @@ pub fn console_is_solo_fresh() -> bool {
     false
 }
 
-/// Windows：双击直启的无窗重生——spawn 同参数 DETACHED_PROCESS 子进程
-/// （stdio 全 NUL，防 println! 断句柄 panic；env [`BARE_CHILD_ENV`]=1），
-/// 返回 true 时调用方立即 exit(0)，父控制台（双击弹出的黑窗）随本进程
-/// 退出即灭（~100ms 闪烁是 console 子系统固有，无法避免）。
-///
-/// 重生失败（极端：exe 被移走/句柄耗尽）返回 false：保留当前控制台继续
-/// 跑，比「双击无反应」好——用户至少看得到 gateway 日志。
-///
-/// 只在「无参/gateway 语义 + 独占新控制台 + 非 BARE_CHILD」时调用
-/// （调用方判定，见 main.rs）；其他子命令保持控制台输出（短命 CLI
-/// 操作，双击场景下用户需要看到输出）。
-#[cfg(target_os = "windows")]
+// 【BUG-20261125-074】原 `#[cfg(target_os = "windows")]` 门误位：插函数时
+// 粘到了 args_os_to_lossy 头上（它属下方的 Windows 版 try_respawn_detached），
+// Linux 面即 E0425（调用点找不到）+ E0428（Windows 版重生函数裸奔与 unix 版
+// 重复）。门已归位到 try_respawn_detached；args 收集是跨平台面（Linux argv
+// 任意字节正是其 doc 场景），无门。
 /// panic-safe CLI 参数收集（核心映射，可注入迭代器供单测构造非 UTF-8 参数）。
 ///
 /// `std::env::args()` 遇非 UTF-8 参数即 panic（Linux argv 是任意字节、
@@ -800,6 +793,19 @@ pub fn collect_args_lossy() -> Vec<String> {
     args_os_to_lossy(std::env::args_os())
 }
 
+/// Windows：双击直启的无窗重生——spawn 同参数 DETACHED_PROCESS 子进程
+/// （stdio 全 NUL，防 println! 断句柄 panic；env [`BARE_CHILD_ENV`]=1），
+/// 返回 true 时调用方立即 exit(0)，父控制台（双击弹出的黑窗）随本进程
+/// 退出即灭（~100ms 闪烁是 console 子系统固有，无法避免）。
+///
+/// 重生失败（极端：exe 被移走/句柄耗尽）返回 false：保留当前控制台继续
+/// 跑，比「双击无反应」好——用户至少看得到 gateway 日志。
+///
+/// 只在「无参/gateway 语义 + 独占新控制台 + 非 BARE_CHILD」时调用
+/// （调用方判定，见 main.rs）；其他子命令保持控制台输出（短命 CLI
+/// 操作，双击场景下用户需要看到输出）。
+// BUG-20261125-074：此门自 args_os_to_lossy 归位至此（见上）。
+#[cfg(target_os = "windows")]
 pub fn try_respawn_detached() -> bool {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
