@@ -946,6 +946,15 @@ impl AgentLoop {
     /// 诚实边界：redo 不重建 checkpoint 索引（undo 时 turn-*.json 已清），
     /// redo 过的区间无法再次 rewind；文件只恢复工作区内（tree 覆盖范围）。
     /// 会话闸：经 [`Self::under_history_gate`] 真互斥（同 rewind 家族）。
+    ///
+    /// 影响面注记（2026-11-25 用户裁决=维持边界）：边界**只覆盖被恢复的
+    /// 旧区间，不扩散**——①undo 只清被截区间内的 checkpoint 条目，锚之前
+    /// 的条目不动；②区间内的点再次 rewind：对话截断仍可做、文件回滚诚实
+    /// 跳过（BUG-20261112-110 带 note 不谎报 applied）；③**区间之前的点
+    /// 完全不受影响**（索引/冲突预检/force 全套完好）；④redo 之后的新
+    /// turn 照常挂载 checkpoint 条目，**新工作完全正常可 rewind**。
+    /// 另：rewind 与 redo 之间夹任何新消息 = redo 诚实拒绝（条目作废，
+    /// 三重陈旧性守卫——是保护不是能力缺失）。
     pub async fn redo_rewind(&self, session_key: &str) -> Result<serde_json::Value, String> {
         self.redo_rewind_with_force(session_key, false).await
     }
