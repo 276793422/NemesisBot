@@ -237,10 +237,11 @@ fn handle_command_with_context_basic_arms() {
     let help = agent_loop
         .handle_command_with_context("  /help  ", "web")
         .expect("/help answers");
-    assert!(help.contains("/model"));
+    // 2026-11-25 /model 切换暂时停用——帮助文本不再 advertise。
+    assert!(!help.contains("/model"));
     let listing = agent_loop
         .handle_command_with_context("/model", "web")
-        .expect("/model without arg lists models");
+        .expect("/model without arg still answers (查询当前模型)");
     assert!(!listing.is_empty());
 }
 

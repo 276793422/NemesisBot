@@ -3548,7 +3548,8 @@ fn test_handle_command_help() {
     let result = agent_loop.handle_command("/help");
     assert!(result.is_some());
     assert!(result.as_ref().unwrap().contains("Commands:"));
-    assert!(result.as_ref().unwrap().contains("/model"));
+    // 2026-11-25 /model 切换暂时停用——帮助文本不再 advertise。
+    assert!(!result.as_ref().unwrap().contains("/model"));
 }
 
 #[test]
@@ -3560,39 +3561,30 @@ fn test_handle_command_model_no_args_shows_current() {
 }
 
 #[test]
-fn test_handle_command_model_switch_by_literal_id() {
+fn test_handle_command_model_switch_disabled_by_literal_id() {
+    // 2026-11-25 /model 切换暂时停用（只换名字不换 provider，跨端点静默
+    // 发错门）——带参形态回诚实停用文案，active_model 不得变化。
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     let result = agent_loop.handle_command("/model deepseek-v4-pro");
     assert!(result.is_some());
-    assert!(
-        result
-            .as_ref()
-            .unwrap()
-            .contains("Model switched to: deepseek-v4-pro")
-    );
-    // Verify active_model actually changed.
-    assert_eq!(*agent_loop.active_model.read(), "deepseek-v4-pro");
+    assert!(result.as_ref().unwrap().contains("暂时停用"));
+    // active_model 不得被停用命令改变（test_config 默认 test-model）。
+    assert_eq!(*agent_loop.active_model.read(), "test-model");
 }
 
 #[test]
-fn test_handle_command_model_switch_by_alias() {
+fn test_handle_command_model_switch_disabled_by_alias() {
     let mut config = test_config();
     config
         .models
         .insert("pro".to_string(), "deepseek-v4-pro".to_string());
-    config
-        .models
-        .insert("flash".to_string(), "deepseek-v4-flash".to_string());
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
+    let before = agent_loop.active_model.read().clone();
 
     let result = agent_loop.handle_command("/model pro");
     assert!(result.is_some());
-    assert!(result.as_ref().unwrap().contains("deepseek-v4-pro"));
-    assert_eq!(*agent_loop.active_model.read(), "deepseek-v4-pro");
-
-    let result2 = agent_loop.handle_command("/model flash");
-    assert!(result2.as_ref().unwrap().contains("deepseek-v4-flash"));
-    assert_eq!(*agent_loop.active_model.read(), "deepseek-v4-flash");
+    assert!(result.as_ref().unwrap().contains("暂时停用"));
+    assert_eq!(*agent_loop.active_model.read(), before);
 }
 
 #[test]
