@@ -516,6 +516,29 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 的只读文本读取（resolve_subtree_path 单点收紧，与锚点同闸）——
         // FileRead=LOW 让 8 层全跑（注入检测/凭据扫描/DLP/审计链）。
         "board_evidence_read" => Some(OperationType::FileRead),
+        // 看板 worker 三件（BUG-20261125-050，2026-11-17 后新增工具族漏
+        // 登记静态表的横向补齐）：claim/discuss 经 send_nb_bus 发 RPC 到
+        // coordinator（cluster_rpc 同档 NetworkRequest）；asset fetch
+        // 下载落盘 / publish 上传（HTTP 出站，SSRF 闸在工具内先行）。
+        // 修复前三者按未知名 fail-closed CRITICAL 过管线（每调用 WARN +
+        // guardian 误档烧 token）+ Plan 模式 stale-cache 调用逃过
+        // declared_write 兜底臂。
+        "board_claim" | "board_discuss" | "board_asset" => {
+            Some(OperationType::NetworkRequest)
+        }
+        // goal/loop 排程/插件提案（BUG-20261125-050 同批补齐）：goal 写
+        // goals/*.md + 注册表（delete/disable 还写 config.json 开关）、
+        // loop_wakeup/loop_finish 写 loops 排程、plugin_propose 写提案
+        // 文件（装配漏斗另有审批卡）→ FileWrite。
+        "goal" | "loop_wakeup" | "loop_finish" | "plugin_propose" => {
+            Some(OperationType::FileWrite)
+        }
+        // mcp_call（BUG-20261125-050 同批补齐）：stdio 臂（command 在场）
+        // 经工具 operation_override 投影 process_exec；HTTP 臂（url 参数）
+        // 落本表 NetworkRequest——工具侧注释一直声称「HTTP 臂维持静态
+        // NetworkRequest」但本表此前无条目，HTTP 臂实际按未知名落
+        // fail-closed CRITICAL（注释与表失配，本条修复后注释主张成立）。
+        "mcp_call" => Some(OperationType::NetworkRequest),
         // 技能文件写（agent 自写 procedural memory）。
         "skill_manage" => Some(OperationType::FileWrite),
         "complete_bootstrap" => Some(OperationType::FileDelete),
@@ -536,7 +559,20 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // （委派持续操控）：send/output/stop 只操控本注册表内的自有子
         // 代理（进程已在 delegate_start 时过闸；steer 文本作为工具入参照
         // 过注入检测层）——对齐 background_output/kill 例外语义。
-        | "delegate_send" | "delegate_output" | "delegate_stop" => {
+        // subagent_steer（BUG-20261125-050 补登记）同此语义：向本 loop
+        // 运行中子代理注入下轮生效的指令（claim_steer_messages 消息队列，
+        // 非进程 stdin——与 background_steer 的 ProcessExec 档分界在此），
+        // 子代理本体已在 spawn 时过闸。
+        | "delegate_send" | "delegate_output" | "delegate_stop"
+        | "subagent_steer" => {
+            Some(OperationType::Internal)
+        }
+        // 纯读/静态查询/纯声明面（BUG-20261125-050 同批补齐）：
+        // loop_status 只读排程、plugin_search 只读搜索、present_files/
+        // present_plan 纯声明（零复制零改动）、tools_schema_get 静态
+        // schema 查询 → Internal（LOW，8 层照跑）。
+        | "loop_status" | "plugin_search" | "present_files" | "present_plan"
+        | "tools_schema_get" => {
             Some(OperationType::Internal)
         }
         // 紫微系统：ziwei_bridge 元工具（配置期操作者，每步审批卡）——
