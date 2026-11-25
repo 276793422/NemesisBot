@@ -1232,7 +1232,7 @@ impl EventWatchManager {
             let mut probe_alive = true;
             // probe HTTP 共享客户端（连接池复用；per-request 超时在探测任务
             // 内 tokio::time::timeout 包裹）。
-            let probe_client = reqwest::Client::new();
+            let probe_client = probe_http_client();
             if self.proc_reader.is_none() {
                 tracing::warn!(
                     "[Events] 无 ProcReader 装配：proc 规则采样跳过（headless/测试装配常态）"
@@ -1410,6 +1410,23 @@ pub(crate) async fn run_probe(
             detail,
         })
         .await;
+}
+
+/// probe HTTP 共享客户端（单次构造、泵循环内复用；per-request 超时在探测
+/// 任务内 tokio::time::timeout 包裹）。重定向策略 = `no_cross_host_redirect_
+/// policy`（BUG-20261125-061）：probe 目标是运维配置的监控 URL，凭据内嵌
+/// path/query 形态常见（healthchecks.io `/ping/<uuid>`、uptime-kuma
+/// `/api/push/<token>`）——劫持目标 302 跨源时 reqwest 默认策略会跟随并把
+/// 原 URL 连同内嵌凭据原样带到第三方主机（nemesis-utils::http_redirect 模块
+/// 文档明示的凭据类；BUG-20261109-014 修 telegram/matrix/signal 同类的横向
+/// 漏网）。跨源终停后 3xx 透传为最终响应 → `is_success()`=false → 探测诚实
+/// 报 down（detail 带 HTTP 302）；同源重定向照常跟随（http→https 同主机
+/// 不断链）。行为级回归锁：manager/tests.rs 的 redirect 两测。
+fn probe_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+        .build()
+        .expect("probe http client build")
 }
 
 /// http 探测：up = 2xx。超时 / 连接失败 = down，detail 带根因（翻转载荷

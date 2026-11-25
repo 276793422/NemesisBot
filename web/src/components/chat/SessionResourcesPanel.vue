@@ -5,7 +5,9 @@
  * 渲染当前会话的 16 类资源聚合（后端 WSAPI `session.resources`，Provider
  * 注册制聚合；协议见 crates/nemesis-web/src/handlers/resources.rs）：
  * - 头部：会话标题 / 项目 / 工作目录（identity.summary + system.status）
- *   +「+ 添加项目目录」（ProjectCreateModal）；
+ *   +「＋项目」（语义分叉，2026-11-25：项目会话 → add-dir 追加放行目录，
+ *   非项目 → 新建项目；ProjectCreateModal）；项目/目录路径行可点，
+ *   在文件管理器打开对应目录（fs.open，2026-11-25）；
  * - 会话工具分节（2026-11-19 拆分迁移 → 九键全迁）：构建/计划 + 插队 +
  *   分享 / 委派 / 思考强度；放行开关分节（Full Access / 外部写删 / 全部
  *   放行）；语音分节（听写 / 语音对话 / 语音播放 / 实时语音）——原
@@ -37,7 +39,7 @@
  * 挂载面：ChatView 壳（宽屏右栏）；会话寻址锚定 props.sessionId，
  * 绝不直引全局 currentId（TodoPanel 2026-09-24 串扰修复同款纪律）。
  */
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { addMessageHandler, removeMessageHandler, wsStatus } from '../../composables/useWebSocket'
 import { useWSAPI } from '../../composables/useWSAPI'
@@ -52,8 +54,10 @@ import { useEditorMode } from '../../composables/useEditorMode'
 import { useVoiceControls } from '../../composables/useVoiceControls'
 import { useInboxStatus } from '../../composables/useInboxStatus'
 import { useChatStore } from '../../stores/chat'
+import { useSessionStore } from '../../stores/session'
 import { useToast } from '../../composables/useToast'
 import ProjectCreateModal from '../ProjectCreateModal.vue'
+import type { ProjectInfo } from '../../composables/useChatApi'
 
 const props = defineProps<{
   /** 壳层钉死的会话 id（ChatView → ChatPanel.effectiveSid 同域）；null =
@@ -203,6 +207,38 @@ const lastRevision = ref(-1)
 const loadError = ref('')
 const workdir = ref('')
 const showProjectModal = ref(false)
+
+// ---- ＋项目分叉（2026-11-25）：项目会话 → 给该项目追加放行目录 ----
+// D 批围栏多根（2026-11-19）在侧栏（SessionSidebar.onProjectPlusClick）已
+// 实现的语义分叉，补齐资源窗臂：当前会话属某项目 → 弹 add-dir 模式（
+// 「添加目录 — <项目名>」，走 projects.add_dir）；非项目会话 / 孤儿会话
+//（项目已从注册表移除，定位不到 ProjectInfo）→ 回落新建项目原语义
+//（孤儿=重新注册，语义正确）。追加放行目录不热生效（围栏在 agent 工具
+// 注册期烧入，重启网关生效——弹窗内同款声明）。
+const sessionStore = useSessionStore()
+const addDirTarget = ref<ProjectInfo | null>(null)
+
+async function onAddProjectClick() {
+  // 保证注册表在场（5s 缓存；面板挂载不依赖侧栏拉取时序）。
+  if (sessionStore.projects.length === 0) await sessionStore.fetchProjects()
+  const proj = resolvedProject.value
+  if (proj) addDirTarget.value = proj
+  else showProjectModal.value = true
+}
+
+/** add-dir 弹窗 updated 回传：addDirTarget 原位换新（弹窗内 extra_dirs
+ *  列表即时反映）+ 注册表缓存同步更新（项目行附加目录显示立即刷新，
+ *  不必重开面板/刷新页面）。 */
+function onAddDirUpdated(p: ProjectInfo) {
+  addDirTarget.value = p
+  const i = sessionStore.projects.findIndex(x => x.id === p.id)
+  if (i >= 0) sessionStore.projects[i] = p
+}
+
+/** ＋项目 tooltip 随分叉语义走（项目会话提示加目录，否则新建）。 */
+const addProjectTitle = computed(() =>
+  projectPath.value ? '给当前项目添加目录' : '新建项目',
+)
 const showEmptyDetail = ref(false)
 /** 资源卡流折叠集（卡 id 集合；默认全展开，不持久化）。 */
 const collapsedCards = ref(new Set<string>())
@@ -382,6 +418,33 @@ const projectPath = computed(() =>
   typeof identitySummary.value.project_path === 'string' ? identitySummary.value.project_path : '',
 )
 
+// ---- ＋项目分叉 / 附加放行目录显示（2026-11-25）----
+
+// 注册表在场保障：附加目录显示与 ＋项目分叉共用（fetchProjects 自带 5s
+// 缓存守卫；面板挂载与 identity 迟到两条路都兜，不依赖侧栏拉取时序）。
+onMounted(() => {
+  if (sessionStore.projects.length === 0) void sessionStore.fetchProjects()
+})
+watch(projectPath, () => {
+  if (sessionStore.projects.length === 0) void sessionStore.fetchProjects()
+})
+
+/** 当前会话归属项目（注册表解析，单一裁决点）：projectId 精确匹配优先；
+ *  projectPath（identity summary，本会话权威归属）与注册表 path 相等匹配
+ *  兜底（sessions 列表缺席 projectId 的旧形态）。＋项目分叉与附加放行
+ *  目录显示共用——两处语义必须一致。 */
+const resolvedProject = computed<ProjectInfo | null>(() => {
+  const sid = props.sessionId
+  const pid = sid ? sessionStore.sessions.find(s => s.id === sid)?.projectId : undefined
+  return (
+    (pid ? sessionStore.projects.find(p => p.id === pid) : undefined) ??
+    (projectPath.value
+      ? sessionStore.projects.find(p => p.path === projectPath.value)
+      : undefined) ??
+    null
+  )
+})
+
 // ---- CTA：durable_loops 内联表单 ----
 
 const loopsCard = computed(() => categories.value['durable_loops'])
@@ -451,6 +514,26 @@ async function toggleAllow(): Promise<void> {
 
 function goHooks(): void { void router.push('/hooks') }
 function goTasks(): void { void router.push('/tasks') }
+
+// ---- CTA：头部路径行点击 → 文件管理器打开目录（2026-11-25）----
+// 项目/目录两行从纯文本变可点：fs.open 目录臂在系统文件管理器开该目录
+// 窗口——两条路径都天然落在 fs.open 放行根集合内（主 workspace + 已注册
+// 项目目录），与聊天文件链接 / 侧栏工作区按钮同一条既有链路，后端零改动。
+// 失败诚实 toast（目录被删 / 项目已移除注册表）；远程访问时窗口开在
+// gateway 侧（宿主动作既有语义）。openingPath 防双击双发。
+const openingPath = ref(false)
+async function openPathInExplorer(p: string): Promise<void> {
+  if (!p || openingPath.value) return
+  openingPath.value = true
+  try {
+    await request('fs', 'open', { path: p })
+    toast.success('已在文件管理器中打开目录')
+  } catch (e: any) {
+    toast.error(`打开失败：${e?.message ?? e}`)
+  } finally {
+    openingPath.value = false
+  }
+}
 
 // ---- 拉取（B4 乱序丢弃 + 回包会话校验）----
 
@@ -693,12 +776,13 @@ function subagentTaskText(row: Record<string, unknown>): string {
 }
 
 /** 计时格式单一真相源（子代理行 + 执行态卡头共用）：epoch ms 起锚 +
- *  当前时刻 → `5s` / `2m05s` / `1h03m`。 */
+ *  当前时刻 → `5s` / `2m05s` / `1h03m05s`（≥1h 保留秒——2026-11-25 修复
+ *  丢秒：用户对照聊天框内单轮计时，秒位常驻才对）。 */
 function fmtElapsed(startMs: number, now: number): string {
   const secs = Math.max(0, Math.floor((now - startMs) / 1000))
   const m = Math.floor(secs / 60)
   const s = secs % 60
-  if (m >= 60) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`
+  if (m >= 60) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m${String(s).padStart(2, '0')}s`
   return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`
 }
 
@@ -717,7 +801,7 @@ function subagentElapsed(row: Record<string, unknown>): string {
       <div class="srp-header-row">
         <span class="srp-title" :title="sessionTitle">{{ sessionTitle }}</span>
         <span class="srp-header-actions">
-          <button class="srp-add-project" type="button" title="添加项目目录" @click="showProjectModal = true">＋项目</button>
+          <button class="srp-add-project" type="button" :title="addProjectTitle" @click="onAddProjectClick">＋项目</button>
           <button
             class="srp-tools-close"
             type="button"
@@ -726,8 +810,32 @@ function subagentElapsed(row: Record<string, unknown>): string {
           >✕</button>
         </span>
       </div>
-      <div v-if="projectPath" class="srp-sub" :title="projectPath">项目：{{ truncPath(projectPath, 32) }}</div>
-      <div v-if="workdir" class="srp-sub" :title="workdir">目录：{{ truncPath(workdir, 36) }}</div>
+      <div
+        v-if="projectPath"
+        class="srp-sub srp-sub-link"
+        data-test="srp-open-project"
+        :title="`${projectPath}（点击在文件管理器中打开）`"
+        @click="openPathInExplorer(projectPath)"
+      >项目：{{ truncPath(projectPath, 32) }}</div>
+      <!-- 附加放行目录（2026-11-25）：注册表 extra_dirs 投影（单一真相源
+           =projects.json，非 identity 快照——后端快照无此字段，项目级属性
+           不塞会话 sidecar）。同主路径点击交互；add-dir 弹窗 updated 原位
+           刷新 store 后此处立即反映。 -->
+      <div
+        v-for="d in resolvedProject?.extra_dirs ?? []"
+        :key="d"
+        class="srp-sub srp-sub-link srp-extra-dir"
+        data-test="srp-extra-dir"
+        :title="`${d}（附加放行目录，点击在文件管理器中打开；重启网关后围栏生效）`"
+        @click="openPathInExplorer(d)"
+      >└ 附加：{{ truncPath(d, 28) }}</div>
+      <div
+        v-if="workdir"
+        class="srp-sub srp-sub-link"
+        data-test="srp-open-workdir"
+        :title="`${workdir}（点击在文件管理器中打开）`"
+        @click="openPathInExplorer(workdir)"
+      >目录：{{ truncPath(workdir, 36) }}</div>
     </div>
 
     <!-- 会话工具分节（2026-11-19 拆分迁移）：分享/委派/思考强度三键从
@@ -1145,6 +1253,16 @@ function subagentElapsed(row: Record<string, unknown>): string {
       @close="showProjectModal = false"
       @created="showProjectModal = false; void fetchResources()"
     />
+    <!-- ＋项目分叉的项目臂（2026-11-25）：给当前会话所属项目追加放行目录。
+         @updated 原位刷新 addDirTarget（弹窗内 extra_dirs 列表即时反映摘除/
+         新增）；identity/resources 不随 add-dir 变化，无需重拉。 -->
+    <ProjectCreateModal
+      v-else-if="addDirTarget"
+      mode="add-dir"
+      :project="addDirTarget"
+      @close="addDirTarget = null"
+      @updated="onAddDirUpdated"
+    />
   </div>
 </template>
 
@@ -1212,6 +1330,21 @@ function subagentElapsed(row: Record<string, unknown>): string {
   white-space: nowrap;
 }
 .srp-sub.err { color: var(--color-error, #e5484d); }
+/* 头部路径行可点形态（2026-11-25）：hover 显链接色 + 下划线（可点
+   affordance）；title 提示补「点击打开」指引——显示文本维持截断形态。 */
+.srp-sub-link { cursor: pointer; }
+.srp-sub-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+/* 附加放行目录行（2026-11-25）：主路径行下的树形从属行——缩进 + 更弱
+   字号，视觉上明确挂在上面的「项目：」行底下，不与主路径混淆。 */
+.srp-extra-dir {
+  margin-top: 2px;
+  padding-left: 14px;
+  font-size: 11px;
+  color: var(--text-dim, var(--text-muted));
+}
 
 /* 卡 */
 .srp-card {
@@ -1241,9 +1374,15 @@ function subagentElapsed(row: Record<string, unknown>): string {
 .srp-exec { border-color: var(--accent); }
 /* ⏱ 当前轮计时徽标（2026-11-24）：accent 走表；tabular-nums 防每秒
    跳动时徽标宽度抖动。 */
-.srp-exec-elapsed {
-  color: var(--accent);
-  border-color: var(--accent);
+.srp-badge.srp-exec-elapsed {
+  /* 2026-11-25：accent 橙 → success 绿（进行中语义）+ 加重（600/11px）。
+   * 复合选择器提特异性——基类 .srp-badge 在样式表更后方，同特异性单类
+   * 会被其 color/border 覆盖（旧 accent 声明从未生效，徽章实显灰色，
+   * 「不醒目」的真根因）。 */
+  color: var(--success);
+  border-color: var(--success);
+  font-weight: 600;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .srp-dot {

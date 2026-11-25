@@ -293,6 +293,24 @@ impl Default for TerminalConfig {
     }
 }
 
+/// 会话错误记录框架（v1 记录地基，`config.json` 的 `session_error` 段；
+/// 2026-11-25。纯追加旁路：episode 四元组（事件/sid/请求/应答）落
+/// `<workspace>/logs/session_errors/YYYY-MM-DD.jsonl`，现有恢复流程零
+/// 改动，规则引擎与【会话事件】页面后续另行计划）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SessionErrorConfig {
+    /// 记录开关（默认 true；false = 零成本旁路，连请求快照 clone 都不做）。
+    /// 装配期读取（gateway/run/acp 三入口 init），改动需重启。
+    pub recording: bool,
+}
+
+impl Default for SessionErrorConfig {
+    fn default() -> Self {
+        Self { recording: true }
+    }
+}
+
 /// 浏览器接管配置段（`config.json` 的 `browser` 段；2026-11-15
 /// 浏览器接管框架。消费方 = gateway prefs_getter（每次 spawn 现读）+
 /// Dashboard 设置页（config.get/set_field 读写）。typed 字段化是硬要求：

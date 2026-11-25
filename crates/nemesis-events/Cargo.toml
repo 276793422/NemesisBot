@@ -19,7 +19,9 @@ sysinfo = "0.33"
 # probe http 探测（workspace 共享：rustls-tls，无 openssl）
 reqwest = { workspace = true }
 # probe command 源的 env 窄版闸（nemesis_utils::env_sanitize，BUG-20261117-048）
-nemesis-utils = { workspace = true }
+# + probe HTTP client 的重定向策略（nemesis_utils::http_redirect，
+# BUG-20261125-061；http 门控=同族消费方接线形态，reqwest 本就直依赖）
+nemesis-utils = { workspace = true, features = ["http"] }
 # 泵常驻循环的进程终态令牌（BUG-20261115-023 家族纪律；BUG-20261119-208 同款
 # DI 形态——gateway 装配传 terminal_cancel_token().clone()）
 tokio-util = "0.7"

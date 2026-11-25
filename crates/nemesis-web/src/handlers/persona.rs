@@ -2183,7 +2183,13 @@ impl PersonaHandler {
     }
 
     fn cmd_remove(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        if name == "default" {
+        // 保留名闸（BUG-20261125-069）：ASCII 大小写不敏感。"Default" 是合法
+        // slug（validate_persona_name 无大小写约束），Windows 大小写不敏感
+        // 文件系统上 personas/Default/ 与 personas/default/ 是同一目录——精确
+        // 匹配拦不住删掉不可再生的 default 归档（Linux 同输入诚实报 not found
+        // = 平台分歧行为）。与 validate_shop_writable_id 写侧同口径：跨平台
+        // 保守，ASCII 变体一律拒绝。
+        if name.eq_ignore_ascii_case("default") {
             return Err("cannot remove default persona".to_string());
         }
 

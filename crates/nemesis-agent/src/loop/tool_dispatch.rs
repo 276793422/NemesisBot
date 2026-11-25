@@ -653,7 +653,7 @@ impl AgentLoop {
                 };
                 if !visible {
                     return format!(
-                        "Error: Tool '{}' is not visible at the active model's tier and its schema cannot be fetched. Inform the user; they can switch models via /model.",
+                        "Error: Tool '{}' is not visible at the active model's tier and its schema cannot be fetched. Inform the user; they can switch the default model from the model management page in the Dashboard.",
                         want
                     );
                 }
@@ -729,7 +729,7 @@ impl AgentLoop {
                     ))
                 } else if !tier_supplies_tool(min_tier, name, tier, mcp_lazy) {
                     Some(format!(
-                        "Error: Tool '{name}' is not visible at the active model's tier and its schema cannot be listed. Inform the user; they can switch models via /model."
+                        "Error: Tool '{name}' is not visible at the active model's tier and its schema cannot be listed. Inform the user; they can switch the default model from the model management page in the Dashboard."
                     ))
                 } else if name == "mcp_call" && !mcp_lazy {
                     Some(
@@ -918,7 +918,7 @@ impl AgentLoop {
                     tool_call.name
                 );
                 return format!(
-                    "Error: Tool '{}' requires model tier '{}' or above; the active model's tier is lower. Inform the user; they can switch models via /model.",
+                    "Error: Tool '{}' requires model tier '{}' or above; the active model's tier is lower. Inform the user; they can switch the default model from the model management page in the Dashboard.",
                     tool_call.name, min
                 );
             }
@@ -956,7 +956,7 @@ impl AgentLoop {
                     tool_call.name
                 );
                 return format!(
-                    "Error: Tool '{}' is not in the tool whitelist for the active model's tier. Inform the user; they can switch to a bigger model via /model.",
+                    "Error: Tool '{}' is not in the tool whitelist for the active model's tier. Inform the user; they can set a bigger model as default from the model management page in the Dashboard.",
                     tool_call.name
                 );
             }

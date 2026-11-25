@@ -36,14 +36,16 @@ ignore = [
   # （gtk3-rs 生态，Linux 托盘链）——随 gtk3-rs 豁免一并处置；纯 proc-macro，
   # 只在编译期展开宏，无运行时暴露。上游 glib 0.20+ 已换 proc-macro-error2。
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; transitive via glib-macros (gtk3 tray chain), compile-time only" },
-  # paste 作者声明完成态（RUSTSEC-2024-0436）。传递链：ratatui（build-config TUI）
-  # + rav1e/ravif（image JPEG-XL 编码）。纯 proc-macro，编译期展开，无运行时暴露。
-  { id = "RUSTSEC-2024-0436", reason = "paste complete/stable by author's statement; transitive via ratatui + image, compile-time only" },
-  # ttf-parser 无人维护（RUSTSEC-2026-0192），无安全升级路径；传递依赖
-  # （owned_ttf_parser ← ab_glyph ← sctk-adwaita ← winit ← nemesis-desktop），
-  # 只解析本机 UI 自带字体、不解析不可信输入。等 winit/ab_glyph 生态迁移
-  # skrifa 后移除本豁免。台账：docs/INFO/2026-08-31_dependency-rules.md
-  { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; transitive via winit UI stack, parses only bundled fonts" },
+  # 2026-11-25 清理：移除 paste(RUSTSEC-2024-0436) / ttf-parser(RUSTSEC-2026-0192) /
+  # rustls-pemfile(RUSTSEC-2025-0134) / unsafe-libyaml(RUSTSEC-2024-0449) 四条豁免。
+  # cargo-deny ≥0.22 严格按公告 [affected] 段匹配，这四条公告（informational
+  # unmaintained、patched 为空、无 affected 段）不再匹配图内任何 crate，逐条
+  # 报 advisory-not-detected——旧版是 warning，新版语义随时可能升 error 堵闸，
+  # 豁免台账必须与当前工具语义自洽，故删除（公告本身未消失，若未来工具恢复
+  # 匹配再按台账流程重录）。台账：docs/INFO/2026-08-31_dependency-rules.md
+  # 注意：gtk3-rs 全家 + proc-macro-error 豁免在 0.22 严格匹配下同样报
+  # unmatched 警告（托盘链未进 deny 激活图，CI 0.22.0 与本地一致），暂保留
+  # 作为托盘链入图时的防御豁免，待 graph 口径（all-targets）专项确认后统一处置。
   # rsa 0.9.10 Marvin Attack（RUSTSEC-2023-0071，无修复版本）。传递链：cms 0.2
   # `builder` feature 硬性捆绑 rsa（feature 列表含 rsa，default-features=false 也
   # 关不掉）← nemesis-verify（v4 CMS SignedData）。项目侧零 RSA 操作暴露：v4 全
@@ -64,20 +66,6 @@ ignore = [
   { id = "RUSTSEC-2026-0098", reason = "rustls-webpki URI name-constraint flaw; fix in webpki >=0.103.12, pinned 0.102 via rustls 0.23 (rumqttc 0.25); reachable only via misissuing CAs" },
   { id = "RUSTSEC-2026-0099", reason = "rustls-webpki wildcard name-constraint flaw; fix in webpki >=0.103.12, pinned 0.102 via rustls 0.23 (rumqttc 0.25); reachable only via misissuing CAs" },
   { id = "RUSTSEC-2026-0104", reason = "rustls-webpki reachable panic in CRL parsing; fix in webpki >=0.103.13, pinned 0.102 via rustls 0.23 (rumqttc 0.25); CRL revocation never enabled by project" },
-  # rustls-pemfile 2.2 unmaintained（RUSTSEC-2025-0134）。rumqttc 0.25.1（最新版，
-  # 无更新可用）自带 rustls-pemfile ^2.2 硬依赖。本项目直接使用已迁 pki-types
-  # PemObject（mqtt feature 三处，2026-09-28），crate 本体仍经 rumqttc 传递在图；
-  # 剩余暴露面 = rumqttc 内部 TLS 装配（用户自配证书解析，非不可信网络输入）。
-  # 移除条件：rumqttc 发布移除 rustls-pemfile 的新版本。台账：docs/INFO/2026-08-31_dependency-rules.md
-  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; hard-pinned by rumqttc 0.25.1 (latest, no newer release); project's own usage migrated to pki-types PemObject, crate remains transitive via rumqttc" },
-  # unsafe-libyaml 归档无人维护（RUSTSEC-2024-0449，上游 2024-03-25 只读，末版
-  # 0.2.11）。传递链：serde_yaml 0.9.34+deprecated 硬钉 unsafe-libyaml（作者
-  # dtolnay 官方弃坑标记，无 0.10）；serde_yaml 是 workspace 直依赖
-  # （nemesis-config / nemesis-agent / nemesis-workflow / nemesisbot），只解析
-  # 本机用户自有的 YAML 配置（credentials.yaml / MCP 配置），无网络不可信输入
-  # 暴露。移除条件：workspace 完成 serde_yaml 迁移（候选 serde_yml fork 或
-  # 配置格式归一 toml/json），属独立重构任务。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-10-14）
-  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml archived (last 0.2.11); hard-pinned by deprecated serde_yaml 0.9, parses only local user-owned YAML configs, no untrusted network input" },
   # rustls-webpki 0.102 emSign 中间证书缺陷（RUSTSEC-2026-0382，修复在
   # webpki ≥0.103.16，跨 minor）。锁内 0.103.x 已 cargo update 到 0.103.16；
   # 残留 0.102.8 与上方 0049/0098/0099/0104 四联公告同一条钉死链
@@ -122,9 +110,12 @@ allow = [
   "Unlicense",       # 公有领域奉献（OSI approved + FSF Free/Libre）；iroh-relay 链 ws_stream_wasm/pharos/async_io_stream
   "MPL-2.0",
   "Unicode-3.0",
-  "Unicode-DFS-2016",
   "CDLA-Permissive-2.0",
-  "OpenSSL",
+  # 2026-11-25 清理：移除 allow 中不再出现的 "Unicode-DFS-2016"（unicode-ident
+  # 生态已整体迁 Unicode-3.0，在列）与 "OpenSSL"（ring 迁出该许可证后图内零命中）。
+  # cargo-deny ≥0.22 对未命中 allow 条目报 license-not-encountered 警告，与
+  # advisory 豁免同理：台账须与当前工具语义自洽；若依赖图回引入相应许可证，
+  # licenses 段会显式红提示回补。台账：docs/INFO/2026-08-31_dependency-rules.md
   "AGPL-3.0-only",   # 本 workspace 全部自有 crate 的许可证（58 成员）
   "NCSA",            # libfuzzer-sys (MIT OR Apache-2.0) AND NCSA；伊利诺伊大学宽松 BSD 族
 ]

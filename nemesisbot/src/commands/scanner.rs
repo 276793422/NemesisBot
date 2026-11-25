@@ -1208,7 +1208,14 @@ async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
         }
         if let Ok(updated) = serde_json::to_value(ec) {
             full_cfg.engines.insert("clamav".to_string(), updated);
-            let _ = save_scanner_config(security_cfg, &full_cfg);
+            // best-effort：病毒库文件已更新成功，config 状态回写失败不回滚
+            // 也不假报失败——但必须留痕（db_status/last_db_update 未持久化，
+            // 后续扫描链状态判定会拿旧值）。
+            if let Err(e) = save_scanner_config(security_cfg, &full_cfg) {
+                eprintln!(
+                    "[scanner] WARN: 病毒库状态写回 config.scanner.json 失败（db_status/last_db_update 未持久化）：{e}"
+                );
+            }
         }
     }
 

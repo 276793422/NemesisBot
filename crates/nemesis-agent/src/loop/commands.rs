@@ -440,24 +440,27 @@ impl AgentLoop {
 
         match parts[0] {
             "/help" => Some(
-                "Commands: /show [model|channel|agents], /list [tools|models], /model <alias>, /plan (计划模式: 停用文件修改), /build (切回构建模式), /compact (压缩会话上下文), /clear (清空会话历史), /undo (撤销上一轮), /help".to_string(),
+                "Commands: /show [model|channel|agents], /list [tools|models], /plan (计划模式: 停用文件修改), /build (切回构建模式), /compact (压缩会话上下文), /clear (清空会话历史), /undo (撤销上一轮), /help".to_string(),
             ),
             "/model" => {
                 if parts.len() < 2 {
+                    // 无参 = 查询（信息面无风险），保留；切换指路模型管理页。
                     let current = self.active_model.read().clone();
-                    let aliases = self.model_aliases();
                     Some(format!(
-                        "Current model: {}\nAliases: {} (or pass any model id)",
-                        current,
-                        if aliases.is_empty() {
-                            "(none configured)".to_string()
-                        } else {
-                            aliases.join(", ")
-                        }
+                        "Current model: {}（切换模型请到 Dashboard 模型管理页设为默认）",
+                        current
                     ))
                 } else {
-                    let new_model = self.set_active_model(parts[1]);
-                    Some(format!("✓ Model switched to: {}", new_model))
+                    // 2026-11-25 暂时停用（用户拍板）：slash 切换只换
+                    // active_model 名字、不重建 provider——目标条目与当前
+                    // provider 跨 api_base/协议/key 时，下一个 LLM 请求 =
+                    // 旧端点旧协议旧 key 打着新模型名出去（静默发错门）。
+                    // 全量热切通道 = Dashboard 模型管理页「设为默认」
+                    // （models.set_default → apply_runtime_swap 全量跟随）。
+                    Some(
+                        "⛔ /model 切换暂时停用：聊天框切换只换模型名不换通道（api_base/协议/key 不跟随），跨端点模型会静默发错门。请到 Dashboard 模型管理页将目标模型设为默认（全量热切）；查看当前模型用 /model 或 /show model。"
+                            .to_string(),
+                    )
                 }
             }
             "/show" => {

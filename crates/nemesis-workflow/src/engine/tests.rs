@@ -3964,15 +3964,20 @@ impl nemesis_providers::router::LLMProvider for W4aProvider {
 }
 
 /// sanitize_workflow_filename: empty -> wf_unnamed, non-alnum -> '_',
-/// leading dot -> wf_ prefix (engine.rs ~102-118).
+/// Windows 保留设备名前缀 `_` 中和（单一真相源在 drafts.rs——
+/// BUG-20261125-073 删双副本后 engine.rs 经 use 消费同一实现）。
 #[test]
 fn w4a_sanitize_workflow_filename_edge_cases() {
     assert_eq!(sanitize_workflow_filename(""), "wf_unnamed");
     assert_eq!(sanitize_workflow_filename("a b/c:d"), "a_b_c_d");
-    // '.' maps to '_' during sanitisation, so the leading-dot `wf_` prefix
-    // branch below can never fire for this input (actual behaviour: "_hidden").
+    // '.' maps to '_' during sanitisation — no hidden-file prefix branch
+    // exists (it was unreachable dead code, removed in BUG-20261125-073).
     assert_eq!(sanitize_workflow_filename(".hidden"), "_hidden");
     assert_eq!(sanitize_workflow_filename("ok-Name_1"), "ok-Name_1");
+    // Windows 保留设备名：persist_workflow 落 `<defs>/con.yaml` 在旧
+    // Windows 设备解析——前缀 `_` 断开（engine 侧同源回归锁）。
+    assert_eq!(sanitize_workflow_filename("con"), "_con");
+    assert_eq!(sanitize_workflow_filename("NUL"), "_NUL");
 }
 
 /// cron_next_fire_at_from_trigger: non-cron -> None, missing schedule ->

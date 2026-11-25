@@ -272,9 +272,12 @@ fn inst_with_user_msg() -> AgentInstance {
 #[test]
 fn workflow_edit_named_session_without_engine_notes_honestly() {
     let al = cov_loop();
-    *al.pending_workflow_edit.write() = Some(nemesis_types::channel::WorkflowEditTarget {
-        workflow_name: Some("ghost-wf".to_string()),
-    });
+    al.pending_workflow_edit.lock().insert(
+        String::new(),
+        nemesis_types::channel::WorkflowEditTarget {
+            workflow_name: Some("ghost-wf".to_string()),
+        },
+    );
     let msgs = al.build_messages(&inst_with_user_msg());
     let joined: String = msgs
         .iter()
@@ -294,9 +297,12 @@ fn workflow_edit_named_session_without_engine_notes_honestly() {
 #[test]
 fn workflow_edit_new_session_renders_capability_guidance() {
     let al = cov_loop();
-    *al.pending_workflow_edit.write() = Some(nemesis_types::channel::WorkflowEditTarget {
-        workflow_name: None,
-    });
+    al.pending_workflow_edit.lock().insert(
+        String::new(),
+        nemesis_types::channel::WorkflowEditTarget {
+            workflow_name: None,
+        },
+    );
     let msgs = al.build_messages(&inst_with_user_msg());
     let joined: String = msgs
         .iter()
@@ -339,9 +345,12 @@ fn workflow_edit_named_session_with_engine_renders_yaml() {
 
     let al = cov_loop();
     *al.workflow_engine.write() = Some(engine);
-    *al.pending_workflow_edit.write() = Some(nemesis_types::channel::WorkflowEditTarget {
-        workflow_name: Some("cov-wf".to_string()),
-    });
+    al.pending_workflow_edit.lock().insert(
+        String::new(),
+        nemesis_types::channel::WorkflowEditTarget {
+            workflow_name: Some("cov-wf".to_string()),
+        },
+    );
 
     let msgs = al.build_messages(&inst_with_user_msg());
     let joined: String = msgs

@@ -217,8 +217,10 @@ pub(crate) fn extract_diag_feedback_paths(
 
 impl AgentLoop {
     /// Switch the active model by alias (resolved via `config.models`) or literal
-    /// model id. Returns the resolved model id. Unknown aliases are used as-is
-    /// (so `/model deepseek-v4-pro` works even without an alias entry).
+    /// model id. Returns the resolved model id. Unknown aliases are used as-is.
+    /// ⚠️ 2026-11-25：`/model` slash 切换臂已暂时停用（只换名字不重建
+    /// provider，跨端点静默发错门）——本函数保留为 loop pub API（测试/
+    /// replay 直用；根治时作为主模型 resolver 注入形态的落点）。
     pub fn set_active_model(&self, alias_or_model: &str) -> String {
         let model = self
             .config
@@ -236,9 +238,9 @@ impl AgentLoop {
         model
     }
 
-    /// Available model aliases (from config.models), for `/model` listing.
-    /// Sorted deterministically（HashMap 迭代序是实现细节，输出进用户可见
-    /// join，见 BUG-20261117-052）。
+    /// Available model aliases (from config.models)。`/model` 无参别名表
+    /// 已随切换臂停用（2026-11-25）——保留 pub API（排序纪律见
+    /// BUG-20261117-052；直测面继续覆盖）。
     pub fn model_aliases(&self) -> Vec<String> {
         let mut aliases: Vec<String> = self.config.models.keys().cloned().collect();
         aliases.sort();
@@ -672,7 +674,8 @@ impl AgentLoop {
     }
 
     /// 当前活跃模型 id（解析后的模型名，非别名；审计/展示用—— 冲突硬解
-    /// 决策流卡记「哪个模型做的硬解」）。切换走 [`Self::set_active_model`]。
+    /// 决策流卡记「哪个模型做的硬解」）。切换走 [`Self::set_active_model`]
+    /// （⚠️ 2026-11-25 起 `/model` slash 切换臂已停用，该函数仅为 pub API）。
     pub fn active_model(&self) -> String {
         self.active_model.read().clone()
     }

@@ -1549,3 +1549,34 @@ fn max_tick_interval_sits_well_below_instant_arithmetic_bound() {
     // 与 heartbeat 先例常量对齐（30 天，分钟数 ×60）。
     assert_eq!(MAX_TICK_INTERVAL_SECS, 30 * 24 * 3600);
 }
+
+#[test]
+fn args_os_to_lossy_handles_non_utf8_without_panic() {
+    // BUG-20261125-070 回归锁：std::env::args() 遇非 UTF-8 参数 panic
+    // （Linux argv 任意字节 / Windows UTF-16 未配对代理）；args_os+lossy
+    // 必须不 panic 且 ASCII flag 字节保持可检测。
+    // 双平台构造非法参数：Windows = 未配对代理项 0xD800；Unix = 裸 0xFF 字节。
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        // ASCII 前缀在前、未配对代理 0xD800 垫尾
+        let bad = std::ffi::OsString::from_wide(&['-' as u16, '-' as u16, 'l' as u16, 0xD800]);
+        let good = std::ffi::OsString::from("--local");
+        let out = args_os_to_lossy(vec![good, bad]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "--local");
+        // ASCII 前缀保持，未配对代理项被 lossy 替换为 U+FFFD
+        assert!(out[1].starts_with("--l"));
+        assert!(out[1].contains('\u{FFFD}'));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let bad = std::ffi::OsString::from_vec(vec![0xFF, 0xFE]);
+        let good = std::ffi::OsString::from("--local");
+        let out = args_os_to_lossy(vec![good, bad]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "--local");
+        assert_eq!(out[1], "\u{FFFD}\u{FFFD}");
+    }
+}

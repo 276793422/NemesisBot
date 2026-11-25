@@ -367,18 +367,21 @@ impl RequestLogger {
 
         let index = self.next_index();
         let filename = format!("{}.request.md", index);
-        // 正文包 ````text 围栏（4+ 反引号，CommonMark 语义：只能被 4+ 反引号
-        // 闭合）：消息本身可能含 markdown 标题（# 行）与 ``` 代码块，裸插或
-        // 三反引号围栏都会被正文打碎（dashboard read_md_section 在标题行断节
-        // →「用户消息全文」被截）。4+ 反引号对用户内容里的 ``` 永不失步。与
-        // log_llm_request 的 Messages 段同一处理逻辑（那边读端不走此路径）。
+        // 正文包自适应反引号围栏（见 md_fence_len）：消息本身可能含 markdown
+        // 标题（# 行）与任意反引号行，裸插或定长围栏都会被正文打碎
+        // （dashboard read_md_section 在标题行断节 →「用户消息全文」被截）。
+        // 定长 4 反引号对正文里的 ``` 永不失步，但正文贴 4+ 反引号行
+        // （复制粘贴本系统日志片段回聊即触发）仍会闭栏失步——围栏长度
+        // 取正文最长纯反引号行 +1，渲染器语义下永不失步。与 log_llm_request
+        // 的 Messages 段同一处理逻辑（那边读端不走此路径）。
+        let fence = "`".repeat(md_fence_len(&info.content));
         let content = format!(
             "# User Request\n\n\
              **Timestamp**: {}\n\
              **Channel**: {}\n\
              **Sender ID**: {}\n\
              **Chat ID**: {}\n\n\
-             ## Message\n\n````text\n{}\n````\n",
+             ## Message\n\n{fence}text\n{}\n{fence}\n",
             info.timestamp.to_rfc3339(),
             info.channel,
             info.sender_id,
@@ -420,7 +423,7 @@ impl RequestLogger {
 
         // HTTP Headers section (mirrors Go's formatHeaders).
         if !info.http_headers.is_empty() {
-            content.push_str("\n## HTTP Headers\n\n```\n");
+            let mut body = String::new();
             for (key, value) in &info.http_headers {
                 let masked_val =
                     if key.to_lowercase().contains("auth") || key.to_lowercase().contains("key") {
@@ -428,9 +431,11 @@ impl RequestLogger {
                     } else {
                         value.clone()
                     };
-                content.push_str(&format!("{}: {}\n", key, masked_val));
+                body.push_str(&format!("{}: {}\n", key, masked_val));
             }
-            content.push_str("```\n");
+            // 自适应围栏（同 md_fence_len）：header 值含反引号行也不失步。
+            let fence = "`".repeat(md_fence_len(&body));
+            content.push_str(&format!("\n## HTTP Headers\n\n{fence}\n{body}{fence}\n"));
         }
 
         // Full Config section (mirrors Go's FullConfig).
@@ -489,8 +494,12 @@ impl RequestLogger {
                 } else {
                     msg.content.clone()
                 };
+                // 自适应围栏（同 md_fence_len）：会话史（系统提示/工具输出）
+                // 含任意反引号行是常态，定长三反引号被正文打碎——同族横扫
+                // 一并加固。
+                let fence = "`".repeat(md_fence_len(&msg_preview));
                 content.push_str(&format!(
-                    "\n## [{}] {}\n\n```text\n{}\n```\n",
+                    "\n## [{}] {}\n\n{fence}text\n{}\n{fence}\n",
                     i, msg.role, msg_preview
                 ));
                 if let Some(ref tool_calls) = msg.tool_calls {
@@ -813,6 +822,29 @@ fn mask_api_key(key: &str) -> String {
     let end = utils::floor_char_boundary(key, 3);
     let start = utils::ceil_char_boundary(key, key.len() - 3);
     format!("{}***{}", &key[..end], &key[start..])
+}
+
+/// 包正文围栏的反引号长度（自适应，渲染器语义下永不失步）。
+///
+/// CommonMark：围栏被「≥开栏长度的同字符 + 行内再无其他字符（首尾空白
+/// 可容忍）」的行闭合。正文里任何纯反引号行都是潜在闭栏候选，围栏必须
+/// 比最长候选长一；无候选 = 4（对正文里的 ``` 永不失步——dcb0db68 基线；
+/// 正文贴 4+ 反引号行——复制粘贴本系统日志片段回聊即触发——自适应加长）。
+/// ````abc 形态行（反引号后带非空白）不是合法闭栏，不计入候选。
+fn md_fence_len(content: &str) -> usize {
+    let mut max_run = 3usize; // 无候选 → 返回 4
+    for line in content.lines() {
+        let t = line.trim();
+        let run = t.chars().take_while(|&c| c == '`').count();
+        if run == 0 {
+            continue;
+        }
+        let rest = &t[run..];
+        if rest.chars().all(|c| c == '`' || c.is_whitespace()) {
+            max_run = max_run.max(run);
+        }
+    }
+    max_run + 1
 }
 
 /// Format an operation type for display.

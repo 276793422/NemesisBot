@@ -71,12 +71,16 @@ pub fn drafts_dir_from_defs(defs_dir: &Path) -> PathBuf {
 }
 
 /// Sanitize a workflow name for use as a draft/definition filename.
-/// Mirrors `engine.rs::sanitize_workflow_filename` (kept in sync by a test
-/// in engine.rs's test module exercising both via persist + draft roundtrip).
+/// **单一真相源**（BUG-20261125-073）：engine.rs 的 persist/清理/读取/
+/// execution 记录面同样消费本函数（`use crate::drafts::sanitize_workflow_filename`
+///），旧的双副本逐字节镜像已删——漂移即丢保留名中和。
 pub fn sanitize_workflow_filename(name: &str) -> String {
     if name.is_empty() {
         return "wf_unnamed".to_string();
     }
+    // 白名单（ASCII 字母数字 + `_` + `-`）已把 `.`、空白、路径分隔符、
+    // 控制字符全部映射为 `_`——`.`/`..` 穿越形态与隐藏文件首点在映射后
+    // 结构性不可能出现（旧实现的 `starts_with('.')` 分支永假，已删）。
     let sanitized: String = name
         .chars()
         .map(|c| {
@@ -87,11 +91,19 @@ pub fn sanitize_workflow_filename(name: &str) -> String {
             }
         })
         .collect();
-    if sanitized.starts_with('.') {
-        format!("wf_{}", sanitized)
-    } else {
-        sanitized
+    // Windows 保留设备名中和（BUG-20261125-073）：白名单全字母数字的
+    // `con`/`nul` 等此前逐字节直通——`<defs>/con.yaml` / `<drafts>/nul.yaml`
+    // 在旧 Windows（10/Server）设备解析（创建诡误/写入设备/静默丢数据），
+    // 与 nemesis-utils `sanitize_path_segment` 出口中和（BUG-20261111-083）
+    // 同威胁面同形态——本消毒器是该家族漏网。前缀 `_` 断开设备名解析
+    // （保留名 ≤4 字符，+1 无越界风险）。判定时机在白名单映射**之后**：
+    // 输入里的 `.` 已映射为 `_`，故 `con.yaml` 输入产出 `con_yaml`
+    //（基名 `con_yaml` 非 `con`，天然安全不命中）；命中的是白名单后
+    // 恰为纯保留名的形态（输入仅由保留名自身字符组成，任意大小写）。
+    if nemesis_utils::sanitize::is_windows_reserved_device_base(&sanitized) {
+        return format!("_{sanitized}");
     }
+    sanitized
 }
 
 /// Serialize a workflow to the canonical on-disk YAML form.

@@ -36,21 +36,27 @@ pub fn build_project_agent_loop(
     //（render_section_for(Some(pid))）——对话洞察（scope=None）不泄入项目
     // 会话，项目之间不串台。构造口径与主 loop 同源（activation_recurrence
     // 同读 config.forge.json）。
-    let forge_cfg = nemesis_forge::config::load_forge_config(
-        &shared
-            .workspace_dir()
-            .join("config")
-            .join("config.forge.json"),
-    );
-    let insights_store =
-        std::sync::Arc::new(nemesis_forge::insights::InsightStore::with_recurrence(
-            &shared.workspace_dir(),
-            forge_cfg.learn.activation_recurrence,
-        ));
-    let pid = project.id.clone();
-    loop_arc.set_insights_section_source(std::sync::Arc::new(move || {
-        insights_store.render_section_for(Some(&pid))
-    }));
+    // forge 门（BUG-20261125-065）：裁剪组合（minimal-iot
+    // --no-default-features）下 nemesis-forge dep 被裁，无门即 E0433；
+    // 非 forge 构建跳过洞察注入（loop 无 section source = 默认行为）。
+    #[cfg(feature = "forge")]
+    {
+        let forge_cfg = nemesis_forge::config::load_forge_config(
+            &shared
+                .workspace_dir()
+                .join("config")
+                .join("config.forge.json"),
+        );
+        let insights_store =
+            std::sync::Arc::new(nemesis_forge::insights::InsightStore::with_recurrence(
+                &shared.workspace_dir(),
+                forge_cfg.learn.activation_recurrence,
+            ));
+        let pid = project.id.clone();
+        loop_arc.set_insights_section_source(std::sync::Arc::new(move || {
+            insights_store.render_section_for(Some(&pid))
+        }));
+    }
     Ok(loop_arc)
 }
 /// 项目/记录 loop 的子代理 spawn 闭包。前台路径复用 run_detached

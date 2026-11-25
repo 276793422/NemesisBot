@@ -12,7 +12,7 @@
 //! 提前挡掉是为了不制造必败子进程噪音）。手动 `nemesisbot eval prompt`
 //! 不经本 helper，不受此限。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -55,9 +55,14 @@ pub fn normalize_trigger_text(prompt: &str) -> &str {
 
 /// 触发一次人格文本的沙盒安全评估（detached fire-and-forget）。
 ///
-/// `home`：当前实例 home——原样经 `NEMESISBOT_HOME` env 传给子进程
-/// （子进程按同一 home 解析 workspace/config 与报告目录；不用 `--local`：
-/// env 注入是 exec 链的既有约定）。
+/// `home`：当前实例 home——经 `NEMESISBOT_HOME` env 传给子进程时传
+/// **父目录**（[`env_home_for_child`]）：CLI 侧 `resolve_home_dir` 的约定是
+/// 对 env 值再 join `.nemesisbot`（paths.rs Priority 2，无存在性检查直接
+/// 返回），传 home 本体 = 子进程解析 `<...>/.nemesisbot/.nemesisbot` 幻影
+/// home，评估在无 config/persona/规则的空配置上跑废且报告落用户找不到的
+/// 目录（BUG-20261125-072）。同族前例：web sandbox `run_cli_subcmd` 与
+/// models `catalog_update` 已修过同一 trap（注释自证 double-join bug）。
+/// 不用 `--local`：env 注入是 exec 链的既有约定。
 pub fn trigger_prompt_eval(home: &Path, prompt: &str) -> PromptEvalTrigger {
     trigger_prompt_eval_inner(home, prompt, cfg!(target_os = "windows"))
 }
@@ -88,7 +93,7 @@ fn trigger_prompt_eval_inner(
     // stdout 只承载最终回复、日志一律 stderr——自动触发面两者都不接管道
     // （detached：不拖住调用方进程的管道，子进程报告自落盘）。
     cmd.args(["eval", "prompt", text])
-        .env("NEMESISBOT_HOME", home)
+        .env("NEMESISBOT_HOME", env_home_for_child(home))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -119,6 +124,17 @@ fn trigger_prompt_eval_inner(
             PromptEvalTrigger::Skipped("spawn-failed")
         }
     }
+}
+
+/// 子进程 `NEMESISBOT_HOME` 的取值：**home 的父目录**，不是 home 本体。
+///
+/// CLI 侧 `resolve_home_dir`（nemesis-path Priority 2）对 env 值 join
+/// `.nemesisbot` 且无存在性检查直接返回——传 home 本体（`<x>/.nemesisbot`）
+/// 会让子进程解析 `<x>/.nemesisbot/.nemesisbot` 幻影 home（BUG-20261125-072，
+/// 实机探针钉死 join 契约）。无父目录（根/裸名）保守回落本体——与 web
+/// sandbox `run_cli_subcmd` / models `catalog_update` 已修形态同款 tradeoff。
+fn env_home_for_child(home: &Path) -> PathBuf {
+    home.parent().unwrap_or(home).to_path_buf()
 }
 
 /// 追加一行触发流水（`<home>/workspace/logs/prompt_eval.log`）。

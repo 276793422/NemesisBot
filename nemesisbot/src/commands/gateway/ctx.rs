@@ -279,13 +279,24 @@ impl GatewayCtx {
         {
             let capture_enabled = cfg.debug.as_ref().is_none_or(|d| d.capture.enabled);
             nemesis_agent::capture_sink::CaptureSink::init(home.join("workspace"), capture_enabled);
+            // 会话错误记录（v1 纯追加旁路）：episode 四元组（事件/sid/
+            // 请求/应答）落 logs/session_errors/。session_error.recording
+            // 缺省 true；记录器任何故障 fail-open（warn 放行），与
+            // capture_sink 同纪律。
+            let se_enabled = cfg
+                .session_error
+                .as_ref()
+                .map(|s| s.recording)
+                .unwrap_or(true);
+            nemesis_agent::r#loop::session_error_recorder::init(home.join("workspace"), se_enabled);
             if capture_enabled {
                 info!("[Gateway] Diagnostic capture armed (failure-triggered → logs/capture/)");
             }
         }
 
         // Step 5: Initialize logger from config
-        let mut args: Vec<String> = std::env::args().skip(2).collect();
+        // args_os+lossy：非 UTF-8 参数 panic 面（common::collect_args_lossy 同源）。
+        let mut args: Vec<String> = common::collect_args_lossy().into_iter().skip(2).collect();
         args.extend(extra_args.iter().cloned());
         let _log_flags = common::init_logger_from_config(&config_path, &args);
 

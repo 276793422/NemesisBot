@@ -251,10 +251,10 @@ impl ModuleHandler for ClusterHandler {
                 self.persona_apply(&data, ctx)
             }
             "peers" => self.peers(ctx),
-            "firewall.check" => self.firewall_check(ctx),
+            "firewall.check" => self.firewall_check(ctx).await,
             "firewall.add_rules" => {
                 let data = data.ok_or("missing data")?;
-                self.firewall_add_rules(&data, ctx)
+                self.firewall_add_rules(&data, ctx).await
             }
             "diagnostics.run" => {
                 let data = data.ok_or("missing data")?;
@@ -985,8 +985,14 @@ impl ClusterHandler {
 
     fn runtime_start(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         // Persist enabled=true to config.cluster.json before starting runtime
-        if let Ok(workspace) = require_workspace(ctx) {
-            let _ = Self::update_cluster_config_enabled(workspace, true);
+        // （best-effort 语义：写盘失败不阻断启动，但必须留痕——否则重启后
+        //   集群状态回跳且零线索）。
+        if let Ok(workspace) = require_workspace(ctx)
+            && let Err(e) = Self::update_cluster_config_enabled(workspace, true)
+        {
+            tracing::warn!(
+                "[Cluster] runtime 启动后 config.cluster.json enabled=true 持久化失败（重启后集群不自启）：{e}"
+            );
         }
         let svc = ctx
             .state
@@ -1005,8 +1011,13 @@ impl ClusterHandler {
             .ok_or("cluster service not available")?;
         svc.stop().map_err(|e| format!("stop failed: {}", e))?;
         // Persist enabled=false to config.cluster.json after stopping
-        if let Ok(workspace) = require_workspace(ctx) {
-            let _ = Self::update_cluster_config_enabled(workspace, false);
+        // （同 runtime_start：best-effort 不阻断，但失败留痕）。
+        if let Ok(workspace) = require_workspace(ctx)
+            && let Err(e) = Self::update_cluster_config_enabled(workspace, false)
+        {
+            tracing::warn!(
+                "[Cluster] runtime 停止后 config.cluster.json enabled=false 持久化失败（重启后集群自启）：{e}"
+            );
         }
         Ok(Some(serde_json::json!({ "stopped": true })))
     }
@@ -2832,7 +2843,10 @@ fn format_ago(d: std::time::Duration) -> String {
 
 impl ClusterHandler {
     /// Check network readiness for cluster discovery and RPC.
-    fn firewall_check(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn firewall_check(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let (udp_port, tcp_port) = Self::read_cluster_ports(ctx);
         let mut tests = Vec::new();
 
@@ -2861,7 +2875,20 @@ impl ClusterHandler {
         tests.push(tcp_result);
 
         // Test 5: Platform firewall status
-        let fw_result = check_platform_firewall(udp_port, tcp_port);
+        // BUG-20261125-063：netsh/ufw/iptables/pfctl 是百毫秒~秒级外部命令，
+        // async 上下文直调会卡死 tokio worker（BUG-20261118-172 同族纪律：
+        // 外呼不占 worker），移 spawn_blocking。JoinError（下游 panic）按
+        // 该项失败落账，不让整个探测面消失。
+        let fw_result =
+            tokio::task::spawn_blocking(move || check_platform_firewall(udp_port, tcp_port))
+                .await
+                .unwrap_or_else(|e| {
+                    serde_json::json!({
+                        "name": "platform_firewall",
+                        "pass": false,
+                        "detail": format!("防火墙探测任务失败: {e}"),
+                    })
+                });
         tests.push(fw_result);
 
         let all_pass = tests.iter().all(|t| t["pass"].as_bool().unwrap_or(false));
@@ -2886,7 +2913,7 @@ impl ClusterHandler {
     }
 
     /// Add firewall rules for cluster ports.
-    fn firewall_add_rules(
+    async fn firewall_add_rules(
         &self,
         data: &serde_json::Value,
         ctx: &RequestContext,
@@ -2908,7 +2935,14 @@ impl ClusterHandler {
         let udp_port = parse_port("udp_port", default_udp)?;
         let tcp_port = parse_port("tcp_port", default_tcp)?;
 
-        add_platform_firewall_rules(udp_port as u16, tcp_port as u16)
+        // BUG-20261125-063：netsh add / ufw / iptables 是秒级外部命令（UAC
+        // 臂 ShellExecuteW 本就不等待），async 上下文直调卡死 tokio worker，
+        // 移 spawn_blocking（BUG-20261118-172 同族纪律）。
+        tokio::task::spawn_blocking(move || {
+            add_platform_firewall_rules(udp_port as u16, tcp_port as u16)
+        })
+        .await
+        .map_err(|e| format!("防火墙规则任务失败: {e}"))?
     }
 
     /// Read cluster ports from config file, fallback to defaults.

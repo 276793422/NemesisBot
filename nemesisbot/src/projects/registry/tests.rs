@@ -198,7 +198,26 @@ fn test_path_validation_and_overlap_matrix() {
         max,
     )
     .unwrap();
-    assert_eq!(list_projects(&reg).len(), 2);
+
+    // 与已有 extra_dirs：精确相等 = 共享放行（建项顺序无关——先加目录后建
+    // 项目与先建项目后加目录同一终态，2026-11-25 单一规则）；嵌套拒绝。
+    let shared = mk("shared-assets");
+    add_project_dir(&reg, &ok.id, shared.to_str().unwrap(), &ws).unwrap();
+    let twin = create_project(&reg, &ws, "twin", shared.to_str().unwrap(), max).unwrap();
+    assert_eq!(
+        twin.path,
+        canonicalize_for_compare(&shared),
+        "项目主根 = 别人附加目录（精确相等）必须共享放行"
+    );
+    let shared_child = mk("shared-assets/inner");
+    let err = create_project(&reg, &ws, "y2", shared_child.to_str().unwrap(), max)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("嵌套重叠") && err.contains("sibling"),
+        "项目目录与别人附加目录嵌套必须拒绝（报错带归属项目名）: {err}"
+    );
+    assert_eq!(list_projects(&reg).len(), 3);
 }
 
 #[test]
@@ -380,7 +399,8 @@ fn test_registry_accepts_utf8_bom_file() {
 
 // ---------------------------------------------------------------------------
 // 附加放行目录（extra_dirs，2026-11-19 D 批）：add/remove 是读-校验-写 RMW，
-// 校验链三向不重叠（主 workspace / 任何项目主根 / 任何已有 extra_dir），
+// 校验链单一规则（2026-11-25）：主 workspace 任何重叠拒绝；项目主根/
+// 已有 extra_dir 精确相等 = 共享放行、嵌套拒绝（报错带归属项目名）。
 // remove 摘列表不动磁盘。canonical 表示与 path 同源（剥 verbatim + 归一
 // 8.3），serde default 零迁移。
 // ---------------------------------------------------------------------------
@@ -530,38 +550,49 @@ fn test_add_dir_validation_and_overlap_matrix() {
         assert!(err.contains("主工作区"), "unexpected: {err}");
     }
 
-    // 与项目主根重叠：自己 / 别的项目（相等或子目录——extra_dir 命中别的
-    // 项目主根 = 跨项目越权写通道，围栏嵌套歧义禁令）。
+    // 与项目主根嵌套重叠：嵌套拒绝（报错带归属项目名）。
     let child_of_b = mk("proj-b/child");
-    for (cand, proj_name) in [
-        (proj_b.to_str().unwrap(), "B"),
-        (child_of_b.to_str().unwrap(), "B"),
-        (proj_a.to_str().unwrap(), "A"),
-    ] {
-        let err = add_project_dir(&reg, &e.id, cand, &ws)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("重叠") && err.contains(proj_name),
-            "extra_dir 命中项目主根必须拒绝（目标 {proj_name}）: {err}"
-        );
-    }
+    let err = add_project_dir(&reg, &e.id, child_of_b.to_str().unwrap(), &ws)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("嵌套重叠") && err.contains("B"),
+        "extra_dir 与项目主根嵌套必须拒绝: {err}"
+    );
 
-    // 与已有 extra_dir 重叠（别的项目的附加目录：相等或子目录）。
+    // 精确相等 = 共享放行（2026-11-25 单一规则）：别的项目的主根（B 的
+    // proj-b）挂为自己的附加目录；自己的主根（A 的 proj-a）同样放行
+    // （无妨 no-op，单规则不特判）。
+    add_project_dir(&reg, &e.id, proj_b.to_str().unwrap(), &ws).unwrap();
+    add_project_dir(&reg, &e.id, proj_a.to_str().unwrap(), &ws).unwrap();
+
+    // 与已有 extra_dir：嵌套拒绝（带归属，此时只有 B 拥有）；精确相等 =
+    // 跨项目共享放行。
     let b_assets = mk("b-assets");
     add_project_dir(&reg, &eb.id, b_assets.to_str().unwrap(), &ws).unwrap();
     let b_assets_child = mk("b-assets/inner");
-    for cand in [b_assets.to_str().unwrap(), b_assets_child.to_str().unwrap()] {
-        let err = add_project_dir(&reg, &e.id, cand, &ws)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("重叠"), "unexpected: {err}");
-    }
+    let err = add_project_dir(&reg, &e.id, b_assets_child.to_str().unwrap(), &ws)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("嵌套重叠") && err.contains("「B」"),
+        "与别人附加目录嵌套必须拒绝（报错带归属项目名）: {err}"
+    );
+    let shared = add_project_dir(&reg, &e.id, b_assets.to_str().unwrap(), &ws).unwrap();
+    assert!(
+        shared.extra_dirs.iter().any(|d| d.ends_with("b-assets")),
+        "跨项目精确相等必须共享放行: {:?}",
+        shared.extra_dirs
+    );
 
     // ws 的兄弟目录合法（不在任何禁区）。
     let ok_dir = mk("ok-assets");
     let updated = add_project_dir(&reg, &e.id, ok_dir.to_str().unwrap(), &ws).unwrap();
-    assert_eq!(updated.extra_dirs.len(), 1);
+    assert!(
+        updated.extra_dirs.iter().any(|d| d.ends_with("ok-assets")),
+        "合法目录入列: {:?}",
+        updated.extra_dirs
+    );
 }
 
 #[test]

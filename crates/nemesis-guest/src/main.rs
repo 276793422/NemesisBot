@@ -14,7 +14,11 @@ use nemesis_exec_protocol::{BoundedLine, read_line_bounded};
 use nemesis_guest::GuestAgent;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // args_os+lossy：非 UTF-8 参数 panic 面（--listen 等 ASCII flag 检测不受影响）。
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let workspace = nemesis_guest::default_workspace();
     let agent_base = match std::env::var("NEMESISBOT_GUEST_TOKEN") {
         Ok(t) if !t.is_empty() => GuestAgent::new(workspace).with_token(t),

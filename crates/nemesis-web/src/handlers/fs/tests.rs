@@ -846,6 +846,103 @@ fn open_resolve_project_leaf_prefix_strip() {
     );
 }
 
+/// 项目附加放行目录（extra_dirs）进人面打开白名单（2026-11-25 回归锁）：
+/// 此前 `allowed_open_roots` 只认主根，extra_dir 内绝对路径点击必拒
+///（语义倒挂——agent 围栏写面放行、人面打开反拒）。钉三臂：extra_dir
+/// 目录本身命中 / extra_dir 内文件命中 / 白名单外系统目录照拒（extra_dirs
+/// 放宽不波及任意路径——防诱导打开系统文件的闸不松）。
+#[test]
+fn open_resolve_project_extra_dirs_allowed() {
+    let _serial = BRIDGE_TEST_LOCK.lock();
+    let _editor_slot = editor_slot_lock();
+    let ws = setup_workspace();
+    let holder = TempDir::new().unwrap();
+    let extra = holder.path().join("zoo-extra");
+    std::fs::create_dir_all(&extra).unwrap();
+    std::fs::write(extra.join("report.md"), "r").unwrap();
+
+    struct ExtraBridge(PathBuf, Vec<String>);
+    impl ProjectsBridge for ExtraBridge {
+        fn list(&self) -> Vec<ProjectInfo> {
+            vec![ProjectInfo {
+                id: "p1".to_string(),
+                name: "proj".to_string(),
+                path: self.0.to_string_lossy().to_string(),
+                created_at: "t".to_string(),
+                running: false,
+                instructions_trusted: true,
+                extra_dirs: self.1.clone(),
+            }]
+        }
+        fn create(&self, _n: &str, _p: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn remove(&self, _id: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn rename(&self, _id: &str, _n: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn set_trust(&self, _id: &str, _t: bool) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn add_dir(&self, _id: &str, _d: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn remove_dir(&self, _id: &str, _d: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn owner_of(&self, _s: &str) -> Option<String> {
+            None
+        }
+        fn loop_for_session(&self, _id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
+            None
+        }
+        fn project_path(&self, _id: &str) -> Option<PathBuf> {
+            None
+        }
+        fn bind_session(&self, _s: &str, _id: &str) -> Result<(), String> {
+            Err("noop".to_string())
+        }
+        fn forget_session(&self, _s: &str) {}
+    }
+    set_projects_bridge_for_test(Some(Arc::new(ExtraBridge(
+        holder.path().join("proj-main"),
+        vec![extra.to_string_lossy().to_string()],
+    ))));
+
+    // 绝对路径在 extra_dir 内：目录本身 / 目录内文件。
+    let dir = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        &extra.to_string_lossy(),
+    );
+    let file = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        &extra.join("report.md").to_string_lossy(),
+    );
+    // 白名单外系统目录照拒。
+    let sys_dir = if cfg!(windows) { "C:/Windows" } else { "/etc" };
+    let oob = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        sys_dir,
+    );
+
+    // 断言前先摘 bridge（进程级共享槽——即使 assert 失败也不污染兄弟测试）。
+    set_projects_bridge_for_test(None);
+
+    let t = dir.unwrap();
+    assert!(t.exists && t.is_dir, "extra_dir 目录本身应命中");
+    assert_eq!(t.path, extra);
+    let t = file.unwrap();
+    assert!(t.exists && !t.is_dir, "extra_dir 内文件应命中");
+    assert_eq!(t.path, extra.join("report.md"));
+    let err = oob.unwrap_err();
+    assert!(err.contains("越出 workspace"), "{err}");
+}
+
 /// handle_cmd 层错误路径（不触发 spawn）：缺 path / 越界。
 #[tokio::test]
 // editor 槽测试互斥锁刻意横跨整个测试体（跨测试串行化；current-thread

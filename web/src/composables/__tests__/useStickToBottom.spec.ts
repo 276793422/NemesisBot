@@ -45,10 +45,16 @@ describe('useStickToBottom 纯函数', () => {
     expect(distanceFromBottom({ scrollTop: 1100, scrollHeight: 1600, clientHeight: 500 })).toBe(0)
   })
 
-  it('距底 ≤ 阈值 → 恢复跟随（无论方向）', () => {
+  it('距底 ≤ 阈值且非上移 → 恢复跟随；上移采样（即使圈内）恒放弃（2026-11-25 拽底循环根修）', () => {
     const m = { scrollTop: 1080, scrollHeight: 1600, clientHeight: 500 }
-    expect(resolveFollowOnScroll(false, m, 1100)).toBe(true)
-    expect(resolveFollowOnScroll(true, m, 1100)).toBe(true)
+    // 从下方到达（scrollTop 增大）→ 恢复（「滚回底部恢复跟随」语义保持）
+    expect(resolveFollowOnScroll(false, m, 1070)).toBe(true)
+    expect(resolveFollowOnScroll(true, m, 1070)).toBe(true)
+    // 上移中（1100→1080，圈内）→ 不重臂——上滚手势不可被圈内采样吞掉
+    // （旧「无论方向」臂把 onWheel 刚放弃的 follow 立刻重臂回 true，配合
+    // 浮钮 v-if 插拔喂 MutationObserver → stick() 形成自触发拽底循环）
+    expect(resolveFollowOnScroll(false, m, 1100)).toBe(false)
+    expect(resolveFollowOnScroll(true, m, 1100)).toBe(false)
   })
 
   it('远端上移（scrollTop 减小 >1px）→ 放弃跟随', () => {
@@ -102,6 +108,30 @@ describe('useStickToBottom composable', () => {
     c.onScroll()
     expect(c.follow.value).toBe(true)
     expect(c.unreadBelow.value).toBe(0)
+  })
+
+  it('拽底循环回归（2026-11-25）：圈内小步上滚不重臂、stick 不拽底；滚回底部恢复', () => {
+    const el = fakeEl()
+    const c = useStickToBottom(() => el)
+    el.scrollHeight = 2000
+    c.jumpToBottom() // 贴底，follow=true（会话打开常态，距底 ~27px 同款圈内起点）
+    c.onScroll() // 真实浏览器里编程赋值 scrollTop 会触发 scroll 事件同步采样；fakeEl 不发事件，手动仿真
+    expect(c.follow.value).toBe(true)
+
+    // 用户小步上滚：wheel 放弃跟随 → scroll 采样仍在 80px 圈内
+    c.onWheel({ deltaY: -30 } as WheelEvent)
+    expect(c.follow.value).toBe(false)
+    el.scrollTop = 1970 // 距底 30px ≤ NEAR_BOTTOM_PX——缺陷原重臂区
+    c.onScroll()
+    expect(c.follow.value).toBe(false) // 不再被规则 1 重臂
+    el.scrollHeight = 2100 // 期间内容增长（等价浮钮插拔外的任意突变）
+    c.stick()
+    expect(el.scrollTop).toBe(1970) // 不拽底——上滚净位移保留
+
+    // 滚回底部（向下）→ 恢复跟随 + stick 恢复贴底
+    el.scrollTop = 2100
+    c.onScroll()
+    expect(c.follow.value).toBe(true)
   })
 
   it('attach 初采样：容器静止停在远端（滚动位置恢复场景）→ 诚实不跟随', () => {

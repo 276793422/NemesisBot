@@ -406,7 +406,16 @@ fn assert_workspace_extraction_excludes(target: &std::path::Path) {
     assert!(target.join("AGENT.md").exists(), "执行面模板必须照常提取");
     assert!(target.join("TOOLS.md").exists());
     assert!(target.join("HEARTBEAT.md").exists());
-    assert!(target.join("config").exists(), "其余顶层目录不受排除影响");
+    // config/ 不再是模板树成员（BUG-20261125-075）：伪模板删除后该目录
+    // 已不存在——出厂配置全部走 nemesisbot/config/ 常量 + onboard
+    // write_if_absent 落地，workspace 模板树不携带任何 config/ 文件。
+    // （本断言曾因污染伪模板创建的 config/ 目录而假绿。）
+    assert!(
+        !target.join("config").exists(),
+        "config/ 不得随提取落地（出厂配置走 config/ 常量通道，见 BUG-20261125-075）"
+    );
+    // 「其余顶层目录不受排除影响」的替身断言：memory/ 是真实模板目录。
+    assert!(target.join("memory").exists(), "其余顶层目录不受排除影响");
 }
 
 #[test]
@@ -421,4 +430,33 @@ fn extract_workspace_templates_skip_existing_excludes_persona_entries() {
     let temp = tempfile::tempdir().unwrap();
     extract_workspace_templates(temp.path()).unwrap();
     assert_workspace_extraction_excludes(temp.path());
+}
+
+/// 嵌入纯度契约（BUG-20261125-075）：`config/config.enhanced_memory.json`
+/// 是**运行时自愈产物**（load_embedding_config 缺省臂 create-if-missing），
+/// 不是出厂模板——曾以 tracked 伪模板形态混入嵌入模板树（88d39f8d 误
+/// sweep），与 config/ 侧唯一真相源 `CONFIG_ENHANCED_MEMORY_DEFAULT`
+///（onboard Step 7.5 write_if_absent 落地）双源并存。现已 git rm：
+/// 新工作区该文件由两臂供给（onboard 常量 + 首次装配缺省臂自愈），
+/// 模板树不得再携带。include_dir! 编译期读盘，gitignore 防不了嵌入，
+/// 本测试是检测线：文件若被重新放回 `nemesisbot/workspace/config/`，
+/// 此处编译期快照就会 loud 失败。
+#[test]
+fn embedded_workspace_has_no_enhanced_memory_pseudo_template() {
+    assert!(
+        EMBEDDED_WORKSPACE
+            .get_file("config/config.enhanced_memory.json")
+            .is_none(),
+        "workspace 模板树不得携带 config.enhanced_memory.json（运行时产物 \
+         非出厂模板，唯一模板源 = config/config.enhanced_memory.default.json；\
+         见 BUG-20261125-075）"
+    );
+    // 姊妹断言：真正的出厂模板常量在场且可解析（防「删错了真模板」的
+    // 反向事故——两个方向都钉死）。
+    let canonical: serde_json::Value = serde_json::from_str(crate::CONFIG_ENHANCED_MEMORY_DEFAULT)
+        .expect("CONFIG_ENHANCED_MEMORY_DEFAULT 必须是合法 JSON");
+    assert!(
+        canonical.get("enabled").is_some(),
+        "出厂模板必须带 enabled 键（memory enable/disable 子开关落点）"
+    );
 }

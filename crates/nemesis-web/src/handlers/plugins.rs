@@ -86,19 +86,29 @@ impl PluginsHandler {
         )
         .await?;
         std::fs::create_dir_all(&base).map_err(|e| format!("创建目录失败：{e}"))?;
-        std::fs::write(&zip_path, &bytes).map_err(|e| format!("写入失败：{e}"))?;
-        // 覆盖重下 = 先清旧解包目录（Windows AV/索引器瞬时句柄 → 韧性重试）。
-        if devkit_dir.exists() && !release_fetch::remove_dir_all_resilient(&devkit_dir) {
-            return Err(format!(
-                "旧开发包目录清除失败（被占用？）：{}",
-                devkit_dir.display()
-            ));
-        }
-        let files = extract_zip_root_stripped(&bytes, &devkit_dir)?;
+        // BUG-20261125-063：zip 落盘（最大 RELEASE_ASSET_MAX_BYTES）+ 旧目录
+        // 清除（退避最坏 ~4.4s）+ 解压是纯阻塞 IO，async 上下文直调卡死
+        // tokio worker（BUG-20261118-172 同族纪律），整段移 spawn_blocking。
+        let byte_len = bytes.len();
+        let zip_path_sb = zip_path.clone();
+        let devkit_dir_sb = devkit_dir.clone();
+        let files = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+            std::fs::write(&zip_path_sb, &bytes).map_err(|e| format!("写入失败：{e}"))?;
+            // 覆盖重下 = 先清旧解包目录（Windows AV/索引器瞬时句柄 → 韧性重试）。
+            if devkit_dir_sb.exists() && !release_fetch::remove_dir_all_resilient(&devkit_dir_sb) {
+                return Err(format!(
+                    "旧开发包目录清除失败（被占用？）：{}",
+                    devkit_dir_sb.display()
+                ));
+            }
+            extract_zip_root_stripped(&bytes, &devkit_dir_sb)
+        })
+        .await
+        .map_err(|e| format!("devkit 落盘/解压任务失败: {e}"))??;
         Ok(serde_json::json!({
             "path": zip_path.display().to_string(),
             "dir": devkit_dir.display().to_string(),
-            "size": bytes.len(),
+            "size": byte_len,
             "files": files,
         }))
     }

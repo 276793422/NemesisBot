@@ -64,6 +64,14 @@ scripts/customize/.config
 # proper test isolation via tempdirs for the 151 Cluster::new() callers is P2.
 /crates/nemesis-cluster/cluster/
 
+# 运行时自愈产物，非出厂模板（BUG-20261125-075）：load_embedding_config 的
+# 缺省臂 create-if-missing 会在装配时写出此文件；曾以 tracked 伪模板混入
+# 嵌入模板树（88d39f8d 误 sweep），唯一模板源 = nemesisbot/config/
+# config.enhanced_memory.default.json（onboard Step 7.5 落地）。回归 writer
+# 测试已修（projects_factory_tests 空 home 相对路径），此条目防再犯；
+# 嵌入纯度检测线 = embedded/tests.rs::embedded_workspace_has_no_enhanced_memory_pseudo_template。
+/nemesisbot/workspace/config/config.enhanced_memory.json
+
 # Python artifacts (sixth-batch sweep): the SDK under test-tools/python/sdk
 # runs pytest in-repo; bytecode caches and pytest scratch must not be committed.
 __pycache__/

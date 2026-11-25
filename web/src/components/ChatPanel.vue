@@ -1060,10 +1060,13 @@ function toggleUserMessage(msg: ChatMessage) {
 }
 
 // --- 滚动跟随（2026-11-09 滚动/焦点/选择批）---------------------------
-// useStickToBottom 三规则：滚轮上滚即时放弃跟随 / scroll 方向判定 /
-// 距底阈值恢复 + 跟随时内容变化贴底（MutationObserver 子树监听）。旧实现只靠
+// useStickToBottom 三规则：滚轮上滚即时放弃跟随 / scroll 方向判定（上移
+// 恒放弃，优先于距底阈值——2026-11-25 拽底循环根修）/ 非上移距底阈值恢复
+// + 跟随时内容变化贴底（MutationObserver 子树监听）。旧实现只靠
 // scroll 事件维护 flag，而内容增长不触发 scroll 事件——「回复到了却不滚」
 // 的根因；重灌/重同步用视口锚保位（capture/restore），不再无条件贴底。
+// 回到底部浮钮在 .chat-messages-wrap（滚动容器外）悬浮——UI 状态自身的
+// 插拔不再喂给贴底 Observer（同族自反馈的纵深防御）。
 const {
   follow: chatFollow,
   unreadBelow,
@@ -1298,8 +1301,25 @@ function handleWSMessage(data: any) {
       // 新流（重试 = 新流）：上一 attempt 的思考残尾作废（与后端 sink
       // reset_for_new_stream 同源语义）。
       chatStore.clearLiveThinking()
+      thinkStreamActive = true
     } else if (phase === 'think_delta') {
       if (typeof p.text === 'string' && p.text) chatStore.ingestLiveThinkingDelta(p.text)
+    } else if (phase === 'think_end') {
+      // 思考流收口（2026-11-25）：旗标复位——此后轮询拍 adopt 恢复全清语义
+      //（已累积内容由轮发布 RoundText 时 store 清，注释见下）。
+      thinkStreamActive = false
+    } else if (phase === 'start' || phase === 'delta') {
+      // 插话窗正文增量（2026-11-25 插话中间过程补全）：⚡ 注记到插话回应
+      // 之间的正文流渲染为注记行下 live 预览（此前整窗零输出——非流式
+      // 模型连思考增量都没有，用户看到「大段空白然后回应突然落出」）。
+      // start = 换流重开（插话专轮内叙述流→回应流多次换流，预览恒对准
+      // 当前流）；delta 仅窗口内摄取。主终答正文维持不消费——「receive
+      // 帧权威」拍板（B3 2026-11-09）不碰，窗口旗标由 store 的
+      // ingestSteerNote / ingestSteerResponse 精确开关。
+      if (phase === 'start') chatStore.clearSteerLive()
+      else if (chatStore.steerWindowActive && typeof p.text === 'string' && p.text) {
+        chatStore.ingestSteerBodyDelta(p.text)
+      }
     }
     // think_end：保留已累积内容供回看；轮发布（RoundText）时 store 清。
     return
@@ -1575,10 +1595,21 @@ function handleWSMessage(data: any) {
         clearWatchdog()
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
+      // R263 同族扫齐（2026-11-25 终局 live 缓冲残留修复）：本 turn 已积累
+      // 的时间线/交付物 flush 挂到错误消息上（与 cmd=error 分支同构）。此前
+      // 只扫 busy/徽标/inflight 漏了 work 缓冲——残留会让【执行态】live 块
+      // 永挂（模板 v-if 含 pendingWork），且下一同会话 turn 的事件混进同一
+      // 缓冲（视图级跨轮污染）。
+      const work = chatStore.flushPendingWork()
+      const deliverables = chatStore.pendingDeliverables.length
+        ? chatStore.flushPendingDeliverables()
+        : undefined
       chatStore.addMessage({
         role: 'error',
         content: data.data.content || data.data,
         timestamp: data.timestamp,
+        work,
+        deliverables,
       })
       chatStore.setBusy(effectiveSid.value, false)
       // WS 协议层错误兜底（2026-11-20 四问题横扫补齐）：busy 已关——进行中
@@ -1658,6 +1689,13 @@ function handleWSMessage(data: any) {
 // gap=true（缺口滑出窗口/网关重启 seq 重置）→ reset + 全量重载兜底。
 // 只对默认 chat 模块生效（workflow_chat 引擎自管，帧不在补拉通道里）。
 let lastChatSeq = 0
+// 思考流活性（2026-11-25 观看端闪屏修复）：provider_stream_event think_* 流
+// 进行中 = liveThinking 增量通道活着——占位轮询拍 adoptWorkSnapshot 时按它
+// 决定是否保留 live 流缓冲（详见 store adoptWorkSnapshot）。think_start 置位
+// / think_end 复位（旧网关无 think_end 帧 = 旗标悬挂——自愈链：轮发布
+// RoundText 经 ingestWorkRoundText 清 liveThinking，残留旗标只会让下一拍
+// adopt 多保留一次空缓冲，无实害）；换会话归零。
+let thinkStreamActive = false
 // chat_dirty hint 的补拉节流窗（trailing）：窗内重复 hint 不叠加多次 sync。
 let chatDirtySyncTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -1752,13 +1790,29 @@ async function replayToolsFromRing() {
   }
 }
 
-async function primeSeqBaseline() {
-  if (!isDefaultChat.value || lastChatSeq > 0) return
+/** 从环回放最近一轮工具事件并挂卡（P1c）；同时锚定补拉游标兜底。
+ * fallbackSeq = 历史响应的 last_seq（后端随历史采样环 latest_seq，环空省略）。
+ * 为什么需要：会话生命周期事件超过环容量（200）后，观看端首屏历史落地时
+ * 游标还是 0，after_seq=0 的窗口起点早已滑出环 → chat.sync 恒 gap=true →
+ * replayToolsFromRing 的游标推进闸（!gap 才锚）永远不命中 → 游标滞留 0 →
+ * 此后每个补拉（activity 信号 / 占位轮询 4s 拍）都判 gap → syncMissedChat
+ * 走 reset+loadHistory 全量循环 = 观看端/切回端「白屏狂闪、内容反复消失」。
+ * 修法（2026-11-25）：历史落地即以 last_seq 同步锚定游标（在 await 之前，
+ * 闭合回放在飞窗口内 activity/轮询拍打进来时游标仍为 0 的竞窗），再照旧
+ * 环回放补工具卡——回放成功由 tail.seq Math.max 收敛（≥last_seq）；gap 或
+ * 回放失败则游标保持 last_seq，从它起补拉只拉快照之后的新行，永不 gap。
+ * needReplay 按锚定前的游标判定（与旧守卫同语义：视图已有活帧锚定的游标
+ * = live 帧已推进到当前，环重放只会重复挂卡）。 */
+async function primeSeqBaseline(fallbackSeq = 0) {
+  if (!isDefaultChat.value) return
+  const needReplay = lastChatSeq === 0
+  if (needReplay && fallbackSeq > 0) lastChatSeq = fallbackSeq
+  if (!needReplay) return
   try {
     await replayToolsFromRing()
   } catch (e) {
-    // 基线拿不到就保持 0；缺陷 ⑤（2026-11-23）：不再纯静默——回放失败
-    // = 最后轮工具卡缺失且用户无从知晓，warn 留观测痕。
+    // 基线拿不到就保持锚定值（或 0）；缺陷 ⑤（2026-11-23）：不再纯静默
+    // ——回放失败 = 最后轮工具卡缺失且用户无从知晓，warn 留观测痕。
     console.warn('[seq] primeSeqBaseline 环回放失败——最后轮工具卡可能缺失', e)
   }
 }
@@ -2788,6 +2842,9 @@ function handleHistoryResponse(data: any) {
     systemNotice: m.system_notice,
     cronJobId: m.cron_job_id,
   }))
+  // 后端随历史采样环 latest_seq（环空省略）：非翻页分支用于清掉被环丢弃的
+  // assistant 残行 + primeSeqBaseline 游标兜底（2026-11-25 观看端闪屏修复）。
+  const lastSeq = typeof data.last_seq === 'number' ? data.last_seq : 0
   if (!inflight.paginated) {
     if (historyMessages.length > 0) {
       chatStore.mergeHistoryTail(
@@ -2795,7 +2852,6 @@ function handleHistoryResponse(data: any) {
         typeof data.oldest_index === 'number' ? data.oldest_index : null,
       )
     }
-    const lastSeq = typeof data.last_seq === 'number' ? data.last_seq : 0
     chatStore.dropAssistantBelowSeq(lastSeq)
   } else if (historyMessages.length > 0) {
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
@@ -2825,7 +2881,9 @@ function handleHistoryResponse(data: any) {
   historyRetryCount = 0
   clearHistoryRetryTimer()
   // L2：历史落地后对齐补拉基线（只取游标，不渲染；详见 primeSeqBaseline）。
-  primeSeqBaseline()
+  // last_seq 随行传入作游标兜底（2026-11-25 观看端闪屏修复：环窗口滑出时
+  // 环回放锚不上游标，滞留 0 = 占位轮询恒 gap → reset+loadHistory 白屏循环）。
+  primeSeqBaseline(lastSeq)
   // 切页恢复：历史落地后检测「尾部悬空 user 行」→ 处理中占位 + 轮询
   // （assistant 行落盘后下一轮重拉自动补上并停轮）。
   detectPendingTurn()
@@ -3062,7 +3120,11 @@ async function refreshWorkCurrent(sid: string | null) {
     if (effectiveSid.value !== sid) return
     if (!pendingTurn.value && !streaming.value) return
     if (res?.work == null) return
-    chatStore.adoptWorkSnapshot(res.work)
+    // preserveLiveStreams（2026-11-25 观看端闪屏修复）：思考流/插话流进行中
+    // 时保留 live 缓冲——周期轮询拍的 adopt 若无条件清空，思考卡/插话预览
+    // 每拍被抹、下一个 delta 才重建 = 4s 周期闪。旗标 false（无 live 流）
+    // 时行为与旧全清一致。
+    chatStore.adoptWorkSnapshot(res.work, { preserveLiveStreams: thinkStreamActive })
     // B2：快照采纳 = 恢复完成——骨架让位给真时间线。null 盲区（上面
     // return）不复位：骨架继续显示，等轮询下一拍重试。
     chatStore.workRestoring = false
@@ -3515,6 +3577,12 @@ function stopGeneration() {
       clearStopping()
       chatStore.setBusy(sid, false)
       chatStore.clearInflightTurn(sid)
+      // 终局 live 缓冲扫除（2026-11-25 BUG：执行态永挂）：后端收尾帧丢失
+      // = 不会有 assistant 帧来 flush，残留 pendingWork 让 live 块永挂
+      //（模板 v-if 含 pendingWork）。若 turn 实际仍在跑，后续工具事件经
+      // ingestWorkToolStart→ensurePendingWork 重建缓冲，自愈无实害。
+      chatStore.flushPendingWork()
+      chatStore.flushPendingDeliverables()
     }
   }, 20000)
   request('agent', 'cancel', cancelData).then((res) => {
@@ -3528,10 +3596,19 @@ function stopGeneration() {
       clearStopping()
       chatStore.setBusy(sid, false)
       chatStore.clearInflightTurn(sid)
+      // 终局 live 缓冲扫除（2026-11-25 同上）：回复早已完成而前端漏了收尾
+      // = 不会再有 assistant 帧，残留 pendingWork 让 live 块永挂。
+      chatStore.flushPendingWork()
+      chatStore.flushPendingDeliverables()
     }
   }).catch(() => {
+    // cancel 请求本身失败（网络抖动/网关不可达）：turn 状态未知——先按
+    // 用户停止意图终局收口（同上扫 live 缓冲防永挂）；若后端 turn 实际
+    // 还在跑，重连/补拉通道的环回放经 ensurePendingWork 重建时间线。
     clearStopping()
     chatStore.setBusy(sid, false)
+    chatStore.flushPendingWork()
+    chatStore.flushPendingDeliverables()
   })
 }
 
@@ -3850,6 +3927,7 @@ const unwatchSession = watch(
     resetHistoryLoadFailure()
     chatStore.reset()
     lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
+    thinkStreamActive = false // 旧会话思考流旗标不带到新会话（reset 已清缓冲）
     resetChatFollow() // 换会话 → 跟随态回初值、未读清零（2026-11-09 滚动批）
     resetActivityLag() // 旧会话的 activity 残留状态（lag 游标/重试链/在途 timer）不带到新会话
     if (newId && wsStatus.value === 'connected') {
@@ -4063,6 +4141,12 @@ onUnmounted(() => {
     <SkinSlot v-if="isDefaultChat && skinHasSlot('chat')" name="chat" />
     <template v-else>
     <!-- Messages -->
+    <!-- 消息区包裹层（2026-11-25 拽底循环修复）：relative 定位上下文——
+         回到底部浮钮悬浮于此层（滚动容器之外），滚动容器的 MutationObserver
+         观察子树从此只含内容节点。flex 纵列 + min-height:0 保持
+         .chat-messages 的 flex:1 + overflow-y:auto 滚动语义不变（三处宿主
+         有界高度契约照旧作用于 .page-chat 根）。 -->
+    <div class="chat-messages-wrap">
     <div ref="chatMessages" class="chat-messages" @click="onChatAreaClick">
       <!-- History loading indicator -->
       <div v-if="chatStore.historyLoading" class="history-loading" style="text-align: center; padding: 8px; color: var(--text-muted); font-size: var(--text-xs);">
@@ -4321,6 +4405,7 @@ onUnmounted(() => {
             v-if="chatStore.pendingWork"
             :work="chatStore.pendingWork"
             :live-thinking="chatStore.liveThinking"
+            :steer-live-text="chatStore.steerLiveText"
             live
             @grown="scrollToBottomIfNear()"
           />
@@ -4373,15 +4458,22 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 回到底部浮钮（2026-11-09 滚动批）：sticky 定位于滚动容器内——
-           放弃跟随时浮在可视区底缘（DSH ui-chat 同语义），点击平滑回底；
-           徽标 = 离底期间落下的新消息数（回底即清零）。 -->
-      <div v-if="!chatFollow" class="back-to-bottom-wrap">
-        <button class="back-to-bottom" type="button" title="回到底部" @click="scrollToBottomSmooth()">
-          <span v-if="unreadBelow > 0" class="btt-unread">{{ unreadBelow > 99 ? '99+' : unreadBelow }}</span>
-          <span class="btt-arrow">↓</span>
-        </button>
-      </div>
+    </div>
+
+    <!-- 回到底部浮钮（2026-11-09 滚动批）：放弃跟随时浮在可视区底缘（DSH
+         ui-chat 同语义），点击平滑回底；徽标 = 离底期间落下的新消息数（回底
+         即清零）。
+         2026-11-25 拽底循环修复：浮钮从滚动容器内部迁出（sticky → wrap 层
+         absolute 悬浮）——旧位置下 follow 翻转的 v-if 插拔本身是滚动容器的
+         childList 突变，喂给 useStickToBottom 的 MutationObserver → stick()
+         把上滚用户拽回底部（自触发循环，实机帧级 trace 实锤，见 BUG 文档）。
+         观察子树从此只含内容节点，UI 状态 chrome 不再参与贴底判定。 -->
+    <div v-if="!chatFollow" class="back-to-bottom-wrap">
+      <button class="back-to-bottom" type="button" title="回到底部" @click="scrollToBottomSmooth()">
+        <span v-if="unreadBelow > 0" class="btt-unread">{{ unreadBelow > 99 ? '99+' : unreadBelow }}</span>
+        <span class="btt-arrow">↓</span>
+      </button>
+    </div>
     </div>
 
     <!-- Toolbar（2026-11-19 九键全迁：有 ChatView 资源窗注入面（resourcesCtl
@@ -4832,24 +4924,34 @@ onUnmounted(() => {
 <style scoped>
 /* ===== 2026-11-09 滚动/焦点/选择批 ===== */
 
-/* 回到底部浮钮：sticky 钉在滚动容器可视底缘（零高度包裹层 + 按钮绝对定位
-   上溢显示，不参与内容布局；不跟随时 v-if 出现）。
-   ⚠ 包裹层必须 display:block——flex 容器 height:0 会把子项交叉轴压扁成
-   线（playwright 实测按钮 36.5×10px），绝对定位脱离弹性布局才保得住形。 */
+/* 消息区包裹层（2026-11-25 拽底循环修复）：浮钮的 relative 定位上下文；
+   flex 纵列 + min-height:0 让 .chat-messages 的 flex:1 + overflow-y:auto
+   滚动语义与迁移前完全一致。 */
+.chat-messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 回到底部浮钮：absolute 悬浮在包裹层（滚动容器之外）底缘——放弃跟随时
+   浮在可视区底缘（DSH ui-chat 同语义）。
+   2026-11-25 拽底循环修复：从滚动容器内部（sticky 零高度包裹）迁出——
+   旧位置下 follow 翻转的 v-if 插拔是滚动容器 childList 突变，喂给
+   useStickToBottom 的 MutationObserver → stick() 形成自触发拽底循环
+   （上滚净位移零、视图钉死在底部）。迁出后观察子树只含内容节点。 */
 .back-to-bottom-wrap {
-  position: sticky;
-  bottom: 0;
-  height: 0;
-  overflow: visible;
-  display: block;
+  position: absolute;
+  bottom: 16px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
   z-index: 6;
   pointer-events: none;
 }
 .back-to-bottom {
-  position: absolute;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
   pointer-events: auto;
   display: inline-flex;
   align-items: center;

@@ -145,7 +145,20 @@ pub(super) async fn issue_dispatch(
     };
 
     let cluster = ctx.state.cluster.clone();
-    let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor, None)?;
+    // BUG-20261125-063：core 内含 git 仓库操作（ensure_repo/head_commit_hex/
+    // export_head_tree，仓库越大越慢）+ staging 目录清除（remove_dir_all_
+    // resilient 退避最坏 ~4.4s），async 上下文直调卡死 tokio worker
+    // （BUG-20261118-172 同族纪律：外呼/退避不占 worker），移 spawn_blocking。
+    // 派发是每次发车必经的高频路径，worker 卡顿会放大成整批会话排队。
+    let out = {
+        let store = store.clone();
+        let target = target.clone();
+        tokio::task::spawn_blocking(move || {
+            dispatch_issue_core(&store, cluster.as_ref(), id, &target, &actor, None)
+        })
+        .await
+        .map_err(|e| format!("派发任务执行失败: {e}"))??
+    };
     // D：手动重派 = 人类明确意图 → 失败账清零（「人工处理后计数作废」
     // 在手动路径成真；熔断停车后 reopen 重派不再因存量 count 秒熔断）。与评
     // 审链同源同一 JSON（以 nemesis-board fail_streak 为准）；清账失败不
@@ -1812,8 +1825,19 @@ pub async fn rebalance_queued_to_worker(
         // ① 取消旧排队派发：store 终态（dispatched → cancelled）+ task_cancel
         //    下行（fire-and-forget；竞态窗口=cancel 到达前已出队开跑 → 白跑，
         //    其回写被写回幂等早退丢弃）。
-        if store.cancel_dispatch(&d.task_id, actor).ok().is_none() {
-            continue; // 已被终结（回报/超时先行）→ 跳过。
+        //    Err（锁中毒/SQLite 故障）与 Ok(None)（竞态输了）语义分臂：
+        //    两者都跳过本单重平衡（store 状态未变，保守退化 + 下轮 sweep 兜底），
+        //    但 Err 必须留痕——否则 store 故障期重平衡全体静默空转排查无门。
+        match store.cancel_dispatch(&d.task_id, actor) {
+            Err(ce) => {
+                tracing::warn!(
+                    "[Board] 重平衡取消旧派发 store 失败 task_id={}：{ce}（跳过本单重平衡，留待下轮 sweep）",
+                    d.task_id
+                );
+                continue;
+            }
+            Ok(None) => continue, // 已被终结（回报/超时先行）→ 跳过。
+            Ok(Some(_)) => {}
         }
         let cancel_req = nemesis_cluster::rpc_types::RPCRequest {
             id: format!("rebalance-cancel-{}", d.task_id),

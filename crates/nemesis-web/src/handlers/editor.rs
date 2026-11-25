@@ -52,7 +52,9 @@ pub(crate) static EDITOR_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex:
 
 /// 刷新 workspace roots(裁决语义边界 6:运行期漂移由 get/set 每次刷新
 /// 纠正,新建项目下次触碰开关即生效)。roots = 主 workspace + 项目
-/// registry 全部项目根;无 workspace 且 bridge 未装配时保留旧 roots
+/// registry 全部项目根 + 各项目附加放行目录（extra_dirs 与 agent 围栏
+/// 写面同源放行，2026-11-25 补齐——此前只认主根，放行目录内文件编辑器
+/// 打开被拒）;无 workspace 且 bridge 未装配时保留旧 roots
 /// (best-effort 降级,不使 get/set 失败——fail-safe)。
 fn refresh_roots(ctx: &RequestContext, state: &EditorAccessState) {
     let mut roots: Vec<String> = Vec::new();
@@ -62,6 +64,7 @@ fn refresh_roots(ctx: &RequestContext, state: &EditorAccessState) {
     if let Some(bridge) = crate::handlers::projects::projects_bridge() {
         for p in bridge.list() {
             roots.push(p.path);
+            roots.extend(p.extra_dirs.iter().cloned());
         }
     }
     if !roots.is_empty() {

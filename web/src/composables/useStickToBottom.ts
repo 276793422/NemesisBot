@@ -6,8 +6,9 @@ import { ref } from 'vue'
  * 参照 use-stick-to-bottom（stackblitz-labs）与 DeepSeek Harness ui-chat
  * 的「滚动归属」设计，收敛为三条规则：
  * 1. 跟随态只在两种时刻放弃：滚轮上滚（即时，手势中断语义）、scroll 事件
- *    里 scrollTop 上移（方向判定，覆盖触摸/键盘滚动）；
- * 2. 距底 ≤ NEAR_BOTTOM_PX 即视为回到底部，跟随恢复、未读清零；
+ *    里 scrollTop 上移（方向判定，覆盖触摸/键盘滚动）——上移判定优先于
+ *    距底阈值（2026-11-25 拽底循环根修，见 resolveFollowOnScroll 注释）；
+ * 2. 非上移采样距底 ≤ NEAR_BOTTOM_PX 即视为回到底部，跟随恢复、未读清零；
  * 3. 跟随态下内容变化即贴底（MutationObserver 监听滚动容器子树）——旧实现
  *    只靠 scroll 事件维护 flag，而内容增长不触发 scroll 事件，「回复到了
  *    却不滚」即由此而来。childList/subtree 覆盖消息追加、打字指示器出现、
@@ -34,14 +35,22 @@ export function distanceFromBottom(m: ScrollMetrics): number {
 /**
  * scroll 事件里的跟随态转移。lastScrollTop 是上一次事件采样的 scrollTop
  * （上移判定容差 1px，吸收亚像素抖动）。
+ *
+ * 方向守卫（2026-11-25 拽底循环根修）：上移采样（scrollTop 减小 >1px）
+ * 恒判 false——**先于**距底阈值判定。旧顺序「距底 ≤80px → 恢复（无论
+ * 方向）」会把用户从底部上滚的前几帧采样（仍在 80px 圈内）当作「回到
+ * 底部」，把 onWheel 刚放弃的 follow 立刻重臂回 true，配合浮钮 v-if
+ * 插拔喂给 MutationObserver → stick() 形成自触发拽底循环（上滚净位移
+ * 零、视图钉死在底部，实机帧级 trace 实锤，见 BUG 文档）。语义不变面：
+ * 向下滚回距底 ≤80px 照常恢复跟随；±1px 抖动容差照常。
  */
 export function resolveFollowOnScroll(
   prev: boolean,
   m: ScrollMetrics,
   lastScrollTop: number,
 ): boolean {
-  if (distanceFromBottom(m) <= NEAR_BOTTOM_PX) return true
   if (m.scrollTop < lastScrollTop - 1) return false
+  if (distanceFromBottom(m) <= NEAR_BOTTOM_PX) return true
   return prev
 }
 

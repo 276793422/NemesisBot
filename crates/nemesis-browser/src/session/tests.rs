@@ -214,6 +214,10 @@ fn stderr_tail_context_absent_log_is_honest() {
 /// （进程级回归锁的「Edge relaunch」替身：留下端口文件后退出）。
 /// `delay_cmd` 传 "" = 写完立即退（raw 先于轮询置位 → 终裁收养路径）；
 /// 传 ping 等 = 装配后才退（wait task 终裁路径）。
+// 仅 Windows 测试调用（下方全部调用点 cfg(windows)）；无门时 Linux
+// `--all-targets` 编译本文件即零调用者 → dead_code 堵 clippy 闸
+// （BUG-20261125-064）。
+#[cfg(windows)]
 fn write_relay_bat(
     profile_dir: &std::path::Path,
     port: u16,
