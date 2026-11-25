@@ -8376,11 +8376,37 @@ fn test_migrate_legacy_max_tool_iterations_rewrites_fingerprint_20() {
 }
 
 #[test]
+fn test_migrate_legacy_max_tool_iterations_rewrites_fingerprint_100() {
+    // BUG-20261125-045 横向排查扩项：config.json 显式 100 的唯一生产来源
+    // 是修复前的 OpenClaw 迁移骨架（模板历史 git log -S 考证从未是 100，
+    // typed serde default 100 不落盘）——BUG 形态产物，非用户自选值，
+    // 与 20 同教义改写 0 + 不动其他键。
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"agents":{"defaults":{"max_tool_iterations":100,"workspace":"w"}},"model_list":[]}"#,
+    )
+    .unwrap();
+    migrate_legacy_max_tool_iterations(&cfg);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        v["agents"]["defaults"]["max_tool_iterations"],
+        serde_json::json!(0),
+        "旧迁移骨架指纹 100 必须被改写为 0（不限）"
+    );
+    assert_eq!(v["agents"]["defaults"]["workspace"], serde_json::json!("w"));
+    assert_eq!(v["model_list"], serde_json::json!([]));
+}
+
+#[test]
 fn test_migrate_legacy_max_tool_iterations_leaves_user_values() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("config.json");
-    // 用户自选值（30 / 0 / 100 / 缺键）一律不碰。
-    for value in [30, 0, 100] {
+    // 用户自选值（30 / 50 / 0 / 缺键）一律不碰。（100 曾在此保护列表——
+    // BUG-20261125-045 考证后移入指纹集：它只可能来自旧迁移骨架。）
+    for value in [30, 50, 0] {
         std::fs::write(
             &cfg,
             format!(r#"{{"agents":{{"defaults":{{"max_tool_iterations":{value}}}}}}}"#),

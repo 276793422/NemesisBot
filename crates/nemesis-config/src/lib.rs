@@ -565,7 +565,10 @@ fn default_max_tool_iterations() -> i64 {
     // 中断现场，用户裁决改为不限）。0=不限 是本键既有惯例（显式 0 本来就
     // 支持）；无界形态的常驻护栏 = turn_guard 循环检测（交替/退化阶梯 +
     // 终级无超时卡）+ estop + 各预算保险丝，迭代闸仅在显式配置非 0 时存在。
-    0
+    // 单一真相源：nemesis-types capability 常量（nemesis-migrate 迁移骨架
+    // 同源引用——BUG-20261125-045：骨架 100 旧值在拍板后漏同步，两条全新
+    // 安装路径分叉）。
+    nemesis_types::capability::DEFAULT_MAX_TOOL_ITERATIONS
 }
 /// default concurrent mode is **steer** — busy sessions accept new input
 /// inline (the model sees the latest user intent mid-turn). 2026-11-03
