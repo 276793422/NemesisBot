@@ -853,8 +853,13 @@ impl Reflector {
             }
         }
 
-        // Build remote patterns
-        for (tool, count) in &remote_tool_freq {
+        // Build remote patterns（确定性纪律：remote_tool_freq 是 HashMap，
+        // 迭代序是进程随机态——remote_patterns/unique_remote_tools/merged_patterns
+        // 直出比对报告，无序迭代 = 报告行序随重启洗牌。按工具名排序迭代，
+        // BUG-20261125-078。）
+        let mut ordered_remote: Vec<(&String, &i32)> = remote_tool_freq.iter().collect();
+        ordered_remote.sort_by(|a, b| a.0.cmp(b.0));
+        for (tool, count) in ordered_remote {
             result.remote_patterns.push(PatternInsight {
                 tool_name: tool.clone(),
                 count: *count,

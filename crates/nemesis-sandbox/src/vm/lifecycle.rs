@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-use nemesis_exec_protocol::{ExecutorResponseWire, build_v2_request_line, new_call_id};
+use nemesis_exec_protocol::{
+    ExecutorResponseWire, MAX_FRAME_BYTES, build_v2_request_line, new_call_id,
+};
 
 use super::assembly::{VmLaunchSpec, build_qemu_args, validate_launch_spec};
 use super::guest_arch::{GuestArch, QemuAccel};
@@ -755,20 +757,33 @@ async fn write_all_budgeted(
         .map_err(VmError::Io)
 }
 
+/// 读一行 guest 响应：时间预算（timeout）+ **帧帽**（协议单一真相源
+/// `MAX_FRAME_BYTES`）双界。BUG-20261126-090 同族——guest agent 进程内
+/// 失控代码（或 VM 内任何抢到该端口的进程，见模块头「宿主其他本地进程
+/// 可达」威胁模型声明）可以灌出无换行巨行，裸 `read_line` 的无界 String
+/// 积累会在时间窗内打爆宿主内存；时间预算只约束「行何时完结」，不约束
+/// 「行有多长」。超帽 = 协议违约，截断拒绝（宁断连接不 OOM）。
 async fn read_line_budgeted(s: &mut TcpStream, timeout: Duration) -> Result<String, VmError> {
-    let mut line = String::new();
     let mut reader = BufReader::new(&mut *s);
-    let n = tokio::time::timeout(timeout, reader.read_line(&mut line))
-        .await
-        .map_err(|_| VmError::Timeout)?
-        .map_err(VmError::Io)?;
-    if n == 0 {
+    let read = tokio::time::timeout(
+        timeout,
+        nemesis_utils::line_cap::read_line_capped(&mut reader, MAX_FRAME_BYTES),
+    )
+    .await
+    .map_err(|_| VmError::Timeout)?
+    .map_err(VmError::Io)?;
+    let Some((raw, truncated)) = read else {
         return Err(VmError::Io(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "guest agent 连接被对端关闭",
         )));
+    };
+    if truncated {
+        return Err(VmError::Launch(format!(
+            "guest agent 响应行超过帧帽 ({MAX_FRAME_BYTES} bytes) — 协议违约，截断拒绝而非无界积累"
+        )));
     }
-    Ok(line)
+    Ok(String::from_utf8_lossy(&raw).into_owned())
 }
 
 #[cfg(test)]

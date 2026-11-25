@@ -87,3 +87,28 @@ async fn stdio_child_exits_without_response() {
         .expect_err("child without a response line");
     assert!(err.contains("exited without a response"), "err: {err}");
 }
+
+/// BUG-20261126-090 回归锁（E2E）：执行体响应行超协议帧帽 → 诚实截断
+/// 报错（读侧不无界积累、不 OOM）。假执行体 `type` 一个无换行巨行文件
+/// （MAX_FRAME_BYTES + 4MiB，.cmd 流式输出不换行）；读侧带帽 = 在帽处
+/// 截断并丢弃剩余直到 EOF，返回「exceeded the frame cap」诚实错误。
+/// 突变验证：读侧帽传 usize::MAX（等效摘帽）→ 巨行完整抵达 parse 失败
+/// （「parse executor response」）→ 本测红于 cap 断言。
+#[tokio::test]
+async fn stdio_overcap_response_line_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let big = dir.path().join("big_line.bin");
+    std::fs::write(&big, vec![b'A'; MAX_FRAME_BYTES + 4 * 1024 * 1024])
+        .expect("write big line fixture");
+    let body = format!("@echo off\r\ntype \"{}\"\r\n", big.display());
+    let exe = fake_executor(dir.path(), &body);
+    let ch = channel(exe, Duration::from_secs(120));
+    let err = ch
+        .spawn_and_call("exec", "{}", &req_ctx())
+        .await
+        .expect_err("over-cap response line must be refused");
+    assert!(
+        err.contains("exceeded the frame cap"),
+        "超帽响应行必须以帧帽错误拒绝，err: {err}"
+    );
+}

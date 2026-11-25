@@ -5,7 +5,7 @@
 use super::*;
 
 // 跨子文件引用（机械拆分）：helpers 定义在 llm.rs
-use super::llm::{failed_node_result, resolve_runtime_string};
+use super::llm::{failed_node_result, padded_placeholders, resolve_runtime_string};
 
 /// Built-in condition node executor.
 pub struct ConditionNodeExecutor;
@@ -594,7 +594,9 @@ impl NodeExecutor for HumanReviewNodeExecutor {
 ///   (numeric comparison when both sides parse as numbers,
 ///   otherwise lexicographic string comparison)
 /// - Bare variable name — truthy check against the context value
-///   (numbers: non-zero; strings: non-empty; etc.)
+///   (numbers: non-zero; strings: boolean-spelling-aware — empty and
+///   `"false"`/`"no"`/`"0"`/`"0.0"` falsy, same table as the literal
+///   form; BUG-20261126-086 对齐前是裸 `!is_empty`)
 /// - Literal `"true"` / `"false"` — boolean
 pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json::Value>) -> bool {
     let condition = condition.trim();
@@ -868,8 +870,15 @@ pub(super) fn resolve_operand(
 }
 
 pub(super) fn is_truthy_str(s: &str) -> bool {
+    // BUG-20261126-086：falsy 表与 Step 2 布尔字面量表（"false"/"no"/"0"）
+    // 对齐——"no" 是文档化布尔拼写（能力表+Step 2 同收），缺它则裸名
+    // String("no") 与模板形 `{{flag}}` 结论相反（本 BUG 同族）。
     let t = s.trim();
-    !t.is_empty() && !t.eq_ignore_ascii_case("false") && t != "0" && t != "0.0"
+    !t.is_empty()
+        && !t.eq_ignore_ascii_case("false")
+        && !t.eq_ignore_ascii_case("no")
+        && t != "0"
+        && t != "0.0"
 }
 
 fn is_truthy(val: &serde_json::Value) -> bool {
@@ -877,7 +886,14 @@ fn is_truthy(val: &serde_json::Value) -> bool {
         serde_json::Value::Null => false,
         serde_json::Value::Bool(b) => *b,
         serde_json::Value::Number(n) => n.as_f64().is_some_and(|v| v != 0.0),
-        serde_json::Value::String(s) => !s.is_empty(),
+        // BUG-20261126-086：字符串值改走 is_truthy_str（布尔拼写感知），
+        // 与模板形 `{{flag}}`（字符串化后 Step 2/回退臂同表）和 Step 4
+        // 未知名回退臂对齐。旧形态 `!s.is_empty()` 把 String("false")
+        // 判真——裸名 `flag`（flag="false"）恒真、同数据 `{{flag}}` 恒假，
+        // 两种文档形态给相反路由（BUG-105/195 同族第三例）；LLM 节点输出
+        // 天然是 JSON 字符串（BUG-105 注释自述），布尔字段以 "false" 形态
+        // 进上下文是常态不是边角。
+        serde_json::Value::String(s) => is_truthy_str(s),
         serde_json::Value::Array(a) => !a.is_empty(),
         serde_json::Value::Object(o) => !o.is_empty(),
     }
@@ -914,11 +930,28 @@ pub(crate) fn eval_condition_with_falsifiability(
             .iter()
             .any(|(head, _)| completed.contains(head.as_str()));
         if provable {
+            // BUG-20261126-088 同族诊断面：占位符键按原文 exact-match 匹配
+            // （裁决契约），首尾空白使运行期必然解析不到——错误消息不能把
+            // 原因单一归到「字段不存在」（padded 正确字段引用会引导作者
+            // 排查本无问题的 id/字段名）。检测到空白时追加归因提示。
+            let padding_hint = {
+                let padded = padded_placeholders(condition);
+                if padded.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "；另检测到占位符 {} 内含首尾空白——占位符键按原文 \
+                         exact-match 匹配（不做 trim），运行期解析不到，\
+                         请去掉占位符内空白",
+                        padded.join("、")
+                    )
+                }
+            };
             return Err(format!(
                 "{site}引用了已完成节点输出中不存在的字段（模板解析后仍残留 \
                  {{{{…}}}}）：{:?}。请核对上游节点 id 与其输出字段名（condition 节点 \
-                 的输出字段是 condition_result）",
-                condition
+                 的输出字段是 condition_result）{}",
+                condition, padding_hint
             ));
         }
         // 引用不可证伪：变量未提供/节点未执行 → 整条条件不成立。

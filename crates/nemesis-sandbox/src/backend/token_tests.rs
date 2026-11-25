@@ -1150,3 +1150,65 @@ fn restricted_token_attach_console_chain() {
         }
     }
 }
+
+// ============================================================
+// BUG-20261126-090 回归锁：stdout 首行带帽捕获（drain_first_line_capped）
+// ============================================================
+//
+// 对手模型 = 执行体隔离自身要防的对手：DACL 档读侧裸 read_line 无界积累
+// ——执行体侧失控/被替换的写者灌无换行巨行即可打爆 gateway 内存。生产帽
+// = 协议帧帽 MAX_FRAME_BYTES；本组单测以小帽注入验证 helper 全臂语义
+// （Cursor 内存流，不 spawn 真进程）。
+
+use std::io::Cursor;
+
+use super::token::drain_first_line_capped;
+
+#[test]
+fn first_line_under_cap_captured_fully() {
+    let mut r = Cursor::new(b"\"ok\":true\nsecond\n".to_vec());
+    let (got, truncated) = drain_first_line_capped(&mut r, 64);
+    assert_eq!(got.as_deref(), Some("\"ok\":true"));
+    assert!(!truncated);
+}
+
+#[test]
+fn first_line_over_cap_capped_with_flag_and_rest_drained() {
+    // 首行 11 字节 > 8 字节帽：前 8 字节 + truncated 旗标；后续行照旧
+    // 排水到 EOF（提前收手关读端的 exit-code 污染纪律保留）。
+    let mut r = Cursor::new(b"abcdefghij\nsecond\n".to_vec());
+    let (got, truncated) = drain_first_line_capped(&mut r, 8);
+    assert_eq!(got.as_deref(), Some("abcdefgh"));
+    assert!(truncated, "超帽首行必须回传 truncated 旗标（内容不完整）");
+}
+
+#[test]
+fn empty_stream_is_none() {
+    let mut r = Cursor::new(Vec::new());
+    let (got, truncated) = drain_first_line_capped(&mut r, 64);
+    assert_eq!(got, None);
+    assert!(!truncated);
+}
+
+#[test]
+fn eof_partial_line_still_captured() {
+    // EOF 收尾的部分行（无换行）仍返回——与旧行为（read_line Ok(n>0)）同语义。
+    let mut r = Cursor::new(b"partial".to_vec());
+    let (got, truncated) = drain_first_line_capped(&mut r, 64);
+    assert_eq!(got.as_deref(), Some("partial"));
+    assert!(!truncated);
+}
+
+#[test]
+fn multibyte_boundary_lossy_not_split() {
+    // 多字节字符跨帽边界：一次性 lossy 把残躯换 U+FFFD，完整字符不受损
+    // （line_cap 模块纪律；非 UTF-8 一行不再以 InvalidData 杀掉捕获）。
+    let mut data = "你".repeat(4).into_bytes(); // 12 字节 UTF-8
+    data.push(b'\n');
+    let mut r = Cursor::new(data);
+    let (got, truncated) = drain_first_line_capped(&mut r, 7);
+    let line = got.unwrap();
+    assert!(truncated);
+    assert!(line.starts_with("你你"), "line: {line:?}");
+    assert!(line.contains('\u{FFFD}'), "line: {line:?}");
+}

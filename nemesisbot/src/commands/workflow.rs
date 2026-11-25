@@ -149,11 +149,15 @@ type Template = (String, String, serde_json::Value);
 ///
 /// Looks in two locations:
 /// 1. `exe_dir/templates/` - bundled templates shipped with the binary
-/// 2. `workspace/workflow/templates/` - user-defined templates
+/// 2. `<home>/workspace/workflow/templates/` - user-defined templates
 ///
 /// Files must be YAML (.yaml/.yml) or JSON (.json) and parse into a Workflow
 /// definition matching the nemesis_workflow crate's format.
-fn load_templates_from_disk() -> Vec<Template> {
+///
+/// （BUG-20261126-085）home 由调用方显式传入（run() 里按 `--local` 解析一次）——
+/// 此前硬编码 `resolve_home(false)`，`--local` 实例的模板发现被静默指到默认
+/// home（本地模板不可见 / 列出别的实例的模板）。
+fn load_templates_from_disk(home: &std::path::Path) -> Vec<Template> {
     let mut templates = Vec::new();
     let mut seen_names = std::collections::HashSet::new();
 
@@ -167,10 +171,9 @@ fn load_templates_from_disk() -> Vec<Template> {
             dirs.push(exe_dir.join("templates"));
         }
 
-        // workspace/workflow/templates/ (resolve using common helper)
-        let home = common::resolve_home(false);
+        // <home>/workspace/workflow/templates/
         dirs.push(
-            common::workspace_path(&home)
+            common::workspace_path(home)
                 .join("workflow")
                 .join("templates"),
         );
@@ -326,8 +329,8 @@ fn get_default_templates() -> Vec<Template> {
 }
 
 /// Get templates: first try loading from disk, fall back to hardcoded defaults.
-fn get_templates() -> Vec<Template> {
-    let disk_templates = load_templates_from_disk();
+fn get_templates(home: &std::path::Path) -> Vec<Template> {
+    let disk_templates = load_templates_from_disk(home);
     if !disk_templates.is_empty() {
         return disk_templates;
     }
@@ -812,8 +815,8 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_template_show(name: &str) -> Result<()> {
-    let templates = get_templates();
+fn cmd_template_show(name: &str, home: &std::path::Path) -> Result<()> {
+    let templates = get_templates(home);
     let found = templates.iter().find(|(n, _, _)| *n == name);
 
     match found {
@@ -848,8 +851,9 @@ fn cmd_template_create(
     workflow_dir: &std::path::Path,
     template: &str,
     output: Option<&str>,
+    home: &std::path::Path,
 ) -> Result<()> {
-    let templates = get_templates();
+    let templates = get_templates(home);
     let found = templates.iter().find(|(n, _, _)| *n == template);
 
     match found {
@@ -966,7 +970,7 @@ pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
                     // Default: list templates (Go behavior)
                     println!("Workflow Templates");
                     println!("==================");
-                    let templates = get_templates();
+                    let templates = get_templates(&home);
                     for (name, desc, def) in &templates {
                         let nodes = def
                             .get("nodes")
@@ -990,7 +994,7 @@ pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
                 Some(TemplateAction::List) => {
                     println!("Workflow Templates");
                     println!("==================");
-                    let templates = get_templates();
+                    let templates = get_templates(&home);
                     for (name, desc, def) in &templates {
                         let nodes = def
                             .get("nodes")
@@ -1011,9 +1015,9 @@ pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
                     println!("Show details: nemesisbot workflow template show <name>");
                     println!("Create: nemesisbot workflow template create <name>");
                 }
-                Some(TemplateAction::Show { name }) => cmd_template_show(&name)?,
+                Some(TemplateAction::Show { name }) => cmd_template_show(&name, &home)?,
                 Some(TemplateAction::Create { template, output }) => {
-                    cmd_template_create(&workflow_dir, &template, output.as_deref())?
+                    cmd_template_create(&workflow_dir, &template, output.as_deref(), &home)?
                 }
             }
         }

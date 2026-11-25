@@ -207,7 +207,14 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
     if active_path.exists() {
         let c = std::fs::read_to_string(&active_path)?;
         let v: serde_json::Value = serde_json::from_str(&c)?;
-        if v["name"].as_str() == Some(name) {
+        // BUG-20261126-093：目录解析在 Windows 上大小写不敏感（case 变体
+        // 名命中同一物理目录），active 比对必须同口径——精确 == 会让
+        // 「remove Coder 传 coder」跳过 default 恢复，marker 悬空指向
+        // 已删人格。ASCII 变体同口径（web 面 cmd_remove 同批修复）。
+        if v["name"]
+            .as_str()
+            .is_some_and(|a| a.eq_ignore_ascii_case(name))
+        {
             // 与 web 面同源的完整恢复（归档/清理/恢复 default + 原子写标记）。
             // fail-closed：default 目录缺失时诚实报错中止，不静默删出悬空
             // 激活标记（前 CLI 行为，见 wave_b 测试）。

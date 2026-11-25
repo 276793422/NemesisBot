@@ -2080,3 +2080,24 @@ fn test_run_command_dossier_arm_installs_default_logger() {
          (BUG-20261125-046)"
     );
 }
+
+/// BUG-20261125-077 回归锁：`loop` 子命令的 clap 主名必须与生态命名对齐
+/// （模块注释/README/交付计划/WSAPI `loop.*` 四面全叫 `loop`；变体名
+/// `Loops` 派生的 `loops` 曾是唯一入口，README 写 `loop` 即 unrecognized
+/// subcommand）。主名 `loop` + alias `loops` 双形态都钉死，防回漂。
+#[cfg(feature = "loop")]
+#[test]
+fn test_loop_subcommand_primary_name_is_loop_with_loops_alias() {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let loops_cmd = cmd
+        .get_subcommands()
+        .find(|s| s.get_name() == "loop")
+        .expect("clap 树必须暴露主名 `loop` 子命令（BUG-20261125-077）");
+    assert!(
+        loops_cmd.get_all_aliases().any(|a| a == "loops"),
+        "`loops` 必须保留为 alias（既有调用者兼容面）"
+    );
+    // 反向锚点：裸变体派生名不得作为主名回流。
+    assert_ne!(loops_cmd.get_name(), "Loops");
+}

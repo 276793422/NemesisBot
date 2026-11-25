@@ -836,63 +836,200 @@ fn make_outbound(
     }
 }
 
+/// dispatch_outbound 循环订阅握手：反复发哨兵到真实会话直到收到帧（=
+/// broadcast 订阅确认——tokio broadcast 只投订阅之后的消息，先 publish
+/// 再 spawn 必被 publish_outbound 以零接收者丢弃），随后排空多发出去的
+/// 残余握手帧，给调用方一个干净帧位。
+async fn confirm_dispatch_subscription(
+    bus: &Arc<MessageBus>,
+    rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    session_id: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "dispatch_outbound never subscribed to the outbound bus"
+        );
+        bus.publish_outbound(make_outbound(
+            "web",
+            &format!("web:{session_id}"),
+            "handshake",
+            "",
+        ));
+        if let Ok(frame) = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+            let parsed: serde_json::Value =
+                serde_json::from_slice(&frame.expect("send queue closed unexpectedly"))
+                    .expect("sentinel frame is valid JSON");
+            assert_eq!(parsed["data"]["content"], "handshake");
+            while rx.try_recv().is_ok() {}
+            return;
+        }
+    }
+}
+
+/// 等待并校验尾哨兵帧：dispatch 单消费者按序处理，尾哨兵到达 = 其前的
+/// 被测消息已被消费且循环健在（被测分支 panic → 尾哨兵永不到达 → 超时红）。
+/// 排空后仍可能迟到握手帧（在途），逐帧消费并跳过，只认 final。
+async fn wait_for_final_sentinel(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, context: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        let frame = tokio::time::timeout(remain, rx.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!("{context}: final sentinel never arrived (dispatch loop died or stalled)")
+            })
+            .expect("send queue closed unexpectedly");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&frame).expect("sentinel frame is valid JSON");
+        match parsed["data"]["content"].as_str() {
+            Some("final") => return,
+            // 迟到的握手帧（排空后在途），跳过继续等。
+            Some("handshake") => continue,
+            other => panic!("{context}: unexpected frame content: {other:?}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_dispatch_outbound_filters_non_web_channel() {
+    use crate::websocket_handler::SendQueue;
     let bus = Arc::new(MessageBus::new());
     let session_manager = Arc::new(SessionManager::with_default_timeout());
+    let session = session_manager.create_session();
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    session_manager.set_send_queue(&session.id, Arc::new(queue));
 
+    // dispatch 先 spawn（subscribe 在任务内发生），再确认订阅，最后才发
+    // 被测消息——旧版先 publish 后 spawn，消息必然被丢，测试三重空转。
+    let handle = {
+        let bus = Arc::clone(&bus);
+        let sm = Arc::clone(&session_manager);
+        tokio::spawn(async move { dispatch_outbound(bus, sm).await })
+    };
+    confirm_dispatch_subscription(&bus, &mut rx, &session.id).await;
+
+    // 被测消息：非 web 通道 → continue 跳过。
     bus.publish_outbound(make_outbound("telegram", "telegram:123", "ignored", ""));
 
-    let handle = tokio::spawn(async move {
-        dispatch_outbound(bus, session_manager).await;
-    });
+    // 尾哨兵到达 = telegram 消息被过滤且循环健在。
+    bus.publish_outbound(make_outbound(
+        "web",
+        &format!("web:{}", session.id),
+        "final",
+        "",
+    ));
+    wait_for_final_sentinel(&mut rx, "non-web message filtered").await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !handle.is_finished(),
+        "dispatch task exited (panic?) while processing the non-web message"
+    );
     handle.abort();
 }
 
 #[tokio::test]
-async fn test_dispatch_outbound_invalid_chat_id_format_warns() {
+async fn test_dispatch_outbound_invalid_chat_id_format_skipped_without_breaking_loop() {
+    use crate::websocket_handler::SendQueue;
     let bus = Arc::new(MessageBus::new());
     let session_manager = Arc::new(SessionManager::with_default_timeout());
+    let session = session_manager.create_session();
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    session_manager.set_send_queue(&session.id, Arc::new(queue));
 
+    let handle = {
+        let bus = Arc::clone(&bus);
+        let sm = Arc::clone(&session_manager);
+        tokio::spawn(async move { dispatch_outbound(bus, sm).await })
+    };
+    confirm_dispatch_subscription(&bus, &mut rx, &session.id).await;
+
+    // 被测消息：web 通道但 chat_id 缺 "web:" 前缀 → warn + continue。
+    //（warn 本体走 tracing，不在此断言；这里验的是跳过不炸循环。）
     bus.publish_outbound(make_outbound("web", "invalid-format", "test", ""));
 
-    let handle = tokio::spawn(async move {
-        dispatch_outbound(bus, session_manager).await;
-    });
+    bus.publish_outbound(make_outbound(
+        "web",
+        &format!("web:{}", session.id),
+        "final",
+        "",
+    ));
+    wait_for_final_sentinel(&mut rx, "invalid chat_id skipped").await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !handle.is_finished(),
+        "dispatch task exited (panic?) while processing the invalid chat_id"
+    );
     handle.abort();
 }
 
 #[tokio::test]
 async fn test_dispatch_outbound_routes_to_nonexistent_session() {
+    use crate::websocket_handler::SendQueue;
     let bus = Arc::new(MessageBus::new());
     let session_manager = Arc::new(SessionManager::with_default_timeout());
+    let session = session_manager.create_session();
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    session_manager.set_send_queue(&session.id, Arc::new(queue));
 
+    let handle = {
+        let bus = Arc::clone(&bus);
+        let sm = Arc::clone(&session_manager);
+        tokio::spawn(async move { dispatch_outbound(bus, sm).await })
+    };
+    confirm_dispatch_subscription(&bus, &mut rx, &session.id).await;
+
+    // 被测消息：路由到不存在的会话 → send_to_session 失败，循环继续。
     bus.publish_outbound(make_outbound("web", "web:nonexistent-session", "hello", ""));
 
-    let handle = tokio::spawn(async move {
-        dispatch_outbound(bus, session_manager).await;
-    });
+    bus.publish_outbound(make_outbound(
+        "web",
+        &format!("web:{}", session.id),
+        "final",
+        "",
+    ));
+    wait_for_final_sentinel(&mut rx, "nonexistent-session routing").await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !handle.is_finished(),
+        "dispatch task exited (panic?) while routing to a nonexistent session"
+    );
     handle.abort();
 }
 
 #[tokio::test]
 async fn test_dispatch_outbound_routes_history_message_to_nonexistent_session() {
+    use crate::websocket_handler::SendQueue;
     let bus = Arc::new(MessageBus::new());
     let session_manager = Arc::new(SessionManager::with_default_timeout());
+    let session = session_manager.create_session();
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    session_manager.set_send_queue(&session.id, Arc::new(queue));
 
+    let handle = {
+        let bus = Arc::clone(&bus);
+        let sm = Arc::clone(&session_manager);
+        tokio::spawn(async move { dispatch_outbound(bus, sm).await })
+    };
+    confirm_dispatch_subscription(&bus, &mut rx, &session.id).await;
+
+    // 被测消息：history 路由分支 → send_history_to_session 对不存在会话
+    // 失败，循环继续。
     bus.publish_outbound(make_outbound("web", "web:nonexistent", "{}", "history"));
 
-    let handle = tokio::spawn(async move {
-        dispatch_outbound(bus, session_manager).await;
-    });
+    bus.publish_outbound(make_outbound(
+        "web",
+        &format!("web:{}", session.id),
+        "final",
+        "",
+    ));
+    wait_for_final_sentinel(&mut rx, "history-to-nonexistent routing").await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !handle.is_finished(),
+        "dispatch task exited (panic?) while routing a history message"
+    );
     handle.abort();
 }
 

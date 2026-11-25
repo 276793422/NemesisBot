@@ -130,18 +130,10 @@ pub(crate) fn parse_board_issue_args(args: &str) -> Result<BoardIssueCommand, St
                 .get("acceptance_criteria")
                 .and_then(|x| x.as_str())
                 .map(str::to_string);
-            let priority = match v.get("priority") {
-                None | Some(serde_json::Value::Null) => None,
-                Some(p) => {
-                    let n = p.as_i64().ok_or("priority must be an integer (0-3)")?;
-                    if !(0..=3).contains(&n) {
-                        return Err(format!(
-                            "priority {n} out of range (0=low 1=medium 2=high 3=urgent)"
-                        ));
-                    }
-                    Some(n as i32)
-                }
-            };
+            // BUG-20261125-080：校验逻辑收拢到 nemesis-board 单一真相源
+            // （parse_priority），与 WSAPI build_new_issue 同源——此前这里
+            // 是独立手写副本，与 WSAPI 裸 cast 位点文案/范围双实现漂移。
+            let priority = nemesis_board::models::priority::parse_priority(v.get("priority"))?;
             let project_id = v.get("project_id").and_then(|x| x.as_i64());
             Ok(BoardIssueCommand::Create {
                 title,

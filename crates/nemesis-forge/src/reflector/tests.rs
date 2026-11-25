@@ -778,6 +778,52 @@ fn test_merge_remote_reflections_from_file() {
     );
 }
 
+/// BUG-20261125-078 回归锁：merge_remote_reflections 的输出列表必须按
+/// 工具名字典序确定——remote_tool_freq 是 HashMap，无序迭代 =
+/// remote_patterns/unique_remote_tools/merged_patterns 报告行序随重启洗牌。
+#[test]
+fn test_merge_remote_reflections_remote_patterns_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    let report_path = dir.path().join("remote_report.md");
+    // 乱序工具名 + 逆序计数（防「恰好按计数排序」假绿）。
+    let report_content =
+        "# Report\n| ztool | 30 |\n| atool | 10 |\n| mtool | 20 |\n| btool | 40 |\n";
+    std::fs::write(&report_path, report_content).unwrap();
+
+    let reflector = Reflector::new();
+    let result = reflector.merge_remote_reflections(&[report_path], &[]);
+    let names: Vec<&str> = result
+        .remote_patterns
+        .iter()
+        .map(|p| p.tool_name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["atool", "btool", "mtool", "ztool"],
+        "remote_patterns 必须按工具名升序"
+    );
+    let unique: Vec<&str> = result
+        .unique_remote_tools
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    assert_eq!(
+        unique,
+        vec!["atool", "btool", "mtool", "ztool"],
+        "unique_remote_tools 必须按工具名升序"
+    );
+    let merged: Vec<&str> = result
+        .merged_patterns
+        .iter()
+        .map(|p| p.tool_name.as_str())
+        .collect();
+    assert_eq!(
+        merged,
+        vec!["atool", "btool", "mtool", "ztool"],
+        "空本地态时 merged_patterns 必须与 remote 同序"
+    );
+}
+
 #[test]
 fn test_resolve_period_defaults_to_today() {
     let result = Reflector::resolve_period("custom_period");

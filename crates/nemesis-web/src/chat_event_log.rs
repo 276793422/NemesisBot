@@ -299,13 +299,11 @@ pub fn evict_session(session_id: &str) {
     }
 }
 
+// (BUG-20261126-083) 测试代码独立文件纪律：原内联 `mod test_support { … }`
+// 带 pub(crate) 头逃逸 check-inline-tests 旧正则，随门禁加固一并迁独立文件
+// （声明式，`crate::chat_event_log::test_support::*` 消费方路径零改动）。
 #[cfg(test)]
-pub(crate) mod test_support {
-    /// 测试专用串行闸：SESSION_LOGS 是进程级全局表且带逐出——并行测试
-    /// 不互斥会互相逐掉对方会话（env-test-race 家族）。tokio Mutex：
-    /// async 测试持锁跨 await 合法（clippy await_holding_lock 不碰 tokio 闸）。
-    pub static GLOBAL_TABLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-}
+pub(crate) mod test_support;
 
 #[cfg(test)]
 mod tests;

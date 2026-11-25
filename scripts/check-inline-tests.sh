@@ -114,11 +114,17 @@ for my $f (@files) {
             my $j = $i + 1;
             # 跳过空行、其他属性行、纯注释行
             while ($j < @lines && $lines[$j] =~ /^\s*(#\[.*\]|\/\/.*)?\s*$/) { $j++ }
-            if ($j < @lines && $lines[$j] =~ /^\s*(pub\s+)?mod\s+\w+\s*\{/) {
+        # 形态 A/D/E：cfg(test) 系属性后面紧跟「带 body 的 mod」（all/any 门控
+        # 均计；mod 头可见性限定符 pub / pub(crate) / pub(super) / pub(in …)
+        # 均计——BUG-20261126-083：旧正则 (pub\s+)? 吃不下 pub(crate) 形态，
+        # 三个在库实存违规（security test_capture_sync / chat_dedup 与
+        # chat_event_log 的 test_support）全部逃逸 = 门禁假绿，随本次正则加固
+        # + 违规迁移一并修复）
+            if ($j < @lines && $lines[$j] =~ /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*\{/) {
                 print "VIOLATION MODBODY $f:", $j + 1, ": ", $lines[$j]; $viol = 1;
             }
             # mod 名与 { 换行分开的形态
-            elsif ($j < @lines && $lines[$j] =~ /^\s*(pub\s+)?mod\s+\w+\s*$/) {
+            elsif ($j < @lines && $lines[$j] =~ /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*$/) {
                 my $k = $j + 1;
                 while ($k < @lines && $lines[$k] =~ /^\s*$/) { $k++ }
                 if ($k < @lines && $lines[$k] =~ /^\s*\{/) {

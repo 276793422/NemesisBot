@@ -1449,8 +1449,17 @@ impl SecurityAuditor {
     }
 
     /// Get all pending approval requests.
+    ///
+    /// 契约（BUG-20261125-078 回归锁
+    /// `test_get_security_summary_pending_sorted_by_id` 依此立）：返回值按
+    /// 请求 id 升序确定性排序——`active_requests` 是 HashMap，无序迭代令
+    /// 审批卡列表顺序随进程重启洗牌；排序在源头做，全部调用方
+    /// （middleware summary / 审批 UI）同享同一确定性顺序。
     pub fn get_pending_requests(&self) -> Vec<OperationRequest> {
-        self.active_requests.read().values().cloned().collect()
+        let mut reqs: Vec<OperationRequest> =
+            self.active_requests.read().values().cloned().collect();
+        reqs.sort_by(|a, b| a.id.cmp(&b.id));
+        reqs
     }
 
     /// Get statistics as a HashMap of string keys to i64 values.

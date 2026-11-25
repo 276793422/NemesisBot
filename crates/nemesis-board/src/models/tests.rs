@@ -214,3 +214,40 @@ fn issue_number_sort_key_unparseable_last_lexicographic() {
     nums.sort_by_key(|n| issue_number_sort_key(n));
     assert_eq!(nums, ["NB-3", "NB-20", "custom-a", "custom-x"]);
 }
+
+/// BUG-20261125-080 回归锁：parse_priority 值域矩阵——越界（含旧裸
+/// `as i32` 会截断成 i32::MIN 的 2^31）与非整数 loud 报错；缺席/null
+/// 透传 None；0-3 原值返回。单一真相源：WSAPI 三入口 + CLI + agent
+/// 工具共用本函数。
+#[test]
+fn parse_priority_domain_matrix() {
+    // 缺席 / null → None（缺省语义由调用方决定）。
+    assert_eq!(priority::parse_priority(None).unwrap(), None);
+    assert_eq!(
+        priority::parse_priority(Some(&serde_json::Value::Null)).unwrap(),
+        None
+    );
+    // 0-3 合法域原值返回。
+    for (raw, want) in [
+        (0i64, priority::LOW),
+        (1, priority::MEDIUM),
+        (2, priority::HIGH),
+        (3, priority::URGENT),
+    ] {
+        assert_eq!(
+            priority::parse_priority(Some(&serde_json::json!(raw))).unwrap(),
+            Some(want),
+            "priority {raw} 必须原值通过"
+        );
+    }
+    // 越界 → loud 报错（2^31 = 旧截断形态的实锤输入）。
+    for bad in [-1i64, 4, 100, 2147483648, 4294967297, -2147483649] {
+        assert!(
+            priority::parse_priority(Some(&serde_json::json!(bad))).is_err(),
+            "priority {bad} 必须越界拒绝"
+        );
+    }
+    // 非整数（字符串/浮点）→ loud 报错。
+    assert!(priority::parse_priority(Some(&serde_json::json!("high"))).is_err());
+    assert!(priority::parse_priority(Some(&serde_json::json!(1.5))).is_err());
+}

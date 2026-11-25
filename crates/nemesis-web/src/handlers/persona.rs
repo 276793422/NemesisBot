@@ -2313,7 +2313,14 @@ impl ModuleHandler for PersonaHandler {
                 let d = data.ok_or("missing data")?;
                 let name = get_str(&d, "name")?;
                 validate_persona_name(&name)?;
-                let was_active = self.read_active(workspace).unwrap_or_default() == name;
+                // BUG-20261126-093：was_active 判定与 cmd_remove 内部
+                // 比对同口径（ASCII 变体视为同一人格）——否则 case 变体
+                // remove 激活中人格后 agent 不重启，继续用已删人格的
+                // system prompt。
+                let was_active = self
+                    .read_active(workspace)
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case(&name);
                 let result = self.cmd_remove(workspace, &name)?;
                 // 次生修复：remove-active 在 cmd_remove 内部落
                 // default（文件面已切），但此前不同步重启 agent——activate/restore
@@ -2565,7 +2572,11 @@ impl PersonaHandler {
 
         self.ensure_initialized(workspace)?;
         let active = self.read_active(workspace)?;
-        if active == name {
+        // BUG-20261126-093：目录解析在 Windows 上大小写不敏感（case 变体
+        // 名命中同一物理目录），active 比对必须同口径——精确 == 会让
+        // 「remove Coder 传 coder」跳过 default 恢复，marker 悬空指向已删
+        // 人格。ASCII 变体同口径（BUG-20261125-069 保留名闸同款纪律）。
+        if active.eq_ignore_ascii_case(name) {
             self.cmd_activate(workspace, "default")?;
         }
 
@@ -2611,7 +2622,10 @@ impl PersonaHandler {
             .map_err(|e| format!("failed to write {}: {}", file, e))?;
 
         let active = self.read_active(workspace).unwrap_or_default();
-        if active == name {
+        // BUG-20261126-093：激活判定 ASCII 变体同口径——存档副本与活体
+        // 是同一人格（Windows 大小写不敏感目录解析命中同一目录），同步
+        // 不能因大小写拼写差异漏挂。
+        if active.eq_ignore_ascii_case(name) {
             let root_path = resolve_path(workspace, file)?;
             nemesis_utils::write_file_atomic(
                 &root_path.to_string_lossy(),

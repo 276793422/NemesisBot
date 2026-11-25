@@ -7,7 +7,7 @@
 //!
 //! 新 pitfall 的接入方式：加一条规则函数，无需动任何消费方。
 
-use crate::nodes::placeholder_refs;
+use crate::nodes::{padded_placeholders, placeholder_refs};
 use crate::types::Workflow;
 
 /// 返回人类可读的 warning 列表（中文，面向生成器与用户）。
@@ -168,6 +168,11 @@ fn lint_edge_conditions(wf: &Workflow, warnings: &mut Vec<String>) {
             &node_types,
             warnings,
         );
+        lint_condition_padded_placeholders(
+            &format!("条件边 {}→{} ", edge.from_node, edge.to_node),
+            cond,
+            warnings,
+        );
     }
 }
 
@@ -195,6 +200,27 @@ fn lint_node_condition_expressions(wf: &Workflow, warnings: &mut Vec<String>) {
             &node_types,
             warnings,
         );
+        lint_condition_padded_placeholders(
+            &format!("节点 {}（{}）的 condition 表达式 ", node.id, node.node_type),
+            cond,
+            warnings,
+        );
+    }
+}
+
+/// 占位符内首尾空白预警（缺陷 15 同族诊断面）：替换语义是裁决过的
+/// exact-match（不 trim，`resolve_prompt_template` 契约钉），`{{ flag }}`
+/// 与 `{{flag}}` 是**不同键**——带空白的占位符运行期必然解析不到（缺失
+/// 键保留原文 → 条件残留 → 可证伪性分流）。`{{ flag }}` 拼写来自
+/// Go template / Jinja 习惯，作者无从知晓这里不 trim——草稿期点名原文，
+/// 生成器当轮自纠。
+fn lint_condition_padded_placeholders(site: &str, cond: &str, warnings: &mut Vec<String>) {
+    for padded in padded_placeholders(cond) {
+        warnings.push(format!(
+            "{site}占位符 {padded} 内含首尾空白——占位符键按原文 exact-match \
+             匹配（不做 trim），运行期解析不到。去掉占位符内空白\
+             （如 {{{{flag}}}}）"
+        ));
     }
 }
 
