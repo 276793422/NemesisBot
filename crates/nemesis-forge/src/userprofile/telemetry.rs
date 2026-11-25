@@ -33,8 +33,16 @@ static DEDUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<(String, String, bo
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 /// 写串行（多连接并发 dispatch 的 append 交错防线）。
 static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-/// config 开关门控缓存：`(config_path, mtime_ns, enabled)`。
-static GATE: parking_lot::Mutex<Option<(PathBuf, u128, bool)>> = parking_lot::Mutex::new(None);
+/// config 开关门控缓存（复查 2026-11-25 分量化）：单槽存**两个开关分量**
+/// ——总闸 `enabled` 与 UI 遥测 `ui_telemetry` 各取投影；若只缓存布尔
+/// 结果，两个闸面（遥测 = 总闸∧ui / 信号 = 总闸）会互相覆盖单槽值。
+struct GateCache {
+    path: PathBuf,
+    mtime: u128,
+    enabled: bool,
+    ui_telemetry: bool,
+}
+static GATE: parking_lot::Mutex<Option<GateCache>> = parking_lot::Mutex::new(None);
 /// 轮转判定的累计近似计数（省 stat：每 256 次写 stat 一次）。
 static WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -102,9 +110,9 @@ pub fn record_wsapi_call(
     let _ = writeln!(f, "{line}");
 }
 
-/// config `user_profile.ui_telemetry` 门控（mtime 缓存：开关翻转不重启
-/// 生效；config 读取失败 = 当关处理，不落盘）。
-fn telemetry_enabled(home: &str) -> bool {
+/// config 开关分量读取（mtime 缓存：开关翻转不重启生效；config 读取失败
+/// = 全关，不落盘）。返回 `(总闸 enabled, UI 遥测 ui_telemetry)`。
+fn gate_components(home: &str) -> (bool, bool) {
     let cfg_path = Path::new(home).join("config.json");
     let mtime = std::fs::metadata(&cfg_path)
         .and_then(|m| m.modified())
@@ -115,24 +123,42 @@ fn telemetry_enabled(home: &str) -> bool {
                 .unwrap_or(0)
         });
     let Some(mtime) = mtime else {
-        return false; // config 不存在 = 学习未配置，不落盘
+        return (false, false); // config 不存在 = 学习未配置，不落盘
     };
     {
         let gate = GATE.lock();
-        if let Some((p, m, enabled)) = gate.as_ref()
-            && p == &cfg_path
-            && *m == mtime
+        if let Some(c) = gate.as_ref()
+            && c.path == cfg_path
+            && c.mtime == mtime
         {
-            return *enabled;
+            return (c.enabled, c.ui_telemetry);
         }
     }
-    let enabled = nemesis_config::load_config(&cfg_path)
+    let (enabled, ui) = nemesis_config::load_config(&cfg_path)
         .ok()
         .and_then(|cfg| cfg.user_profile)
-        .map(|u| u.ui_telemetry_enabled_or(true))
-        .unwrap_or(true);
-    *GATE.lock() = Some((cfg_path, mtime, enabled));
-    enabled
+        .map(|u| (u.enabled, u.ui_telemetry_enabled_or(true)))
+        .unwrap_or((false, true));
+    *GATE.lock() = Some(GateCache {
+        path: cfg_path,
+        mtime,
+        enabled,
+        ui_telemetry: ui,
+    });
+    (enabled, ui)
+}
+
+/// 学习落盘**总闸**（复查 2026-11-25）：config `user_profile.enabled`。
+/// 信号面（审批卡/estop，`collection::append_signal`）只认总闸——关闭
+/// 状态下信号零消费者，落盘只积无消费数据（存储即隐私闸统一）。
+pub fn profile_enabled(home: &str) -> bool {
+    gate_components(home).0
+}
+
+/// UI 遥测闸 = 总闸 ∧ `user_profile.ui_telemetry`（wsapi_usage 面）。
+fn telemetry_enabled(home: &str) -> bool {
+    let (enabled, ui) = gate_components(home);
+    enabled && ui
 }
 
 /// 超限轮转：`wsapi_usage.jsonl` → `wsapi_usage.jsonl.old`（单代，覆盖）。

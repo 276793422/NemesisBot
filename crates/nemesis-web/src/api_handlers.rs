@@ -984,17 +984,15 @@ pub async fn handle_api_internal(
                         hook("engage", "cli");
                     }
                     // 批 C ⑤：estop 强信号观测行（CLI 入口；学习侧旁路）。
+                    // 复查 2026-11-25 收编 record_estop_signal 单点（原内联
+                    // 重复 json 构造），home/workspace 由 append_signal 总闸
+                    // 消费。
                     #[cfg(feature = "forge")]
-                    if let Some(ws) = state.workspace.as_deref() {
-                        nemesis_forge::userprofile::collection::append_signal(
-                            std::path::Path::new(ws),
-                            &serde_json::json!({
-                                "ts_ms": chrono::Utc::now().timestamp_millis(),
-                                "kind": "estop",
-                                "action": "engage",
-                            }),
-                        );
-                    }
+                    crate::handlers::estop::record_estop_signal(
+                        state.home.as_deref(),
+                        state.workspace.as_deref(),
+                        "engage",
+                    );
                     tracing::info!("[Web] E-stop engaged via /api/internal");
                 }
                 "estop_release" => {
@@ -1003,17 +1001,13 @@ pub async fn handle_api_internal(
                         hook("release", "cli");
                     }
                     // 批 C ⑤：estop 强信号观测行（CLI 入口；学习侧旁路）。
+                    // 复查 2026-11-25 收编 record_estop_signal 单点。
                     #[cfg(feature = "forge")]
-                    if let Some(ws) = state.workspace.as_deref() {
-                        nemesis_forge::userprofile::collection::append_signal(
-                            std::path::Path::new(ws),
-                            &serde_json::json!({
-                                "ts_ms": chrono::Utc::now().timestamp_millis(),
-                                "kind": "estop",
-                                "action": "release",
-                            }),
-                        );
-                    }
+                    crate::handlers::estop::record_estop_signal(
+                        state.home.as_deref(),
+                        state.workspace.as_deref(),
+                        "release",
+                    );
                     tracing::info!("[Web] E-stop released via /api/internal");
                 }
                 _ => {}

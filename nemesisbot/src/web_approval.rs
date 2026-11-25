@@ -48,14 +48,21 @@ fn alert_denial(
 /// （`<ws>/config/approval_rules.json`）；rules_path 未配置 = 不落
 /// （诚实降级——signals 是旁路面，缺了只丢学习素材）。失败静默
 /// （append_signal 侧同纪律）。
+/// `profile_home`（复查 2026-11-25）：append_signal 总闸
+/// （config `user_profile.enabled`）的闸面路径——None = fail-closed 不落。
+/// `duration_ms`（复查 2026-11-25 批 F1）：live respond 路径取内存
+/// Instant 墙钟恒有值；stale 补裁路径从台账 RFC3339 created_at 补算，
+/// 解析失败/负差 = None → 序列化为 null（挖掘侧 `as_u64` 失败即诚实
+/// 跳过该行时长，裁决方向照常消费）。
 #[cfg(feature = "forge")]
 fn record_approval_signal(
     rules_path: Option<&std::path::PathBuf>,
+    profile_home: Option<&std::path::PathBuf>,
     entry_operation: &str,
     entry_risk_level: &str,
     entry_approved: bool,
     entry_session_key: &str,
-    duration_ms: u64,
+    duration_ms: Option<u64>,
 ) {
     let Some(rules) = rules_path else {
         return;
@@ -63,8 +70,10 @@ fn record_approval_signal(
     let Some(workspace) = rules.parent().and_then(|p| p.parent()) else {
         return;
     };
+    let home_s = profile_home.map(|h| h.to_string_lossy());
     nemesis_forge::userprofile::collection::append_signal(
         workspace,
+        home_s.as_deref(),
         &serde_json::json!({
             "ts_ms": chrono::Utc::now().timestamp_millis(),
             "kind": "approval",
@@ -85,6 +94,18 @@ fn payload_session_key_of(entry: &nemesis_types::approval_journal::ApprovalJourn
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+/// stale 补裁的墙钟补算（复查 2026-11-25 批 F1）：台账条目 created_at 是
+/// RFC3339 字符串（重启后内存 Instant 已失），解析取 `now − ts`；解析
+/// 失败或负差（时钟回拨，钳 0 会伪装「秒批」污染挖掘读法）→ None。
+#[cfg(feature = "forge")]
+fn stale_duration_ms(created_at: &str) -> Option<u64> {
+    let ts = chrono::DateTime::parse_from_rfc3339(created_at)
+        .ok()?
+        .timestamp_millis();
+    let now = chrono::Utc::now().timestamp_millis();
+    now.checked_sub(ts).and_then(|d| u64::try_from(d).ok())
 }
 
 /// 一条等待裁决的审批请求：元数据（`approval.pending` 列表用）+ 裁决回传
@@ -168,6 +189,10 @@ pub struct WebApprovalManager {
     /// 「总是允许」规则表路径（`<workspace>/config/approval_rules.json`）。
     /// None = 未配置（respond always 诚实报错，不静默吞）。
     rules_path: Option<std::path::PathBuf>,
+    /// home 根（复查 2026-11-25：append_signal 总闸
+    /// config `user_profile.enabled` 的闸面路径）。None = 信号闸面不可得
+    /// （append_signal 侧 fail-closed 不落）。
+    profile_home: Option<std::path::PathBuf>,
     /// 审批台账（tasks.db approvals 表）。OnceLock 晚绑：manager 先于
     /// tasks.db 装配（与 LateWebSkillsGate 同款时序），runtime.rs 装配块
     /// `set_journal()` 注入；未注入 = 台账关闭（审批照常工作，仅丢重启
@@ -188,11 +213,13 @@ impl WebApprovalManager {
     pub fn new(
         agent_event_tx: Option<tokio::sync::broadcast::Sender<AgentEvent>>,
         rules_path: Option<std::path::PathBuf>,
+        profile_home: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             agent_event_tx,
             pending: Mutex::new(HashMap::new()),
             rules_path,
+            profile_home,
             journal: std::sync::OnceLock::new(),
             continuation: std::sync::OnceLock::new(),
         }
@@ -420,6 +447,20 @@ impl WebApprovalManager {
                             ),
                         );
                     }
+                    // 复查 2026-11-25 批 F1：stale 裁决同为真实用户审批
+                    // 信号（拒绝是强负反馈、批准是强正反馈），落
+                    // signals.jsonl——时长从台账 created_at 补算，解析失败
+                    // = null（挖掘侧诚实跳过）。
+                    #[cfg(feature = "forge")]
+                    record_approval_signal(
+                        self.rules_path.as_ref(),
+                        self.profile_home.as_ref(),
+                        &e.operation,
+                        &e.risk_level,
+                        approved,
+                        &payload_session_key_of(&e),
+                        stale_duration_ms(&e.created_at),
+                    );
                     self.notify_stale_decision(request_id, &e, approved);
                 }
                 self.broadcast_resolved(request_id, if approved { "approved" } else { "denied" });
@@ -915,11 +956,12 @@ impl ApprovalResponder for WebApprovalManager {
         #[cfg(feature = "forge")]
         record_approval_signal(
             self.rules_path.as_ref(),
+            self.profile_home.as_ref(),
             &entry.operation,
             &entry.risk_level,
             approved,
             &entry.session_key,
-            entry.created_at.elapsed().as_millis() as u64,
+            Some(entry.created_at.elapsed().as_millis() as u64),
         );
 
         // 批准 + 总是允许 → 写规则。裁决已送达不回滚；层级安全门
@@ -1140,11 +1182,12 @@ impl ApprovalResponder for WebApprovalManager {
             #[cfg(feature = "forge")]
             record_approval_signal(
                 self.rules_path.as_ref(),
+                self.profile_home.as_ref(),
                 &entry.operation,
                 &entry.risk_level,
                 approved,
                 &entry.session_key,
-                entry.created_at.elapsed().as_millis() as u64,
+                Some(entry.created_at.elapsed().as_millis() as u64),
             );
             responded += 1;
             responded_ids.push(id.clone());

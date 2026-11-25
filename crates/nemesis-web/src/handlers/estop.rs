@@ -22,13 +22,18 @@ pub type EstopAuditHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
 /// 由 gateway runtime 托盘闭包同款调用本函数补齐）。forge feature 关闭 /
 /// workspace 未配置 = 不落（旁路面诚实降级）。失败静默（append_signal
 /// 侧同纪律）。pub = nemesisbot 侧托盘闭包复用同一实现（三入口单点）。
+///
+/// `home`（复查 2026-11-25）：append_signal 总闸（config
+/// `user_profile.enabled`）的闸面路径——home 缺失 = 闸面不可得，
+/// fail-closed 不落。
 #[cfg(feature = "forge")]
-pub fn record_estop_signal(workspace: Option<&str>, action: &str) {
+pub fn record_estop_signal(home: Option<&str>, workspace: Option<&str>, action: &str) {
     let Some(ws) = workspace else {
         return;
     };
     nemesis_forge::userprofile::collection::append_signal(
         std::path::Path::new(ws),
+        home,
         &serde_json::json!({
             "ts_ms": chrono::Utc::now().timestamp_millis(),
             "kind": "estop",
@@ -63,7 +68,11 @@ impl ModuleHandler for EstopHandler {
                     hook("engage", "dashboard");
                 }
                 #[cfg(feature = "forge")]
-                record_estop_signal(ctx.state.workspace.as_deref(), "engage");
+                record_estop_signal(
+                    ctx.state.home.as_deref(),
+                    ctx.state.workspace.as_deref(),
+                    "engage",
+                );
                 tracing::info!("[Web/WSAPI] E-stop engaged");
                 Ok(Some(serde_json::json!({ "engaged": true })))
             }
@@ -74,7 +83,11 @@ impl ModuleHandler for EstopHandler {
                     hook("release", "dashboard");
                 }
                 #[cfg(feature = "forge")]
-                record_estop_signal(ctx.state.workspace.as_deref(), "release");
+                record_estop_signal(
+                    ctx.state.home.as_deref(),
+                    ctx.state.workspace.as_deref(),
+                    "release",
+                );
                 tracing::info!("[Web/WSAPI] E-stop released");
                 Ok(Some(serde_json::json!({ "engaged": false })))
             }

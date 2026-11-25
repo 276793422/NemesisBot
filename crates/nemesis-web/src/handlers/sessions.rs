@@ -787,6 +787,8 @@ impl ModuleHandler for SessionsHandler {
                 if let Some(ws) = ctx.workspace.as_deref() {
                     nemesis_forge::userprofile::collection::append_event(
                         std::path::Path::new(ws),
+                        // home = 存储即隐私闸（复查 2026-11-25 批 F3）。
+                        ctx.home.as_deref(),
                         &serde_json::json!({
                             "kind": "rewind",
                             "session_key": session_key,

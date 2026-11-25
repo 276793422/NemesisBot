@@ -27,7 +27,7 @@ fn mgr_with_events() -> (
             let _ = ctx.send(serde_json::to_value(&ev).unwrap()).await;
         }
     });
-    (WebApprovalManager::new(Some(btx), None), crx)
+    (WebApprovalManager::new(Some(btx), None, None), crx)
 }
 
 /// 在独立线程发起审批请求（模拟 auditor 的同步调用上下文）。
@@ -75,7 +75,7 @@ fn wait_pending(mgr: &WebApprovalManager, want: usize) {
 
 #[test]
 fn approve_flow_resolves_true_and_clears_pending() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-a", 300);
     // 请求线程需要一点时间进入 pending。
     wait_pending(&mgr, 1);
@@ -91,7 +91,7 @@ fn approve_flow_resolves_true_and_clears_pending() {
 
 #[test]
 fn deny_flow_resolves_false() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-d", 300);
     wait_pending(&mgr, 1);
     assert!(!mgr.respond("req-d", false, false, None).unwrap());
@@ -104,7 +104,7 @@ fn deny_flow_resolves_false() {
 
 #[test]
 fn timeout_denies_and_removes_pending() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-t", 1);
     let v = result_rx
         .recv_timeout(Duration::from_secs(5))
@@ -118,7 +118,7 @@ fn timeout_denies_and_removes_pending() {
 
 #[test]
 fn double_respond_is_first_wins() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-r", 300);
     wait_pending(&mgr, 1);
     assert!(
@@ -138,7 +138,7 @@ fn double_respond_is_first_wins() {
 
 #[test]
 fn pending_lists_request_metadata() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-p", 300);
     wait_pending(&mgr, 1);
     let list = mgr.pending();
@@ -189,7 +189,7 @@ async fn broadcast_carries_full_request_payload() {
 
 #[test]
 fn respond_without_request_is_unknown_error() {
-    let mgr = WebApprovalManager::new(None, None);
+    let mgr = WebApprovalManager::new(None, None, None);
     let err = mgr.respond("nope", true, false, None).unwrap_err();
     assert!(err.contains("unknown approval request"), "err: {}", err);
 }
@@ -198,7 +198,7 @@ fn respond_without_request_is_unknown_error() {
 /// 任务（这里是 respond 调用本身）仍可推进——不死锁。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_in_tokio_context_uses_block_in_place_and_still_resolves() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let m2 = mgr.clone();
     let waiter = tokio::spawn(async move {
         m2.request_approval_sync("req-bip", "process_exec", "x", "HIGH", "r", 300)
@@ -222,7 +222,7 @@ async fn request_in_tokio_context_uses_block_in_place_and_still_resolves() {
 fn respond_always_approved_writes_exec_prefix_rule() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone()), None));
     let result_rx = request_async(mgr.clone(), "req-always", 300);
     wait_pending(&mgr, 1);
 
@@ -242,7 +242,7 @@ fn respond_always_approved_writes_exec_prefix_rule() {
 fn respond_always_false_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone()), None));
     let result_rx = request_async(mgr.clone(), "req-once", 300);
     wait_pending(&mgr, 1);
     mgr.respond("req-once", true, false, None).unwrap();
@@ -254,7 +254,7 @@ fn respond_always_false_writes_nothing() {
 fn respond_always_denied_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone()), None));
     let result_rx = request_async(mgr.clone(), "req-deny", 300);
     wait_pending(&mgr, 1);
     mgr.respond("req-deny", false, true, None).unwrap();
@@ -268,7 +268,7 @@ fn respond_always_on_critical_nonexec_op_is_ignored() {
     // 本次批准照常送达。
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone()), None));
     let (tx, rx) = mpsc::channel();
     let m = mgr.clone();
     std::thread::spawn(move || {
@@ -302,7 +302,7 @@ fn respond_always_on_credential_use_writes_no_rule_death_letter_skip() {
     // 免卡正道 = vault 页「凭据免打扰」开关或域绑定（config.vault_domain）。
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone()), None));
     let (tx, rx) = mpsc::channel();
     let m = mgr.clone();
     std::thread::spawn(move || {
@@ -329,7 +329,7 @@ fn respond_always_on_credential_use_writes_no_rule_death_letter_skip() {
 
 #[test]
 fn respond_always_without_rules_path_is_honest_error() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-nopath", 300);
     wait_pending(&mgr, 1);
     let err = mgr.respond("req-nopath", true, true, None).unwrap_err();
@@ -346,7 +346,7 @@ fn always_rule_upsert_is_idempotent() {
     // 同 pattern 二次「总是允许」：规则去重不翻倍。
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone()), None));
 
     for rid in ["req-u1", "req-u2"] {
         let result_rx = request_async(mgr.clone(), rid, 300);
@@ -371,7 +371,7 @@ async fn late_skills_gate_ignores_install_rules_always_card() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("approval_rules.json");
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone())));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, Some(path.clone()), None));
 
     // 手写一条 skills.install 规则（写入侧 rule_permitted_for 现已拒绝
     // 新增——这里直测消费侧纵深：规则在场也必须弹卡）。
@@ -418,7 +418,7 @@ async fn late_skills_gate_ignores_install_rules_always_card() {
 #[test]
 fn deny_note_flows_to_waiter_verdict() {
     // 备注只在 denied 时随 verdict 送达；auditor 侧拼进拒绝消息回灌模型。
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-note", 300);
     wait_pending(&mgr, 1);
     assert!(
@@ -436,7 +436,7 @@ fn deny_note_flows_to_waiter_verdict() {
 #[test]
 fn deny_blank_note_is_normalized_to_none() {
     // 空串/纯空白备注视同无备注（auditor 侧消息不带冒号尾巴）。
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-blank", 300);
     wait_pending(&mgr, 1);
     mgr.respond("req-blank", false, false, Some("   ".into()))
@@ -452,7 +452,7 @@ fn deny_blank_note_is_normalized_to_none() {
 #[test]
 fn approve_ignores_note() {
     // approved=true 时备注被忽略（trait 契约：note 仅拒绝语义）。
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let result_rx = request_async(mgr.clone(), "req-appr", 300);
     wait_pending(&mgr, 1);
     assert!(
@@ -518,7 +518,7 @@ fn save_always_rule_is_exclusive_with_config_family_lock() {
     let rules_path = dir.path().join("config/approval_rules.json");
     std::fs::create_dir_all(rules_path.parent().unwrap()).unwrap();
 
-    let mgr = WebApprovalManager::new(None, Some(rules_path.clone()));
+    let mgr = WebApprovalManager::new(None, Some(rules_path.clone()), None);
 
     // 外部写者持 config 家族锁整写文件（模拟 approvals.clear 的读→写）
     // 与 save_always_rule 并发跑。save 5 次同一规则（upsert 幂等收敛 1 条）。
@@ -596,7 +596,7 @@ fn journal_at(
 fn journal_records_pending_and_live_decision() {
     let dir = tempfile::tempdir().unwrap();
     let journal = journal_at(&dir.path().join("tasks.db"));
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     mgr.set_journal(journal.clone());
 
     let result_rx = request_async(mgr.clone(), "req-jl", 300);
@@ -621,7 +621,7 @@ fn journal_records_pending_and_live_decision() {
 fn journal_timeout_records_expired() {
     let dir = tempfile::tempdir().unwrap();
     let journal = journal_at(&dir.path().join("tasks.db"));
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     mgr.set_journal(journal.clone());
 
     let result_rx = request_async(mgr.clone(), "req-jt", 1);
@@ -645,7 +645,7 @@ fn journal_restart_resume_stale_card_decidable_exactly_once() {
     // 「重启前」：pending 记账后进程死亡（无活 ask 线程——记账与等待解耦，
     // 直接走记账入口；内存 pending 随 mgr drop 消失）。
     {
-        let mgr = WebApprovalManager::new(None, None);
+        let mgr = WebApprovalManager::new(None, None, None);
         mgr.set_journal(journal_at(&db_path));
         let entry = WebApprovalManager::journal_entry(
             "req-stale-1",
@@ -664,7 +664,7 @@ fn journal_restart_resume_stale_card_decidable_exactly_once() {
 
     // 「重启后」：新进程从盘上重开 tasks.db（真重开验证落盘耐久，非同
     // 连接句柄自证）。
-    let mgr = WebApprovalManager::new(None, None);
+    let mgr = WebApprovalManager::new(None, None, None);
     mgr.set_journal(journal_at(&db_path));
 
     // stale 卡片可见（stale: true 供前端注记「原操作已失效」）。
@@ -687,6 +687,95 @@ fn journal_restart_resume_stale_card_decidable_exactly_once() {
     assert_eq!(mgr.pending().len(), 0);
 }
 
+/// 复查 2026-11-25 批 F1 回归锁：stale 补裁（重启遗留卡）同落审批强
+/// 信号行——live respond（内存 Instant 墙钟）与 stale respond（台账
+/// RFC3339 created_at 补算）两条路径都对 signals.jsonl 有贡献；
+/// created_at 解析失败 = duration_ms null（挖掘侧 as_u64 诚实跳过该
+/// 行时长），方向/类别照常消费。
+#[cfg(feature = "forge")]
+#[test]
+fn stale_respond_records_approval_signal() {
+    let dir = tempfile::tempdir().unwrap();
+    // rules_path 两级父目录推导 workspace（record_approval_signal 契约）。
+    let rules = dir.path().join("config").join("approval_rules.json");
+    std::fs::create_dir_all(rules.parent().unwrap()).unwrap();
+    // 总闸开启的 home。
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    let db_path = dir.path().join("tasks.db");
+
+    // 「重启前」：两条 pending 记账（一条 created_at 正常 / 一条故意畸形）。
+    {
+        let mgr = WebApprovalManager::new(None, Some(rules.clone()), Some(home.clone()));
+        mgr.set_journal(journal_at(&db_path));
+        mgr.journal_record_pending(&WebApprovalManager::journal_entry(
+            "req-sig-ok",
+            "process_exec",
+            "cargo publish",
+            "HIGH",
+            "rule: exec-publish",
+            "cargo publish *",
+            "",
+            "sess/a",
+            "",
+        ));
+        let mut bad = WebApprovalManager::journal_entry(
+            "req-sig-bad",
+            "file_write",
+            "D:\\x.txt",
+            "HIGH",
+            "rule: write",
+            "write *",
+            "",
+            "sess/b",
+            "",
+        );
+        bad.created_at = "not-a-timestamp".into();
+        mgr.journal_record_pending(&bad);
+        // drop = 进程死亡。
+    }
+
+    // 「重启后」：新进程重开 tasks.db，各补裁一票（批准 + 拒绝）。
+    let mgr = WebApprovalManager::new(None, Some(rules.clone()), Some(home.clone()));
+    mgr.set_journal(journal_at(&db_path));
+    assert!(mgr.respond("req-sig-ok", true, false, None).unwrap());
+    // respond_stale 回执 = Ok(approved)——拒绝补裁成功 = Ok(false)
+    // （拒绝回显；「已裁决」才是 Err），与既有 approve-only 测试互补。
+    assert_eq!(
+        mgr.respond("req-sig-bad", false, false, None).ok(),
+        Some(false),
+        "denied stale respond must record and echo Ok(false)"
+    );
+
+    let content = std::fs::read_to_string(
+        dir.path()
+            .join("forge")
+            .join("userprofile")
+            .join("signals.jsonl"),
+    )
+    .unwrap();
+    let rows: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2, "两条 stale 裁决各落一行信号");
+    let ok = rows.iter().find(|r| r["session_key"] == "sess/a").unwrap();
+    assert_eq!(ok["approved"], true);
+    assert_eq!(ok["operation"], "process_exec");
+    assert!(ok["duration_ms"].is_u64(), "正常 created_at → 数值墙钟");
+    let bad = rows.iter().find(|r| r["session_key"] == "sess/b").unwrap();
+    assert_eq!(bad["approved"], false);
+    assert!(
+        bad["duration_ms"].is_null(),
+        "畸形 created_at → null（挖掘侧诚实跳过，方向照常消费）"
+    );
+}
+
 // 跨 broker 闸（BUG-20261112-090 回归锁）：web/channel/acp 三个 manager
 // 共写同一个 tasks.db pending 表——别的 broker 的 pending 条目是**活**审批
 // （IM 卡在等回复 / ACP 卡在等编辑器授权），不是重启遗留。web 侧不得把它
@@ -698,7 +787,7 @@ fn cross_broker_pending_entry_is_neither_surfaced_nor_adjudicable() {
     let db_path = dir.path().join("tasks.db");
     let journal = journal_at(&db_path);
 
-    let mgr = WebApprovalManager::new(None, None);
+    let mgr = WebApprovalManager::new(None, None, None);
     mgr.set_journal(journal.clone());
 
     // channel broker 的「活」卡直落台账（绕过 web 内存 pending——模拟
@@ -743,7 +832,7 @@ fn web_broker_stale_card_still_surfaced_and_adjudicable() {
     let db_path = dir.path().join("tasks.db");
     let journal = journal_at(&db_path);
 
-    let mgr = WebApprovalManager::new(None, None);
+    let mgr = WebApprovalManager::new(None, None, None);
     mgr.set_journal(journal.clone());
 
     let mut entry = WebApprovalManager::journal_entry(
@@ -899,7 +988,7 @@ fn journal_pending_persists_before_map_visible_and_broadcast() {
     gated.add_gate("__pending");
 
     let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(Some(btx), None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(Some(btx), None, None));
     mgr.set_journal(gated.clone());
 
     let result_rx = request_async(mgr.clone(), "req-ord", 300);
@@ -934,7 +1023,7 @@ fn respond_after_expired_records_no_verdict_and_errors() {
     let gated = GateJournal::new(sqlite.clone());
     gated.add_gate("web-user");
 
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     mgr.set_journal(gated.clone());
 
     let result_rx = request_async(mgr.clone(), "req-race1", 1);
@@ -984,7 +1073,7 @@ fn timeout_honors_raced_respond_and_recovers_verdict() {
     gated.add_gate("timeout");
 
     let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(32);
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(Some(btx), None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(Some(btx), None, None));
     mgr.set_journal(gated.clone());
 
     let result_rx = request_async(mgr.clone(), "req-race2", 1);
@@ -1090,7 +1179,7 @@ impl nemesis_types::approval_journal::ApprovalJournal for ErrJournal {
 
 #[test]
 fn respond_still_delivers_when_journal_errors() {
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     mgr.set_journal(std::sync::Arc::new(ErrJournal));
 
     let result_rx = request_async(mgr.clone(), "req-dberr", 300);
@@ -1147,7 +1236,7 @@ fn restart_with_stale_card(
     session_key: &str,
 ) -> WebApprovalManager {
     {
-        let mgr = WebApprovalManager::new(None, None);
+        let mgr = WebApprovalManager::new(None, None, None);
         mgr.set_journal(journal_at(db_path));
         let entry = WebApprovalManager::journal_entry(
             request_id,
@@ -1162,7 +1251,7 @@ fn restart_with_stale_card(
         );
         mgr.journal_record_pending(&entry);
     }
-    let mgr = WebApprovalManager::new(None, None);
+    let mgr = WebApprovalManager::new(None, None, None);
     mgr.set_journal(journal_at(db_path));
     mgr
 }
@@ -1257,7 +1346,7 @@ fn stale_undeliverable_session_degrades_and_stays_exactly_once() {
 fn ctx_request_routes_session_key_into_entry_and_journal() {
     let dir = tempfile::tempdir().unwrap();
     let journal = journal_at(&dir.path().join("tasks.db"));
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     mgr.set_journal(journal.clone());
 
     // 带 ctx 的请求（loop dispatch 从 RequestContext 穿线后的真实形态）。
@@ -1316,7 +1405,7 @@ fn ctx_request_routes_session_key_into_entry_and_journal() {
 fn orphan_cleanup_closes_all_and_denies_waiters() {
     // 全清：estop 类终局把所有未决卡一次关掉；等待方立即醒来拿到
     // 「系统清理」拒绝裁决（不是超时假象，也绝不产生批准）。
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let rx1 = request_async(mgr.clone(), "req-o1", 300);
     let rx2 = request_async(mgr.clone(), "req-o2", 300);
     wait_pending(&mgr, 2);
@@ -1342,7 +1431,7 @@ fn orphan_cleanup_closes_all_and_denies_waiters() {
 fn orphan_cleanup_for_session_targets_only_matching_session() {
     // 定向清：会话 clear 只关本会话的卡；别的会话与无来源（session_key
     // 为空——cron 直发等旧链路形态）的卡不受波及。
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let sk = "agent:main:session:sess-a";
     let rx_mine = {
         let (tx, rx) = mpsc::channel();
@@ -1450,7 +1539,7 @@ async fn orphan_cleanup_records_journal_orphaned_and_broadcasts() {
 fn orphan_cleanup_after_respond_raced_is_noop() {
     // 竞速：respond 先裁决摘卡 → 孤儿清理看不到它（map.remove 互斥）→
     // 返回 0、等待方拿到的是用户裁决而非清理裁决。
-    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None));
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
     let rx = request_async(mgr.clone(), "req-race", 300);
     wait_pending(&mgr, 1);
     assert!(mgr.respond("req-race", true, false, None).unwrap());

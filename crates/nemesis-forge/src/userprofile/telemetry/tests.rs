@@ -131,6 +131,34 @@ fn missing_workspace_or_home_is_noop() {
     record_wsapi_call(None, None, "mod_noop", "cmd", true);
 }
 
+/// 总闸（复查 2026-11-25）：`user_profile.enabled=false` = 遥测也不落
+/// ——此前 `telemetry_enabled` 只看 ui_telemetry，总开关关闭时遥测照落
+/// 零消费（与 route 闸/stats 语义不一致的根修）。
+#[test]
+fn profile_enabled_gate_blocks_telemetry_when_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"user_profile": {"enabled": false}}"#,
+    )
+    .unwrap();
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    record_wsapi_call(
+        Some(ws.to_str().unwrap()),
+        Some(home.to_str().unwrap()),
+        "mod_master_off",
+        "cmd",
+        true,
+    );
+    assert!(
+        !ws.join("logs").join("wsapi_usage.jsonl").exists(),
+        "总闸关 = 遥测不落（enabled ∧ ui_telemetry）"
+    );
+}
+
 #[test]
 fn rotation_moves_to_old_generation() {
     let dir = tempfile::tempdir().unwrap();

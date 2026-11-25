@@ -728,7 +728,7 @@ async fn credential_set_persists_config_and_hot_flips_state() {
         .expect("set on")
         .expect("payload");
     assert_eq!(resp["saved"], true);
-    assert_eq!(st.enabled(), true, "运行态热翻（闸下次判定即读新值）");
+    assert!(st.enabled(), "运行态热翻（闸下次判定即读新值）");
     let on_disk = std::fs::read_to_string(security_config_file(&dir)).unwrap();
     assert!(
         on_disk.contains("\"credential_auto_approve\": true"),
@@ -745,7 +745,7 @@ async fn credential_set_persists_config_and_hot_flips_state() {
         .await
         .expect("set off")
         .expect("payload");
-    assert_eq!(st.enabled(), false);
+    assert!(!st.enabled());
     let on_disk = std::fs::read_to_string(security_config_file(&dir)).unwrap();
     assert!(
         !on_disk.contains("\"credential_auto_approve\": true"),
@@ -758,7 +758,7 @@ async fn credential_set_persists_config_and_hot_flips_state() {
         .await
         .expect_err("missing enabled must error");
     assert!(err.contains("enabled"), "{err}");
-    assert_eq!(st.enabled(), false, "拒绝路径不得误翻运行态");
+    assert!(!st.enabled(), "拒绝路径不得误翻运行态");
 }
 
 /// credential_stats：counters 三主臂 + records 序列化投影（记录载荷只有
