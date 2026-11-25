@@ -300,6 +300,23 @@ impl GatewayCtx {
         args.extend(extra_args.iter().cloned());
         let _log_flags = common::init_logger_from_config(&config_path, &args);
 
+        // Step 5a-前置：人格归档存量回迁（BUG-20261126 配套，幂等）。
+        // 位置纪律：必须在 `init_logger_from_config` **之后**（首版放
+        // gateway.rs run() 预装配块，早于 subscriber 安装，回迁日志蒸发
+        // ——e2e S5 抓出后挪此处）且早于一切会话 meta 扫描消费方
+        // （owner index / start_all 在 assemble 之后的装配步）。
+        {
+            let ws = common::workspace_path(&home);
+            match nemesis_web::handlers::persona::repair_project_sessions(&ws.to_string_lossy()) {
+                Ok(n) if n > 0 => tracing::info!(
+                    "[Gateway] persona archive repair: {} project session file(s) restored to workspace root",
+                    n
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("[Gateway] persona archive repair failed: {}", e),
+            }
+        }
+
         // Step 5a：独立代理配置 env 段注入（代理设置三项改造批B）。
         // 位置纪律：必须在 `init_logger_from_config` **之后**（注入日志要被
         // subscriber 捕获——首版放在 gateway.rs run() 顶部，早于 logger 初始化，

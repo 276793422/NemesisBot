@@ -189,9 +189,16 @@ struct AgentLoopState {
     agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
     /// Handle to the inbound bridge task (bus broadcast → mpsc).
     bridge_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Handle to the agent loop task. Arc 包装供监督任务与 stop() 共享
-    /// （`abort`/`is_finished` 均为 `&self`，Arc 解引用直接可用）。
-    agent_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
+    /// 主循环任务的 abort 句柄（BUG-20261126 监督重设计）：JoinHandle 所
+    /// 有权移交监督任务 await（死因裁决），state 只留 abort 能力——
+    /// `AbortHandle::abort` 与结果读取解耦，stop 不再需要任务句柄本体。
+    agent_abort: Option<tokio::task::AbortHandle>,
+    /// 本代停机证词（一代一面）：start() 每代新建，stop() 置位。监督
+    /// 任务只持自家代际的 clone，老监督永不读新代证词——跨代污染
+    /// （旧 expected_stop 共享旗被 start 复位引发的连环误杀）结构性消失。
+    /// 仅 `Ok(())` 结局需要它消歧（al.stop() 先置 running=false、任务
+    /// 先于 abort 自然收班 = Ok；无证词的 Ok = 无人叫停的自发退出）。
+    stop_witness: Option<Arc<AtomicBool>>,
 }
 
 /// 运行期 loop 级接线 stash（BUG-20261108-012 横向收尾）：gateway 装配
@@ -246,17 +253,18 @@ pub struct AgentLoopServiceAdapter {
     /// Needed because tray callbacks run on the winit thread (no tokio context),
     /// but `start()` needs to spawn async tasks on the tokio runtime.
     rt: tokio::runtime::Handle,
-    /// 主循环任务监督（BUG-20261123-003）：回合体除工具执行（tool_dispatch
-    /// 的 catch_unwind）外无 panic 隔离（admission.rs SessionBusyGuard 注释
-    /// 自证），任务 panic = 主循环静默死亡——`agent_handle` 存 state 后从不
-    /// await（JoinError 永远取不出）、`is_running()` 查 bridge_handle 假绿、
-    /// inbound bridge 要等下一条消息才 warn 断桥（BUG-20261113-138 臂），
-    /// 空闲期 panic = bot 全瘫只留一条 stderr panic 日志。监督任务轮询
-    /// `is_finished()`：非期望停机的任务死亡 → 触发 restart_hook
-    /// （stop+start 重建 fresh loop，绕开半死实例——stop take 丢弃）。
-    /// 退避 1s/10s/60s，第 4 次+只留痕不重启（panic 风暴 = 系统性问题，
-    /// 人工介入；计数进程生命周期累计，gateway 重启清零）。
-    expected_stop: Arc<AtomicBool>,
+    /// 主循环任务监督（BUG-20261123-003 引入，BUG-20261126 重设计）：
+    /// 回合体除工具执行（tool_dispatch 的 catch_unwind）外无 panic 隔离
+    /// （admission.rs SessionBusyGuard 注释自证），任务 panic = 主循环
+    /// 静默死亡。监督任务 **await 任务句柄**（tokio 直接报死因，事件
+    /// 驱动零轮询）：`Err(is_cancelled)` = 我们的 abort（stop）→ 安静
+    /// 退役；`Ok(())` + 本代停机证词 = al.stop() 正常收班 → 安静退役；
+    /// `Err(is_panic)` 或无证词的 `Ok(())` = 真异常死亡 → 触发
+    /// restart_hook（stop+start 重建 fresh loop）+ 退避 1s/10s/60s，
+    /// 第 4 次+只留痕不重启（panic 风暴 = 系统性问题，人工介入；计数
+    /// 进程生命周期累计，gateway 重启清零）。监督随句柄 resolved 自然
+    /// 退休——旧设计的「每代永生监督盯上一代尸体」连环误杀链
+    /// （2026-11-25 人格切换三连误杀事故）结构性不可能复发。
     panic_restart_count: std::sync::atomic::AtomicU64,
     /// 重启回调（gateway 装配点注入 `adapter.supervisor_restart` 包装闭包）。
     /// None = 只 error! 留痕不自动重启（诚实降级，监督观测面仍在）。
@@ -276,7 +284,8 @@ impl AgentLoopServiceAdapter {
             state: std::sync::Mutex::new(AgentLoopState {
                 agent_loop: Some(initial_agent_loop),
                 bridge_handle: None,
-                agent_handle: None,
+                agent_abort: None,
+                stop_witness: None,
             }),
             shared,
             agent_loop_ref,
@@ -284,7 +293,6 @@ impl AgentLoopServiceAdapter {
             runtime_wiring: std::sync::Mutex::new(RuntimeWiring::default()),
             skip_predicate: std::sync::OnceLock::new(),
             rt: tokio::runtime::Handle::current(),
-            expected_stop: Arc::new(AtomicBool::new(false)),
             panic_restart_count: std::sync::atomic::AtomicU64::new(0),
             restart_hook: std::sync::Mutex::new(None),
         }
@@ -402,24 +410,24 @@ impl AgentLoopServiceAdapter {
         }
     }
 
-    /// 主循环任务监督 spawn（BUG-20261123-003）：任务体在 free fn
-    /// `agent_loop_supervisor_task`（单测直驱）。钩子/计数 spawn 时快照
-    /// （钩子在 gateway 装配期先于 start 注入）。
-    fn spawn_loop_supervisor(&self, handle: Arc<tokio::task::JoinHandle<()>>) {
-        let expected = Arc::clone(&self.expected_stop);
+    /// 主循环任务监督 spawn（BUG-20261123-003 引入，BUG-20261126 重设计）：
+    /// 任务体在 free fn `agent_loop_supervisor_task`（单测直驱）。JoinHandle
+    /// 所有权移交监督任务 await；代际停机证词 clone 随行。钩子/计数 spawn
+    /// 时快照（钩子在 gateway 装配期先于 start 注入）。
+    fn spawn_loop_supervisor(&self, handle: tokio::task::JoinHandle<()>, witness: Arc<AtomicBool>) {
         let hook = self.restart_hook.lock().unwrap().clone();
-        let count = self.panic_restart_count.load(Ordering::SeqCst);
+        let death_seq = self.panic_restart_count.load(Ordering::SeqCst);
         self.rt
-            .spawn(agent_loop_supervisor_task(handle, expected, hook, count));
+            .spawn(agent_loop_supervisor_task(handle, witness, hook, death_seq));
     }
 }
 
 impl LifecycleService for AgentLoopServiceAdapter {
     fn start(&self) -> Result<(), String> {
-        // 显式 start = 全新运行意图：清监督的期望停机标志（stop→start 循环
-        // 后监督臂照常生效）。死亡计数**不清**（进程生命周期累计，熔断
-        // 语义见 supervisor_restart；gateway 重启才归零）。
-        self.expected_stop.store(false, Ordering::SeqCst);
+        // BUG-20261126：旧设计此处复位共享 expected_stop 旗——正是连环误杀
+        // 的第一推手（新代落旗 = 老监督眼里的「无旗尸体」）。重设计下停机
+        // 证词一代一面（下方新建），无共享旗可复位。死亡计数**不清**（进程
+        // 生命周期累计，熔断语义见 supervisor_restart；gateway 重启才归零）。
         let mut state = self.state.lock().unwrap();
 
         if state.agent_loop.is_some() && state.bridge_handle.is_some() {
@@ -567,36 +575,45 @@ impl LifecycleService for AgentLoopServiceAdapter {
             }
         });
 
-        // Spawn the agent loop（Arc 包装：state 存一份供 stop abort，监督
-        // 任务持一份轮询 is_finished——JoinHandle 非 Clone，Arc 共享）。
+        // Spawn the agent loop。JoinHandle 所有权整份移交监督任务 await
+        // （死因裁决真相源）；state 只留 abort 句柄 + 本代停机证词。
         let agent_loop_clone = agent_loop.clone();
-        let agent_task = Arc::new(self.rt.spawn(async move {
+        let agent_task = self.rt.spawn(async move {
             agent_loop_clone.run_bus_arc(agent_inbound_rx).await;
-        }));
+        });
+        let agent_abort = agent_task.abort_handle();
+        let stop_witness = Arc::new(AtomicBool::new(false));
 
         // Store everything in state (still holding the lock).
         state.agent_loop = Some(agent_loop);
         state.bridge_handle = Some(bridge);
-        state.agent_handle = Some(Arc::clone(&agent_task));
+        state.agent_abort = Some(agent_abort);
+        state.stop_witness = Some(Arc::clone(&stop_witness));
         drop(state);
 
-        // 监督任务（锁外 spawn：其 panic 臂经 hook 走 stop/start 会拿同一把
-        // state 锁——锁内 spawn 无直接死锁（监督 5s 后才行动）但没必要）。
-        self.spawn_loop_supervisor(agent_task);
+        // 监督任务（锁外 spawn：其重启臂经 hook 走 stop/start 会拿同一把
+        // state 锁——await 设计下监督只在任务 resolved 后行动，锁内 spawn
+        // 无直接死锁但没必要）。
+        self.spawn_loop_supervisor(agent_task, stop_witness);
 
         tracing::info!("[AgentAdapter] start: agent loop started, listening on bus");
         Ok(())
     }
 
     fn stop(&self) -> Result<(), String> {
-        // 先置期望停机标志：监督任务见到即收班（不再把本次停机误判为
-        // 异常死亡触发重启）。幂等 stop 同样置位无害。
-        self.expected_stop.store(true, Ordering::SeqCst);
         let mut state = self.state.lock().unwrap();
 
         if state.agent_loop.is_none() {
             tracing::info!("[AgentAdapter] stop: already stopped, skipping");
             return Ok(());
+        }
+
+        // 先立本代停机证词（BUG-20261126）：监督任务 resolve 后读自家代际
+        // 证词收班。置位必须在 al.stop() 之前——al.stop() 置 running=false
+        // 可使任务先于下方 abort 自然收班（Ok 结局），监督届时证词必须
+        // 已在场。幂等 stop 同样置位无害（证词已随 take 归还）。
+        if let Some(witness) = state.stop_witness.take() {
+            witness.store(true, Ordering::SeqCst);
         }
 
         tracing::info!("[AgentAdapter] stop: shutting down agent...");
@@ -624,12 +641,13 @@ impl LifecycleService for AgentLoopServiceAdapter {
             handle.abort();
         }
 
-        // Abort the agent loop task. Known behavior: if the agent was
-        // processing a message, the response for that message is lost.
-        // This is expected — the user explicitly stopped the agent, so
-        // incomplete replies are acceptable.
-        if let Some(handle) = state.agent_handle.take() {
-            handle.abort();
+        // Abort the agent loop task（经代际 abort 句柄；任务已收班时
+        // no-op）。Known behavior: if the agent was processing a message,
+        // the response for that message is lost. This is expected — the
+        // user explicitly stopped the agent, so incomplete replies are
+        // acceptable.
+        if let Some(abort) = state.agent_abort.take() {
+            abort.abort();
         }
 
         // Drop the old AgentLoop entirely.
@@ -665,60 +683,67 @@ impl AgentLoopServiceTrait for AgentLoopServiceAdapter {
     }
 }
 
-/// 主循环监督任务体（BUG-20261123-003；独立 free fn 供单测直驱——
-/// 构造整个 adapter 太重）。每 5s 轮询 `is_finished()`：期望停机标志
-/// （stop() 置位）= 正常退出臂；任务死亡且非期望停机 = panic/异常终止
-/// → 按 `death_seq` 退避（1s/10s/60s）后触发 restart 回调（None = 只
-/// error! 留痕）。行动后本任务即退——重启产生的新任务由新监督接管。
-/// 期望停机即退（stop 后最多 5s 收尾）。
+/// 主循环监督任务体（BUG-20261123-003 引入，BUG-20261126 重设计；独立
+/// free fn 供单测直驱——构造整个 adapter 太重）。**await 任务句柄拿真实
+/// 死因**（tokio JoinHandle resolved 即报结局，事件驱动零轮询）：
+/// - `Err(e) if e.is_cancelled()`：我们的 abort（stop 流程）→ 安静退役；
+/// - `Ok(())` 且本代停机证词置位：al.stop() 先置 running=false、任务先于
+///   abort 自然收班的正常形态 → 安静退役；
+/// - `Err(is_panic)` 或无证词的 `Ok(())`：真异常死亡 → 按 `death_seq`
+///   退避（1s/10s/60s）→ 复核证词（窗口内来了显式 stop 尊重）→ 触发
+///   restart 回调（None = 只 error! 留痕）。
+///
+/// 行动后本任务即退；**句柄所有权在本任务手里，await resolve 即监督自然
+/// 退休**——旧设计「每代永生监督盯上一代尸体」（共享 expected_stop 旗被
+/// start 复位 + 5s 轮询猜死活）的连环误杀链结构性不可能复发：监督只对
+/// 自家代际句柄/证词裁决，stop 不再产生「无旗尸体」。
 async fn agent_loop_supervisor_task(
-    handle: Arc<tokio::task::JoinHandle<()>>,
-    expected: Arc<AtomicBool>,
+    handle: tokio::task::JoinHandle<()>,
+    stop_witness: Arc<AtomicBool>,
     hook: Option<Arc<dyn Fn() + Send + Sync>>,
     death_seq: u64,
 ) {
-    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
-    tick.tick().await; // interval 首 tick 立即返回，跳过
-    loop {
-        tick.tick().await;
-        if expected.load(Ordering::SeqCst) {
-            return; // 正常 stop 流程，监督收班
-        }
-        if !handle.is_finished() {
-            continue;
-        }
-        // 任务已结束且非期望停机 = 异常死亡（panic unwind / 非 stop
-        // 终止）。is_running()（查 bridge_handle）此刻仍假绿、bridge
-        // 要等下一条消息才断——这里是唯一可靠的死亡观测点。
-        match hook {
-            Some(restart) => {
-                // 退避：panic 风暴不无限快重启（1s/10s/60s，第 4 次+
-                // 由 supervisor_restart 熔断只留痕）。
-                let backoff = match death_seq {
-                    0 => std::time::Duration::from_secs(1),
-                    1 => std::time::Duration::from_secs(10),
-                    _ => std::time::Duration::from_secs(60),
-                };
-                tracing::error!(
-                    "[AgentAdapter] agent loop task finished unexpectedly (not a stop) — \
-                     supervisor restart in {}s (prior deaths: {death_seq})",
-                    backoff.as_secs()
-                );
-                tokio::time::sleep(backoff).await;
-                // 退避窗口内来了显式 stop → 尊重，不重启。
-                if expected.load(Ordering::SeqCst) {
-                    return;
+    match handle.await {
+        // 我们的 abort（stop 流程打断在途轮次）= 正常换班，安静退役。
+        Err(e) if e.is_cancelled() => {}
+        // 自然收班 + 本代证词在场 = al.stop() 的正常形态，安静退役。
+        Ok(()) if stop_witness.load(Ordering::SeqCst) => {}
+        // 真 panic（unwind）或无证词的自发退出 = 异常死亡。
+        outcome => {
+            let reason = match &outcome {
+                Ok(()) => "exited without a stop witness (unexpected graceful exit)",
+                Err(e) if e.is_panic() => "panicked",
+                Err(_) => "failed to join (unknown join error)",
+            };
+            match hook {
+                Some(restart) => {
+                    // 退避：panic 风暴不无限快重启（1s/10s/60s，第 4 次+
+                    // 由 supervisor_restart 熔断只留痕）。
+                    let backoff = match death_seq {
+                        0 => std::time::Duration::from_secs(1),
+                        1 => std::time::Duration::from_secs(10),
+                        _ => std::time::Duration::from_secs(60),
+                    };
+                    tracing::error!(
+                        "[AgentAdapter] agent loop task {reason} — \
+                         supervisor restart in {}s (prior deaths: {death_seq})",
+                        backoff.as_secs()
+                    );
+                    tokio::time::sleep(backoff).await;
+                    // 退避窗口内来了显式 stop（证词置位）→ 尊重，不重启。
+                    if stop_witness.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    restart();
                 }
-                restart();
-            }
-            None => {
-                tracing::error!(
-                    "[AgentAdapter] agent loop task finished unexpectedly (not a stop); \
-                     no restart hook wired — manual restart required"
-                );
+                None => {
+                    tracing::error!(
+                        "[AgentAdapter] agent loop task {reason}; \
+                         no restart hook wired — manual restart required"
+                    );
+                }
             }
         }
-        return;
     }
 }
 
