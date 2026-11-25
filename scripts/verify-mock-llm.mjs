@@ -90,6 +90,16 @@ const STEER_REPLY_MS = Number(process.env.STEER_REPLY_MS ?? 5_000)
 // Playwright 轮询窗（~100ms）永远赶不上 live 成对态。
 const STEER_RESUME_MS = Number(process.env.STEER_RESUME_MS ?? 4_000)
 
+// 渐进 SSE（2026-11-25 插话中间过程显示效果演示；env 门控默认 0 = 原行为
+// 逐字节不变——整段延迟后一次性发完）。>0 时 steer_reply 的 SSE 按本间隔
+// 逐帧写出，给前端「插话正文预览卡」留可见的增长窗口。
+const STEER_STREAM_CHUNK_MS = Number(process.env.STEER_STREAM_CHUNK_MS ?? 0)
+// 正文拆片数（默认 3 等分 = 原行为；演示设更大值让预览逐段长出）。
+const STEER_STREAM_CHUNKS = Number(process.env.STEER_STREAM_CHUNKS ?? 0)
+// 追加回应文本（默认空串 = STEER_REPLY_TEXT 逐字节不变；e2e 断言全是
+// toContainText 子串形态，追加安全——演示用更长文本让预览卡有内容可长）。
+const STEER_REPLY_EXTRA = process.env.STEER_REPLY_EXTRA ?? ''
+
 // 子代理胶囊视觉自测的 spawn 任务文本（含 E2E_SLOW 标记 → 子代理 LLM
 // 调用走慢速臂，注册表 running 行维持 ~20s；两条任务文本可区分）。
 const SPAWN_TASKS = {
@@ -131,7 +141,8 @@ function bodyHasMarker(body, marker) {
   return JSON.stringify(body?.messages ?? []).includes(marker)
 }
 
-const STEER_REPLY_TEXT = 'E2E_STEER_ACK：插话已收到，边界说明已纳入后续处理（中间回应，主线继续）。'
+const STEER_REPLY_TEXT =
+  'E2E_STEER_ACK：插话已收到，边界说明已纳入后续处理（中间回应，主线继续）。' + STEER_REPLY_EXTRA
 const STEER_RESUME_TEXT = 'E2E_STEER_MAIN_DONE：主线任务已完成（插话已消化后继续收尾）。'
 
 function routeRequest(body) {
@@ -553,9 +564,10 @@ function messagePayload(route, body) {
   }
 }
 
-// SSE 流式形态：内容拆 3 段 delta + 终态帧 + [DONE]。工具调用整体进单个
+// SSE 流式形态：内容拆 N 段 delta + 终态帧 + [DONE]。工具调用整体进单个
 // delta.tool_calls 帧（真实 provider 对短工具调用同形态，聚合器兼容）。
-function sseChunks(route, body) {
+// 帧数组形态（2026-11-25）：渐进流式演示按帧逐个写出，普通路径一次性 join。
+function sseFrames(route, body) {
   const base = {
     id: `chatcmpl-mock-${route}-stream`,
     object: 'chat.completion.chunk',
@@ -577,17 +589,23 @@ function sseChunks(route, body) {
       }),
       frame({}, 'tool_calls'),
       'data: [DONE]\n\n',
-    ].join('')
+    ]
   }
   const content = msg.content ?? ''
-  const third = Math.max(1, Math.ceil(content.length / 3))
-  const pieces = [content.slice(0, third), content.slice(third, third * 2), content.slice(third * 2)]
+  const n = STEER_STREAM_CHUNKS > 0 ? STEER_STREAM_CHUNKS : 3
+  const size = Math.max(1, Math.ceil(content.length / n))
+  const pieces = []
+  for (let i = 0; i < content.length; i += size) pieces.push(content.slice(i, i + size))
   return [
     frame({ role: 'assistant', content: '' }),
     ...pieces.filter((p) => p.length > 0).map((p) => frame({ content: p })),
     frame({}, 'stop'),
     'data: [DONE]\n\n',
-  ].join('')
+  ]
+}
+
+function sseChunks(route, body) {
+  return sseFrames(route, body).join('')
 }
 
 const server = http.createServer((req, res) => {
@@ -610,11 +628,28 @@ const server = http.createServer((req, res) => {
       if (body) recordEvidence(body)
       const respond = () => {
         if (body?.stream === true) {
-          res.writeHead(200, {
+          const headers = {
             'content-type': 'text/event-stream',
             'cache-control': 'no-cache',
             connection: 'keep-alive',
-          })
+          }
+          // 渐进流式（演示）：steer_reply 逐帧按间隔写出（env 门控，默认关）。
+          if (STEER_STREAM_CHUNK_MS > 0 && route === 'steer_reply') {
+            const frames = sseFrames(route, body)
+            res.writeHead(200, headers)
+            let i = 0
+            const step = () => {
+              if (i < frames.length) {
+                res.write(frames[i++])
+                setTimeout(step, STEER_STREAM_CHUNK_MS)
+              } else {
+                res.end()
+              }
+            }
+            step()
+            return
+          }
+          res.writeHead(200, headers)
           res.end(sseChunks(route, body))
           return
         }

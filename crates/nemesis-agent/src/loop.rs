@@ -161,7 +161,10 @@ mod recovery;
 pub use recovery::*;
 #[allow(unused_imports)]
 pub(crate) use recovery::*;
+// 会话错误记录框架（v1 纯追加旁路，2026-11-25）：episode 四元组 JSONL
+// 记录面。pub：装配点（bot 层 gateway/run/acp）init 需要跨 crate 可见。
 mod rewind;
+pub mod session_error_recorder;
 #[allow(unused_imports)]
 pub use rewind::*;
 #[allow(unused_imports)]
@@ -1698,6 +1701,10 @@ mod recovery_classifier_tests;
 // 实测短语命中）给「请新建会话」可行动出路；普通 403 文案逐字节不变。
 #[cfg(test)]
 mod recovery_session_block_tests;
+// 会话错误记录框架单测（v1）：直接构造实例绕 OnceLock 毒化（与
+// session/tests.rs 的 CaptureSink 纪律同款）。
+#[cfg(test)]
+mod session_error_recorder_tests;
 // 停机感知回归锁（tokio 停机 panic 根修）：retry_transient/
 // retry_rate_limited 重试 sleep 被 stop() 唤醒 + 循环顶停机闸
 // （process_direct 直调任务不在 turn_task_handles，abort 覆盖不到，停机

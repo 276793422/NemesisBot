@@ -279,6 +279,16 @@ impl GatewayCtx {
         {
             let capture_enabled = cfg.debug.as_ref().is_none_or(|d| d.capture.enabled);
             nemesis_agent::capture_sink::CaptureSink::init(home.join("workspace"), capture_enabled);
+            // 会话错误记录（v1 纯追加旁路）：episode 四元组（事件/sid/
+            // 请求/应答）落 logs/session_errors/。session_error.recording
+            // 缺省 true；记录器任何故障 fail-open（warn 放行），与
+            // capture_sink 同纪律。
+            let se_enabled = cfg
+                .session_error
+                .as_ref()
+                .map(|s| s.recording)
+                .unwrap_or(true);
+            nemesis_agent::r#loop::session_error_recorder::init(home.join("workspace"), se_enabled);
             if capture_enabled {
                 info!("[Gateway] Diagnostic capture armed (failure-triggered → logs/capture/)");
             }
