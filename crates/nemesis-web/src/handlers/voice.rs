@@ -5,6 +5,7 @@
 //!           tts, stt_start, stt_stop, speakers, devices,
 //!           engine_start, engine_stop, pipeline_start, pipeline_stop
 
+#[cfg(target_os = "windows")]
 use crate::handlers::require_workspace;
 #[cfg(target_os = "windows")]
 use crate::server::WS_BROADCAST_TIMEOUT;
