@@ -1624,6 +1624,62 @@ async fn test_condition_node_unprovable_leftover_is_false() {
     assert_eq!(result.output["condition_result"], serde_json::json!(false));
 }
 
+/// BUG-20261126-088 回归：padded 占位符（`{{ check.condition_result }}`，
+/// Go template / Jinja 书写习惯）在**字段拼写完全正确**时也必然解析不到
+/// ——替换语义是裁决过的 exact-match（不 trim）。旧实现错误消息把原因
+/// 单一归到「字段不存在」并引导作者核对本无问题的节点 id/字段名（排查
+/// 死路）；修复后消息追加空白归因提示。lint 草稿期同步预警见 lint/tests.rs
+/// 同号用例。
+#[tokio::test]
+async fn test_condition_node_padded_placeholder_error_names_whitespace() {
+    let exec = ConditionNodeExecutor;
+    let wf_ctx = wf_ctx_with_completed_condition("check", true);
+    let mut config = HashMap::new();
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{ check.condition_result }}"),
+    );
+    let node = make_node("n1", "condition", config);
+    let result = exec.execute(&node, &HashMap::new(), &wf_ctx).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap_or_default();
+    assert!(err.contains("首尾空白"), "{err}");
+    assert!(err.contains("{{ check.condition_result }}"), "{err}");
+    assert!(err.contains("exact-match"), "{err}");
+
+    // 对照：无空白的幻觉字段（真·字段不存在）错误**不含**空白归因——
+    // 提示只在确有 padding 时出现，不冒认。
+    let mut config2 = HashMap::new();
+    config2.insert(
+        "condition".to_string(),
+        serde_json::json!("{{check.passed}}"),
+    );
+    let node2 = make_node("n1", "condition", config2);
+    let result2 = exec
+        .execute(&node2, &HashMap::new(), &wf_ctx)
+        .await
+        .unwrap();
+    assert_eq!(result2.state, ExecutionState::Failed);
+    let err2 = result2.error.unwrap_or_default();
+    assert!(!err2.contains("首尾空白"), "{err2}");
+}
+
+/// padded_placeholders 纯函数契约：只收含首尾空白的占位符**原文**；
+/// 无空白 / 全空白键 / 无闭合不收。
+#[test]
+fn padded_placeholders_picks_only_whitespace_padded() {
+    assert_eq!(padded_placeholders("{{ flag }} == 1"), vec!["{{ flag }}"]);
+    assert_eq!(
+        padded_placeholders("{{a}} {{ b.c }} {{  d  }}"),
+        vec!["{{ b.c }}", "{{  d  }}"]
+    );
+    // 无空白不收；全空白内文（trim 后空键）不收——「去掉空白」建议对其
+    // 无修复意义；无闭合扫描终止不 panic。
+    assert!(padded_placeholders("{{a}} + {{b}}").is_empty());
+    assert!(padded_placeholders("{{ }}").is_empty());
+    assert!(padded_placeholders("{{unclosed").is_empty());
+}
+
 /// 真实 LoopNodeExecutor：条件幻觉字段（body 子节点输出中不存在的字段）
 /// → 第 1 轮条件检查即诚实失败（旧实现残留「非空即真」恒真，静默跑满
 /// safety_cap）。
