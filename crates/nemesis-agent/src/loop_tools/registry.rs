@@ -11,7 +11,8 @@ use super::misc::ForgeBridgeTool;
 /// Register all default tools and return them as a HashMap.
 ///
 /// The default tools are:
-/// - `message` - Send a simple text message
+/// - `message` - Journal-only note（零投递：send 回调零生产接线，
+///   BUG-20261126-100——用户面内容走终局回复）
 /// - `read_file` - Read a file from disk
 /// - `write_file` - Write content to a file on disk
 /// - `list_dir` - List the contents of a directory

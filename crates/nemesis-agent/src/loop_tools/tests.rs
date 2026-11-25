@@ -868,6 +868,40 @@ fn test_message_tool_default() {
     assert!(!tool.has_sent_in_round());
 }
 
+// BUG-20261126-100 回归锁：工具描述必须诚实——不得宣称投递
+// （「Send a message to user」是假声明：send 回调零生产接线，全通道
+// 零投递），必须明示「does NOT deliver / final reply」journal-only 语义。
+#[test]
+fn test_message_tool_description_honest_no_delivery_claim() {
+    let d = MessageTool::new().description();
+    assert!(
+        !d.contains("Send a message to user"),
+        "description must not claim delivery (BUG-20261126-100): {d}"
+    );
+    assert!(
+        d.contains("does NOT deliver"),
+        "description must state the no-delivery contract: {d}"
+    );
+    assert!(
+        d.contains("final reply"),
+        "description must point user-facing content at the final reply: {d}"
+    );
+}
+
+// BUG-20261126-100 配套：无回调形态（生产形态）零投递零置位——
+// sent_in_round 恒 false，execute 只回显内容（journal-only 契约）。
+#[tokio::test]
+async fn test_message_tool_no_callback_is_inert_passthrough() {
+    let tool = MessageTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(r#"{"content": "note"}"#, &ctx).await.unwrap();
+    assert_eq!(result, "note");
+    assert!(
+        !tool.has_sent_in_round(),
+        "no-callback path must not set sent_in_round"
+    );
+}
+
 #[test]
 fn test_message_tool_sent_in_round_cycle() {
     let tool = MessageTool::new();

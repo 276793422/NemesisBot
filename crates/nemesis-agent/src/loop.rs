@@ -1494,11 +1494,19 @@ impl AgentLoop {
     /// Mark that a message was sent for the given session in the current round.
     /// Used by tools like MessageTool to prevent double-sending. Mirrors Go's
     /// MessageTool.sentInRound.
+    ///
+    /// BUG-20261126-100 诚实注记：生产零调用者（全仓仅测试触达）——
+    /// MessageTool 的 send 回调自 INIT 起零生产接线，本标记从不被置位，
+    /// [`Self::has_sent_in_round`] / finish_message 的 already_sent 检查
+    /// 因此恒假（假死机制，非活去重）。接线是否补齐属用户拍板项。
     pub fn mark_sent_in_round(&self, session_key: &str) {
         self.sent_in_round.mark_sent(session_key);
     }
 
     /// Check if a message was already sent in the current round for a session.
+    ///
+    /// 生产恒 false（见 [`Self::mark_sent_in_round`] 注记）——无生产
+    /// 标记者，检查形同虚设。
     pub fn has_sent_in_round(&self, session_key: &str) -> bool {
         self.sent_in_round.has_sent_in_round(session_key)
     }
