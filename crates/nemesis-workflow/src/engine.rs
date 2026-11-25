@@ -18,6 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::checkpoint::{Checkpoint, CheckpointStore, FileCheckpointStore, SerializableContext};
 use crate::context::WorkflowContext;
+use crate::drafts::sanitize_workflow_filename;
 use crate::events::{WorkflowEvent, WorkflowEventManager};
 use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
@@ -96,29 +97,10 @@ fn cron_next_fire_at_from_trigger(trigger: &TriggerConfig) -> Option<String> {
     Some(next_str)
 }
 
-/// Make a workflow name safe to use as a filename. Replaces anything
-/// outside `[A-Za-z0-9_-]` with `_`. Empty names get a `wf_` prefix to
-/// avoid hidden files.
-fn sanitize_workflow_filename(name: &str) -> String {
-    if name.is_empty() {
-        return "wf_unnamed".to_string();
-    }
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if sanitized.starts_with('.') {
-        format!("wf_{}", sanitized)
-    } else {
-        sanitized
-    }
-}
+// `sanitize_workflow_filename` 已收编为 `crate::drafts` 的单一真相源
+//（BUG-20261125-073：删除此处的逐字节双副本——旧副本缺 Windows 保留
+// 设备名中和，漂移面；persist/清理/读取/execution 记录面经顶部 use
+// 消费同一实现）。
 
 /// 读取 workflow 定义文件并返回其内容里的 workflow 名（
 /// 碰撞守卫辅助）。parse 失败返回 None——坏文件没有可辨认的属主。
