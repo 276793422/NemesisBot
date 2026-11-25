@@ -148,8 +148,9 @@ pub fn new_project_id() -> String {
 }
 
 /// 规范化 + 校验项目路径：非空、绝对、存在且为目录、canonical 后不与主
-/// workspace 或已有项目重叠（相等或任一为另一的祖先——防围栏嵌套歧义）。
-/// 返回 canonical 路径（剥 verbatim，围栏比较层同表示）。
+/// workspace 或已有项目重叠（相等或任一为另一的祖先——防围栏嵌套歧义）；
+/// 与已有项目 extra_dirs 精确相等放行（共享）、嵌套拒绝。返回 canonical
+/// 路径（剥 verbatim，围栏比较层同表示）。
 pub fn canonicalize_project_path(
     raw: &str,
     main_workspace: &Path,
@@ -182,6 +183,19 @@ pub fn canonicalize_project_path(
                 e.path.display(),
                 canon.display()
             );
+        }
+        // 已有 extra_dirs：精确相等 = 共享（项目主根挂为别人附加目录，
+        // 与 add_dir 侧同规则——建项顺序无关）；嵌套拒绝（围栏嵌套歧义）。
+        for d in &e.extra_dirs {
+            let d_canon = canonicalize_for_compare(Path::new(d));
+            if d_canon != canon && paths_overlap(&d_canon, &canon) {
+                bail!(
+                    "项目目录与项目「{}」的附加目录嵌套重叠: {} vs {}（围栏嵌套歧义，禁止）",
+                    e.name,
+                    d,
+                    canon.display()
+                );
+            }
         }
     }
     Ok(canon)
@@ -303,18 +317,18 @@ pub fn set_project_trust(path: &Path, id: &str, trusted: bool) -> Result<Project
 }
 
 /// 校验附加放行目录（D3 add_dir 入参）：非空、绝对、存在且为目录、canonical
-/// 后与主 workspace / 任何项目主根 / 任何已有 extra_dir 双向不重叠（围栏
-/// 嵌套歧义禁令——extra_dir 命中别的项目主根 = 跨项目越权写通道）。返回
-/// canonical 字符串（与 [`ProjectEntry::extra_dirs`] 存储同表示）。
-/// `target_id` = 正在添加的目标项目：对**自己的**已有 extra_dir 只豁免
-/// 精确相等（那是重复添加，由 [`add_project_dir`] 以「已存在」诚实报错），
-/// 嵌套（祖先/后代）照旧拒绝；对**别人的** extra_dir 精确相等也拒绝
-/// （同一路径挂两个项目语义上允许但报错更防呆——先摘再加，避免误配）。
+/// 后与主 workspace 任何重叠拒绝；与项目主根/已有 extra_dir **精确相等 =
+/// 共享放行**、**嵌套（祖先/后代）拒绝**（围栏嵌套歧义禁令）。规则单一化
+/// （2026-11-25 用户裁决）：精确相等共享是合法工作流（同一资产目录挂多个
+/// 项目），旧「跨项目相等防呆拒绝（先摘再加）」只能搬不能共享、挡住真实
+/// 用法且报错误导（`C:\Zoo vs C:\Zoo`），弃用；围栏执行面 per-loop 判界，
+/// 共享不产生越权。返回 canonical 字符串（与 [`ProjectEntry::extra_dirs`]
+/// 存储同表示）。自己的已有 extra_dir 精确相等在下方跳过后由
+/// [`add_project_dir`] 以「已存在」诚实报错。
 pub fn canonicalize_extra_dir(
     raw: &str,
     main_workspace: &Path,
     existing: &[ProjectEntry],
-    target_id: &str,
 ) -> Result<String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -336,23 +350,30 @@ pub fn canonicalize_extra_dir(
         );
     }
     for e in existing {
-        if paths_overlap(&e.path, &canon) {
+        // 项目主根：精确相等 = 共享（把别的项目的主根挂为自己的放行目录）；
+        // 嵌套拒绝（围栏嵌套歧义）。
+        if e.path != canon && paths_overlap(&e.path, &canon) {
             bail!(
-                "附加目录与项目「{}」重叠: {} vs {}",
+                "附加目录与项目「{}」主根嵌套重叠: {} vs {}（围栏嵌套歧义，禁止）",
                 e.name,
                 e.path.display(),
                 canon.display()
             );
         }
-        let self_entry = e.id == target_id;
         for d in &e.extra_dirs {
             let d_canon = canonicalize_for_compare(Path::new(d));
-            if d_canon == canon && self_entry {
-                // 自己的重复添加：不在这里拦，交 add_project_dir 报「已存在」。
+            if d_canon == canon {
+                // 精确相等：自己的 = 重复添加（add_project_dir 报「已存在」）；
+                // 别人的 = 跨项目共享，放行。
                 continue;
             }
             if paths_overlap(&d_canon, &canon) {
-                bail!("附加目录与已有附加目录重叠: {} vs {}", d, canon.display());
+                bail!(
+                    "附加目录与项目「{}」的附加目录嵌套重叠: {} vs {}（围栏嵌套歧义，禁止）",
+                    e.name,
+                    d,
+                    canon.display()
+                );
             }
         }
     }
@@ -371,7 +392,7 @@ pub fn add_project_dir(
 ) -> Result<ProjectEntry> {
     let _serial = REGISTRY_WRITE_LOCK.lock();
     let mut file = try_load_projects(path)?.unwrap_or_default();
-    let canon = canonicalize_extra_dir(raw, main_workspace, &file.projects, id)?;
+    let canon = canonicalize_extra_dir(raw, main_workspace, &file.projects)?;
     let entry = file
         .projects
         .iter_mut()

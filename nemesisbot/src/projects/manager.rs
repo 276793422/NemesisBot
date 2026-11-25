@@ -1211,7 +1211,8 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
         dir: &str,
     ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
         // 只写注册表（校验链在 registry::add_project_dir：绝对路径/存在/
-        // canonical/三向不重叠/去重/上限）。**不热更在跑 loop**——围栏
+        // canonical/嵌套拒绝+精确相等共享放行/去重/上限，2026-11-25 单一
+        // 规则）。**不热更在跑 loop**——围栏
         // Arc 在工具注册期烧入，重启网关或重建项目后生效（WSAPI note 已
         // 向用户声明该时机）；未在跑 loop spawn 时自然读新注册表。
         let entry =

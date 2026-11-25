@@ -182,3 +182,57 @@ async fn agt_get_refreshes_roots_from_bridge_and_abac_sees_project_root() {
     set_projects_bridge_for_test(None);
     set_editor_access_for_test(None);
 }
+
+/// extra_dirs 注入回归锁（2026-11-25）：refresh_roots 此前只推项目主根，
+/// 附加放行目录（围栏多根，D 批）没进编辑器语义边界——extra_dir 内文件
+/// editor.get/set 被拒（与 fs.open 人面白名单同族缺口）。钉：bridge 带一个
+/// extra_dir → refresh_roots 后 ABAC 对 extra_dir 内写删短路 Allowed
+///（editor_access:full，同项目根语义）。
+#[tokio::test]
+async fn agt_get_refreshes_roots_includes_project_extra_dirs() {
+    let _bridge_guard = BRIDGE_TEST_LOCK.lock();
+    let _editor_guard = EDITOR_TEST_LOCK.lock();
+
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("agt-proj-x");
+    let extra = dir.path().join("agt-extra-x");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&extra).unwrap();
+    let bridge = Arc::new(AgtOneProjectBridge {
+        project: ProjectInfo {
+            id: "agt-p2".to_string(),
+            name: "AGT 项目X".to_string(),
+            path: proj.to_string_lossy().to_string(),
+            created_at: "2026-11-25T00:00:00Z".to_string(),
+            running: false,
+            instructions_trusted: true,
+            extra_dirs: vec![extra.to_string_lossy().to_string()],
+        },
+    });
+    install_projects_bridge(bridge);
+
+    let access = nemesis_security::editor_access::EditorAccessState::new();
+    install_editor_access(access.clone());
+    access.set_flags(true, false);
+
+    let ctx = agt_ctx(Some(dir.path().to_string_lossy().to_string()));
+    let resp = EditorHandler.handle_cmd("get", None, &ctx).await.unwrap();
+    let resp = resp.expect("get 必有响应体");
+    assert_eq!(resp["full_access"], serde_json::Value::Bool(true));
+
+    // ABAC 侧验证：extra_dir 已注入 roots → 目录内 FileWrite 短路放行。
+    let inside = access.evaluate(
+        nemesis_security::types::OperationType::FileWrite,
+        &extra.join("f.txt").to_string_lossy(),
+    );
+    let (decision, reason, rule) = inside.expect("extra_dir 内写删必须短路");
+    assert_eq!(decision, nemesis_security::types::SecurityDecision::Allowed);
+    assert!(
+        reason.contains("inside workspace roots"),
+        "reason: {reason}"
+    );
+    assert_eq!(rule, "editor_access:full");
+
+    set_projects_bridge_for_test(None);
+    set_editor_access_for_test(None);
+}
