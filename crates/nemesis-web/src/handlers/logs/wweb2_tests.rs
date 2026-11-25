@@ -419,17 +419,26 @@ fn read_md_section_direct_variants() {
 }
 
 #[test]
-fn extract_md_first_message_truncates_at_200_chars() {
-    // ASCII 300 字 → 截 200
-    let md = format!("## Message\n\n{}\n", "a".repeat(300));
+fn extract_md_first_message_truncates_at_2000_chars() {
+    // 上限 2000（此前 200）：ASCII 2500 字 → 截 2000 + 字符量注记
+    let md = format!("## Message\n\n{}\n", "a".repeat(2500));
     let got = extract_md_first_message(&md);
-    assert_eq!(got.chars().count(), 200);
-    assert!(got.chars().all(|c| c == 'a'));
-    // 中文 300 字 → 按字符截 200（不panic、不出半个字）
-    let md_cn = format!("## Message\n\n{}\n", "中".repeat(300));
+    assert_eq!(
+        got.chars().count(),
+        2000 + "…（全文共 2500 字符，见详情）".chars().count()
+    );
+    assert!(got.starts_with(&"a".repeat(2000)));
+    assert!(got.contains("…（全文共 2500 字符"));
+    // 中文 2500 字 → 按字符截（不 panic、不出半个字）
+    let md_cn = format!("## Message\n\n{}\n", "中".repeat(2500));
     let got = extract_md_first_message(&md_cn);
-    assert_eq!(got.chars().count(), 200);
-    assert!(got.chars().all(|c| c == '中'));
+    assert!(got.starts_with(&"中".repeat(2000)));
+    assert!(got.contains("…（全文共 2500 字符"));
+    // 限内不截断、无注记
+    let md_ok = format!("## Message\n\n{}\n", "好".repeat(300));
+    let got_ok = extract_md_first_message(&md_ok);
+    assert_eq!(got_ok.chars().count(), 300);
+    assert!(!got_ok.contains('…'));
     // 无 Message 节 → 空串
     assert_eq!(extract_md_first_message("# nothing\n"), "");
 }

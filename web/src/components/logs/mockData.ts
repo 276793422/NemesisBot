@@ -70,13 +70,15 @@ export interface LlmIteration {
 }
 
 export interface LlmRequestEntry {
-  id: string // 目录名 2026-06-17_14-23-45_a3f
+  id: string // 目录名 2026-06-17_14-23-45_a3f（微秒形态 2026-06-17_14-23-45.123456_a3f 同型）
   timestamp: string
   model: string
   duration_ms: number
   toolCallCount: number
   messageCount: number
   firstMessage: string
+  isAux?: boolean // `_aux` 尾缀目录 = 压缩摘要杂务调用（前端打「杂务」徽标）
+  fullMessage?: string // 用户消息全文（request_detail 回传，不截断；列表预览截 2000）
   sessionId?: string // 关联的 session（如有）
   clusterTaskId?: string // 关联的集群任务（如有）
   iterations: LlmIteration[]
@@ -195,8 +197,20 @@ export function connectorOutcomeLabel(outcome: string): string {
 // 工具函数
 // ============================================================================
 
+/**
+ * 目录名时间戳（`YYYY-MM-DD_HH-MM-SS[.微秒]`，request_logs 目录命名）→ Date。
+ * 此前直接 `new Date(ts)`——下划线目录名 V8 恒判 Invalid Date，列表相对
+ * 时间恒「NaN天前」。非该形态（ISO 串等）回落 `new Date(ts)`。
+ */
+export function parseDirTimestamp(ts: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:\.(\d+))?$/.exec(ts)
+  if (!m) return new Date(ts)
+  const ms = (m[7] ?? '0').slice(0, 3).padEnd(3, '0')
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6], +ms)
+}
+
 export function formatTime(ts: string, withMs = false): string {
-  const d = new Date(ts)
+  const d = parseDirTimestamp(ts)
   const h = d.getHours().toString().padStart(2, '0')
   const m = d.getMinutes().toString().padStart(2, '0')
   const s = d.getSeconds().toString().padStart(2, '0')
@@ -206,7 +220,7 @@ export function formatTime(ts: string, withMs = false): string {
 }
 
 export function formatRelative(ts: string): string {
-  const diff = Date.now() - new Date(ts).getTime()
+  const diff = Date.now() - parseDirTimestamp(ts).getTime()
   if (diff < 60_000) return `${Math.floor(diff / 1000)}秒前`
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)}分钟前`
   if (diff < 86_400_000) return `${Math.floor(diff / 3600_000)}小时前`
