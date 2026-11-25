@@ -94,12 +94,69 @@ fn dedup_window_compresses_same_cmd() {
     assert_eq!(lines.len(), 2, "同键 30s 压缩为一条 + 异键独立: {content}");
 }
 
+/// ok 分键（复查 2026-11-24）：失败后 30s 内重试成功，两条都落（retry_candidates
+/// 依赖失败→成功对）；同 ok 轮询仍压缩为一条。
+#[test]
+fn dedup_key_includes_ok_fail_then_success_both_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = home_with_telemetry(dir.path(), true);
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let ws_s = ws.to_str().unwrap();
+    let home_s = home.to_str().unwrap();
+    record_wsapi_call(Some(ws_s), Some(home_s), "mod_oksplit", "cmd.x", false);
+    record_wsapi_call(Some(ws_s), Some(home_s), "mod_oksplit", "cmd.x", true);
+    // 同 ok（失败）仍去重。
+    record_wsapi_call(Some(ws_s), Some(home_s), "mod_oksplit", "cmd.x", false);
+    let content = std::fs::read_to_string(ws.join("logs").join("wsapi_usage.jsonl")).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "fail→success 对不被吞 + 同 ok 去重: {content}"
+    );
+    let rows: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows[0]["ok"], false);
+    assert_eq!(rows[1]["ok"], true);
+}
+
 #[test]
 fn missing_workspace_or_home_is_noop() {
     // 旁路纪律：任一缺失静默跳过，不 panic 不落盘。
     record_wsapi_call(None, Some("h"), "mod_noop", "cmd", true);
     record_wsapi_call(Some("w"), None, "mod_noop", "cmd", true);
     record_wsapi_call(None, None, "mod_noop", "cmd", true);
+}
+
+/// 总闸（复查 2026-11-25）：`user_profile.enabled=false` = 遥测也不落
+/// ——此前 `telemetry_enabled` 只看 ui_telemetry，总开关关闭时遥测照落
+/// 零消费（与 route 闸/stats 语义不一致的根修）。
+#[test]
+fn profile_enabled_gate_blocks_telemetry_when_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"user_profile": {"enabled": false}}"#,
+    )
+    .unwrap();
+    let ws = dir.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    record_wsapi_call(
+        Some(ws.to_str().unwrap()),
+        Some(home.to_str().unwrap()),
+        "mod_master_off",
+        "cmd",
+        true,
+    );
+    assert!(
+        !ws.join("logs").join("wsapi_usage.jsonl").exists(),
+        "总闸关 = 遥测不落（enabled ∧ ui_telemetry）"
+    );
 }
 
 #[test]

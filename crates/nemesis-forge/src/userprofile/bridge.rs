@@ -151,6 +151,11 @@ pub fn read_pending_lessons(workspace: &Path, limit: usize) -> Vec<LessonEntry> 
 
 /// 确认消费：按 id 置 status=acked（留痕不删）。返回确认条数；id 不存在
 /// 不报错（消费方重试语义友好）。写回原子落盘，损坏行原样保留。
+///
+/// 锁纪律（复查 2026-11-25）：RMW（读-改-写）**全程持 WRITE_LOCK**——
+/// 读在锁外时，读到的旧内容写回会吞掉并发 append 的整行（不是注释曾说
+/// 的「暂时超 cap 几条」；丢失的自愈靠重提名，但违背 store.rs 全程持锁
+/// 纪律）。纯读面（read_pending/lesson_stats）锁外快照无害。
 pub fn ack_lessons(workspace: &Path, ids: &[String]) -> Result<usize, String> {
     if ids.is_empty() {
         return Ok(0);
@@ -275,13 +280,22 @@ fn all_observations(workspace: &Path) -> Vec<ObservationEntry> {
 /// 追加观察提名（分配 id + pending）。pending 到顶 = 新提名丢弃，返回
 /// 实际入队条数（调用方只把入队提名写 ledger——丢弃的结论下轮证据支持
 /// 时可重提，不被锁死）。失败静默（学习侧旁路数据，绝不炸 sweep 主路径）。
+///
+/// 锁纪律（复查 2026-11-25）：pending 计数读进 WRITE_LOCK——计数与
+/// append 原子化；读在锁外时计数对并发的裁决/清理过期（超 cap 瞬时
+/// 可见），更糟的是与 RMW 写回并发时本函数的 append 行可能被整条吞掉
+/// （ack_lessons 注释同款根因）。
 pub fn append_observations(workspace: &Path, entries: &[ObservationEntry]) -> usize {
     if entries.is_empty() {
         return 0;
     }
-    // pending 现量（读不加锁——旁路面的宽松计数；写侧 WRITE_LOCK 保行
-    // 完整性，裁决/清理是显式用户动作，与 sweep append 的竞窗代价上限 =
-    // 暂时超 cap 几条，无害）。
+    let path = observations_path(workspace);
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return 0;
+    }
+    let _w = WRITE_LOCK.lock();
     let pending_now = all_observations(workspace)
         .iter()
         .filter(|o| o.status == OBS_STATUS_PENDING)
@@ -291,13 +305,6 @@ pub fn append_observations(workspace: &Path, entries: &[ObservationEntry]) -> us
         return 0;
     }
     let admitted = budget.min(entries.len());
-    let path = observations_path(workspace);
-    if let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_err()
-    {
-        return 0;
-    }
-    let _w = WRITE_LOCK.lock();
     let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

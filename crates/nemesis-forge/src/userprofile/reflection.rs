@@ -391,6 +391,8 @@ fn ledger_path(workspace: &Path) -> std::path::PathBuf {
 }
 
 /// 追加一轮反思记录（`{ts_ms, conclusions}`；失败静默——学习侧旁路数据）。
+/// 持 WRITE_LOCK（复查 2026-11-25：prune_ledger 引入后的 RMW 竞窗防线，
+/// bridge/collection 同族模式）。
 pub fn append_ledger(workspace: &Path, conclusions: &[String]) {
     if conclusions.is_empty() {
         return;
@@ -405,37 +407,89 @@ pub fn append_ledger(workspace: &Path, conclusions: &[String]) {
         "ts_ms": chrono::Utc::now().timestamp_millis(),
         "conclusions": conclusions,
     });
-    if let Ok(line) = serde_json::to_string(&record)
-        && let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
+    let Ok(line) = serde_json::to_string(&record) else {
+        return;
+    };
+    let _w = LEDGER_WRITE_LOCK.lock();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
     {
         use std::io::Write;
         let _ = writeln!(f, "{line}");
     }
 }
 
+/// ledger 写串行（append_ledger ↔ prune_ledger_older_than 的 RMW 竞窗
+/// 防线；bridge.rs / collection.rs / telemetry.rs 同族模式）。
+static LEDGER_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 清理反思 ledger：`ts_ms` 早于 `cutoff_ms` 的行整行删除（其余原样保留，
+/// 损坏行不过滤——不吃数据）。ledger 的唯一消费者是反思 prompt 回灌
+/// （read_recent_conclusions 只取尾部窗口），清理不伤语义。**全程持
+/// LEDGER_WRITE_LOCK**。非零删除才原子写回。返回删除条数。缺文件 = Ok(0)。
+pub fn prune_ledger_older_than(workspace: &Path, cutoff_ms: i64) -> Result<usize, String> {
+    let path = ledger_path(workspace);
+    let _w = LEDGER_WRITE_LOCK.lock();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("read reflections: {e}")),
+    };
+    let mut pruned = 0usize;
+    let mut out = String::new();
+    for line in content.lines() {
+        let ts = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| v.get("ts_ms").and_then(|t| t.as_i64()));
+        match ts {
+            Some(ts) if ts < cutoff_ms => {
+                pruned += 1;
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    if pruned == 0 {
+        return Ok(0);
+    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
+        .map_err(|e| format!("write reflections: {e}"))?;
+    Ok(pruned)
+}
+
 /// 读最近 `limit` 条结论（时间升序尾部取回；反思 prompt 的回灌上下文）。
-/// 缺失/损坏 = 空 vec。
+/// 缺失/损坏 = 空 vec。tail-before-parse：行倒序、行内结论也倒序，逐条
+/// push 到 limit 即止，最后整体 reverse 还原升序（复查 2026-11-25 批 D
+/// ——旧行为全量解析后丢头部；注意 ledger 行内是多结论数组，只反行不反
+/// 行内会把同一行的结论顺序翻掉、整行 push 后判 limit 也会越过条数闸）。
 pub fn read_recent_conclusions(workspace: &Path, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let path = ledger_path(workspace);
     let Ok(content) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for line in content.lines() {
+    let mut tail = Vec::new();
+    'outer: for line in content.lines().rev() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         if let Some(arr) = v.get("conclusions").and_then(|c| c.as_array()) {
-            for c in arr.iter().filter_map(|c| c.as_str()) {
-                out.push(c.to_string());
+            for c in arr.iter().rev().filter_map(|c| c.as_str()) {
+                tail.push(c.to_string());
+                if tail.len() >= limit {
+                    break 'outer;
+                }
             }
         }
     }
-    let start = out.len().saturating_sub(limit);
-    out.split_off(start)
+    tail.reverse();
+    tail
 }
 
 #[cfg(test)]

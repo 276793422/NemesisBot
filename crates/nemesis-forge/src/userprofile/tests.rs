@@ -137,6 +137,63 @@ fn sweep_once_disabled_is_noop() {
     assert!(bridge::read_pending_lessons(ws, 10).is_empty());
 }
 
+/// 置信度收口闸（复查 2026-11-24）：全部候选统一 ≥阈值才进画像。
+/// 纠正前缀挖掘器置信度 0.5+3×0.1=0.8——阈值提到 0.99 时被收口闸拦下
+///（画像零条目）；缺省阈值 0.7 时照常入画像（对照臂证明拦截来自阈值闸
+/// 而非挖掘器没触发；滚动窗语义 = 每次扫描 ≥最近 24h，两臂同批消息可见）。
+#[test]
+fn sweep_once_confidence_gate_filters_subthreshold_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+
+    // 种对话：3 条纠正前缀用户消息（触发纠正挖掘器，置信度 0.8）。
+    let ts = (chrono::Utc::now() - chrono::Duration::minutes(30)).to_rfc3339();
+    let logs = ws.join("logs").join("session_logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let mut body = String::new();
+    for content in ["不对，这里逻辑反了", "不要用递归，改成迭代", "别动那个文件"]
+    {
+        let row = serde_json::json!({"role": "user", "content": content, "timestamp": ts});
+        body.push_str(&serde_json::to_string(&row).unwrap());
+        body.push('\n');
+    }
+    std::fs::write(logs.join("sess-gate.jsonl"), body).unwrap();
+
+    let enabled_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let p = store::profile_path(ws);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(
+        p,
+        serde_json::to_string_pretty(&serde_json::json!({"enabled_at": enabled_at})).unwrap(),
+    )
+    .unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    // 高阈值臂：0.8 候选低于 0.99 → 收口闸拦下，画像零条目。
+    std::fs::write(
+        ws.join("config.json"),
+        r#"{"user_profile": {"enabled": true, "confidence_threshold": 0.99}}"#,
+    )
+    .unwrap();
+    sweep_once(&ws.join("config.json"), ws, &handle, None).unwrap();
+    assert!(
+        store::load_profile(ws).habits.is_empty(),
+        "低于阈值的挖掘候选被收口闸拦下"
+    );
+
+    // 对照臂：缺省阈值 0.7 → 0.8 候选照常入画像。
+    std::fs::write(
+        ws.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    sweep_once(&ws.join("config.json"), ws, &handle, None).unwrap();
+    let profile = store::load_profile(ws);
+    assert_eq!(profile.habits.len(), 1, "缺省阈值下纠正习惯入画像");
+    assert_eq!(profile.habits[0].category, "correction");
+}
+
 #[test]
 fn collect_stats_counts_all_channels() {
     let dir = tempfile::tempdir().unwrap();

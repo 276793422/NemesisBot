@@ -768,6 +768,15 @@ pub struct AgentLoop {
     /// the old per-session hash map gated nothing and was removed — see
     /// skills_digest.rs module doc).
     skills_digest_state: std::sync::Arc<crate::skills_digest::DigestState>,
+    /// 自学习铺路批次一（2026-11-24）：active 洞察注入段渲染闭包。
+    /// 闭包形态而非类型依赖——forge 是本 crate 的**可选** feature，
+    /// 直接依赖 nemesis-forge 类型会破坏裁剪；装配点（bot agent_factory，
+    /// feature=forge 时）把台账渲染闭包注入进来。`None` = 不注入（段
+    /// 缺席零字节）。每 build 调用一次，从盘重渲（merged snapshot 字节
+    /// 稳定语义与 skills digest 同款）。Set via
+    /// `set_insights_section_source`.
+    insights_section_source:
+        parking_lot::RwLock<Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>>,
     /// per-session message inbox for Queue/Steer modes. Unused in
     /// Reject mode (kept anyway — trivial cost, simplifies mode switching).
     inbox: crate::inbox::SharedInbox,
@@ -1114,6 +1123,7 @@ impl AgentLoop {
             plan_present: parking_lot::RwLock::new(None),
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
+            insights_section_source: parking_lot::RwLock::new(None),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
@@ -1467,6 +1477,10 @@ mod inbox_tests;
 // 自定义 slash 命令改写：rewrite_custom_command 决策表测试。
 #[cfg(test)]
 mod commands_tests;
+// 自学习铺路批次一（2026-11-24）：active 洞察注入段测试
+// （闭包注入/缺席零字节/字节稳定）。
+#[cfg(test)]
+mod insights_tests;
 // （cache-warmer）：TTL 解析 / 90% 触发 / 经济闸 / 快照淘汰 / 热关退出测试。
 #[cfg(test)]
 mod cache_warmer_tests;

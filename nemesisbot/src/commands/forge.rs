@@ -16,12 +16,7 @@ pub enum ForgeAction {
     /// Disable forge module
     Disable,
     /// Trigger manual reflection
-    Reflect {
-        /// 当次强制跑 auto_skill 技能蒸馏（覆盖 config.forge.json 的
-        /// artifacts.auto_skill；缺省按该配置开关）
-        #[arg(long)]
-        auto_skill: bool,
-    },
+    Reflect,
     /// List forge artifacts
     List {
         /// Artifact kind filter: all | skill | script | mcp（大小写不敏感）
@@ -47,6 +42,11 @@ pub enum ForgeAction {
     Learning {
         #[command(subcommand)]
         action: Option<LearningAction>,
+    },
+    /// 学习对话（自学习铺路批次三：扫描→组包→四阶段对话→沉淀）
+    Learn {
+        #[command(subcommand)]
+        action: LearnAction,
     },
     /// Run behavior regression tests for a skill (A 线回归网)
     Test {
@@ -78,6 +78,11 @@ pub enum ForgeAction {
         #[arg(long)]
         param: Option<String>,
     },
+    /// Insight ledger management (自学习铺路批次一)
+    Insights {
+        #[command(subcommand)]
+        action: InsightsAction,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -92,6 +97,33 @@ pub enum LearningAction {
     History {
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum LearnAction {
+    /// 手动触发一次学习对话（不受 learn.enabled 总闸约束——显式用户动
+    /// 作即用户意志；该闸只管 cycle 自动周期）
+    Run,
+}
+
+#[derive(clap::Subcommand)]
+pub enum InsightsAction {
+    /// List insight ledger entries
+    List {
+        /// Status filter: all | candidate | active | retired（大小写不敏感）
+        #[arg(long, default_value = "all")]
+        status: String,
+    },
+    /// Promote candidate → active（人工权威面）
+    Promote {
+        /// Entry ID (ins-...)
+        id: String,
+    },
+    /// Veto entry → retired(vetoed)（同指纹再提案永久压制）
+    Veto {
+        /// Entry ID (ins-...)
+        id: String,
     },
 }
 
@@ -423,7 +455,6 @@ fn cmd_reflect(
     home: &std::path::Path,
     cfg_path: &std::path::Path,
     forge_dir: &std::path::Path,
-    auto_skill_flag: bool,
 ) -> Result<()> {
     // Check if forge is enabled in main config
     if cfg_path.exists()
@@ -468,14 +499,12 @@ fn cmd_reflect(
     println!();
 
     // Create a real Forge instance（forge 配置读 workspace/config/config.forge.json，
-    // 与 WSAPI load_forge_config 同源——CLI 反思尊重用户 artifacts.auto_skill 开关；
-    // --auto-skill flag 是当次意志，显式给时覆盖配置（与 model add --stream 惯例同款）。
+    // 与 WSAPI load_forge_config 同源）。
     let workspace = forge_dir.parent().unwrap_or(forge_dir).to_path_buf();
     let forge_cfg = nemesis_forge::config::load_forge_config(
         &workspace.join("config").join("config.forge.json"),
     );
     let use_llm = forge_cfg.reflection.use_llm;
-    let auto_skill = auto_skill_flag || forge_cfg.artifacts.auto_skill;
     let exp_limit = forge_cfg.collection.max_experiences.max(1);
     let mut forge = nemesis_forge::forge::Forge::new(forge_cfg, workspace.clone());
     // F- 同款：注册表先从盘回载再消费——Registry::new 是空内存注册表，
@@ -591,37 +620,6 @@ fn cmd_reflect(
         }
         Err(e) => {
             println!("  Warning: Failed to write report file: {}", e);
-        }
-    }
-
-    // auto_skill 蒸馏（生成面，重放通道）：config.forge.json
-    // 的 artifacts.auto_skill=true 时对经验做程序性知识蒸馏，draft 落
-    // <forge>/skills/<slug>/SKILL.md（不自动启用）。
-    if auto_skill {
-        match tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(forge.distill_and_store_draft(&experiences))
-        }) {
-            Ok(Some(slug)) => {
-                println!();
-                println!("  auto_skill: distilled draft skill '{}'", slug);
-                println!(
-                    "    Location: {}",
-                    forge_dir
-                        .join("skills")
-                        .join(&slug)
-                        .join("SKILL.md")
-                        .display()
-                );
-                println!("    Status: draft（未启用；评审合格后手动部署）");
-            }
-            Ok(None) => {
-                println!();
-                println!("  auto_skill: no distillable pattern this cycle.");
-            }
-            Err(e) => {
-                println!();
-                println!("  auto_skill: distillation failed: {}", e);
-            }
         }
     }
 
@@ -917,7 +915,7 @@ fn cmd_learning_status(forge_dir: &std::path::Path) -> Result<()> {
     println!("Learning Loop Status");
     println!("====================");
 
-    // CFG-04：typed ForgeConfig（learning 段必有），明细始终展示。
+    // CFG-04：typed ForgeConfig（learning/learn 段必有），明细始终展示。
     let forge_cfg = nemesis_forge::config::load_forge_config(&runtime_forge_config_path(forge_dir));
     println!("  Enabled: {}", forge_cfg.learning.enabled);
 
@@ -926,18 +924,6 @@ fn cmd_learning_status(forge_dir: &std::path::Path) -> Result<()> {
     println!(
         "    Min Pattern Frequency: {}",
         forge_cfg.learning.min_pattern_frequency
-    );
-    println!(
-        "    High Confidence Threshold: {}",
-        forge_cfg.learning.high_conf_threshold
-    );
-    println!(
-        "    Max Auto Creates: {}",
-        forge_cfg.learning.max_auto_creates
-    );
-    println!(
-        "    Max Refine Rounds: {}",
-        forge_cfg.learning.max_refine_rounds
     );
     println!(
         "    Min Outcome Samples: {}",
@@ -955,14 +941,128 @@ fn cmd_learning_status(forge_dir: &std::path::Path) -> Result<()> {
         "    Degrade Cooldown (days): {}",
         forge_cfg.learning.degradation_cooldown_days
     );
+
+    // 学习对话（自学习铺路批次三：学什么/学成什么形态归对话引擎）。
+    println!();
     println!(
-        "    LLM Budget Tokens: {}",
-        forge_cfg.learning.llm_budget_tokens
+        "  Learn Dialogue: {}（budget {} tokens/call）",
+        if forge_cfg.learn.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        forge_cfg.learn.budget_tokens
     );
 
     println!();
     println!("  Trace Collection: {}", forge_cfg.trace.enabled);
 
+    Ok(())
+}
+
+/// `forge learn run`——手动触发一次学习对话（自学习铺路批次三）。显式用
+/// 户动作即用户意志：不受 learn.enabled 总闸约束（该闸只管 cycle 自动周
+/// 期）。caller = ChainLearnCaller 每阶段现场解析回落链（CLI 无网关也能
+/// 跑）；estop 槽 CLI 进程不持（estop 是 gateway 运行态，CLI 侧恒 false，
+/// 与 cmd_test/reflect 同边界）。
+async fn cmd_learn_run(home: &std::path::Path, forge_dir: &std::path::Path) -> Result<()> {
+    // forge 总闸检查（与 cmd_reflect 同款）。
+    let cfg_path = crate::common::config_path(home);
+    if cfg_path.exists()
+        && let Ok(data) = nemesis_utils::fsutil::read_config_string(&cfg_path)
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+    {
+        let enabled = cfg
+            .get("forge")
+            .and_then(|f| f.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !enabled {
+            println!("Forge module is not enabled. Run 'nemesisbot forge enable' first.");
+            return Ok(());
+        }
+    }
+    if !forge_dir.exists() {
+        println!("Error: Forge workspace not initialized. Run 'nemesisbot forge enable' first.");
+        return Ok(());
+    }
+
+    let workspace = forge_dir.parent().unwrap_or(forge_dir).to_path_buf();
+    let forge_cfg = nemesis_forge::config::load_forge_config(
+        &workspace.join("config").join("config.forge.json"),
+    );
+    let forge = nemesis_forge::forge::Forge::new(forge_cfg, workspace.clone());
+    forge.set_learn_caller(Arc::new(crate::forge_test_runner::ChainLearnCaller::new(
+        home.to_path_buf(),
+        workspace.clone(),
+    )));
+    forge.set_learn_estop_check(Arc::new(|| false));
+
+    println!("▶ 触发学习对话（扫描 → 证据包 → 四阶段对话）...");
+    match forge.run_learn_dialogue("manual").await {
+        Ok(outcome) => {
+            match outcome.empty_reason.as_deref() {
+                Some(reason) => {
+                    println!("○ 没有值得学的：{reason}");
+                }
+                None => {
+                    println!("✓ 对话完成（{}/4 阶段）", outcome.phases_completed);
+                    if !outcome.insights.is_empty() {
+                        println!("  洞察沉淀（candidate 态，复现或人工 promote 转 active）：");
+                        for i in &outcome.insights {
+                            println!("    - [{}] {}", i.id, i.statement);
+                        }
+                    }
+                    if !outcome.skills.is_empty() {
+                        println!(
+                            "  skill 草稿（批次三随留痕交付，不落 workspace；批次四装前 tests 闸）："
+                        );
+                        for s in &outcome.skills {
+                            println!(
+                                "    - {}（tests 段：{}）",
+                                s.slug,
+                                if s.has_tests {
+                                    "合法"
+                                } else {
+                                    "缺失/非法"
+                                }
+                            );
+                        }
+                    }
+                    if !outcome.retired.is_empty() {
+                        println!("  supersede 退役：{}", outcome.retired.join(", "));
+                    }
+                }
+            }
+            if !outcome.dropped.is_empty() {
+                println!("  诚实丢弃（{} 条）：", outcome.dropped.len());
+                for d in &outcome.dropped {
+                    println!("    - {d}");
+                }
+            }
+            if outcome.truncated {
+                println!("  ⚠ 证据包超预算截断（truncated=true）");
+            }
+            // 留痕目录（trace = <forge>/learn/<ts>_manual/）。
+            let learn_root = forge_dir.join("learn");
+            if learn_root.exists()
+                && let Ok(entries) = std::fs::read_dir(&learn_root)
+            {
+                let mut dirs: Vec<_> = entries
+                    .filter_map(std::result::Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                dirs.sort();
+                if let Some(latest) = dirs.last() {
+                    println!("  留痕：{}", latest.display());
+                }
+            }
+        }
+        Err(e) => {
+            println!("✗ 学习对话失败：{e}");
+        }
+    }
     Ok(())
 }
 
@@ -1058,9 +1158,7 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
         ForgeAction::Status => cmd_status(&home, &cfg_path, &forge_dir)?,
         ForgeAction::Enable => cmd_enable(&cfg_path, &forge_dir)?,
         ForgeAction::Disable => cmd_disable(&cfg_path)?,
-        ForgeAction::Reflect {
-            auto_skill: auto_skill_flag,
-        } => cmd_reflect(&home, &cfg_path, &forge_dir, auto_skill_flag)?,
+        ForgeAction::Reflect => cmd_reflect(&home, &cfg_path, &forge_dir)?,
         ForgeAction::List { r#type } => cmd_list(&forge_dir, &r#type)?,
         ForgeAction::Evaluate { id } => cmd_evaluate(&forge_dir, &id)?,
         ForgeAction::Export { id, output, all } => {
@@ -1199,6 +1297,101 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
             Some(LearningAction::Disable) => cmd_learning_disable(&forge_dir)?,
             Some(LearningAction::History { limit }) => cmd_learning_history(&forge_dir, limit)?,
         },
+        ForgeAction::Learn { action } => match action {
+            LearnAction::Run => block_on_async(cmd_learn_run(&home, &forge_dir))?,
+        },
+        ForgeAction::Insights { action } => cmd_insights(&home, action)?,
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Insights ledger（自学习铺路批次一，2026-11-24）
+// ---------------------------------------------------------------------------
+
+/// `forge insights`——洞察台账治理面（list/promote/veto）。store 是路径
+/// 视图按调用现构造（RMW 由 forge 侧模块级全局写锁串行，与注入闭包/
+/// WSAPI 的实例互不冲突）。
+fn cmd_insights(home: &std::path::Path, action: InsightsAction) -> Result<()> {
+    let workspace = common::workspace_path(home);
+    let store = nemesis_forge::insights::InsightStore::new(&workspace);
+    match action {
+        InsightsAction::List { status } => {
+            let filter =
+                nemesis_forge::insights::parse_status(&status).map_err(anyhow::Error::msg)?;
+            let entries = store.list(filter).map_err(anyhow::Error::msg)?;
+            println!(
+                "▶ 洞察台账（{} 条；过滤 {}）：{}",
+                entries.len(),
+                status,
+                store.path().display()
+            );
+            for e in &entries {
+                println!(
+                    "  {}  [{:>8}]  src={:<8}  occ={:<2}  conf={:.2}  [{}] {}  {{{}}}",
+                    e.id,
+                    format!("{:?}", e.status).to_lowercase(),
+                    format!("{:?}", e.source).to_lowercase(),
+                    e.occurrences,
+                    e.confidence,
+                    e.category,
+                    e.statement,
+                    // 场景（洞察页与场景拆分 2026-11-24）：对话 / 项目:<id>
+                    e.scope
+                        .as_deref()
+                        .map(|s| format!("项目:{s}"))
+                        .unwrap_or_else(|| "对话".into())
+                );
+                if let Some(reason) = e.retire_reason {
+                    println!("    ↳ 退役原因：{reason:?}");
+                }
+            }
+            if entries.is_empty() {
+                println!("  （空）");
+            }
+            // 实效统计随行（自学习铺路批次四）：纠正率 delta 前后窗对照
+            // 最近一次 refresh_stats 落盘值；从未刷新 = 诚实提示。
+            if filter.is_none() {
+                if let Some(s) = store.stats() {
+                    println!("▶ 实效统计（生成于 {}）", s.generated_at);
+                    println!(
+                        "  候选 {} 行（已消化 {}）｜条目 candidate={} active={} retired={}",
+                        s.candidates_total,
+                        s.candidates_consumed,
+                        s.entries_candidate,
+                        s.entries_active,
+                        s.entries_retired
+                    );
+                    if !s.activation_pivot.is_empty() {
+                        let delta = match s.rate_delta() {
+                            Some(d) => format!("{d:+.2}"),
+                            None => "窗口过短不可比".into(),
+                        };
+                        println!(
+                            "  纠正率对照（切分点 {}）：前窗 {:.2} 条/天 × {:.1} 天  vs  后窗 {:.2} 条/天 × {:.1} 天（delta {}）",
+                            s.activation_pivot,
+                            s.correction_rate_before,
+                            s.window_days_before,
+                            s.correction_rate_after,
+                            s.window_days_after,
+                            delta
+                        );
+                    } else {
+                        println!("  尚无激活条目——无窗口对照数据");
+                    }
+                } else {
+                    println!("  （实效统计尚未生成——跑一次 forge learn run 后刷新）");
+                }
+            }
+        }
+        InsightsAction::Promote { id } => {
+            let e = store.promote(&id).map_err(anyhow::Error::msg)?;
+            println!("✔ {} → active（每轮常驻注入）", e.id);
+        }
+        InsightsAction::Veto { id } => {
+            let e = store.veto(&id).map_err(anyhow::Error::msg)?;
+            println!("✔ {} → retired(vetoed)（同指纹再提案不再复活）", e.id);
+        }
     }
     Ok(())
 }

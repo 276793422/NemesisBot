@@ -30,7 +30,28 @@ pub fn build_project_agent_loop(
     project: &crate::projects::registry::ProjectEntry,
     session_store: Arc<nemesis_agent::session::SessionStore>,
 ) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>> {
-    build_agent_loop_from_spec(shared, &AgentLoopSpec::from_project(project), session_store)
+    let loop_arc =
+        build_agent_loop_from_spec(shared, &AgentLoopSpec::from_project(project), session_store)?;
+    // 项目洞察注入（洞察页与场景拆分 2026-11-24）：只注入本项目的条目
+    //（render_section_for(Some(pid))）——对话洞察（scope=None）不泄入项目
+    // 会话，项目之间不串台。构造口径与主 loop 同源（activation_recurrence
+    // 同读 config.forge.json）。
+    let forge_cfg = nemesis_forge::config::load_forge_config(
+        &shared
+            .workspace_dir()
+            .join("config")
+            .join("config.forge.json"),
+    );
+    let insights_store =
+        std::sync::Arc::new(nemesis_forge::insights::InsightStore::with_recurrence(
+            &shared.workspace_dir(),
+            forge_cfg.learn.activation_recurrence,
+        ));
+    let pid = project.id.clone();
+    loop_arc.set_insights_section_source(std::sync::Arc::new(move || {
+        insights_store.render_section_for(Some(&pid))
+    }));
+    Ok(loop_arc)
 }
 /// 项目/记录 loop 的子代理 spawn 闭包。前台路径复用 run_detached
 ///（本 loop 内 detached 轮次）；后台路径（解锁）与主 spawn

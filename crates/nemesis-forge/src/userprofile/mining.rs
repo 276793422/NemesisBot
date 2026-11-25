@@ -1346,7 +1346,10 @@ pub fn terminal_command_candidates(
         let mut entry = HabitEntry::auto_entry(
             "tool_preference",
             &format!("用户终端常用 {cmd}——涉及该工具的任务优先考虑 {cmd} 相关方案"),
-            (0.55 + (total.min(30) as f64 / 30.0) * 0.25).min(0.8),
+            // 置信度 [0.7, 0.8]：基线钉在阈值 CONFIDENCE_THRESHOLD=0.7
+            //（复查 2026-11-24——原 0.55 基线在 total<18 时会发出低于阈值
+            // 的候选，靠 sweep_once 收口闸兜底；公式自身也应达标）。
+            (0.7 + (total.min(30) as f64 / 30.0) * 0.1).min(0.8),
             total as u32,
             now,
         );

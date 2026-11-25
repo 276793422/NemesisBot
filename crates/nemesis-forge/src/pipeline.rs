@@ -122,6 +122,12 @@ impl Pipeline {
         *self.skill_test_runner.write() = Some(runner);
     }
 
+    /// 读取 skill 行为测试执行器（自学习铺路批次四装前闸消费；单一
+    /// 注入点仍是 [`Self::set_skill_test_runner`]，读侧不设第二注入面）。
+    pub fn skill_test_runner(&self) -> Option<Arc<dyn crate::skill_tests::SkillTestRunner>> {
+        self.skill_test_runner.read().clone()
+    }
+
     /// Set the Stage 2 judge-layer caller（杂务模型回落链注入点）。未注入 =
     /// judge 层回落 `llm_caller`（主模型）。
     pub fn set_judge_caller(&self, caller: Arc<dyn crate::reflector_llm::LLMCaller>) {

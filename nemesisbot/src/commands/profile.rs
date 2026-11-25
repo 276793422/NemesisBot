@@ -96,7 +96,9 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             println!("✓ profile disabled (config user_profile.enabled=false)");
         }
         ProfileAction::Veto { content } => {
-            let hit = surface::veto(&workspace, &content).map_err(anyhow::Error::msg)?;
+            // home = append_event 总闸（复查 2026-11-25 批 F3：学习关闭不落）。
+            let hit =
+                surface::veto(&workspace, home.to_str(), &content).map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {
@@ -107,7 +109,8 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             );
         }
         ProfileAction::Forget { content } => {
-            let hit = surface::forget(&workspace, &content).map_err(anyhow::Error::msg)?;
+            let hit =
+                surface::forget(&workspace, home.to_str(), &content).map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {

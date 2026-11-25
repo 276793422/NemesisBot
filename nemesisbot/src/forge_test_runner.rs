@@ -421,3 +421,49 @@ impl nemesis_forge::reflector_llm::LLMCaller for ChainJudgeCaller {
         caller.chat(system_prompt, user_prompt, max_tokens).await
     }
 }
+
+/// 学习对话杂务模型回落链适配器（自学习铺路批次三；[`ChainJudgeCaller`]
+/// 同构）。每次 `chat` 现场解析 `resolve_learn_caller`（`forge.learn.model`
+/// → agents.small_model → 主模型）——模型热切即时生效，无陈旧 Arc；全链
+/// 失败 = 诚实 Err（对话引擎按调用失败收场留痕）。
+pub struct ChainLearnCaller {
+    home: PathBuf,
+    workspace: PathBuf,
+    /// aux 账本归因（judge 同款语义；CLI 进程缺省 None = 不落账）。
+    data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
+}
+
+impl ChainLearnCaller {
+    pub fn new(home: PathBuf, workspace: PathBuf) -> Self {
+        Self {
+            home,
+            workspace,
+            data_store: None,
+        }
+    }
+
+    /// gateway 装配点注入账本归因（[`ChainJudgeCaller::with_data_store`]
+    /// 同款 builder 形态）。
+    pub fn with_data_store(mut self, ds: Option<std::sync::Arc<nemesis_data::DataStore>>) -> Self {
+        self.data_store = ds;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_forge::reflector_llm::LLMCaller for ChainLearnCaller {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        let caller = nemesis_web::handlers::forge::resolve_learn_caller(
+            &self.home.to_string_lossy(),
+            &self.workspace.to_string_lossy(),
+            self.data_store.as_ref(),
+        )?
+        .ok_or_else(|| "learn caller chain resolved to none (all arms failed)".to_string())?;
+        caller.chat(system_prompt, user_prompt, max_tokens).await
+    }
+}

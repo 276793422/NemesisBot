@@ -1492,13 +1492,16 @@ impl ForgeToolExecutor {
             "- Min pattern frequency: {}\n",
             config.learning.min_pattern_frequency
         ));
+
+        // 学习对话状态（自学习铺路批次三）：二级闸 + 预算一行带出。
         output.push_str(&format!(
-            "- High confidence threshold: {:.2}\n",
-            config.learning.high_conf_threshold
-        ));
-        output.push_str(&format!(
-            "- Max auto-creates per cycle: {}\n",
-            config.learning.max_auto_creates
+            "- Learn dialogue: {}（budget {} tokens/call）\n",
+            if config.learn.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            config.learn.budget_tokens
         ));
 
         // Latest cycle info

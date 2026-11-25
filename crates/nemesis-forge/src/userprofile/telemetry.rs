@@ -8,8 +8,9 @@
 //! 成本纪律：
 //! - 全程 fire-and-forget（任何失败静默——遥测是学习侧旁路数据，绝不炸
 //!   dispatch 主路径）；
-//! - 同 (module, cmd) 30s 窗口去重（Dashboard 2-3s 轮询压缩成 30s 一条，
-//!   8MB 上限 + 单代轮转 `.old`）；
+//! - 同 (module, cmd, ok) 30s 窗口去重（Dashboard 2-3s 轮询压缩成 30s 一
+//!   条；**ok 分键**——失败后 30s 内重试成功的「失败→成功」对两条都落，
+//!   retry_candidates 挖掘器依赖该对子，8MB 上限 + 单代轮转 `.old`）；
 //! - 写闸 = config `user_profile.ui_telemetry`（缺省 true；mtime 缓存，
 //!   配置翻开关不重启生效）。关 = 不落盘（隐私面：存储即闸，不止不挖掘）。
 
@@ -17,20 +18,31 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// 同命令去重窗口（毫秒）。
+/// 同 (命令, 结果) 去重窗口（毫秒）。
 const DEDUP_WINDOW_MS: i64 = 30_000;
 /// 单文件轮转阈值（字节）。
 const ROTATE_BYTES: u64 = 8 * 1024 * 1024;
-/// 去重表容量上限（防 (module,cmd) 组合无界增长）。
+/// 去重表容量上限（防 (module,cmd,ok) 组合无界增长）。
 const DEDUP_CAP: usize = 512;
 
-/// (module, cmd) → 上次落盘 ts_ms（HashMap::new 非 const → LazyLock 包裹）。
-static DEDUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<(String, String), i64>>> =
+/// (module, cmd, ok) → 上次落盘 ts_ms（HashMap::new 非 const → LazyLock 包
+/// 裹）。**ok 是键的一部分**（复查 2026-11-24）：按 (module,cmd) 去重会把
+/// 「失败后 30s 内重试成功」的成功行吞掉，retry_candidates 恰恰依赖该
+/// 失败→成功对；同结果轮询仍压缩为一条。
+static DEDUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<(String, String, bool), i64>>> =
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 /// 写串行（多连接并发 dispatch 的 append 交错防线）。
 static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-/// config 开关门控缓存：`(config_path, mtime_ns, enabled)`。
-static GATE: parking_lot::Mutex<Option<(PathBuf, u128, bool)>> = parking_lot::Mutex::new(None);
+/// config 开关门控缓存（复查 2026-11-25 分量化）：单槽存**两个开关分量**
+/// ——总闸 `enabled` 与 UI 遥测 `ui_telemetry` 各取投影；若只缓存布尔
+/// 结果，两个闸面（遥测 = 总闸∧ui / 信号 = 总闸）会互相覆盖单槽值。
+struct GateCache {
+    path: PathBuf,
+    mtime: u128,
+    enabled: bool,
+    ui_telemetry: bool,
+}
+static GATE: parking_lot::Mutex<Option<GateCache>> = parking_lot::Mutex::new(None);
 /// 轮转判定的累计近似计数（省 stat：每 256 次写 stat 一次）。
 static WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -51,11 +63,12 @@ pub fn record_wsapi_call(
     if !telemetry_enabled(home) {
         return;
     }
-    // 去重：同命令 30s 窗口一条（轮询压缩；真实重复点击 >30s 间隔照记）。
+    // 去重：同 (命令,结果) 30s 窗口一条（轮询压缩；真实重复点击 >30s 间隔
+    // 照记；失败→成功对不被去重吞掉——ok 分键）。
     let now_ms = chrono::Utc::now().timestamp_millis();
     {
         let mut dedup = DEDUP.lock();
-        let key = (module.to_string(), cmd.to_string());
+        let key = (module.to_string(), cmd.to_string(), ok);
         if let Some(last) = dedup.get(&key)
             && now_ms - *last < DEDUP_WINDOW_MS
         {
@@ -97,9 +110,9 @@ pub fn record_wsapi_call(
     let _ = writeln!(f, "{line}");
 }
 
-/// config `user_profile.ui_telemetry` 门控（mtime 缓存：开关翻转不重启
-/// 生效；config 读取失败 = 当关处理，不落盘）。
-fn telemetry_enabled(home: &str) -> bool {
+/// config 开关分量读取（mtime 缓存：开关翻转不重启生效；config 读取失败
+/// = 全关，不落盘）。返回 `(总闸 enabled, UI 遥测 ui_telemetry)`。
+fn gate_components(home: &str) -> (bool, bool) {
     let cfg_path = Path::new(home).join("config.json");
     let mtime = std::fs::metadata(&cfg_path)
         .and_then(|m| m.modified())
@@ -110,24 +123,42 @@ fn telemetry_enabled(home: &str) -> bool {
                 .unwrap_or(0)
         });
     let Some(mtime) = mtime else {
-        return false; // config 不存在 = 学习未配置，不落盘
+        return (false, false); // config 不存在 = 学习未配置，不落盘
     };
     {
         let gate = GATE.lock();
-        if let Some((p, m, enabled)) = gate.as_ref()
-            && p == &cfg_path
-            && *m == mtime
+        if let Some(c) = gate.as_ref()
+            && c.path == cfg_path
+            && c.mtime == mtime
         {
-            return *enabled;
+            return (c.enabled, c.ui_telemetry);
         }
     }
-    let enabled = nemesis_config::load_config(&cfg_path)
+    let (enabled, ui) = nemesis_config::load_config(&cfg_path)
         .ok()
         .and_then(|cfg| cfg.user_profile)
-        .map(|u| u.ui_telemetry_enabled_or(true))
-        .unwrap_or(true);
-    *GATE.lock() = Some((cfg_path, mtime, enabled));
-    enabled
+        .map(|u| (u.enabled, u.ui_telemetry_enabled_or(true)))
+        .unwrap_or((false, true));
+    *GATE.lock() = Some(GateCache {
+        path: cfg_path,
+        mtime,
+        enabled,
+        ui_telemetry: ui,
+    });
+    (enabled, ui)
+}
+
+/// 学习落盘**总闸**（复查 2026-11-25）：config `user_profile.enabled`。
+/// 信号面（审批卡/estop，`collection::append_signal`）只认总闸——关闭
+/// 状态下信号零消费者，落盘只积无消费数据（存储即隐私闸统一）。
+pub fn profile_enabled(home: &str) -> bool {
+    gate_components(home).0
+}
+
+/// UI 遥测闸 = 总闸 ∧ `user_profile.ui_telemetry`（wsapi_usage 面）。
+fn telemetry_enabled(home: &str) -> bool {
+    let (enabled, ui) = gate_components(home);
+    enabled && ui
 }
 
 /// 超限轮转：`wsapi_usage.jsonl` → `wsapi_usage.jsonl.old`（单代，覆盖）。

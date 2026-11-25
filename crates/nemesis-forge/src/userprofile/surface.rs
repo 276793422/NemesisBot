@@ -11,11 +11,13 @@ use super::collection::append_event;
 use super::store::{self, UserProfile};
 
 /// 否决（按内容子串匹配 → vetoed 驻留抑制）+ 负反馈事件落盘。
-pub fn veto(workspace: &Path, content_sub: &str) -> Result<bool, String> {
+/// `home` = append_event 总闸（复查 2026-11-25 批 F3，学习关闭时不落）。
+pub fn veto(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result<bool, String> {
     let hit = store::veto_habit(workspace, content_sub)?;
     if hit {
         append_event(
             workspace,
+            home,
             &serde_json::json!({
                 "kind": "veto",
                 "content": content_sub,
@@ -27,11 +29,12 @@ pub fn veto(workspace: &Path, content_sub: &str) -> Result<bool, String> {
 }
 
 /// 忘记（按内容子串整条删除）+ 负反馈事件落盘。
-pub fn forget(workspace: &Path, content_sub: &str) -> Result<bool, String> {
+pub fn forget(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result<bool, String> {
     let removed = store::forget_habit(workspace, content_sub)?;
     if removed {
         append_event(
             workspace,
+            home,
             &serde_json::json!({
                 "kind": "forget",
                 "content": content_sub,
@@ -83,12 +86,17 @@ pub fn confirm_observation(workspace: &Path, id: &str) -> Result<Option<()>, Str
 /// `kind="dismiss"` 行——反思通道下轮当「勿重提同类」注记回灌（与
 /// veto/forget 同族纪律）；忽略的结论同时进 Forge 语义分析的负样本面。
 /// id 不存在 / 已裁决 = Ok(None)。
-pub fn dismiss_observation(workspace: &Path, id: &str) -> Result<Option<String>, String> {
+pub fn dismiss_observation(
+    workspace: &Path,
+    home: Option<&str>,
+    id: &str,
+) -> Result<Option<String>, String> {
     let Some(o) = super::bridge::resolve_observation(workspace, id, false)? else {
         return Ok(None);
     };
     append_event(
         workspace,
+        home,
         &serde_json::json!({
             "kind": "dismiss",
             "content": o.content,

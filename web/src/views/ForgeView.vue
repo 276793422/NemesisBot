@@ -2,11 +2,13 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { useSessionStore } from '../stores/session'
 import BehaviorTestPanel from '../components/forge/BehaviorTestPanel.vue'
 import ReplayPanel from '../components/forge/ReplayPanel.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
+const sessionStore = useSessionStore()
 
 // --- Tab state ---
 const activeTab = ref('overview')
@@ -44,6 +46,89 @@ const skillDirectories = ref<any[]>([])
 
 // --- Config state ---
 const configData = ref<any>(null)
+
+// --- Insights state（洞察台账，2026-11-24 洞察页与场景拆分）---
+const insightsEntries = ref<any[]>([])
+const insightsStats = ref<any>(null)
+const insightsScope = ref('all') // all | dialogue | <project_id>
+const insightsLoading = ref(false)
+const learnRunning = ref(false)
+
+const insightStatusLabel: Record<string, string> = {
+  Candidate: '候选',
+  Active: '活跃',
+  Retired: '退役',
+}
+const insightStatusClass: Record<string, string> = {
+  Candidate: 'badge-info',
+  Active: 'badge-success',
+  Retired: 'badge-neutral',
+}
+
+const insightsFiltered = computed(() => {
+  if (insightsScope.value === 'all') return insightsEntries.value
+  if (insightsScope.value === 'dialogue')
+    return insightsEntries.value.filter((e) => !e.scope)
+  return insightsEntries.value.filter((e) => e.scope === insightsScope.value)
+})
+
+// 场景显示名：条目 scope 为空 = 对话；project_id → 项目注册表名字
+// （项目已移除/注册表缺席 = 显示原始 id，不猜）。
+function scopeLabel(e: any): string {
+  if (!e.scope) return '对话'
+  const p = sessionStore.projects.find((x) => x.id === e.scope)
+  return '项目·' + (p?.name || e.scope)
+}
+
+async function loadInsights() {
+  insightsLoading.value = true
+  try {
+    const data = await request('forge', 'insights.list', {})
+    insightsEntries.value = data?.entries || []
+    insightsStats.value = data?.stats || null
+  } catch (e: any) {
+    toast.error('加载洞察台账失败: ' + e)
+  } finally {
+    insightsLoading.value = false
+  }
+}
+
+async function insightAction(id: string, action: string) {
+  try {
+    await request('forge', 'insights.update', { id, action })
+    toast.success('状态已更新')
+    await loadInsights()
+  } catch (e: any) {
+    toast.error('操作失败: ' + e)
+  }
+}
+
+async function triggerLearn() {
+  if (learnRunning.value) return
+  learnRunning.value = true
+  try {
+    const data = await request('forge', 'learn.run', {})
+    if (data?.triggered) {
+      const ni = (data?.insights || []).length
+      const ns = (data?.skills || []).length
+      const na = (data?.activated || []).length
+      if (data?.empty_reason) toast.info('学习对话收场：' + data.empty_reason)
+      else if (ni + ns > 0) {
+        const act = na > 0 ? `，自动激活 ${na} 条` : ''
+        toast.success(`学习对话完成：${ni} 条洞察 / ${ns} 个技能草稿${act}`)
+      } else toast.info('学习对话完成，本轮无可定稿条目')
+      if (data?.truncated)
+        toast.warn('证据包超出总预算被截断——本轮仅裁决包内材料，未进包的候选留待下一轮')
+      await loadInsights()
+    } else {
+      toast.info('学习对话未执行')
+    }
+  } catch (e: any) {
+    toast.error('触发失败: ' + e)
+  } finally {
+    learnRunning.value = false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -248,7 +333,6 @@ async function saveAdvanced() {
       values: {
         replay_auto_ingest: c.replay_auto_ingest === true,
         'reflection.use_llm': c.reflection?.use_llm === true,
-        'artifacts.auto_skill': c.artifacts?.auto_skill === true,
         'validation.auto_validate': c.validation?.auto_validate === true,
         'test.judge_model': c.test?.judge_model ?? null,
         'test.judge_threshold': Number(c.test?.judge_threshold ?? 0.7),
@@ -325,6 +409,11 @@ function switchTab(tab: string) {
   else if (tab === 'reflections' && reports.value.length === 0) {
     loadReflections()
     loadLatestReport()
+  }
+  else if (tab === 'insights') {
+    // 台账轻量本地读，每次切页拉新（操作面状态常变，不用懒加载缓存）。
+    loadInsights()
+    sessionStore.fetchProjects()
   }
   else if (tab === 'cycles' && cycles.value.length === 0) loadCycles()
   else if (tab === 'artifacts' && artifacts.value.length === 0) loadArtifacts()
@@ -415,6 +504,7 @@ onUnmounted(() => {
           <button class="tab" :class="{ active: activeTab === 'overview' }" @click="switchTab('overview')">概览</button>
           <button class="tab" :class="{ active: activeTab === 'experiences' }" @click="switchTab('experiences')">经验</button>
           <button class="tab" :class="{ active: activeTab === 'reflections' }" @click="switchTab('reflections')">反思</button>
+          <button class="tab" :class="{ active: activeTab === 'insights' }" @click="switchTab('insights')">洞察</button>
           <button class="tab" :class="{ active: activeTab === 'cycles' }" @click="switchTab('cycles')">学习循环</button>
           <button class="tab" :class="{ active: activeTab === 'artifacts' }" @click="switchTab('artifacts')">Artifacts</button>
           <button class="tab" :class="{ active: activeTab === 'regression' }" @click="switchTab('regression')">回归</button>
@@ -736,6 +826,113 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- ==================== Insights（洞察台账） ==================== -->
+      <div v-if="activeTab === 'insights'">
+        <!-- 实效统计（F 线：纠正率前后窗对照） -->
+        <div class="card" style="margin-bottom: var(--space-4);">
+          <div class="card-header">
+            <h3>实效统计</h3>
+            <span v-if="insightsStats?.generated_at" style="font-size: var(--text-xs); color: var(--text-secondary);">统计于 {{ formatDate(insightsStats.generated_at) }}</span>
+          </div>
+          <div class="card-body">
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--space-3);">
+              <div style="display: flex; flex-direction: column; align-items: center; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md);">
+                <span style="color: var(--text-secondary); font-size: var(--text-sm); margin-bottom: var(--space-1);">候选总数</span>
+                <span style="font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums;">{{ insightsStats?.candidates_total ?? 0 }}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; align-items: center; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md);">
+                <span style="color: var(--text-secondary); font-size: var(--text-sm); margin-bottom: var(--space-1);">已消化</span>
+                <span style="font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums;">{{ insightsStats?.candidates_consumed ?? 0 }}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; align-items: center; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md);">
+                <span style="color: var(--text-secondary); font-size: var(--text-sm); margin-bottom: var(--space-1);">候选条目</span>
+                <span style="font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--color-info);">{{ insightsStats?.entries_candidate ?? 0 }}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; align-items: center; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md);">
+                <span style="color: var(--text-secondary); font-size: var(--text-sm); margin-bottom: var(--space-1);">活跃条目</span>
+                <span style="font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--success);">{{ insightsStats?.entries_active ?? 0 }}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; align-items: center; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md);">
+                <span style="color: var(--text-secondary); font-size: var(--text-sm); margin-bottom: var(--space-1);">退役条目</span>
+                <span style="font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text-muted);">{{ insightsStats?.entries_retired ?? 0 }}</span>
+              </div>
+            </div>
+            <div
+              v-if="insightsStats && insightsStats.window_days_before > 0 && insightsStats.window_days_after > 0"
+              style="margin-top: var(--space-3); padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);"
+            >
+              纠正率对照（最早激活时刻开窗）：前窗 {{ insightsStats.corrections_before }} 次 / {{ insightsStats.window_days_before.toFixed(1) }} 天
+              → 后窗 {{ insightsStats.corrections_after }} 次 / {{ insightsStats.window_days_after.toFixed(1) }} 天，
+              每天率 delta <span :style="{ color: (insightsStats.correction_rate_after - insightsStats.correction_rate_before) <= 0 ? 'var(--success)' : 'var(--color-error)', fontWeight: 600 }">{{ ((insightsStats.correction_rate_after - insightsStats.correction_rate_before) * 100).toFixed(1) }}%</span>
+              <span style="color: var(--text-muted);">（负 = 后窗纠正更少，洞察生效方向；判断归人，这里只给数据）</span>
+            </div>
+            <div v-else style="margin-top: var(--space-3); padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-muted);">
+              纠正率对照：暂无激活锚点——条目首次转活跃后自动开窗对照
+            </div>
+          </div>
+        </div>
+
+        <!-- 台账列表 -->
+        <div class="card">
+          <div class="card-header">
+            <h3>洞察台账</h3>
+            <div style="display: flex; gap: var(--space-2); align-items: center;">
+              <select v-model="insightsScope" style="padding: 4px var(--space-2); border-radius: var(--radius-md); border: 1px solid var(--border-primary); background: var(--bg-secondary); color: var(--text-primary); font-size: var(--text-sm);">
+                <option value="all">全部场景</option>
+                <option value="dialogue">对话</option>
+                <option v-for="p in sessionStore.projects" :key="p.id" :value="p.id">项目·{{ p.name }}</option>
+              </select>
+              <button class="btn btn-primary btn-sm" :disabled="learnRunning" @click="triggerLearn">
+                {{ learnRunning ? '学习对话进行中…' : '触发学习对话' }}
+              </button>
+              <button class="btn btn-secondary btn-sm" :disabled="insightsLoading" @click="loadInsights">刷新</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div v-if="insightsFiltered.length === 0" class="empty-state">
+              <p>暂无洞察条目——学习对话定稿或人工晋升后在此呈现</p>
+            </div>
+            <div v-else class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>陈述</th>
+                    <th>分类</th>
+                    <th>场景</th>
+                    <th>状态</th>
+                    <th>置信</th>
+                    <th>次数</th>
+                    <th>最后更新</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="e in insightsFiltered" :key="e.id">
+                    <td style="max-width: 320px;">
+                      <div style="font-weight: 500;">{{ e.statement }}</div>
+                      <div v-if="e.evidence" style="font-size: var(--text-xs); color: var(--text-secondary); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ e.evidence }}</div>
+                    </td>
+                    <td>{{ e.category }}</td>
+                    <td><span class="badge" :class="e.scope ? 'badge-info' : 'badge-neutral'">{{ scopeLabel(e) }}</span></td>
+                    <td><span class="badge" :class="insightStatusClass[e.status] || 'badge-neutral'">{{ insightStatusLabel[e.status] || e.status }}</span></td>
+                    <td>{{ formatRate(e.confidence) }}</td>
+                    <td>{{ e.occurrences }}</td>
+                    <td style="font-size: var(--text-xs); color: var(--text-secondary);">{{ formatDate(e.last_seen) }}</td>
+                    <td>
+                      <div style="display: flex; gap: var(--space-1);">
+                        <button v-if="e.status === 'Candidate'" class="btn btn-primary btn-sm" @click="insightAction(e.id, 'promote')">晋升</button>
+                        <button v-if="e.status === 'Active'" class="btn btn-secondary btn-sm" @click="insightAction(e.id, 'retire')">退役</button>
+                        <button v-if="e.status !== 'Retired'" class="btn btn-danger btn-sm" @click="insightAction(e.id, 'veto')">否决</button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ==================== Learning Cycles ==================== -->
       <div v-if="activeTab === 'cycles'">
         <div class="card">
@@ -932,10 +1129,6 @@ onUnmounted(() => {
                       <span style="color: var(--text-secondary);">最小模式频率</span>
                       <span>{{ configData.min_pattern_frequency }}</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between;">
-                      <span style="color: var(--text-secondary);">单循环最大创建数</span>
-                      <span>{{ configData.max_auto_creates }}</span>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -980,17 +1173,6 @@ onUnmounted(() => {
                       <input v-model="advConfig.reflection.use_llm" type="checkbox" style="opacity: 0; width: 0; height: 0;">
                       <span style="position: absolute; inset: 0; border-radius: 10px; transition: background 0.2s;" :style="{ background: advConfig.reflection.use_llm ? 'var(--success)' : 'var(--text-muted)' }"></span>
                       <span style="position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;" :style="{ transform: advConfig.reflection.use_llm ? 'translateX(18px)' : 'translateX(2px)' }"></span>
-                    </label>
-                  </div>
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="color: var(--text-secondary); position: relative; cursor: help;" title="工件部署后自动生成对应 SKILL.md 技能。">
-                      自动生成技能
-                      <span style="font-size: var(--text-xs); color: var(--text-muted); margin-left: 2px;">?</span>
-                    </span>
-                    <label style="position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer;">
-                      <input v-model="advConfig.artifacts.auto_skill" type="checkbox" style="opacity: 0; width: 0; height: 0;">
-                      <span style="position: absolute; inset: 0; border-radius: 10px; transition: background 0.2s;" :style="{ background: advConfig.artifacts.auto_skill ? 'var(--success)' : 'var(--text-muted)' }"></span>
-                      <span style="position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;" :style="{ transform: advConfig.artifacts.auto_skill ? 'translateX(18px)' : 'translateX(2px)' }"></span>
                     </label>
                   </div>
                   <div style="display: flex; justify-content: space-between; align-items: center;">

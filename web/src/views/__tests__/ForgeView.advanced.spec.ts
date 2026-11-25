@@ -1,9 +1,11 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createPinia } from 'pinia'
 import { useToast } from '../../composables/useToast'
 
 // Forge 高级设置折叠区（批次 2 配置页补全）：config.forge.json side-file
-// 8 键，读走 forge.config.get（defaults ⊕ raw 深合并）、写走 forge.config.set
+// 7 键（2026-11-24 批次三：artifacts.auto_skill 随蒸馏退役移出白名单），
+// 读走 forge.config.get（defaults ⊕ raw 深合并）、写走 forge.config.set
 // 整批一次保存（任一键非法整批拒绝，不落半批）。后端白名单面由 handlers/forge
 // 测试钉住；本 spec 钉前端折叠交互与 config.set 载荷形态。
 
@@ -27,7 +29,9 @@ beforeEach(() => {
 })
 
 async function mountView() {
-  const w = mount(ForgeView)
+  // 洞察页接线（2026-11-24）：ForgeView setup 使用 session store（项目名解析），
+  // 需 active Pinia。
+  const w = mount(ForgeView, { global: { plugins: [createPinia()] } })
   await flushPromises()
   return w
 }
@@ -51,7 +55,7 @@ describe('ForgeView 高级设置折叠（批次 2）', () => {
     w.unmount()
   })
 
-  it('改 judge_threshold + budget_tokens → 保存 → forge.config.set 整批 8 键载荷', async () => {
+  it('改 judge_threshold + budget_tokens → 保存 → forge.config.set 整批 7 键载荷', async () => {
     const w = await mountView()
     await openConfigTab(w)
     await w.find('[data-test="forge-adv-toggle"]').trigger('click')
@@ -67,7 +71,6 @@ describe('ForgeView 高级设置折叠（批次 2）', () => {
       values: {
         replay_auto_ingest: false,
         'reflection.use_llm': false,
-        'artifacts.auto_skill': false,
         'validation.auto_validate': false,
         'test.judge_model': null,
         'test.judge_threshold': 0.85,

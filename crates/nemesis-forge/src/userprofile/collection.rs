@@ -85,6 +85,11 @@ impl DialogueRow {
 ///   时把系统注入行当成了用户消息）；
 /// - 行时间戳解析失败视为早于水线跳过（仅向前语义：无时间锚的数据不参与
 ///   画像）；
+/// - **文件 mtime 预过滤**（复查 2026-11-25 批 F2）：行时间戳 ≤ 文件 mtime
+///   （行先写、mtime 后盖），mtime < window_start ⇒ 整文件不可能有窗内行
+///   ——stat 跳过，免大文件全量 `read_to_string`（`collect_terminal_sessions`
+///   同款先例）。stat 失败同跳（无新鲜度证明不读，与「无时间锚不参与」同
+///   纪律）；跨机时钟偏斜大于窗口间隙时可能误跳，与终端采集器同接受面；
 /// - 缺目录 = 还没有任何会话（onboard 后未对话的常态），不是错误——按
 ///   Ok(空) 处理，不留每 tick warn 噪声（四路评审 B-Minor1 根修）；
 /// - `read_dir` 结果显式排序（NTFS/ext4 目录序是平台实现细节，结果顺序
@@ -105,6 +110,18 @@ pub fn collect_dialogue_after(
     paths.sort();
     for p in paths {
         if p.extension().map(|e| e != "jsonl").unwrap_or(true) {
+            continue;
+        }
+        // mtime 预过滤（复查 2026-11-25 批 F2）：mtime < 窗起点 ⇒ 窗内行
+        // 不可能在文件里（行先写、mtime 后盖），整文件免读。collect_terminal_
+        // sessions 同款；stat 失败 = 无新鲜度证明，保守跳过。
+        let mtime_fresh = std::fs::metadata(&p)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .map(|mtime| mtime >= window_start_ms);
+        if mtime_fresh != Some(true) {
             continue;
         }
         let session = p
@@ -376,7 +393,19 @@ pub fn collect_todos(
 
 /// 负反馈事件落盘（`<ws>/forge/userprofile/events.jsonl` append-only）。
 /// 失败静默（学习侧旁路数据，不炸主流程）。`event` 需自带 ts/kind 字段。
-pub fn append_event(workspace: &Path, event: &serde_json::Value) {
+/// 持 WRITE_LOCK（复查 2026-11-25：prune 引入后的 RMW 竞窗防线）。
+///
+/// **总闸**（复查 2026-11-25 批 F3）：与 [`append_signal`] 同款——config
+/// `user_profile.enabled` 关 = 事件也不落（关闭状态下事件消费者——反思
+/// 负样本注记 / rework rewind 计数——全在 enabled 闸后，落盘只积无消费
+/// 数据）；`home` 缺失 = 闸面不可得，fail-closed 不落。
+pub fn append_event(workspace: &Path, home: Option<&str>, event: &serde_json::Value) {
+    let Some(home) = home else {
+        return;
+    };
+    if !super::telemetry::profile_enabled(home) {
+        return;
+    }
     let dir = workspace.join("forge").join("userprofile");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -386,6 +415,7 @@ pub fn append_event(workspace: &Path, event: &serde_json::Value) {
         Err(_) => return,
     };
     let path = dir.join("events.jsonl");
+    let _w = WRITE_LOCK.lock();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -398,7 +428,15 @@ pub fn append_event(workspace: &Path, event: &serde_json::Value) {
 
 /// 读最近 `limit` 条负反馈事件（时间升序尾部取回，反思上下文用）。
 /// 缺失/损坏 = 空_vec（旁路数据，诚实降级）。
+///
+/// 尾部优先解析（复查 2026-11-25）：从文件尾倒序攒够 `limit` 条有效行即
+/// 停——语义与旧「全量 parse 后 tail-N」一致（坏行跳过、升序返回），
+/// parse 成本从 O(全量) 降到 O(尾部窗口)；文件无清理期长期积累的旧行
+/// 不再逐轮重付。
 pub fn read_recent_events(workspace: &Path, limit: usize) -> Vec<serde_json::Value> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let path = workspace
         .join("forge")
         .join("userprofile")
@@ -407,25 +445,40 @@ pub fn read_recent_events(workspace: &Path, limit: usize) -> Vec<serde_json::Val
         return Vec::new();
     };
     let mut out = Vec::new();
-    for line in content.lines() {
+    for line in content.lines().rev() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             out.push(v);
+            if out.len() >= limit {
+                break;
+            }
         }
     }
-    let start = out.len().saturating_sub(limit);
-    out.split_off(start)
+    out.reverse();
+    out
 }
 
 /// 交互强信号落盘（批 C ④⑤：`<ws>/forge/userprofile/signals.jsonl`
 /// append-only）。失败静默（学习侧旁路数据，不炸主流程——审批/estop
 /// 主语义零依赖此文件）。`signal` 需自带 `ts_ms`/`kind` 字段。
 ///
+/// **总闸**（复查 2026-11-25）：config `user_profile.enabled` 关 = 信号
+/// 也不落（`telemetry::profile_enabled`，mtime 缓存）——关闭状态下挖掘
+/// 器不跑，信号零消费者，落盘只积无消费数据（存储即隐私闸统一，与
+/// wsapi_usage 面 `/ route` 闸同语义）。`home` 缺失 = 闸面不可得，
+/// fail-closed 不落（隐私方向安全侧）。
+///
 /// 行形态（挖掘器 [`super::mining`] 消费）：
 /// - 审批卡：`{"ts_ms", "kind":"approval", "operation", "risk_level",
 ///   "approved", "duration_ms", "session_key"}`（duration_ms = 卡片创建到
 ///   裁决的墙钟——用户决策耗时的直接观测）；
 /// - 急停：`{"ts_ms", "kind":"estop", "action":"engage"|"release"}`。
-pub fn append_signal(workspace: &Path, signal: &serde_json::Value) {
+pub fn append_signal(workspace: &Path, home: Option<&str>, signal: &serde_json::Value) {
+    let Some(home) = home else {
+        return;
+    };
+    if !super::telemetry::profile_enabled(home) {
+        return;
+    }
     let dir = workspace.join("forge").join("userprofile");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -435,6 +488,7 @@ pub fn append_signal(workspace: &Path, signal: &serde_json::Value) {
         Err(_) => return,
     };
     let path = dir.join("signals.jsonl");
+    let _w = WRITE_LOCK.lock();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -446,8 +500,12 @@ pub fn append_signal(workspace: &Path, signal: &serde_json::Value) {
 }
 
 /// 读最近 `limit` 条交互强信号（时间升序尾部取回，挖掘器上下文用）。
-/// 缺失/损坏 = 空 vec（旁路数据，诚实降级）。
+/// 缺失/损坏 = 空 vec（旁路数据，诚实降级）。尾部优先解析（
+/// read_recent_events 同款，复查 2026-11-25）。
 pub fn read_recent_signals(workspace: &Path, limit: usize) -> Vec<serde_json::Value> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let path = workspace
         .join("forge")
         .join("userprofile")
@@ -456,13 +514,82 @@ pub fn read_recent_signals(workspace: &Path, limit: usize) -> Vec<serde_json::Va
         return Vec::new();
     };
     let mut out = Vec::new();
-    for line in content.lines() {
+    for line in content.lines().rev() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             out.push(v);
+            if out.len() >= limit {
+                break;
+            }
         }
     }
-    let start = out.len().saturating_sub(limit);
-    out.split_off(start)
+    out.reverse();
+    out
+}
+
+// ---------- 信号/事件文件清理（复查 2026-11-25，prune_queue 消费） ----------
+
+/// append 写串行（`signals.jsonl` / `events.jsonl` 共用：append 与 prune
+/// 的 RMW 竞窗防线——bridge.rs / telemetry.rs 同族模式。复查 2026-11-25
+/// 补锁：append 原本无锁 fire-and-forget，prune 引入后写回会吞并发
+/// append 行，统一持锁纪律）。纯读面（read_recent_*）锁外快照无害。
+static WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 通用行清理：删除 `ts_ms` 早于 `cutoff_ms` 的行，其余原样保留（损坏行
+/// 不过滤——不吃数据）。非零删除才原子写回（省一次原子写）。返回删除
+/// 条数。缺文件 = Ok(0)。**全程持 WRITE_LOCK**（RMW 纪律，与 append 同锁）。
+fn prune_ts_lines_older_than(path: &Path, cutoff_ms: i64) -> Result<usize, String> {
+    let _w = WRITE_LOCK.lock();
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let mut pruned = 0usize;
+    let mut out = String::new();
+    for line in content.lines() {
+        let ts = serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| v.get("ts_ms").and_then(|t| t.as_i64()));
+        match ts {
+            Some(ts) if ts < cutoff_ms => {
+                pruned += 1; // 整行删除
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    if pruned == 0 {
+        return Ok(0);
+    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(pruned)
+}
+
+/// 清理信号文件：`ts_ms` 早于 `cutoff_ms` 的行整行删除（signals.jsonl 是
+/// 纯流式观测数据——无 pending 概念，全部行都是清理对象；挖掘器只读
+/// 最近滚动窗，清理不伤挖掘）。返回删除条数。缺文件 = Ok(0)。
+pub fn prune_signals_older_than(workspace: &Path, cutoff_ms: i64) -> Result<usize, String> {
+    prune_ts_lines_older_than(
+        &workspace
+            .join("forge")
+            .join("userprofile")
+            .join("signals.jsonl"),
+        cutoff_ms,
+    )
+}
+
+/// 清理负反馈事件文件（events.jsonl，语义同 [`prune_signals_older_than`]）。
+pub fn prune_events_older_than(workspace: &Path, cutoff_ms: i64) -> Result<usize, String> {
+    prune_ts_lines_older_than(
+        &workspace
+            .join("forge")
+            .join("userprofile")
+            .join("events.jsonl"),
+        cutoff_ms,
+    )
 }
 
 // ---------- 终端会话采集（2026-11-24 T 批：PTY 审计 → 命令行投影） ----------
@@ -565,8 +692,23 @@ pub fn collect_terminal_sessions(
         if ts_ms < window_start_ms {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(&p) else {
+        // 非法 UTF-8 容错（复查 2026-11-25）：写侧（nemesis-web pty.rs）落的是
+        // 原始终端字节——ConPTY 读块边界可劈开多字节字符（中文输出高发），
+        // 中文 Windows cmd.exe 默认 chcp 936 输出直接是 GBK；read_to_string
+        // 会整文件 Err → 整会话静默丢失。改 lossy 解码：坏字节变替换符，
+        // ASCII 命令首 token 不受损，挖掘照常；仅真出现替换时 warn 一次。
+        let Ok(bytes) = std::fs::read(&p) else {
             continue;
+        };
+        let content = match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "终端审计文件含非 UTF-8 字节（ConPTY 块边界劈开多字节字符或非 UTF-8 编码输出），lossy 解码继续: {}",
+                    p.display()
+                );
+                String::from_utf8_lossy(e.into_bytes().as_slice()).into_owned()
+            }
         };
         let (shell, commands) = parse_terminal_audit(&content);
         out.push(TerminalSession {

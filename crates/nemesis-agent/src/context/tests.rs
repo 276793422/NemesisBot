@@ -332,7 +332,7 @@ fn context_builder_load_skills() {
     std::fs::create_dir_all(&skill_a).unwrap();
     std::fs::write(
         skill_a.join("SKILL.md"),
-        "# My Cool Skill\nDoes cool things.",
+        "---\nname: my-skill\ndescription: Does cool things well\nversion: \"1.0\"\n---\n\n# My Cool Skill\nBody text.",
     )
     .unwrap();
 
@@ -342,11 +342,46 @@ fn context_builder_load_skills() {
     let info = builder.get_skills_info();
     assert_eq!(info.len(), 1);
     assert_eq!(info[0].name, "my-skill");
-    assert!(info[0].description.contains("My Cool Skill"));
+    assert_eq!(
+        info[0].description, "Does cool things well",
+        "frontmatter description 键优先，不再把首行 --- 当描述"
+    );
 
     let prompt = builder.build_system_prompt(false);
     assert!(prompt.contains("Loaded Skills"));
     assert!(prompt.contains("my-skill"));
+}
+
+// （frontmatter 无 description 键 = 留空不回落——上游 BUG-20261122-013
+// 回归锁 bug20261122_013_skills_description_frontmatter_aware 已钉同一
+// 口径，本侧旧「回落正文首行」测试在合并收敛时删除。）
+
+#[test]
+fn context_builder_load_skills_plain_markdown_legacy() {
+    // 无 frontmatter（老内置技能形态）保持旧行为：首非空行去 # 前缀。
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("Skills");
+    let dir = skills_dir.join("legacy");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "# Legacy Skill\nLegacy body.").unwrap();
+
+    let mut builder = ContextBuilder::new(tmp.path());
+    builder.load_skills(&skills_dir);
+    assert_eq!(builder.get_skills_info()[0].description, "Legacy Skill");
+}
+
+#[test]
+fn context_builder_load_skills_bom_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("Skills");
+    let dir = skills_dir.join("bom");
+    std::fs::create_dir_all(&dir).unwrap();
+    let content = "\u{feff}---\nname: bom\ndescription: BOM 前缀不破判定\n---\n\n# X";
+    std::fs::write(dir.join("SKILL.md"), content).unwrap();
+
+    let mut builder = ContextBuilder::new(tmp.path());
+    builder.load_skills(&skills_dir);
+    assert_eq!(builder.get_skills_info()[0].description, "BOM 前缀不破判定");
 }
 
 #[test]
@@ -603,12 +638,23 @@ fn context_builder_multiple_skills() {
     for name in &["skill-a", "skill-b", "skill-c"] {
         let dir = skills_dir.join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("SKILL.md"), format!("# {} description", name)).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name} description\n---\n\n# Body"),
+        )
+        .unwrap();
     }
 
     let mut builder = ContextBuilder::new(tmp.path());
     builder.load_skills(&skills_dir);
     assert_eq!(builder.get_skills_info().len(), 3);
+    assert!(
+        builder
+            .get_skills_info()
+            .iter()
+            .all(|i| i.description.ends_with("description")),
+        "frontmatter 形态描述全部落键值"
+    );
 }
 
 #[test]
