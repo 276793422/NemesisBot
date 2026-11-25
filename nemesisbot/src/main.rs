@@ -725,6 +725,10 @@ enum Commands {
     },
     /// Manage durable self-paced loops (create/list/show/pause/resume/remove)
     #[cfg(feature = "loop")]
+    // BUG-20261125-077 契约对齐：模块注释/README/交付计划/WSAPI（loop.*）四面
+    // 全叫 `loop`，clap 变体名派生的 `loops` 是异常项（Rust 关键字规避的惯性
+    // 命名）——显式 rename 主名 `loop`，`loops` 留 alias 兼容既有调用者。
+    #[command(name = "loop", alias = "loops")]
     Loops {
         #[command(subcommand)]
         action: commands::loops::LoopAction,
