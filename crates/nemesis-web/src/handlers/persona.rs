@@ -5,7 +5,7 @@
 //! .md files into the NemesisBot persona format (IDENTITY.md, SOUL.md, AGENT.md,
 //! TOOLS.md).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::handlers::{get_str, require_workspace, resolve_path};
@@ -1603,8 +1603,334 @@ fn convert_agent_md(content: &str) -> PersonaFiles {
 // 此前 CLI 侧各自维护简化实现——activate 不归档旧人格、install 转换产物缺
 // 字段——与 web 面语义分裂，跨入口切换会串档/丢文件。）
 
+// ---- BUG-20261126：人格归档的项目会话过滤 ----
+//
+// 裁定：项目数据（projects.json + 项目绑定会话）**全局通用**，切换人格不得
+// 带走（多人协同同一项目 = 换人格继续处理）；对话数据（无 project_id 的
+// 会话/记忆）保持人格私有。旧实现整目录归档 sessions/ 与 logs/session_logs/，
+// 把项目绑定会话一并收进 personas/<人格>/——侧栏项目组随之消失。
+//
+// 判定单一真相源 = 根 `logs/session_logs/<safe>.meta.json` 的 `project_id`
+// 非空（L6++ sidecar 绑定烧入，与 nemesis-forge userprofile 的
+// sidecar_is_project 同语义）。safe stem 提取一律按后缀 strip（
+// BUG-20261125-079 家族纪律：with_extension 两步构造对含点会话键错位）。
+
+/// 人格归档目录的处理形态（PERSONA_ARCHIVE_DIRS 逐项分派）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PersonaArchiveDirKind {
+    /// 整目录搬移（memory：人格私有，无会话归属概念）。
+    WholeDir,
+    /// workspace 根 `sessions/`（store JSON + todo 文件；按会话 stem 过滤）。
+    SessionsStore,
+    /// workspace 根 `logs/session_logs/`（jsonl/meta/附属文件；按 stem 过滤）。
+    SessionLogs,
+}
+
+fn persona_archive_dir_kind(dir_name: &str) -> PersonaArchiveDirKind {
+    match dir_name {
+        "sessions" => PersonaArchiveDirKind::SessionsStore,
+        "logs/session_logs" => PersonaArchiveDirKind::SessionLogs,
+        // 未知新增目录回落整目录旧语义（安全缺省）。
+        _ => PersonaArchiveDirKind::WholeDir,
+    }
+}
+
+/// logs/session_logs/ 文件名 → 会话 safe stem。已知后缀族与 chat_log 单一
+/// 真相源对齐：{safe}.jsonl / {safe}.meta.json / {safe}.pending /
+/// {safe}.iqueue / {safe}.notices + .taking 瞬态崩溃残留三变体（pending
+/// 走 with_extension 换扩展名 `{safe}.pending`→`{safe}.taking`；iqueue/
+/// notices 走追加后缀 `{safe}.iqueue`→`{safe}.iqueue.taking`，chat_log
+/// mirror_take_raw「追加后缀不换扩展——三族侧车 tmp 撞名防护」）。顺序
+/// 敏感：双段 .taking 变体必须先于裸 .taking，否则 {safe}.iqueue.taking
+/// 会被 strip 成错误 stem {safe}.iqueue。None = 未知形态（按人格私有的
+/// 旧整文件语义处理）。
+fn session_stem_of_log_file_name(name: &str) -> Option<&str> {
+    const LOG_SUFFIXES: [&str; 8] = [
+        ".meta.json",
+        ".jsonl",
+        ".pending",
+        ".iqueue",
+        ".notices",
+        ".iqueue.taking",
+        ".notices.taking",
+        ".taking",
+    ];
+    LOG_SUFFIXES.iter().find_map(|s| name.strip_suffix(s))
+}
+
+/// sessions/ 文件名 → 会话 safe stem：{safe}.json（LLM 上下文 store）/
+/// todo_{safe}.json（todo 清单）。
+fn session_stem_of_store_file_name(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".json")?;
+    Some(stem.strip_prefix("todo_").unwrap_or(stem))
+}
+
+/// meta 侧车文件名 → 会话 safe stem（项目绑定预扫描 + 存量回迁的入口）。
+fn session_stem_of_meta_file_name(name: &str) -> Option<&str> {
+    name.strip_suffix(".meta.json")
+}
+
+/// 根会话日志的项目绑定 stem 全集（一次预扫描）。archive/clean/restore
+/// 统一消费这份快照，规避 read_dir 无序下「meta 先删导致 jsonl 误判为
+/// 对话」的次序坑（顺序是平台实现细节）。
+fn collect_project_session_stems(root_session_logs: &std::path::Path) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let Ok(entries) = std::fs::read_dir(root_session_logs) else {
+        return set;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(stem) = name.to_str().and_then(session_stem_of_meta_file_name) else {
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let is_project = v["project_id"]
+            .as_str()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if is_project {
+            set.insert(stem.to_string());
+        }
+    }
+    set
+}
+
+/// 归档（人格镜像 ← 根）：先把人格侧镜像清空（单代镜像语义，与旧整目录
+/// 「先清后拷」对齐，防重激活同名人格时陈旧文件混代），再逐文件拷贝
+/// **非项目**会话文件；stem 命中项目集合的文件留根不归档。子目录等未知
+/// 形态保持旧整目录语义（人格私有）。
+fn archive_session_dir_filtered(
+    src_dir: &std::path::Path,
+    dst_dir: &std::path::Path,
+    kind: PersonaArchiveDirKind,
+    project_stems: &HashSet<String>,
+) -> Result<(), String> {
+    if dst_dir.exists() {
+        for entry in std::fs::read_dir(dst_dir)
+            .map_err(|e| format!("failed to read {}: {}", dst_dir.display(), e))?
+        {
+            let entry = entry.map_err(|e| format!("read_dir entry: {}", e))?;
+            let path = entry.path();
+            if path.is_dir() {
+                nemesis_utils::fsutil::remove_dir_all_retry(&path)
+                    .map_err(|e| format!("failed to remove {}: {}", path.display(), e))?;
+            } else {
+                nemesis_utils::fsutil::remove_file_resilient(&path);
+            }
+        }
+    }
+    std::fs::create_dir_all(dst_dir)
+        .map_err(|e| format!("failed to create {}: {}", dst_dir.display(), e))?;
+    for entry in std::fs::read_dir(src_dir)
+        .map_err(|e| format!("failed to read {}: {}", src_dir.display(), e))?
+    {
+        let entry = entry.map_err(|e| format!("read_dir entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            let target = dst_dir.join(entry.file_name());
+            copy_dir_recursive(&path, &target)?;
+            continue;
+        }
+        let name = entry.file_name();
+        let stem = name.to_str().and_then(|n| match kind {
+            PersonaArchiveDirKind::SessionsStore => session_stem_of_store_file_name(n),
+            _ => session_stem_of_log_file_name(n),
+        });
+        if let Some(stem) = stem
+            && project_stems.contains(stem)
+        {
+            continue; // 项目绑定：留根，不进人格目录
+        }
+        std::fs::copy(&path, dst_dir.join(&name))
+            .map_err(|e| format!("failed to copy {}: {}", name.to_string_lossy(), e))?;
+    }
+    Ok(())
+}
+
+/// 清理根会话目录的人格私有文件：stem 命中项目集合的文件**保留**（项目
+/// 数据全局，不随人格切换离场）。未知形态文件按旧整目录清理语义移除。
+fn clean_session_dir_filtered(
+    dir: &std::path::Path,
+    kind: PersonaArchiveDirKind,
+    project_stems: &HashSet<String>,
+) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in
+        std::fs::read_dir(dir).map_err(|e| format!("failed to read {}: {}", dir.display(), e))?
+    {
+        let entry = entry.map_err(|e| format!("read_dir entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            nemesis_utils::fsutil::remove_dir_all_retry(&path)
+                .map_err(|e| format!("failed to remove {}: {}", path.display(), e))?;
+            continue;
+        }
+        let name = entry.file_name();
+        let stem = name.to_str().and_then(|n| match kind {
+            PersonaArchiveDirKind::SessionsStore => session_stem_of_store_file_name(n),
+            _ => session_stem_of_log_file_name(n),
+        });
+        if let Some(stem) = stem
+            && project_stems.contains(stem)
+        {
+            continue; // 项目绑定：留根
+        }
+        nemesis_utils::fsutil::remove_file_resilient(&path);
+    }
+    Ok(())
+}
+
+/// 恢复（根 ← 人格镜像）：逐文件拷回**非项目**文件；stem 命中项目集合的
+/// 镜像文件绝不落根（根上的项目会话是活体权威，旧镜像可能是陈代内容）。
+fn restore_session_dir_filtered(
+    src_dir: &std::path::Path,
+    dst_dir: &std::path::Path,
+    kind: PersonaArchiveDirKind,
+    project_stems: &HashSet<String>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dst_dir)
+        .map_err(|e| format!("failed to create {}: {}", dst_dir.display(), e))?;
+    for entry in std::fs::read_dir(src_dir)
+        .map_err(|e| format!("failed to read {}: {}", src_dir.display(), e))?
+    {
+        let entry = entry.map_err(|e| format!("read_dir entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            let target = dst_dir.join(entry.file_name());
+            copy_dir_recursive(&path, &target)?;
+            continue;
+        }
+        let name = entry.file_name();
+        let stem = name.to_str().and_then(|n| match kind {
+            PersonaArchiveDirKind::SessionsStore => session_stem_of_store_file_name(n),
+            _ => session_stem_of_log_file_name(n),
+        });
+        if let Some(stem) = stem
+            && project_stems.contains(stem)
+        {
+            continue; // 项目绑定：镜像不覆盖根上活体
+        }
+        std::fs::copy(&path, dst_dir.join(&name))
+            .map_err(|e| format!("failed to copy {}: {}", name.to_string_lossy(), e))?;
+    }
+    Ok(())
+}
+
+/// 存量回迁（BUG-20261126）：旧版人格归档把项目绑定会话一并收进了
+/// personas/<人格>/。本函数扫描各人格目录的 session_logs meta，凡
+/// project_id 非空且根上缺席的会话，把其文件族搬回 workspace 根
+/// （`logs/session_logs/` 下的 .jsonl/.meta.json/.pending/.iqueue/.notices
+/// 加 `sessions/` 下的 store json 与 todo json）。
+/// 幂等：根已在 = 跳过（撞车保留根——根是活体权威）；返回搬回文件数。
+/// gateway 启动与每次人格激活入口（ensure_persona_store）调用。
+pub fn repair_project_sessions(workspace: &str) -> Result<usize, String> {
+    let personas_dir = resolve_path(workspace, "personas")?;
+    if !personas_dir.exists() {
+        return Ok(0);
+    }
+    let root_logs = resolve_path(workspace, "logs/session_logs")?;
+    let root_store = resolve_path(workspace, "sessions")?;
+    let mut moved = 0usize;
+    let persona_entries = std::fs::read_dir(&personas_dir)
+        .map_err(|e| format!("failed to read personas dir: {}", e))?;
+    for persona_entry in persona_entries {
+        let persona_entry = persona_entry.map_err(|e| format!("read_dir entry: {}", e))?;
+        let persona_dir = persona_entry.path();
+        if !persona_dir.is_dir() {
+            continue; // _active.json 等散文件
+        }
+        let persona_logs = persona_dir.join("logs").join("session_logs");
+        let Ok(log_entries) = std::fs::read_dir(&persona_logs) else {
+            continue; // 该人格没有会话归档
+        };
+        let persona_store = persona_dir.join("sessions");
+        for entry in log_entries.flatten() {
+            let name = entry.file_name();
+            let Some(stem) = name.to_str().and_then(session_stem_of_meta_file_name) else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let is_project = v["project_id"]
+                .as_str()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !is_project {
+                continue; // 对话会话：留在人格目录（人格私有语义不变）
+            }
+            // logs 侧文件族（meta 判定同源；先 meta 后正文无次序敏感——
+            // 每文件独立判定，meta 判定只读自身）。.taking 三变体随族
+            // （崩溃残留消息文件同样回根，让 drain_orphan_pending 兜底
+            // 扫描重新看得见）。
+            for suffix in [
+                ".meta.json",
+                ".jsonl",
+                ".pending",
+                ".iqueue",
+                ".notices",
+                ".taking",
+                ".iqueue.taking",
+                ".notices.taking",
+            ] {
+                let file_name = format!("{}{}", stem, suffix);
+                if move_file_root_first(
+                    &persona_logs.join(&file_name),
+                    &root_logs.join(&file_name),
+                )? {
+                    moved += 1;
+                }
+            }
+            // store 侧（LLM 上下文 store + todo 清单）
+            for file_name in [format!("{}.json", stem), format!("todo_{}.json", stem)] {
+                if move_file_root_first(
+                    &persona_store.join(&file_name),
+                    &root_store.join(&file_name),
+                )? {
+                    moved += 1;
+                }
+            }
+        }
+    }
+    if moved > 0 {
+        tracing::info!(
+            "[persona] restored {} project session file(s) from persona archives to workspace root",
+            moved
+        );
+    }
+    Ok(moved)
+}
+
+/// 存量回迁的单文件搬运（复制 + 韧性删除源；同卷 rename 在 Windows 上有
+/// 目标存在即败/AV 瞬时句柄两类坑，复制-后-删更稳）：目标已在 = 跳过
+/// （幂等护栏）；源缺席 = 跳过；目标父目录缺席 = 自建（回迁自足，不对
+/// 新工作区预创空目录）。返回是否实际搬回。
+fn move_file_root_first(src: &std::path::Path, dst: &std::path::Path) -> Result<bool, String> {
+    if !src.exists() || dst.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {}", parent.display(), e))?;
+    }
+    std::fs::copy(src, dst).map_err(|e| format!("failed to copy {}: {}", src.display(), e))?;
+    nemesis_utils::fsutil::remove_file_resilient(src);
+    Ok(true)
+}
+
 /// 初始化人格存储：首次（无 `_active.json`）把 workspace 根的现有人格文件
 /// 与 memory/sessions/logs 归档进 `personas/default/` 并写 default 激活标记。
+/// 已初始化 = 顺手跑一次项目会话存量回迁（幂等，BUG-20261126）。
 pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
     let personas_dir = resolve_path(workspace, "personas")?;
     // Gate on the real init marker (_active.json), NOT on the personas/ dir.
@@ -1613,6 +1939,12 @@ pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
     // initialization and leave _active.json missing, so cmd_current /
     // cmd_list fail with "failed to read _active.json".
     if personas_dir.join("_active.json").exists() {
+        // 存量回迁（BUG-20261126，幂等）：旧版归档可能把项目会话收进了
+        // personas/<人格>/；入口顺手把根缺的项目会话搬回。失败不阻塞
+        // （回迁是修复动作不是前置条件，warn 后按现状继续）。
+        if let Err(e) = repair_project_sessions(workspace) {
+            tracing::warn!("[persona] project session repair failed: {}", e);
+        }
         return Ok(());
     }
     std::fs::create_dir_all(&personas_dir)
@@ -1637,13 +1969,23 @@ pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
         }
     }
 
-    // Archive memory/ directory if it exists
+    // Archive memory/ + session dirs（memory 整目录旧语义；sessions/
+    // logs/session_logs 逐文件过滤——项目绑定会话留根，首次初始化同样
+    // 不收编项目数据）。
+    let project_stems =
+        collect_project_session_stems(&resolve_path(workspace, "logs/session_logs")?);
     for &dir_name in PERSONA_ARCHIVE_DIRS {
         let src_dir = resolve_path(workspace, dir_name)?;
         if src_dir.exists() {
             let dst_dir = default_dir.join(dir_name);
-            copy_dir_recursive(&src_dir, &dst_dir)
-                .map_err(|e| format!("failed to archive {}: {}", dir_name, e))?;
+            match persona_archive_dir_kind(dir_name) {
+                PersonaArchiveDirKind::WholeDir => {
+                    copy_dir_recursive(&src_dir, &dst_dir)
+                        .map_err(|e| format!("failed to archive {}: {}", dir_name, e))?;
+                }
+                kind => archive_session_dir_filtered(&src_dir, &dst_dir, kind, &project_stems)
+                    .map_err(|e| format!("failed to archive {}: {}", dir_name, e))?,
+            }
         }
     }
 
@@ -1733,17 +2075,27 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
                 .map_err(|e| format!("archive: failed to write {}: {}", file, e))?;
             }
         }
-        // Archive directories (memory/)
+        // Archive directories（memory 整目录旧语义；sessions/session_logs
+        // 逐文件过滤——项目绑定会话留根不随人格切换离场，BUG-20261126）
+        let project_stems =
+            collect_project_session_stems(&resolve_path(workspace, "logs/session_logs")?);
         for &dir_name in PERSONA_ARCHIVE_DIRS {
             let src_dir = resolve_path(workspace, dir_name)?;
             if src_dir.exists() {
                 let dst_dir = archive_dir.join(dir_name);
-                if dst_dir.exists() {
-                    nemesis_utils::fsutil::remove_dir_all_retry(&dst_dir)
-                        .map_err(|e| format!("archive: failed to clean {}: {}", dir_name, e))?;
+                match persona_archive_dir_kind(dir_name) {
+                    PersonaArchiveDirKind::WholeDir => {
+                        if dst_dir.exists() {
+                            nemesis_utils::fsutil::remove_dir_all_retry(&dst_dir).map_err(|e| {
+                                format!("archive: failed to clean {}: {}", dir_name, e)
+                            })?;
+                        }
+                        copy_dir_recursive(&src_dir, &dst_dir)
+                            .map_err(|e| format!("archive: failed to copy {}: {}", dir_name, e))?;
+                    }
+                    kind => archive_session_dir_filtered(&src_dir, &dst_dir, kind, &project_stems)
+                        .map_err(|e| format!("archive: {}: {}", dir_name, e))?,
                 }
-                copy_dir_recursive(&src_dir, &dst_dir)
-                    .map_err(|e| format!("archive: failed to copy {}: {}", dir_name, e))?;
             }
         }
     }
@@ -1759,11 +2111,20 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
             nemesis_utils::fsutil::remove_file_resilient(&dst);
         }
     }
+    // Clean session dirs（项目绑定文件保留——清根只带走人格私有数据）
+    let project_stems =
+        collect_project_session_stems(&resolve_path(workspace, "logs/session_logs")?);
     for &dir_name in PERSONA_ARCHIVE_DIRS {
         let dst_dir = resolve_path(workspace, dir_name)?;
         if dst_dir.exists() {
-            nemesis_utils::fsutil::remove_dir_all_retry(&dst_dir)
-                .map_err(|e| format!("clean: failed to remove {}: {}", dir_name, e))?;
+            match persona_archive_dir_kind(dir_name) {
+                PersonaArchiveDirKind::WholeDir => {
+                    nemesis_utils::fsutil::remove_dir_all_retry(&dst_dir)
+                        .map_err(|e| format!("clean: failed to remove {}: {}", dir_name, e))?;
+                }
+                kind => clean_session_dir_filtered(&dst_dir, kind, &project_stems)
+                    .map_err(|e| format!("clean: {}: {}", dir_name, e))?,
+            }
         }
     }
 
@@ -1787,15 +2148,24 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
                 .map_err(|e| format!("restore: failed to write {}: {}", file, e))?;
         }
     }
-    // Restore directories
+    // Restore directories（memory 整目录旧语义；sessions/session_logs 逐
+    // 文件过滤——镜像里的项目 stem 文件绝不落根，根上活体权威不动）
+    let project_stems =
+        collect_project_session_stems(&resolve_path(workspace, "logs/session_logs")?);
     for &dir_name in PERSONA_ARCHIVE_DIRS {
         let src_dir = target_dir.join(dir_name);
         if src_dir.exists() {
             let dst_dir = resolve_path(workspace, dir_name)?;
             std::fs::create_dir_all(&dst_dir)
                 .map_err(|e| format!("restore: failed to create {}: {}", dir_name, e))?;
-            copy_dir_recursive(&src_dir, &dst_dir)
-                .map_err(|e| format!("restore: failed to copy {}: {}", dir_name, e))?;
+            match persona_archive_dir_kind(dir_name) {
+                PersonaArchiveDirKind::WholeDir => {
+                    copy_dir_recursive(&src_dir, &dst_dir)
+                        .map_err(|e| format!("restore: failed to copy {}: {}", dir_name, e))?;
+                }
+                kind => restore_session_dir_filtered(&src_dir, &dst_dir, kind, &project_stems)
+                    .map_err(|e| format!("restore: {}: {}", dir_name, e))?,
+            }
         }
     }
 
