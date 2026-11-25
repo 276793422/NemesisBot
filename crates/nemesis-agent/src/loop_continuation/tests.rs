@@ -2714,6 +2714,43 @@ async fn cleanup_old_snapshots_evicts_disk_and_memory() {
     assert!(!cache.join("t2.json").exists());
 }
 
+/// BUG-20261125-042 回归锁：TTL 清扫必须一并清相位记录（remove_continuation
+/// 同款不变量「条目消亡 = 相位消亡」）。泄漏形态：重启恢复 mark_restored 插入
+/// Restored → 回调永不到 → TTL 清扫删快照+内存条目但漏相位 → restore_phases
+/// 永久驻留（陈旧相位陷阱）。判别式：清扫后二次 mark_restored——修复态回落
+/// Checkpoint（Checkpoint→Restored 合法 = Ok），泄漏态 Restored→Restored
+/// 非法 = Err。
+#[tokio::test]
+async fn cleanup_old_snapshots_clears_phase_records() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+    manager
+        .save_continuation(
+            "t-phase",
+            vec![make_message("user", "a")],
+            "tc",
+            "web",
+            "c",
+            "s",
+            "",
+        )
+        .await;
+    // 模拟重启恢复链：recover_to_manager 折算后 mark_restored 落相位。
+    manager
+        .mark_restored("t-phase")
+        .expect("首次 mark_restored 合法");
+    assert!(manager.has_continuation("t-phase").await);
+
+    std::thread::sleep(Duration::from_millis(20));
+    let removed = manager.cleanup_old_snapshots(Duration::ZERO).await;
+    assert_eq!(removed, 1);
+    assert!(!manager.has_continuation("t-phase").await);
+    // 判别式：相位已随清扫消亡（二次恢复合法）；泄漏态此处 Err(Restored→Restored)。
+    manager
+        .mark_restored("t-phase")
+        .expect("TTL 清扫后相位必须已清（回落 Checkpoint）");
+}
+
 #[tokio::test]
 async fn save_continuation_disk_failure_still_marks_ready() {
     // cluster 路径被文件占位 → create_dir_all 失败 → save 告警但内存照常 + ready。
