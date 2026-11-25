@@ -8,7 +8,7 @@
 //! - 提示词无序列意识——即便采到完整链路也不知道要输出步骤（G3）。
 //!
 //! 新形态：
-//! - 输入 = [`super::collection::collect_dialogue_after`] 的**全量结构化行**
+//! - 输入 = [`super::collection::collect_dialogue_after_scope`] 的**全量结构化行**
 //!   （user 500 字摘录 + assistant 工具时间线投影），按会话分组保序；
 //! - 提示词带**序列意识**（明确要求识别多步仪式并输出 steps 数组）+
 //!   **ledger 上下文**（上次反思结论回灌——知识复利：不重复、可细化）；
@@ -20,6 +20,7 @@ use std::path::Path;
 
 use super::bridge::{LessonEntry, ObservationEntry};
 use super::collection::DialogueRow;
+use super::mining::SignalCard;
 use super::store::{HabitEntry, KIND_HABIT, KIND_LESSON, MAX_EVIDENCE};
 
 /// 反思触发：sweep 计数闸缺省值（config `user_profile.reflect_every_sweeps`
@@ -170,15 +171,23 @@ fn render_session(session: &str, rows: &[&DialogueRow]) -> String {
 /// `[OBSERVATION_MIN_CONFIDENCE, threshold)` → 观察提名（bridge 队列，
 /// Dashboard「待确认观察」人工裁决——确认入画像/忽略转负样本）；lesson
 /// 类低置信 = 丢弃（教训消费面在 Forge，无人工确认面）。
+///
+/// 批二（话术 AI 化 §4.3）：`signals` = 本拍触发的信号卡（进 prompt
+/// 「确定性信号」节，参考话术供 AI 自行措辞）；`existing_rules` = 画像
+/// 既有规则化条目（rule_id + 当前话术，取自 sweep 开头快照）——AI 可
+/// 点名改写历史兜底条目（不止本拍新卡）。返回值 habit 槽升级为
+/// [`ReflectedHabit`]（条目 + 可选 rule_ids 回填）。
 #[allow(clippy::type_complexity)]
-pub fn reflect_semantic_habits(
+pub(crate) fn reflect_semantic_habits(
     caller: &std::sync::Arc<dyn crate::reflector_llm::LLMCaller>,
     rows: &[DialogueRow],
     prior_conclusions: &[String],
     negative_events: &[serde_json::Value],
     rt: &tokio::runtime::Handle,
     threshold: f64,
-) -> Result<(Vec<HabitEntry>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
+    signals: &[SignalCard],
+    existing_rules: &[(String, String)],
+) -> Result<(Vec<ReflectedHabit>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
     let digest = build_digest(rows);
     if digest.trim().is_empty() {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
@@ -197,7 +206,7 @@ pub fn reflect_semantic_habits(
          - 跨多条消息的**多步流程仪式**请识别为 workflow 条目，\
          并把每个阶段写进 steps 数组（按执行顺序，每步一句话）；\
          阶段内容必须取自记录中该用户**实际说过/做过的事**，禁止套用任何预设流程模板；\n\
-         - 协作节奏维度（与确定性挖掘同向覆盖，谁先有证据谁上榜）：**开场形态**\
+         - 协作节奏维度（与信号卡同向覆盖，谁先有证据谁上榜）：**开场形态**\
          （用户是开场即派活还是寒暄铺垫）、**催促模式**（等待中会不会复述/催促）、\
          **分工风格**（微观管理型高频插细节指令 vs 派单型派后沉默）、**返工节奏**\
          （迭代型先快出再看 vs 一次成型型先对齐方案）；有跨会话证据时输出为条目；\n\
@@ -205,6 +214,37 @@ pub fn reflect_semantic_habits(
          只在有充分证据时输出，单次偶然行为不算；\n\
          - content 必须一句话（不含换行）。",
     );
+    // 确定性信号节（批二 §4.3）：本拍触发的信号卡 + 既有规则化条目清单
+    // ——AI 是第一写作者（参考话术不是标准答案），可合并同族信号并在
+    // rule_ids 中点名（对号入座归并的前提）。
+    if !signals.is_empty() {
+        prompt.push_str(
+            "\n\n本拍确定性信号（程序按阈值数数自动触发，供你参考）。\
+             请**用你自己的话**总结这些习惯——参考话术不是标准答案；\
+             多条同族信号可合并为一条结论，并在该结论的 rule_ids 数组中\
+             列出全部对应规则 id：",
+        );
+        for s in signals {
+            let mut line = format!("\n- [{}] {}", s.rule_id, s.fallback_statement);
+            if !s.steps.is_empty() {
+                line.push_str(&format!("（步骤：{}）", s.steps.join(" → ")));
+            }
+            if !s.evidence.is_empty() {
+                line.push_str(&format!("（证据：{}）", s.evidence.join("；")));
+            }
+            prompt.push_str(&line);
+        }
+    }
+    if !existing_rules.is_empty() {
+        prompt.push_str(
+            "\n\n画像中已有的规则化条目（若你的某条结论是对下面某条的更好表述，\
+             在该结论的 rule_ids 中点名其规则 id，将原地改写该条；\
+             合并多条时列出全部 id）：",
+        );
+        for (id, wording) in existing_rules {
+            prompt.push_str(&format!("\n- [{id}] {wording}"));
+        }
+    }
     if !prior_conclusions.is_empty() {
         prompt.push_str(
             "\n\n此前已归纳的结论（不要原样重复；如本轮证据支持，可给出 steps 细化版本）：",
@@ -228,13 +268,23 @@ pub fn reflect_semantic_habits(
     prompt.push_str(&format!(
         "\n\n只输出 JSON 数组，每项 {{\"kind\": \"habit\"|\"lesson\", \"category\": \"{}\", \
          \"content\": \"<一句话陈述>\", \"confidence\": <0.0-1.0>, \
-         \"steps\": [\"步骤1\", \"步骤2\"]}}（kind 缺省按 habit；steps 可省略）。\
+         \"steps\": [\"步骤1\", \"步骤2\"], \
+         \"rule_ids\": [\"规则id\"]}}（kind 缺省按 habit；steps/rule_ids 可省略\
+         ——rule_ids 只能取自上文信号与既有条目给出的规则 id）。\
          无稳定结论则输出 []。\n\n对话记录：\n{digest}",
         REFLECT_CATEGORIES.join("|")
     ));
     let resp =
         rt.block_on(caller.chat("你是用户行为分析师。只输出 JSON。", &prompt, Some(2048)))?;
     parse_reflection_response(&resp, &now, threshold)
+}
+
+/// 反思 habit 产物（批二 §4.3）：条目 + 可选 rule_ids 回填。`rule_ids`
+/// 空 = 纯 AI 自发结论（现行为，upsert by content）；非空 = AI 点名了
+/// 规则身份证（sweep 末尾临界区按 id 原地改写/合并既有条目）。
+pub(crate) struct ReflectedHabit {
+    pub entry: HabitEntry,
+    pub rule_ids: Vec<String>,
 }
 
 /// 反思响应提取（数组感知）：[`crate::reflector_llm::extract_json`] 只认
@@ -268,11 +318,14 @@ fn extract_entry_values(resp: &str) -> Option<Vec<serde_json::Value>> {
 /// 接口二（2026-11-24）：habit 类结论落边缘带
 /// `[OBSERVATION_MIN_CONFIDENCE, threshold)` → [`ObservationEntry`] 观察提名
 /// 第三元（不自动生效也不丢弃，人工裁决）；lesson 类低置信 = 丢弃。
-pub fn parse_reflection_response(
+/// 批二（话术 AI 化 §4.3）：habit 类结论可选 `rule_ids` 数组回填
+/// （LLM 从给定域内选的规则身份证；空 = 纯 AI 自发结论，现行为）——
+/// 条目本体 `rule_id` 字段保持空，改写/插入落库时由编排层定夺。
+pub(crate) fn parse_reflection_response(
     resp: &str,
     now: &str,
     threshold: f64,
-) -> Result<(Vec<HabitEntry>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
+) -> Result<(Vec<ReflectedHabit>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
     let arr = extract_entry_values(resp).ok_or("reflect response is not valid JSON")?;
     let mut habits = Vec::new();
     let mut lessons = Vec::new();
@@ -373,9 +426,26 @@ pub fn parse_reflection_response(
             auto: false,
             kind: KIND_HABIT.into(),
             source: String::new(),
+            rule_id: String::new(),
         };
         entry.evidence.truncate(MAX_EVIDENCE);
-        habits.push(entry);
+        // rule_ids 回填提取（批二 §4.3）：LLM 从给定域内选的规则身份证。
+        // 域外/重复清洗在编排层（临界区）做——解析层只收字符串，不做域
+        // 判定（域 = 本拍信号卡 ∪ 既有条目，编排层两集齐备）。防呆上限
+        // 8 个（正常合并 ≤3，LLM 刷屏按截断处理）。
+        let rule_ids: Vec<String> = item
+            .get("rule_ids")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default();
+        habits.push(ReflectedHabit { entry, rule_ids });
     }
     Ok((habits, lessons, observations))
 }

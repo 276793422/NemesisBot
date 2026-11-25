@@ -385,6 +385,20 @@ impl SecurityState {
     }
 }
 
+/// 用户画像 scope（双 scope 拆分 2026-11-25，注入侧投影）：本 loop 注入
+/// 哪份画像。nemesis-agent 本地镜像（nemesis-forge 是 optional dep——无
+/// forge 构建下字段仍需存在，消费点在 `#[cfg(feature = "forge")]` 臂内
+/// 映射到 forge 同名枚举；镜像两值一一对应，无第三态）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ProfileScope {
+    /// 对话会话画像（`config/user_profile.json`；主/集群/headless 默认）。
+    #[default]
+    Dialogue,
+    /// 项目会话画像（`config/user_profile_project.json`；项目 loop 装配
+    /// 时注入，存储根仍是主 workspace——画像资产不落项目目录）。
+    Project,
+}
+
 pub struct AgentLoop {
     // --- Standalone fields (always present) ---
     /// LLM provider for generating responses.
@@ -814,6 +828,15 @@ pub struct AgentLoop {
     /// session_home_root 同族先例：项目 loop 不可从 workspace_root 推导的
     /// 根一律显式注入；2026-11-24 项目会话画像注入缺口修复）。
     profile_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// 用户画像 scope（双 scope 拆分 2026-11-25）：本 loop 注入**哪份**
+    /// 画像——Dialogue = `config/user_profile.json`（对话会话，默认），
+    /// Project = `config/user_profile_project.json`（项目会话）。两份文件
+    /// 独立水线/独立采集（nemesis-forge 拆分纪律）；注入侧按 loop 归属
+    /// 选择，项目 loop 装配时 `set_profile_scope(Project)`（主 workspace
+    /// 根 + 项目 scope = 读项目画像文件），主/集群/headless 默认 Dialogue
+    /// 行为不变。scope 在装配期钉死、运行期不切（无热切需求——会话归属
+    /// loop 归属是静态事实），mtime 缓存键含 scope 兜底防未来热切串值。
+    profile_scope: parking_lot::RwLock<ProfileScope>,
     /// VM 档执行环境注记 resolver（审计收口）。`Some` 时每轮
     /// build_messages 调用一次，非空返回值作为一行追加进 # Environment
     /// 快照（bot 侧安装：档位 per-call 现读，vm 档返回 guest 路径语义行，
@@ -903,7 +926,7 @@ pub struct AgentLoop {
     /// forge 裁剪：读写点全在 forge 门控块内，字段随门（否则关 forge
     /// 组合下「field never read」假警告）。
     #[cfg(feature = "forge")]
-    user_profile_cache: parking_lot::RwLock<((Option<u128>, Option<u128>), String)>,
+    user_profile_cache: parking_lot::RwLock<((Option<u128>, Option<u128>, ProfileScope), String)>,
     /// （cache-warmer）：会话 → 最近一次成功 LLM 请求的字节级快照（warm
     /// 重放候选）。仅 `agents.cache_warmer.enabled=true` 时被写入（默认关 =
     /// 永空）；逻辑全在 cache_warmer.rs（计划 §冲突面登记：warmer 域改动
@@ -1130,6 +1153,7 @@ impl AgentLoop {
             vault_domain_config_path: parking_lot::RwLock::new(None),
             session_home_root: parking_lot::RwLock::new(None),
             profile_root: parking_lot::RwLock::new(None),
+            profile_scope: parking_lot::RwLock::new(ProfileScope::default()),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -1148,7 +1172,10 @@ impl AgentLoop {
             workflow_engine: parking_lot::RwLock::new(None),
             config_gen: parking_lot::RwLock::new(None),
             #[cfg(feature = "forge")]
-            user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
+            user_profile_cache: parking_lot::RwLock::new((
+                (None, None, ProfileScope::default()),
+                String::new(),
+            )),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             small_model_resolver: parking_lot::RwLock::new(None),

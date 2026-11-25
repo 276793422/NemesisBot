@@ -287,6 +287,7 @@ impl AgentLoop {
             vault_domain_config_path: parking_lot::RwLock::new(None),
             session_home_root: parking_lot::RwLock::new(None),
             profile_root: parking_lot::RwLock::new(None),
+            profile_scope: parking_lot::RwLock::new(super::ProfileScope::default()),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -305,7 +306,10 @@ impl AgentLoop {
             workflow_engine: parking_lot::RwLock::new(None),
             config_gen: parking_lot::RwLock::new(None),
             #[cfg(feature = "forge")]
-            user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
+            user_profile_cache: parking_lot::RwLock::new((
+                (None, None, super::ProfileScope::default()),
+                String::new(),
+            )),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             small_model_resolver: parking_lot::RwLock::new(None),

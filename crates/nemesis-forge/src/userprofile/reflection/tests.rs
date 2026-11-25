@@ -99,19 +99,32 @@ fn parse_accepts_steps_and_extended_categories() {
     ```json
     [
       {"category": "workflow", "content": "计划式工作流", "confidence": 0.9,
-       "steps": ["先做计划", "回顾确认", "测试收尾"]},
+       "steps": ["先做计划", "回顾确认", "测试收尾"],
+       "rule_ids": ["ritual.plan", " todo.test_last ", "", "  "]},
       {"category": "quality_bar", "content": "交付前必测试", "confidence": 0.8}
     ]
     ```"#;
     let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
     assert_eq!(habits.len(), 2);
-    assert_eq!(habits[0].steps, vec!["先做计划", "回顾确认", "测试收尾"]);
-    assert_eq!(habits[0].category, "workflow");
-    assert_eq!(habits[1].category, "quality_bar", "扩容类别收");
-    assert!(!habits[0].auto, "反思产物 = manual 桶");
+    assert_eq!(
+        habits[0].entry.steps,
+        vec!["先做计划", "回顾确认", "测试收尾"]
+    );
+    assert_eq!(habits[0].entry.category, "workflow");
+    assert_eq!(habits[1].entry.category, "quality_bar", "扩容类别收");
+    assert!(!habits[0].entry.auto, "反思产物 = manual 桶");
     assert!(lessons.is_empty(), "无 kind 缺省 = habit，lesson 桶空");
     assert!(observations.is_empty(), "高分结论不过边缘带，观察桶空");
-    assert_eq!(habits[0].kind, "habit");
+    assert_eq!(habits[0].entry.kind, "habit");
+    // rule_ids 提取：trim + 丢弃空串；无 rule_ids 字段 = 空表（纯 AI 形态）。
+    assert_eq!(
+        habits[0].rule_ids,
+        vec!["ritual.plan", "todo.test_last"],
+        "trim + 空串过滤"
+    );
+    assert!(habits[1].rule_ids.is_empty(), "缺字段 = 纯 AI 结论");
+    // entry.rule_id 恒空（点名在 rule_ids，落地改写时才绑定——解析层不猜）。
+    assert!(habits[0].entry.rule_id.is_empty());
 }
 
 #[test]
@@ -136,8 +149,8 @@ fn parse_rejects_bad_category_newline_and_low_confidence() {
     ]"#;
     let (habits, _, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
     assert_eq!(habits.len(), 1);
-    assert_eq!(habits[0].content, "越界高分");
-    assert!((habits[0].confidence - 1.0).abs() < 1e-9);
+    assert_eq!(habits[0].entry.content, "越界高分");
+    assert!((habits[0].entry.confidence - 1.0).abs() < 1e-9);
     assert_eq!(observations.len(), 1, "边缘带 habit → 观察提名");
     assert_eq!(observations[0].content, "低分");
     assert_eq!(observations[0].status, "pending");
@@ -149,8 +162,8 @@ fn parse_rejects_bad_category_newline_and_low_confidence() {
     let steps: Vec<String> = (0..20).map(|i| format!("步骤{i}\n尾部")).collect();
     let resp = serde_json::json!([{"category": "workflow", "content": "仪式", "confidence": 0.9, "steps": steps}]).to_string();
     let (habits, _, _) = parse_reflection_response(&resp, "now", 0.7).unwrap();
-    assert_eq!(habits[0].steps.len(), 12);
-    assert!(habits[0].steps.iter().all(|s| !s.contains('\n')));
+    assert_eq!(habits[0].entry.steps.len(), 12);
+    assert!(habits[0].entry.steps.iter().all(|s| !s.contains('\n')));
 }
 
 // ---- kind 主语分型（批 A）----
@@ -165,9 +178,9 @@ fn parse_routes_lessons_by_subject_kind() {
     ]"#;
     let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
     assert_eq!(habits.len(), 2, "habit + 缺省项都进画像桶");
-    assert_eq!(habits[0].content, "用户偏好简洁");
-    assert_eq!(habits[1].content, "缺 kind 缺省 habit");
-    assert!(habits.iter().all(|h| h.kind == "habit"));
+    assert_eq!(habits[0].entry.content, "用户偏好简洁");
+    assert_eq!(habits[1].entry.content, "缺 kind 缺省 habit");
+    assert!(habits.iter().all(|h| h.entry.kind == "habit"));
     assert_eq!(lessons.len(), 1);
     assert_eq!(lessons[0].kind, "lesson");
     assert_eq!(lessons[0].content, "先看注册表再注册工具");
@@ -224,7 +237,7 @@ fn parse_edge_band_nominate_observation_between_min_and_threshold() {
     ]"#;
     let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
     assert_eq!(habits.len(), 1, "只有过闸项进画像桶");
-    assert_eq!(habits[0].content, "高分结论");
+    assert_eq!(habits[0].entry.content, "高分结论");
     assert!(lessons.is_empty());
     assert_eq!(observations.len(), 1, "边缘带 habit 提名一条");
     let o = &observations[0];

@@ -43,3 +43,48 @@ fn prune_cutoff_one_day() {
         "cutoff 应在最近 24h 内"
     );
 }
+
+// ---------- scope 解析（批三 scope 参数化，2026-11-25） ----------
+
+use super::scope_from;
+use nemesis_forge::userprofile::store::ProfileScope;
+use serde_json::json;
+
+/// 缺失 / 空 data / 空串 = 对话（兼容旧前端不传 scope）。
+#[test]
+fn scope_defaults_to_dialogue() {
+    assert_eq!(scope_from(None).unwrap(), ProfileScope::Dialogue);
+    assert_eq!(
+        scope_from(Some(&json!({}))).unwrap(),
+        ProfileScope::Dialogue
+    );
+    assert_eq!(
+        scope_from(Some(&json!({"scope": ""}))).unwrap(),
+        ProfileScope::Dialogue
+    );
+}
+
+/// 显式值两态 + 大小写/空白容错。
+#[test]
+fn scope_parses_both_values_case_insensitive() {
+    assert_eq!(
+        scope_from(Some(&json!({"scope": "project"}))).unwrap(),
+        ProfileScope::Project
+    );
+    assert_eq!(
+        scope_from(Some(&json!({"scope": " Project "}))).unwrap(),
+        ProfileScope::Project
+    );
+    assert_eq!(
+        scope_from(Some(&json!({"scope": "Dialogue"}))).unwrap(),
+        ProfileScope::Dialogue
+    );
+}
+
+/// 显式未知值 loud 拒绝（不静默纠偏——拼错 scope 名要当场红，不是悄悄
+/// 读错画像）。
+#[test]
+fn scope_unknown_value_is_loud_error() {
+    assert!(scope_from(Some(&json!({"scope": "proj"}))).is_err());
+    assert!(scope_from(Some(&json!({"scope": 7}))).is_err());
+}

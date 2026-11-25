@@ -2,7 +2,10 @@
 //! 2026-11-24）。
 //!
 //! 采集通路：
-//! - [`collect_dialogue_after`]：session_logs **结构化读**——user/assistant
+//! - [`collect_dialogue_after_scope`]：session_logs **结构化读**（双 scope
+//!   分流，2026-11-25 批二 D5——同名 `.meta.json` sidecar `project_id`
+//!   非空 = 项目会话；缺席/损坏/空 = 对话会话，与
+//!   `session_evidence::sidecar_scope` 同款诚实缺省）——user/assistant
 //!   全行 + assistant 行 `work` 时间线的工具名投影 + 批 C 四投影（文件种类
 //!   `file_changes`/`deliverables` 路径按扩展名分类、中间轮叙述 `work`
 //!   rounds text、来源通道 `channel` 键、模型名 `model` 键——缺字段宽容，
@@ -73,12 +76,31 @@ impl DialogueRow {
     }
 }
 
-/// 读 session_logs 全部 `*.jsonl`，收集 `role in {user, assistant}` 且时间戳
-/// 不早于 `window_start_ms`（证据窗起点，epoch 毫秒）的行，**按时间升序**
-/// 返回（此前按文件序返回——反思通道「近期 60 条」采样取的是列表尾部；
-/// 文件序由 session key 字典序决定，与新旧无关）。
+/// 对话 scope 便捷包装（既有消费方/测试零迁移）：等价
+/// [`collect_dialogue_after_scope`] 且 `scope=Dialogue`。
+pub fn collect_dialogue_after(
+    workspace: &Path,
+    window_start_ms: i64,
+) -> Result<Vec<DialogueRow>, String> {
+    collect_dialogue_after_scope(
+        workspace,
+        window_start_ms,
+        super::store::ProfileScope::Dialogue,
+    )
+}
+
+/// 读 session_logs 全部 `*.jsonl`（双 scope 分流，批二 D5 真相源——按会话
+/// sidecar `.meta.json` 的 `project_id` 把文件分流：项目会话的行不进对话
+/// 画像，对话会话的行不进项目画像；`scope=Dialogue` 收非项目会话，
+/// `scope=Project` 收项目会话，判定见 [`sidecar_is_project`]），收集
+/// `role in {user, assistant}` 且时间戳不早于 `window_start_ms`（证据窗起
+/// 点，epoch 毫秒）的行，**按时间升序**返回（此前按文件序返回——反思通
+/// 道「近期 60 条」采样取的是列表尾部；文件序由 session key 字典序决定，
+/// 与新旧无关）。
 ///
 /// 过滤纪律：
+/// - **scope 分流**（批二 D5）：非本 scope 的会话文件整文件跳过（小读
+///   sidecar 判定，先于大 jsonl 的 mtime 预过滤）；
 /// - `role=="boundary"`（轮边界哨兵行）与带 `system_notice` 的行（cron tick/
 ///   审批回灌/后台唤醒等系统注入）**不进管线**——它们不是真人消息，混入会
 ///   污染统计规则（平均长度/纠正前缀）与反思采样（旧采集器只筛 role==user
@@ -94,9 +116,10 @@ impl DialogueRow {
 ///   Ok(空) 处理，不留每 tick warn 噪声（四路评审 B-Minor1 根修）；
 /// - `read_dir` 结果显式排序（NTFS/ext4 目录序是平台实现细节，结果顺序
 ///   必须与时间排序解耦确定）。
-pub fn collect_dialogue_after(
+pub fn collect_dialogue_after_scope(
     workspace: &Path,
     window_start_ms: i64,
+    scope: super::store::ProfileScope,
 ) -> Result<Vec<DialogueRow>, String> {
     let dir = workspace.join("logs").join("session_logs");
     let mut out = Vec::new();
@@ -110,6 +133,10 @@ pub fn collect_dialogue_after(
     paths.sort();
     for p in paths {
         if p.extension().map(|e| e != "jsonl").unwrap_or(true) {
+            continue;
+        }
+        // scope 分流（D5）：本项目 scope 才读，异 scope 整文件跳过。
+        if sidecar_is_project(&p) != (scope == super::store::ProfileScope::Project) {
             continue;
         }
         // mtime 预过滤（复查 2026-11-25 批 F2）：mtime < 窗起点 ⇒ 窗内行
@@ -194,6 +221,29 @@ pub fn collect_dialogue_after(
     // 统计通道的输入从此与文件名字典序解耦。
     out.sort_by_key(|r| r.ts_ms);
     Ok(out)
+}
+
+/// 会话 sidecar 项目判定（D5）：同名 `.meta.json` 的 `project_id` 非空 =
+/// 项目会话。sidecar 缺席/非法 JSON/键缺失/空白串 = 对话会话（诚实缺省，
+/// `session_evidence::sidecar_scope` 同款语义——损坏不猜测）。
+///
+/// 路径构造纪律：**一步** `with_extension("meta.json")`（把 `.jsonl` 换成
+/// `.meta.json`），与写入端 `format!("{safe_key}.meta.json")`（chat_log）
+/// 逐字节对齐。两步「先剥后接」对含点会话键会错位：`a.b.jsonl` 剥成
+/// `a.b` 再接成 `a.meta.json`（`b` 被当扩展名替换掉）——sidecar 永远读
+/// 不见、项目会话被误归对话（回归锁：collection/tests 含点键用例）。
+fn sidecar_is_project(log_path: &Path) -> bool {
+    let sidecar = log_path.with_extension("meta.json");
+    let Ok(bytes) = std::fs::read(&sidecar) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    v["project_id"]
+        .as_str()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// assistant 行 `work.rounds[].tools[].tool` 名投影（去重保序、截 8）。
