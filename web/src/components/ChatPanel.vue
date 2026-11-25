@@ -1060,10 +1060,13 @@ function toggleUserMessage(msg: ChatMessage) {
 }
 
 // --- 滚动跟随（2026-11-09 滚动/焦点/选择批）---------------------------
-// useStickToBottom 三规则：滚轮上滚即时放弃跟随 / scroll 方向判定 /
-// 距底阈值恢复 + 跟随时内容变化贴底（MutationObserver 子树监听）。旧实现只靠
+// useStickToBottom 三规则：滚轮上滚即时放弃跟随 / scroll 方向判定（上移
+// 恒放弃，优先于距底阈值——2026-11-25 拽底循环根修）/ 非上移距底阈值恢复
+// + 跟随时内容变化贴底（MutationObserver 子树监听）。旧实现只靠
 // scroll 事件维护 flag，而内容增长不触发 scroll 事件——「回复到了却不滚」
 // 的根因；重灌/重同步用视口锚保位（capture/restore），不再无条件贴底。
+// 回到底部浮钮在 .chat-messages-wrap（滚动容器外）悬浮——UI 状态自身的
+// 插拔不再喂给贴底 Observer（同族自反馈的纵深防御）。
 const {
   follow: chatFollow,
   unreadBelow,
@@ -4063,6 +4066,12 @@ onUnmounted(() => {
     <SkinSlot v-if="isDefaultChat && skinHasSlot('chat')" name="chat" />
     <template v-else>
     <!-- Messages -->
+    <!-- 消息区包裹层（2026-11-25 拽底循环修复）：relative 定位上下文——
+         回到底部浮钮悬浮于此层（滚动容器之外），滚动容器的 MutationObserver
+         观察子树从此只含内容节点。flex 纵列 + min-height:0 保持
+         .chat-messages 的 flex:1 + overflow-y:auto 滚动语义不变（三处宿主
+         有界高度契约照旧作用于 .page-chat 根）。 -->
+    <div class="chat-messages-wrap">
     <div ref="chatMessages" class="chat-messages" @click="onChatAreaClick">
       <!-- History loading indicator -->
       <div v-if="chatStore.historyLoading" class="history-loading" style="text-align: center; padding: 8px; color: var(--text-muted); font-size: var(--text-xs);">
@@ -4373,15 +4382,22 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 回到底部浮钮（2026-11-09 滚动批）：sticky 定位于滚动容器内——
-           放弃跟随时浮在可视区底缘（DSH ui-chat 同语义），点击平滑回底；
-           徽标 = 离底期间落下的新消息数（回底即清零）。 -->
-      <div v-if="!chatFollow" class="back-to-bottom-wrap">
-        <button class="back-to-bottom" type="button" title="回到底部" @click="scrollToBottomSmooth()">
-          <span v-if="unreadBelow > 0" class="btt-unread">{{ unreadBelow > 99 ? '99+' : unreadBelow }}</span>
-          <span class="btt-arrow">↓</span>
-        </button>
-      </div>
+    </div>
+
+    <!-- 回到底部浮钮（2026-11-09 滚动批）：放弃跟随时浮在可视区底缘（DSH
+         ui-chat 同语义），点击平滑回底；徽标 = 离底期间落下的新消息数（回底
+         即清零）。
+         2026-11-25 拽底循环修复：浮钮从滚动容器内部迁出（sticky → wrap 层
+         absolute 悬浮）——旧位置下 follow 翻转的 v-if 插拔本身是滚动容器的
+         childList 突变，喂给 useStickToBottom 的 MutationObserver → stick()
+         把上滚用户拽回底部（自触发循环，实机帧级 trace 实锤，见 BUG 文档）。
+         观察子树从此只含内容节点，UI 状态 chrome 不再参与贴底判定。 -->
+    <div v-if="!chatFollow" class="back-to-bottom-wrap">
+      <button class="back-to-bottom" type="button" title="回到底部" @click="scrollToBottomSmooth()">
+        <span v-if="unreadBelow > 0" class="btt-unread">{{ unreadBelow > 99 ? '99+' : unreadBelow }}</span>
+        <span class="btt-arrow">↓</span>
+      </button>
+    </div>
     </div>
 
     <!-- Toolbar（2026-11-19 九键全迁：有 ChatView 资源窗注入面（resourcesCtl
@@ -4832,24 +4848,34 @@ onUnmounted(() => {
 <style scoped>
 /* ===== 2026-11-09 滚动/焦点/选择批 ===== */
 
-/* 回到底部浮钮：sticky 钉在滚动容器可视底缘（零高度包裹层 + 按钮绝对定位
-   上溢显示，不参与内容布局；不跟随时 v-if 出现）。
-   ⚠ 包裹层必须 display:block——flex 容器 height:0 会把子项交叉轴压扁成
-   线（playwright 实测按钮 36.5×10px），绝对定位脱离弹性布局才保得住形。 */
+/* 消息区包裹层（2026-11-25 拽底循环修复）：浮钮的 relative 定位上下文；
+   flex 纵列 + min-height:0 让 .chat-messages 的 flex:1 + overflow-y:auto
+   滚动语义与迁移前完全一致。 */
+.chat-messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 回到底部浮钮：absolute 悬浮在包裹层（滚动容器之外）底缘——放弃跟随时
+   浮在可视区底缘（DSH ui-chat 同语义）。
+   2026-11-25 拽底循环修复：从滚动容器内部（sticky 零高度包裹）迁出——
+   旧位置下 follow 翻转的 v-if 插拔是滚动容器 childList 突变，喂给
+   useStickToBottom 的 MutationObserver → stick() 形成自触发拽底循环
+   （上滚净位移零、视图钉死在底部）。迁出后观察子树只含内容节点。 */
 .back-to-bottom-wrap {
-  position: sticky;
-  bottom: 0;
-  height: 0;
-  overflow: visible;
-  display: block;
+  position: absolute;
+  bottom: 16px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
   z-index: 6;
   pointer-events: none;
 }
 .back-to-bottom {
-  position: absolute;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
