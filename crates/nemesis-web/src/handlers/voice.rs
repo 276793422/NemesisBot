@@ -6,6 +6,7 @@
 //!           engine_start, engine_stop, pipeline_start, pipeline_stop
 
 use crate::handlers::require_workspace;
+#[cfg(target_os = "windows")]
 use crate::server::WS_BROADCAST_TIMEOUT;
 use crate::ws_router::{ModuleHandler, RequestContext};
 #[cfg(target_os = "windows")]

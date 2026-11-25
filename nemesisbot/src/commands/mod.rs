@@ -61,6 +61,10 @@ pub mod model;
 pub mod onboard;
 pub mod persona;
 /// 用户习惯画像 CLI（自进化升级 B 线：list/enable/disable/veto/forget/pin）。
+// forge 门（BUG-20261125-065）：profile.rs 硬引用 nemesis_forge，裁剪组合
+// （minimal-iot --no-default-features）下 dep 被裁 → E0433；main.rs 的
+// Profile 子命令已带同款门，这里补齐模块本体。
+#[cfg(feature = "forge")]
 pub mod profile;
 // QUIC CLI（与集群解耦：QUIC 自身配置/身份/中继是 QUIC 层
 // 资产，不寄居集群命令族；relay 运行面在 plugin_roaming 插件）。
