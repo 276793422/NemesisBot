@@ -819,22 +819,47 @@ impl WebServerOps for WebServerOpsAdapter {
         );
         let data = serde_json::to_vec(&msg).map_err(|e| format!("marshal: {}", e))?;
         let sm = self.session_manager.clone();
+        let mut failures: Vec<String> = Vec::new();
         for sid in self.active_session_ids() {
             let data_clone = data.clone();
             // BUG-20261113-139：与 server.rs 广播调用点同款慢客户端隔离——
             // 单个挂起会话（hi 满，可等待任意久）不得卡死整段全广播串行
             // 循环，更不得卡死调用宿主（manager 出站泵）。超时值与
             // server.rs 共用 WS_BROADCAST_TIMEOUT 单点。
+            // BUG-20261125-047：超时只解决了「永久卡死」，没解决「一坏全
+            // 断」——旧形态首个失败会话上的 `?` 直接中断扇出，其后所有
+            // 健康会话连尝试都没有。本路径帧不经 chat_event_log 落环
+            // （无 seq，chat.sync 无从补拉），中断 = 健康会话永久丢帧。
+            // 改为逐会话隔离：失败留痕继续（超时臂 warn——SessionManager
+            // 内部只在无队列臂留痕，挂起超时无人看见），收尾聚合报错。
+            // Err 契约不变（调用方仍能看到部分失败），全部成功才 Ok。
             let inner = tokio::task::block_in_place(|| {
                 self.rt.block_on(tokio::time::timeout(
                     nemesis_web::server::WS_BROADCAST_TIMEOUT,
                     sm.broadcast(&sid, &data_clone),
                 ))
-            })
-            .map_err(|e| format!("broadcast to {sid}: timed out ({e})"))?;
-            inner.map_err(|e| format!("broadcast to {sid}: {e}"))?;
+            });
+            match inner {
+                Err(elapsed) => {
+                    tracing::warn!(
+                        session_id = %sid,
+                        "[WebServerOps] broadcast to {sid} timed out ({elapsed}) (slow/dead client isolation) — continuing to remaining sessions"
+                    );
+                    failures.push(format!("broadcast to {sid}: timed out ({elapsed})"));
+                }
+                Ok(Err(e)) => failures.push(format!("broadcast to {sid}: {e}")),
+                Ok(Ok(())) => {}
+            }
         }
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "broadcast partial failure ({} failed): {}",
+                failures.len(),
+                failures.join("; ")
+            ))
+        }
     }
 
     fn active_session_ids(&self) -> Vec<String> {

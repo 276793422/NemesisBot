@@ -1332,6 +1332,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         }
         #[cfg(feature = "board")]
         Commands::Dossier { action } => {
+            // BUG-20261125-046：唯一漏装 default logger 的命令臂——dossier
+            // 路径上 BoardStore::open 的 msg_dedup 清扫 info/warn 与
+            // archive_writer 的失败 warn 全部静默丢弃（tracing 无 subscriber
+            // 时事件不可逆丢失），失败不可见违背全家族纪律。
+            common::ensure_default_logger();
             commands::dossier::run(action, cli.local)?;
         }
         #[cfg(feature = "workflow")]
