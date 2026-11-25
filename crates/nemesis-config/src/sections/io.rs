@@ -1025,6 +1025,11 @@ impl ConfigLoader {
 /// On Linux: config.security.linux.json
 /// On Windows: config.security.windows.json
 /// On macOS: config.security.darwin.json
+/// On other: config.security.other.json（BUG-20261125-049：此前返回
+/// `config.security.json`，与 nemesisbot/config/ 模板清单（唯一 other 形态
+/// 是 `config.security.other.json`）失配——`set_embedded_defaults_from_fs`
+/// 在 other 平台按此名读模板必 Err，`get_platform_info` 的
+/// `security_config` 字段亦虚报。
 pub fn get_platform_security_config_filename() -> String {
     if cfg!(target_os = "linux") {
         "config.security.linux.json".to_string()
@@ -1033,7 +1038,7 @@ pub fn get_platform_security_config_filename() -> String {
     } else if cfg!(target_os = "macos") {
         "config.security.darwin.json".to_string()
     } else {
-        "config.security.json".to_string()
+        "config.security.other.json".to_string()
     }
 }
 

@@ -139,6 +139,27 @@ fn test_platform_security_config_filename() {
 }
 
 #[test]
+fn test_platform_security_config_templates_exist() {
+    // BUG-20261125-049：函数四个分支返回的文件名必须都在出厂模板清单
+    // （nemesisbot/config/）里。other 臂曾返回 `config.security.json` 而
+    // 模板唯一 other 形态是 `config.security.other.json`——函数名与模板
+    // 失配，`set_embedded_defaults_from_fs` 在 other 平台必 Err。本测试
+    // 把四个分支的合法值钉在模板清单上（改名/换名双侧都会红）。
+    let template_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nemesisbot/config");
+    for name in [
+        "config.security.windows.json",
+        "config.security.linux.json",
+        "config.security.darwin.json",
+        "config.security.other.json",
+    ] {
+        assert!(
+            template_dir.join(name).exists(),
+            "platform security template missing from nemesisbot/config/: {name}"
+        );
+    }
+}
+
+#[test]
 fn test_platform_display_name() {
     let name = get_platform_display_name();
     assert!(!name.is_empty());
