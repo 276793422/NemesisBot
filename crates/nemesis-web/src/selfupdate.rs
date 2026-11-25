@@ -3043,7 +3043,11 @@ fn extract_tar_gz_bundle(pkg_bytes: &[u8]) -> Result<ExtractedBundle, String> {
 #[cfg(feature = "selfupdate")]
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn spawn_new_version(new_exe: &Path) -> Result<u32, String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // args_os+lossy：非 UTF-8 参数 panic 面（argv 原样接力给新版本进程）。
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let mut cmd = std::process::Command::new(new_exe);
     cmd.args(&args).env(
         "NEMESISBOT_SELFUPDATE_WAIT_PID",

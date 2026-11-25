@@ -777,6 +777,29 @@ pub fn console_is_solo_fresh() -> bool {
 /// （调用方判定，见 main.rs）；其他子命令保持控制台输出（短命 CLI
 /// 操作，双击场景下用户需要看到输出）。
 #[cfg(target_os = "windows")]
+/// panic-safe CLI 参数收集（核心映射，可注入迭代器供单测构造非 UTF-8 参数）。
+///
+/// `std::env::args()` 遇非 UTF-8 参数即 panic（Linux argv 是任意字节、
+/// Windows UTF-16 可含未配对代理项）——而 main 入口在 clap 解析**之前**
+/// 就要做 `--local` 预解析与角色短路检测，panic 发生在 clap 的 args_os
+/// 安全解析之前，用户看到的是裸 panic 而非友好报错。统一 args_os +
+/// `to_string_lossy` 降级（U+FFFD 替换，与仓库 env::var→var_os 既有
+/// 口径同族）：ASCII flag 检测（--local/--multiple）与子命令分派不受
+/// 非法字节影响。
+pub fn args_os_to_lossy<I>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    args.into_iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// 读当前进程 argv（panic-safe 版 `std::env::args().collect()`）。
+pub fn collect_args_lossy() -> Vec<String> {
+    args_os_to_lossy(std::env::args_os())
+}
+
 pub fn try_respawn_detached() -> bool {
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -788,7 +811,7 @@ pub fn try_respawn_detached() -> bool {
         Err(_) => return false,
     };
     // 用原始 argv（含 --local 等），子进程按同一套规则重新解析。
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = collect_args_lossy().into_iter().skip(1).collect();
 
     match Command::new(&exe)
         .args(&args)

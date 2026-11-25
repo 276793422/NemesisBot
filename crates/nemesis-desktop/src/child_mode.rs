@@ -20,13 +20,18 @@ use crate::process::handshake::{HandshakeResult, PipeMessage};
 // ---------------------------------------------------------------------------
 
 /// Check if the current process was spawned as a child process (`--multiple`).
+/// args_os 而非 args：非 UTF-8 参数 panic 面（子进程参数由父进程注入，
+/// 但防御性等价——OsString 与 &str 直接比较零分配）。
 pub fn has_child_mode_flag() -> bool {
-    env::args().any(|arg| arg == "--multiple")
+    env::args_os().any(|arg| arg == "--multiple")
 }
 
 /// Extract the child ID from `--child-id <value>`.
 pub fn get_child_id() -> Option<String> {
-    let args: Vec<String> = env::args().collect();
+    // args_os+lossy：非 UTF-8 参数 panic 面。
+    let args: Vec<String> = env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     for i in 0..args.len() {
         if args[i] == "--child-id" && i + 1 < args.len() {
             return Some(args[i + 1].clone());
@@ -37,7 +42,10 @@ pub fn get_child_id() -> Option<String> {
 
 /// Extract the window type from `--window-type <value>`.
 pub fn get_window_type() -> Option<String> {
-    let args: Vec<String> = env::args().collect();
+    // args_os+lossy：非 UTF-8 参数 panic 面。
+    let args: Vec<String> = env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     for i in 0..args.len() {
         if args[i] == "--window-type" && i + 1 < args.len() {
             return Some(args[i + 1].clone());

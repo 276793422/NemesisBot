@@ -812,7 +812,9 @@ fn main() -> Result<()> {
 /// 关闸（`security.sanitize_child_env=false`）即破；args 条件在入口处
 /// 一次性堵死全部形态。
 fn executor_role_short_circuit(role: &str) -> bool {
-    std::env::args().nth(1).is_none() && std::env::var("NEMESISBOT_ROLE").as_deref() == Ok(role)
+    // args_os 而非 args：非 UTF-8 参数时 args() panic（入口第一行就炸，
+    // clap 的 args_os 安全解析根本到不了）。is_none 语义不变。
+    std::env::args_os().nth(1).is_none() && std::env::var("NEMESISBOT_ROLE").as_deref() == Ok(role)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -860,8 +862,10 @@ async fn async_main() -> Result<()> {
 
     // Pre-parse --local from all args (Go-compatible: --local can appear anywhere).
     // Go strips --local from os.Args before command dispatch, so we do the same.
+    // args_os+lossy 而非 args：非 UTF-8 参数 panic 面（见 executor_role_short_circuit）。
     let mut local_mode = false;
-    let filtered_args: Vec<String> = std::env::args()
+    let filtered_args: Vec<String> = common::args_os_to_lossy(std::env::args_os())
+        .into_iter()
         .filter(|arg| {
             if arg == "--local" {
                 local_mode = true;
@@ -1029,8 +1033,10 @@ fn main() -> Result<()> {
 
     // Same `--local` pre-parse as the non-mac entry (Go-compatible: `--local`
     // may appear anywhere; we strip it before clap parsing).
+    // args_os+lossy 而非 args：非 UTF-8 参数 panic 面（见 executor_role_short_circuit）。
     let mut local_mode = false;
-    let filtered_args: Vec<String> = std::env::args()
+    let filtered_args: Vec<String> = common::args_os_to_lossy(std::env::args_os())
+        .into_iter()
         .filter(|arg| {
             if arg == "--local" {
                 local_mode = true;
