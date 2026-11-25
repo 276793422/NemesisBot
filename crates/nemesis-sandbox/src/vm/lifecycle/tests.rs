@@ -415,6 +415,39 @@ async fn auth_handshake_unreachable_times_out() {
     assert!(started.elapsed() < Duration::from_secs(5), "不挂死");
 }
 
+/// 超帧帽巨行：读侧截断拒绝（BUG-20261126-090 同族修复——时间预算只管
+/// 「行何时完结」不管「行有多长」，帧帽才是长度界）。红证：把
+/// read_line_budgeted 内的 cap 突变为 usize::MAX 时本测试 FAILED（巨行
+/// 被完整积累并当正常行返回 Ok）。
+/// 写端在读者收齐 `\n` 前不关套接字（oneshot 保持）——否则 Windows 环回
+/// 对「仍有未读数据时关闭」的套接字以 RST 拆链，读者会先吃到
+/// ConnectionReset 而非帧帽错误（两种形态都是有界失败，但断言要确定）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guest_resp_line_over_frame_cap_is_refused() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind ephemeral");
+    let addr = listener.local_addr().expect("addr");
+    let (keep_tx, keep_rx) = tokio::sync::oneshot::channel::<()>();
+    let writer = tokio::spawn(async move {
+        let mut s = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let giant = vec![b'A'; nemesis_exec_protocol::MAX_FRAME_BYTES + 4 * 1024 * 1024];
+        s.write_all(&giant).await.expect("write giant body");
+        s.write_all(b"\n").await.expect("write newline");
+        let _ = keep_rx.await;
+    });
+    let (mut stream, _) = listener.accept().await.expect("accept");
+    let err = read_line_budgeted(&mut stream, Duration::from_secs(120))
+        .await
+        .expect_err("over-cap line must be refused");
+    assert!(
+        matches!(&err, VmError::Launch(m) if m.contains("帧帽")),
+        "超帧帽必须以帧帽错误拒绝: {err:?}"
+    );
+    let _ = keep_tx.send(());
+    writer.await.expect("writer task");
+}
+
 /// alloc_loopback_port：返回非常量端口且可绑定。
 #[test]
 fn alloc_loopback_port_sane() {

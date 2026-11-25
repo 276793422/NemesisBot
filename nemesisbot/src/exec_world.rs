@@ -542,6 +542,7 @@ pub fn build_executor_channel_with_extra_roots(
                 )?;
                 Ok(nemesis_agent::DaclSpawnOutcome {
                     response: out.response,
+                    response_truncated: out.response_truncated,
                     exit_code: out.exit_code,
                     stderr_tail: out.stderr_tail,
                 })
