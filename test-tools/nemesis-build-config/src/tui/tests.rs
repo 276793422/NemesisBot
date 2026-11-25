@@ -560,3 +560,85 @@ fn s12b_non_key_events_and_non_press_kind_are_noops() {
     );
     assert!(!dirty);
 }
+
+#[test]
+fn s12b_save_failure_keeps_dirty_and_blocks_q_exit() {
+    // BUG-20261125-043 regression lock: a failed save must NOT clear the
+    // dirty marker (s) and must NOT exit (q/Esc) — both used to silently
+    // discard the whole editing session.
+    let dir = tempfile::tempdir().unwrap();
+    // parent directory does not exist => fs::write fails deterministically
+    let cp = dir.path().join("no_such_dir").join(".config");
+    let (m, mut cfg, rs) = fixture();
+    let mut dirty = false;
+    handle_key(
+        press(KeyCode::Char(' ')),
+        &rs,
+        Some(2),
+        &m,
+        &mut cfg,
+        &mut dirty,
+        &cp,
+    );
+    assert!(dirty);
+    // s: save fails => dirty must stay on (pre-fix: unconditionally cleared)
+    assert_eq!(
+        handle_key(
+            press(KeyCode::Char('s')),
+            &rs,
+            Some(2),
+            &m,
+            &mut cfg,
+            &mut dirty,
+            &cp
+        ),
+        KeyDisposition::Nothing
+    );
+    assert!(dirty, "failed save must keep the dirty marker on");
+    // q: save fails => must NOT exit (pre-fix: Exit discarded everything)
+    assert_eq!(
+        handle_key(
+            press(KeyCode::Char('q')),
+            &rs,
+            Some(2),
+            &m,
+            &mut cfg,
+            &mut dirty,
+            &cp
+        ),
+        KeyDisposition::Nothing,
+        "failed save must keep the editor open"
+    );
+    assert!(dirty);
+    // Esc carries the same contract
+    assert_eq!(
+        handle_key(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty())),
+            &rs,
+            Some(2),
+            &m,
+            &mut cfg,
+            &mut dirty,
+            &cp
+        ),
+        KeyDisposition::Nothing
+    );
+    assert!(dirty);
+    // nothing was written anywhere
+    assert!(!cp.exists());
+    // a later successful save still exits (Ctrl+C remains the abort path)
+    let good_cp = dir.path().join(".config");
+    assert_eq!(
+        handle_key(
+            press(KeyCode::Char('q')),
+            &rs,
+            Some(2),
+            &m,
+            &mut cfg,
+            &mut dirty,
+            &good_cp
+        ),
+        KeyDisposition::Exit,
+        "a successful save must still exit"
+    );
+}

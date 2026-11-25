@@ -233,10 +233,15 @@ enum KeyDisposition {
 /// machine is unit-testable without a live TTY; the rendering + poll loop
 /// remains structurally tied to a real terminal).
 ///
-/// Semantics (unchanged):
-/// - `q`/Esc: save `.config` (best-effort, errors logged to stderr) and exit
+/// Semantics:
+/// - `q`/Esc: save `.config` and exit **only on a successful save**; on
+///   failure the editor stays open with the dirty marker on (the error is
+///   surfaced via the marker, not stderr — eprintln inside the alternate
+///   screen is invisible and gets discarded by LeaveAlternateScreen)
 /// - Ctrl+C: exit **without** saving
-/// - `s`: save in place, clear the dirty marker, keep editing
+/// - `s`: save in place, clear the dirty marker **only on success**, keep
+///   editing — on failure the "(未保存)" marker stays visible so a lost
+///   save is never silent
 /// - ↓/j · ↑/k: move selection, clamped to `[0, rows.len()-1]`
 /// - Space: flip the boolean feature at the cursor (header rows ignored)
 /// - →/Enter: cycle an enum feature through its options (wraps; header rows
@@ -257,13 +262,19 @@ fn handle_key(
         return KeyDisposition::Nothing;
     }
     match k.code {
-        // q / Esc: save the current selection and exit (so a parent
-        // build script can immediately build with the saved .config).
+        // q / Esc: save the current selection and exit — but only when the
+        // save actually succeeds (BUG-20261125-043: a failed save used to
+        // exit anyway, silently discarding the whole editing session; the
+        // stderr note landed inside the alternate screen and was discarded
+        // by LeaveAlternateScreen, so the loss was invisible). On failure we
+        // keep editing with the dirty marker on: the user can retry (s/q)
+        // or give up deliberately via Ctrl+C.
         KeyCode::Char('q') | KeyCode::Esc => {
-            if let Err(e) = cfg.save(config_path) {
-                eprintln!("[nemesis-build-config] failed to save .config: {e}");
+            if cfg.save(config_path).is_ok() {
+                KeyDisposition::Exit
+            } else {
+                KeyDisposition::Nothing
             }
-            KeyDisposition::Exit
         }
         // Ctrl+C: abort without saving.
         KeyCode::Char('c')
@@ -273,12 +284,14 @@ fn handle_key(
             KeyDisposition::Exit
         }
         KeyCode::Char('s') => {
-            // save in place; keep editing
-            if let Err(e) = cfg.save(config_path) {
-                // best-effort: surface error in the dirty marker
-                let _ = e;
+            // save in place; keep editing. The dirty marker clears only on a
+            // successful save (BUG-20261125-043: it used to clear
+            // unconditionally, contradicting the "surface the error via the
+            // marker" contract — a failed save looked exactly like a
+            // successful one).
+            if cfg.save(config_path).is_ok() {
+                *dirty = false;
             }
-            *dirty = false;
             KeyDisposition::Nothing
         }
         KeyCode::Down | KeyCode::Char('j') => {
