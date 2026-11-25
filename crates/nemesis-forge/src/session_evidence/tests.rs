@@ -270,9 +270,18 @@ fn test_scan_stamps_scope_from_sidecar_project_id() {
     // ④ sidecar project_id 空串 → None
     std::fs::write(logs.join("empty_d.jsonl"), mk_rows("D 目标")).unwrap();
     std::fs::write(logs.join("empty_d.meta.json"), r#"{"project_id":"  "}"#).unwrap();
+    // ⑤ 含点会话键（回归锁 2026-11-25）：sidecar 路径一步构造——两步
+    // 「先剥后接」把 `dot.e.jsonl` 错位成 `dot.meta.json`，sidecar 读不见
+    // → 项目会话被误标对话洞察。
+    std::fs::write(logs.join("dot.e.jsonl"), mk_rows("E 目标")).unwrap();
+    std::fs::write(
+        logs.join("dot.e.meta.json"),
+        r#"{"project_id":"prj-77","project_path":"D:/work/e"}"#,
+    )
+    .unwrap();
 
     let drafts = scan_workspace_logs(&logs);
-    assert_eq!(drafts.len(), 4);
+    assert_eq!(drafts.len(), 5);
     let scope_of = |k: &str| {
         drafts
             .iter()
@@ -285,6 +294,11 @@ fn test_scan_stamps_scope_from_sidecar_project_id() {
     assert_eq!(scope_of("chat_b"), None);
     assert_eq!(scope_of("broken_c"), None);
     assert_eq!(scope_of("empty_d"), None);
+    assert_eq!(
+        scope_of("dot.e").as_deref(),
+        Some("prj-77"),
+        "含点键 sidecar 必须命中"
+    );
 }
 
 // ── 台账 + 游标 ───────────────────────────────────────────────────────

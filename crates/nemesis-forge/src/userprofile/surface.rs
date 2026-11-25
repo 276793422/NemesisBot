@@ -8,12 +8,18 @@
 use std::path::Path;
 
 use super::collection::append_event;
-use super::store::{self, UserProfile};
+use super::store::{self, ProfileScope, UserProfile};
 
 /// 否决（按内容子串匹配 → vetoed 驻留抑制）+ 负反馈事件落盘。
-/// `home` = append_event 总闸（复查 2026-11-25 批 F3，学习关闭时不落）。
-pub fn veto(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result<bool, String> {
-    let hit = store::veto_habit(workspace, content_sub)?;
+/// `scope` 指定操作哪份画像（对话/项目）；`home` = append_event 总闸
+/// （复查 2026-11-25 批 F3，学习关闭时不落）。
+pub fn veto(
+    workspace: &Path,
+    scope: ProfileScope,
+    home: Option<&str>,
+    content_sub: &str,
+) -> Result<bool, String> {
+    let hit = store::veto_habit(workspace, scope, content_sub)?;
     if hit {
         append_event(
             workspace,
@@ -29,8 +35,13 @@ pub fn veto(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result<b
 }
 
 /// 忘记（按内容子串整条删除）+ 负反馈事件落盘。
-pub fn forget(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result<bool, String> {
-    let removed = store::forget_habit(workspace, content_sub)?;
+pub fn forget(
+    workspace: &Path,
+    scope: ProfileScope,
+    home: Option<&str>,
+    content_sub: &str,
+) -> Result<bool, String> {
+    let removed = store::forget_habit(workspace, scope, content_sub)?;
     if removed {
         append_event(
             workspace,
@@ -46,23 +57,32 @@ pub fn forget(workspace: &Path, home: Option<&str>, content_sub: &str) -> Result
 }
 
 /// pin / unpin（钉住 = 不衰减、渲染置顶；无事件面——正反馈不影响学习器）。
-pub fn pin(workspace: &Path, content_sub: &str, pinned: bool) -> Result<bool, String> {
-    store::set_pinned(workspace, content_sub, pinned)
+pub fn pin(
+    workspace: &Path,
+    scope: ProfileScope,
+    content_sub: &str,
+    pinned: bool,
+) -> Result<bool, String> {
+    store::set_pinned(workspace, scope, content_sub, pinned)
 }
 
 // ---------- 观察队列用户侧消费面（接口二·待确认观察，2026-11-24） ----------
 
 /// 确认观察提名入画像：resolve(confirmed) → [`store::ingest_external_entry`]
 /// （source=`"observation"` 强制标记——画像条目带来源，UI 徽标「来自
-/// 反思观察」；stats 归 external 桶）。id 不存在 / 已裁决 = Ok(None)。
-/// 确认走 ingest 而非直写 = 安全边界过滤（security 语义内容照拒）与
-/// 合并语义与 Forge 抛入同源。
+/// 反思观察」；stats 归 external 桶）。`scope` 指定入哪份画像。id 不存在 /
+/// 已裁决 = Ok(None)。确认走 ingest 而非直写 = 安全边界过滤（security
+/// 语义内容照拒）与合并语义与 Forge 抛入同源。
 ///
 /// 安全禁词预检（BUG-20261125-053）：含禁词的观察在 resolve **之前**
 /// loud 报错拒绝——resolve 是不可逆裁决，先 resolve 再让 upsert 层静默
 /// 丢弃 = 观察被消费、画像无条目、UI 显示成功三方失配（BUG-20261125-052
 /// 同族）。拒绝时条目留 pending，人工走「忽略」转负样本回流。
-pub fn confirm_observation(workspace: &Path, id: &str) -> Result<Option<()>, String> {
+pub fn confirm_observation(
+    workspace: &Path,
+    scope: ProfileScope,
+    id: &str,
+) -> Result<Option<()>, String> {
     if let Some(o) = super::bridge::peek_pending_observation(workspace, id)
         && nemesis_types::safety::violates_security_boundary(&o.content)
     {
@@ -90,8 +110,9 @@ pub fn confirm_observation(workspace: &Path, id: &str) -> Result<Option<()>, Str
         auto: false,
         kind: store::KIND_HABIT.into(),
         source: String::new(), // ingest_external_entry 强制覆盖为 "observation"
+        rule_id: String::new(),
     };
-    store::ingest_external_entry(workspace, entry, "observation")?;
+    store::ingest_external_entry(workspace, scope, entry, "observation")?;
     Ok(Some(()))
 }
 
@@ -133,9 +154,35 @@ pub fn enable(workspace: &Path, max_entries: usize) -> Result<UserProfile, Strin
     store::enable_profile(workspace, max_entries)
 }
 
-/// 读取画像（只读展示面：缺失/损坏 = 空画像容错形态）。
-pub fn list(workspace: &Path) -> UserProfile {
-    store::load_profile(workspace)
+/// 读取画像（只读展示面：缺失/损坏 = 空画像容错形态）。`scope` 指定读
+/// 对话画像还是项目画像（双 scope 拆分 2026-11-25）。
+pub fn list(workspace: &Path, scope: ProfileScope) -> UserProfile {
+    store::load_profile_scope(workspace, scope)
+}
+
+/// 条目来源五态派生（话术 AI 化批三 §4.5 的单一真相源；WSAPI
+/// `profile.list` 逐条投影 `source_kind` + [`collect_stats`] 五桶统计
+/// 共用——前端不再自行从 auto/source 推导徽标，两处口径永不漂移）：
+/// - `"manual"`：手动条目（source=manual——用户在「注入内容」页编辑器
+///   手写的习惯，双 scope 拆分 2026-11-25 新增；用户意志锚点级保护）；
+/// - `"template"`：模板兜底（auto=true——确定性挖掘器固定产物，措辞 =
+///   静态模板表原文）；
+/// - `"observation"`：观察转正（source=observation——接口二人工确认
+///   入画像的反思观察）；
+/// - `"external"`：外部回抛（source 其他标记，如 learn_dialogue——
+///   Forge 经验抛入）；
+/// - `"ai"`：AI 总结（auto=false 且 source 空——反思自发结论、批二
+///   原地改写产物、legacy 反思条目同徽标）。
+pub fn source_kind(h: &store::HabitEntry) -> &'static str {
+    if h.source == store::SOURCE_MANUAL {
+        return "manual";
+    }
+    match h.source.as_str() {
+        "observation" => "observation",
+        s if !s.is_empty() => "external",
+        _ if h.auto => "template",
+        _ => "ai",
+    }
 }
 
 /// 挖掘/分流统计面（批 D Dashboard 消费；**统计面永不注入**——注入克制
@@ -145,7 +192,9 @@ pub fn list(workspace: &Path) -> UserProfile {
 /// - `lessons`：教训队列分流计数（pending/acked，接口一消费进度）；
 /// - `observations`：观察队列分流计数（pending/confirmed/dismissed，接口二
 ///   待确认观察进度）；
-/// - `habits_by_category` / `habits_by_source`：画像条目分布（分流统计）；
+/// - `habits_by_category` / `habits_by_source`：画像条目分布（五桶来源
+///   统计，manual/ai/template/observation/external——[`source_kind`]
+///   同源；对话+项目两份画像合并聚合）；
 /// - `signals_recent`：交互强信号近 200 行计数（审批卡/急停——批 C 采集
 ///   面存活的直观读数）。
 ///
@@ -181,22 +230,19 @@ pub fn collect_stats(workspace: &Path) -> serde_json::Value {
     // 观察队列分流计数（接口二·待确认观察）。
     let (obs_pending, obs_confirmed, obs_dismissed) = bridge::observation_stats(workspace);
 
-    // 画像条目分布（按类别 / 按来源分流）。
-    let profile = list(workspace);
+    // 画像条目分布（按类别 / 按来源五桶——[`source_kind`] 单一派生，
+    // 与 WSAPI list 徽标同口径；双 scope 拆分起合并对话+项目两份画像
+    // 聚合——统计面是全局读数，scope 归属在「注入内容」页按卡片展示）。
     let mut by_category = std::collections::BTreeMap::<String, usize>::new();
-    let mut by_source_auto = 0usize;
-    let mut by_source_manual = 0usize;
-    let mut by_source_external = 0usize;
-    for h in &profile.habits {
-        *by_category.entry(h.category.clone()).or_default() += 1;
-        if !h.source.is_empty() {
-            by_source_external += 1;
-        } else if h.auto {
-            by_source_auto += 1;
-        } else {
-            by_source_manual += 1;
+    let mut by_source = std::collections::BTreeMap::<&'static str, usize>::new();
+    for scope in [ProfileScope::Dialogue, ProfileScope::Project] {
+        let profile = list(workspace, scope);
+        for h in &profile.habits {
+            *by_category.entry(h.category.clone()).or_default() += 1;
+            *by_source.entry(source_kind(h)).or_default() += 1;
         }
     }
+    let bucket = |k: &str| by_source.get(k).copied().unwrap_or(0);
 
     // 交互强信号近 200 行计数（审批卡 / 急停）。
     let mut approval_cards = 0usize;
@@ -219,9 +265,11 @@ pub fn collect_stats(workspace: &Path) -> serde_json::Value {
         },
         "habits_by_category": by_category,
         "habits_by_source": {
-            "auto": by_source_auto,
-            "manual": by_source_manual,
-            "external": by_source_external,
+            "manual": bucket("manual"),
+            "ai": bucket("ai"),
+            "template": bucket("template"),
+            "observation": bucket("observation"),
+            "external": bucket("external"),
         },
         "signals_recent": {
             "approval_cards": approval_cards,

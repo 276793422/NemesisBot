@@ -325,6 +325,14 @@ pub async fn run(
         None => common::workspace_path(home),
     };
 
+    // 会话错误记录（v1 纯追加旁路，与 gateway/acp 同源装配）。
+    let se_enabled = cfg
+        .session_error
+        .as_ref()
+        .map(|s| s.recording)
+        .unwrap_or(true);
+    nemesis_agent::r#loop::session_error_recorder::init(workspace_dir.clone(), se_enabled);
+
     // 3. SecurityPlugin——与 gateway 完全同一构造（提取的统一定义）。
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
     let security_plugin =

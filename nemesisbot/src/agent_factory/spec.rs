@@ -458,6 +458,10 @@ pub fn build_agent_loop_from_spec(
     // 画像资产 `config/user_profile.json` 在主 workspace；不注入 = 项目
     // 会话读项目目录下的画像文件（永不存在）→ 画像段恒空不注入。
     agent_loop.set_profile_root(shared.workspace_dir().to_path_buf());
+    // 用户画像 scope（双 scope 拆分 2026-11-25）：项目会话注入**项目**
+    // 画像（`config/user_profile_project.json`，仍在主 workspace 根）；
+    // 对话会话的对话画像不受影响（scope 按 loop 归属分流）。
+    agent_loop.set_profile_scope(nemesis_agent::r#loop::ProfileScope::Project);
     // vault 域绑定 sidecar 权威路径（L26 修复 2026-11-11）：**主 workspace
     // 锚**——项目 loop 的 workspace_root 是项目目录（上面一行），不可作
     // 推导根；恒走 SharedResources 单一推导点（与 CLI 写入侧同点）。

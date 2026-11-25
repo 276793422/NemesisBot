@@ -28,8 +28,13 @@ const props = withDefaults(
      *  （store liveThinking；非空 = 渲染增长中的思考卡）。轮发布后思考
      *  折叠进 rounds，本卡让位——单份展示不双份。 */
     liveThinking?: string
+    /** 插话窗正文流预览（2026-11-25 插话中间过程补全）：⚡ 注记到插话
+     *  回应之间的 provider 正文流增长缓冲（store steerLiveText）。非空
+     *  且窗口未收口 = 注记行下渲染增长中的预览卡；回应落地后由注记轮
+     *  steer_response 段接棒，预览让位——单份展示不双份。 */
+    steerLiveText?: string
   }>(),
-  { live: false, liveThinking: '' },
+  { live: false, liveThinking: '', steerLiveText: '' },
 )
 
 const emit = defineEmits<{ (e: 'grown'): void }>()
@@ -151,6 +156,19 @@ watch(
     if (props.live) emit('grown')
   },
 )
+// 插话窗正文预览同族（2026-11-25）：预览卡增长同样贴底。
+watch(
+  () => props.steerLiveText,
+  () => {
+    if (props.live) emit('grown')
+  },
+)
+// 插话处理中指示（2026-11-25）：注记轮未收口（无 steer_response）= 插话
+// 正在被处理——live 态渲染活动指示（非流式模型无正文增量也有反馈，不再
+// 「⚡ 之后大段空白」）。落地态不渲染（历史回看注记轮恒已收口或轮已终局）。
+const steerProcessing = computed(
+  () => props.live && props.work.rounds.some(r => r.steer_note && !r.steer_response),
+)
 
 // --- exec 执行中输出尾窗（2026-11-08 ToolOutput 实时流）---
 // 内容级签名（不能用长度：稳态替换窗恒 2048 字符，长度不变内容在换）。
@@ -192,6 +210,21 @@ watch(liveTailSig, () => {
              本轮内容之前），用户一眼看到自己的插话在哪里被消化、后续思考
              块的出现不再突兀。 -->
         <div v-if="r.steer_note" class="wt-steer-note">{{ r.steer_note }}</div>
+        <!-- 插话处理窗中间面（2026-11-25 插话中间过程补全）：注记轮未收口
+             且 live = 插话正在被处理。① 活动指示常驻（非流式模型无正文
+             增量也有「在干活」的反馈）；② steerLiveText 非空 = provider
+             正文流增长预览（边生成边长出来，回应落地后由下方 steer_
+             response 接棒，预览让位——单份展示不双份）。窗口内仅一个
+             未收口注记轮（后续插话排队不注入，后端原子性拍板），两行
+             天然归属唯一活动窗口。 -->
+        <div v-if="steerProcessing" class="wt-steer-working">
+          <span class="wt-spinner"></span>
+          <span>处理插话中…</span>
+        </div>
+        <div
+          v-if="steerProcessing && steerLiveText"
+          class="wt-steer-live-text"
+        >{{ steerLiveText }}</div>
         <!-- 插话专轮收口回应（2026-11-21 插话专轮批）：后端
              record_steer_response 反查最近未回注记轮——回应记在注记轮上，
              本行紧随注记行成对渲染（「我的插话 → 中间回应」相邻可读；注记轮
@@ -342,6 +375,36 @@ span.wt-badge.wt-steer {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 插话处理窗中间面（2026-11-25 插话中间过程补全）：活动指示 + 正文流
+   增长预览。指示沿琥珀家族（与注记/回应成对）；预览卡形态随 live 思考
+   卡（增长中内容 = 半透明 + pre-wrap），正文色让回应段保持唯一权威态。 */
+.wt-steer-working {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 8px;
+  color: #c98a2b;
+  font-size: var(--text-xs, 12px);
+}
+.wt-steer-working .wt-spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+.wt-steer-live-text {
+  margin: 2px 8px 0;
+  padding: 6px 8px;
+  color: var(--text);
+  opacity: 0.75;
+  background: rgba(201, 138, 43, 0.05);
+  border-radius: 6px;
+  font-size: var(--text-sm, 13px);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow-y: auto;
 }
 /* 思考链（批次二 2026-10-31）：头部计数徽标 + 正文折叠卡。元素限定选择
    器——徽标 span 与 details 共用 wt-think 类名但形态不同。紫色系 = 「思

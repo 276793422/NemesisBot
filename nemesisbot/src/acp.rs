@@ -1158,6 +1158,13 @@ impl SessionFactory for RealSessionFactory {
             let experts_store = Arc::new(
                 crate::experts_store::ExpertsStore::new(&cwd).with_config_path(experts_config_path),
             );
+            // 会话错误记录（v1 纯追加旁路，与 gateway/run 同源装配）。
+            let se_enabled = cfg
+                .session_error
+                .as_ref()
+                .map(|s| s.recording)
+                .unwrap_or(true);
+            nemesis_agent::r#loop::session_error_recorder::init(cwd.clone(), se_enabled);
             let shared = Arc::new(crate::agent_factory::SharedResources {
                 home: self.home.clone(),
                 workspace: cwd,

@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::common;
+use nemesis_forge::userprofile::store::ProfileScope;
 use nemesis_forge::userprofile::{store, surface};
 
 #[derive(Debug, Subcommand)]
@@ -45,7 +46,7 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
     let workspace = common::workspace_path(&home);
     match action {
         ProfileAction::List => {
-            let profile = surface::list(&workspace);
+            let profile = surface::list(&workspace, ProfileScope::Dialogue);
             let cfg = nemesis_config::load_config(&common::config_path(&home))
                 .ok()
                 .and_then(|cfg| cfg.user_profile);
@@ -97,8 +98,8 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
         }
         ProfileAction::Veto { content } => {
             // home = append_event 总闸（复查 2026-11-25 批 F3：学习关闭不落）。
-            let hit =
-                surface::veto(&workspace, home.to_str(), &content).map_err(anyhow::Error::msg)?;
+            let hit = surface::veto(&workspace, ProfileScope::Dialogue, home.to_str(), &content)
+                .map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {
@@ -109,8 +110,8 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             );
         }
         ProfileAction::Forget { content } => {
-            let hit =
-                surface::forget(&workspace, home.to_str(), &content).map_err(anyhow::Error::msg)?;
+            let hit = surface::forget(&workspace, ProfileScope::Dialogue, home.to_str(), &content)
+                .map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {
@@ -121,7 +122,8 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
             );
         }
         ProfileAction::Pin { content, unpin } => {
-            let hit = surface::pin(&workspace, &content, !unpin).map_err(anyhow::Error::msg)?;
+            let hit = surface::pin(&workspace, ProfileScope::Dialogue, &content, !unpin)
+                .map_err(anyhow::Error::msg)?;
             println!(
                 "{}",
                 if hit {

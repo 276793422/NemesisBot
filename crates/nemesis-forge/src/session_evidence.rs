@@ -411,9 +411,13 @@ pub fn scan_workspace_logs(logs_dir: &Path) -> Vec<CandidateDraft> {
 
 /// 会话 sidecar 场景解析：同名 `.meta.json` 的 `project_id` 字段。
 /// sidecar 缺席 / 非法 JSON / 键缺失 / 空串 = None（对话组会话）。
+///
+/// 路径构造纪律：**一步** `with_extension("meta.json")`，与写入端
+/// `format!("{safe_key}.meta.json")`（chat_log）逐字节对齐；两步「先剥
+/// 后接」对含点会话键错位（`a.b.jsonl` → `a.meta.json`，`b` 被当扩展名
+/// 替换），sidecar 永远读不见（同族修复见 userprofile/collection）。
 fn sidecar_scope(log_path: &Path) -> Option<String> {
-    let stem = log_path.with_extension("");
-    let sidecar = stem.with_extension("meta.json");
+    let sidecar = log_path.with_extension("meta.json");
     let Ok(bytes) = std::fs::read(&sidecar) else {
         return None;
     };

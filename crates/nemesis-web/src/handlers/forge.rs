@@ -1758,9 +1758,9 @@ fn resolve_caller_from_arms(
     Ok(None)
 }
 
-/// 按模型引用构造 LLMCaller（空串 = 当前默认模型）。解析/构造失败 =
-/// `Ok(None)`（回落链消费）。S8：data_store 经 [`crate::ForgeProviderBridge::with_data_store`]
-/// 挂 aux 账本（None = 不落账）。
+/// 按模型引用构造 LLMCaller（空串 = 当前默认模型）。解析/构造失败 = `Err`
+///（带点名错误；逐臂回落语义由 [`resolve_caller_from_arms`] 消费）。S8：data_store
+/// 经 [`crate::ForgeProviderBridge::with_data_store`] 挂 aux 账本（None = 不落账）。
 fn build_caller_for_ref(
     cfg: &nemesis_config::Config,
     model_ref: &str,
@@ -1772,9 +1772,10 @@ fn build_caller_for_ref(
     } else {
         model_ref.to_string()
     };
-    let Ok(resolution) = nemesis_config::resolve_model_config(cfg, &llm_ref) else {
-        return Ok(None);
-    };
+    let resolution = nemesis_config::resolve_model_config(cfg, &llm_ref).map_err(|e| {
+        tracing::warn!("[Forge] caller resolve '{llm_ref}' failed: {e}");
+        e.to_string()
+    })?;
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         proxy: resolution.proxy.clone(),
         stream_mode: resolution.stream_mode.clone(),
@@ -1790,11 +1791,12 @@ fn build_caller_for_ref(
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
-    match nemesis_providers::factory::create_provider(&factory_cfg) {
-        Ok(provider) => Ok(Some(std::sync::Arc::new(
-            crate::ForgeProviderBridge::new(provider, resolution.model_name.clone())
-                .with_data_store(data_store.cloned()),
-        ))),
-        Err(_) => Ok(None),
-    }
+    let provider = nemesis_providers::factory::create_provider(&factory_cfg).map_err(|e| {
+        tracing::warn!("[Forge] caller create '{llm_ref}' failed: {e}");
+        e.to_string()
+    })?;
+    Ok(Some(std::sync::Arc::new(
+        crate::ForgeProviderBridge::new(provider, resolution.model_name.clone())
+            .with_data_store(data_store.cloned()),
+    )))
 }

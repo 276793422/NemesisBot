@@ -121,6 +121,16 @@ impl AgentLoop {
     ) -> Result<LlmResponse, AgentEvent> {
         let turns_used = st.turns_used;
         let chat_opts = &st.chat_opts;
+        // 会话错误记录（v1 纯追加旁路，docs/REPORT/2026-11-25_会话错误
+        // 记录框架交付报告）：首呼请求快照（图片引用降维 A 方案）——
+        // recording 关 = None 零成本旁路（连 clone 都不做）。estop/取消
+        // 路径在下方 select 臂直接返回，不经任何记录点（estop 全局豁免）。
+        let se_snapshot = super::session_error_recorder::snapshot_if_enabled(
+            active_model,
+            &messages,
+            &tool_defs,
+            chat_opts,
+        );
         // Clone provider Arc so RwLock guard is dropped before.await.
         // Detached 模型覆盖（BUG `board.plan.model` dead-key 修复）：
         // 本回合带覆盖时走覆盖 provider（调用侧解析注入），否则 loop 主
@@ -194,6 +204,18 @@ impl AgentLoop {
                 // 首次调用从发起到失败的时长（Err 臂入口即失败点）。
                 let first_call_failed_after = first_call_start.elapsed();
                 let err_lower = err.to_lowercase();
+
+                // 会话错误记录（v1 纯追加）：episode 发生行——分类/分派
+                // 之前记录四元组（事件=分类+子形态+原文 / sid / 首呼完整
+                // 请求快照 / 应答=上游错误原文），既有分类分派零改动。
+                super::session_error_recorder::record_occurrence(
+                    &context.session_key,
+                    trace_id,
+                    turns_used,
+                    active_model,
+                    se_snapshot.as_ref(),
+                    &err,
+                );
 
                 // （扩展计划）：provider 侧错误分类器先行。分派语义：
                 //   Auth/Billing → 不进任何重试环直接终局（旧词表形态
@@ -362,8 +384,35 @@ impl AgentLoop {
                         )
                         .await
                     {
-                        Ok(resp) => resp,
-                        Err(ev) => return Err(ev),
+                        Ok(resp) => {
+                            // 会话错误记录（v1 纯追加）：压缩环救回——
+                            // outcome 行 recovered_by。
+                            super::session_error_recorder::record_outcome(
+                                trace_id,
+                                turns_used,
+                                &super::session_error_recorder::SessionErrorOutcome::recovered(
+                                    "context_compression",
+                                    None,
+                                ),
+                            );
+                            resp
+                        }
+                        Err(ev) => {
+                            // 恢复环耗尽 Error 终局记录（Done=estop/取消
+                            // 上抛，estop 全局豁免不记录）。
+                            if let AgentEvent::Error(text) = &ev {
+                                super::session_error_recorder::record_outcome(
+                                    trace_id,
+                                    turns_used,
+                                    &super::session_error_recorder::SessionErrorOutcome::terminal(
+                                        "context_compression_exhausted",
+                                        None,
+                                        Some(text.clone()),
+                                    ),
+                                );
+                            }
+                            return Err(ev);
+                        }
                     }
                 } else {
                     // ③ Transient-error retry (network / stream / 5xx). Retries
@@ -453,9 +502,13 @@ impl AgentLoop {
                     // 终局路径。transient 环额外带回实际发起的重试次数
                     // （终局文案分层用——connect error 类耗尽换可行动提示
                     // 时注明已自动重试几次；非 transient 路径恒 0）。
+                    // 会话错误记录（v1 纯追加）：分支标签（recovered_by,
+                    // terminal 出口名）——集中收口处使用，环内部零触碰。
+                    let mut se_lane: (&'static str, &'static str) = ("unhandled", "unhandled");
                     let mut transient_retries = 0u32;
                     let (maybe_resp, mut last_err) = if is_rate_limit_error || classified_rate_limit
                     {
+                        se_lane = ("rate_limit", "rate_limit_exhausted");
                         match self
                             .retry_rate_limited(
                                 context,
@@ -473,6 +526,7 @@ impl AgentLoop {
                             Err(ev) => return Err(ev),
                         }
                     } else if is_transient_error || classified_transient {
+                        se_lane = ("transient", "transient_exhausted");
                         match self
                             .retry_transient(
                                 instance,
@@ -507,6 +561,7 @@ impl AgentLoop {
                         let effort_rejected_400 =
                             nemesis_utils::llm_error_class::extract_http_status(&err) == Some(400);
                         if effort_attached && effort_rejected_400 {
+                            se_lane = ("effort_stripped", "effort_400_fell_through");
                             match self
                                 .retry_effort_stripped(
                                     instance,
@@ -528,6 +583,17 @@ impl AgentLoop {
                         }
                     };
                     if let Some(resp) = maybe_resp {
+                        // 会话错误记录（v1 纯追加）：恢复环救回——outcome
+                        // 行（transient 环带回实际重试次数；4b/effort 次数
+                        // 不外露，诚实省略 retries 键）。
+                        super::session_error_recorder::record_outcome(
+                            trace_id,
+                            turns_used,
+                            &super::session_error_recorder::SessionErrorOutcome::recovered(
+                                se_lane.0,
+                                (transient_retries > 0).then_some(transient_retries),
+                            ),
+                        );
                         resp
                     } else {
                         // effort 探针保鲜层③（2026-11-09）：请求带强度档
@@ -643,6 +709,18 @@ impl AgentLoop {
                             user_err,
                             request_had_images,
                         ));
+                        // 会话错误记录（v1 纯追加）：episode outcome 行——
+                        // 终局出口 + 实际重试次数 + 出站终文案（estop/取消
+                        // 臂不走此路）。
+                        super::session_error_recorder::record_outcome(
+                            trace_id,
+                            turns_used,
+                            &super::session_error_recorder::SessionErrorOutcome::terminal(
+                                se_lane.1,
+                                (transient_retries > 0).then_some(transient_retries),
+                                Some(formatted.clone()),
+                            ),
+                        );
                         return Err(AgentEvent::Error(formatted));
                     }
                 }
@@ -659,6 +737,7 @@ impl AgentLoop {
             chat_opts,
             cancel_token,
             stream_sink.as_deref(),
+            se_snapshot.as_ref(),
             turns_used,
             response,
         )
@@ -930,6 +1009,17 @@ impl AgentLoop {
             format!("Error: {}（原始错误：{}）", hint, err),
             request_had_images,
         ));
+        // 会话错误记录（v1 纯追加）：no_retry 终局（Auth/Billing/Forbidden
+        // 三类）——episode outcome 行 + 出站终文案。
+        super::session_error_recorder::record_outcome(
+            trace_id,
+            turns_used,
+            &super::session_error_recorder::SessionErrorOutcome::terminal(
+                "no_retry",
+                None,
+                Some(formatted.clone()),
+            ),
+        );
         AgentEvent::Error(formatted)
     }
 
@@ -1520,6 +1610,7 @@ impl AgentLoop {
         chat_opts: &crate::types::ChatOptions,
         cancel_token: &tokio_util::sync::CancellationToken,
         stream_sink: Option<&ProviderStreamSink>,
+        se_snapshot: Option<&super::session_error_recorder::SessionErrorRequestSnapshot>,
         turns_used: u32,
         mut response: LlmResponse,
     ) -> Result<LlmResponse, AgentEvent> {
@@ -1546,6 +1637,18 @@ impl AgentLoop {
                         warn!(
                             "[AgentLoop] LLM hook blocked the response, turns_used={}: {}",
                             turns_used, reason
+                        );
+                        // 会话错误记录（v1 纯追加）：hook Block 终局——发
+                        // 生+终局合并单行（成功响应被 hook 拒即终局，两相
+                        // 同刻成立）；请求快照 + 被拒应答同构入记录。
+                        super::session_error_recorder::record_hook_block(
+                            &context.session_key,
+                            trace_id,
+                            turns_used,
+                            active_model,
+                            se_snapshot,
+                            &reason,
+                            &response,
                         );
                         return Err(AgentEvent::Done(format!(
                             "⛔ HOOK BLOCKED [layer:hook|policy:llm_hook] {} — A registered LLM hook terminated this round. Inform the user.",

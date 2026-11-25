@@ -16,12 +16,21 @@
 // 结论人工裁决（profile.observations / observation_respond：确认 =
 // ingest source=observation 入画像；忽略 = 负样本回流）；stats 卡补
 // observations 三态计数；条目来源徽标 observation → 「反思观察」。
+// 双 scope 注入内容页（2026-11-25 用户拍板，双 TAB 改版）：TAB1「注入
+// 内容」（默认）= 对话/项目两大卡片左右并列，每卡片上半 = 手动习惯编辑器
+// （用户自己设置习惯，必须可编辑，保存后一并注入）、下半 = 系统总结预览
+// （后端 profile.preview 渲染产物，只读——用户看这里就知道实际注入提示词
+// 的内容）；TAB2「习惯条目」= 现有治理表格原样保留。手动条目行语法
+// `[类别] 内容`（类别可选缺省 manual），manual_get/manual_save 服务端
+// 按行 diff 整体替换（新增 upsert / 消失删除，只动 source=manual）。
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
 const { request } = useWSAPI()
 const toast = useToast()
+
+const activeTab = ref<'inject' | 'entries'>('inject')
 
 const enabled = ref(false)
 const enabledAt = ref<string | null>(null)
@@ -33,6 +42,27 @@ const obsCounts = ref<any>(null)
 const loading = ref(true)
 const telemetryBusy = ref(false)
 
+// 双 scope 注入内容状态（TAB1）：每 scope 一份手动编辑草稿 + 注入预览。
+const injectState = ref<Record<'dialogue' | 'project', {
+  draft: string
+  preview: string
+  manualCount: number
+  saving: boolean
+}>>({
+  dialogue: { draft: '', preview: '', manualCount: 0, saving: false },
+  project: { draft: '', preview: '', manualCount: 0, saving: false },
+})
+
+const SCOPES: Array<{ key: 'dialogue' | 'project'; title: string; hint: string }> = [
+  { key: 'dialogue', title: '对话', hint: '对话组会话（主对话 / 集群 / 命令行）注入这份' },
+  { key: 'project', title: '项目', hint: '项目组会话（每项目独立执行引擎）注入这份' },
+]
+
+const MANUAL_EDITOR_HINT =
+  '每行一条：[类别] 习惯内容（类别可省略）。保存后这些习惯与下方系统总结一并注入。'
+const MANUAL_PLACEHOLDER =
+  '[风格] 提交信息用中文一行式\n回复保持简短，先给结论'
+
 const CATEGORY_LABEL: Record<string, string> = {
   workflow: '工作流',
   correction: '纠正',
@@ -41,6 +71,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   environment: '环境',
   quality_bar: '质量线',
   trust: '信任画像',
+  manual: '手动',
 }
 
 function categoryLabel(c: string): string {
@@ -55,6 +86,54 @@ const SOURCE_LABEL: Record<string, string> = {
 function sourceLabel(s: string): string {
   return SOURCE_LABEL[s] || s
 }
+
+// 条目来源四态（批三 §4.5）：WSAPI list 逐条投影 source_kind（后端
+// surface::source_kind 单一派生，与 stats 五桶同口径）；字段缺席时前端
+// 按 auto/source 同口径兜底推导——两处逻辑保持对齐。
+function kindOf(h: any): string {
+  if (h.source_kind) return h.source_kind
+  if (h.source) return h.source === 'observation' ? 'observation' : (h.source === 'manual' ? 'manual' : 'external')
+  return h.auto ? 'template' : 'ai'
+}
+
+// 来源色点（2026-11-25 用户裁定，替代习惯单元格内的徽标链）：蓝=内置触发
+// （rule_id 在场，触发信号来自确定性挖掘器）；绿=AI 总结；灰=模板兜底
+// （legacy 色位——现行兜底产物恒带 rule_id 落蓝，灰点只覆盖历史无 rule_id
+// 模板条目）；橙=反思观察；紫=外部回抛；青=手动条目（双 scope 批三，
+// 用户在「注入内容」页手写）。rule_id 与话术来源正交（AI 改写
+// 认领 = 蓝点 + tooltip 注明「话术已由 AI 原地改写」），明细悬停可见。
+function dotClass(h: any): string {
+  if (h.rule_id) return 'dot-rule'
+  const k = kindOf(h)
+  if (k === 'manual') return 'dot-manual'
+  if (k === 'ai') return 'dot-ai'
+  if (k === 'template') return 'dot-template'
+  if (k === 'observation') return 'dot-observation'
+  return 'dot-external'
+}
+function dotTitle(h: any): string {
+  if (h.rule_id) {
+    const writer = kindOf(h) === 'ai' ? '话术已由 AI 原地改写' : '话术 = 模板原文'
+    return `内置触发 · ${h.rule_id}（触发信号来自确定性挖掘器；${writer}；命中按此 id 归并）`
+  }
+  const k = kindOf(h)
+  if (k === 'manual') return '手动条目（你在「注入内容」页手写；不衰减、AI 不改写、超限截断时优先保留；编辑唯一入口 = 注入内容页）'
+  if (k === 'ai') return 'AI 总结（反思通道自拟措辞）'
+  if (k === 'template') return '模板兜底（确定性挖掘器固定产物）'
+  if (k === 'observation') return '来自 反思观察（人工确认入画像）'
+  return `来自 ${sourceLabel(h.source || '')}（外部学习子系统回抛）`
+}
+
+// 操作三键说明（2026-11-25 用户要求 tips 化，语义对齐 store.rs 后门动作）。
+function pinTitle(h: any): string {
+  return h.pinned
+    ? '取消钉住：解除锚点保护，条目回到常规生命周期（可衰减、可被 AI 反思改写、可被合并吞并）'
+    : '钉住：设为用户意志锚点——不衰减/不过期、不被 AI 反思改写、不被合并吞并，条目超限截断时优先保留，注入会话时段位置顶'
+}
+const VETO_TITLE =
+  '否决：标记负样本——条目驻留但被压制（不再注入对话，同内容再命中也不会重新生成）；想永久屏蔽一条用它（遗忘后可能重生，否决不会）'
+const FORGET_TITLE =
+  '遗忘：直接删除该条目；若同样的触发信号再次出现，会重新生成同语义条目——只想清除一次用它（想永久屏蔽用「否决」）'
 
 // 五维分组（批 D）：类别 → 维度归属；未知类别落「其他」兜底组。
 const GROUPS: Array<{ key: string; label: string; categories: string[] }> = [
@@ -108,6 +187,22 @@ function statusLabel(s: string): string {
 
 onMounted(load)
 
+/// 单 scope 注入内容加载（TAB1）：manual_get（编辑器回显，行语法解析
+/// 单一真相源在服务端）+ preview（注入预览，渲染规则单一真相源在服务端
+/// render_section）。
+async function loadScopeInject(scope: 'dialogue' | 'project') {
+  const st = injectState.value[scope]
+  try {
+    const [mg, pv] = await Promise.all([
+      request('profile', 'manual_get', { scope }),
+      request('profile', 'preview', { scope }),
+    ])
+    st.draft = (mg?.lines || []).join('\n')
+    st.preview = pv?.preview || ''
+    st.manualCount = pv?.manual_count || 0
+  } catch { /* 注入面加载失败静默（卡内空态自解释） */ }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -125,6 +220,30 @@ async function load() {
     obsCounts.value = obsData?.counts || null
   } catch { /* ignore */ } finally {
     loading.value = false
+  }
+  await Promise.all([loadScopeInject('dialogue'), loadScopeInject('project')])
+}
+
+/// 手动习惯保存（TAB1 上半编辑器；整体替换语义——服务端按行 diff）。
+/// 冲突（与系统条目撞文，不重复建）诚实 toast；保存后刷新本卡预览 +
+/// TAB2 表格。
+async function saveManual(scope: 'dialogue' | 'project') {
+  const st = injectState.value[scope]
+  st.saving = true
+  try {
+    const lines = st.draft.split('\n')
+    const data = await request('profile', 'manual_save', { scope, lines })
+    const added = data?.added || 0
+    const removed = data?.removed || 0
+    const conflicts: string[] = data?.conflicts || []
+    let msg = `已保存：新增 ${added} 条，移除 ${removed} 条`
+    if (conflicts.length) msg += `；${conflicts.length} 条与系统总结撞文（不重复生成）`
+    toast.success(msg)
+    await Promise.all([loadScopeInject(scope), load()])
+  } catch (e: any) {
+    toast.error('保存失败: ' + e)
+  } finally {
+    st.saving = false
   }
 }
 
@@ -243,6 +362,49 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
       </div>
 
       <div v-else>
+        <!-- 双 TAB（2026-11-25 用户拍板）：TAB1 注入内容（默认）/ TAB2 习惯条目治理面 -->
+        <div class="tabs" style="margin-top: calc(-1 * var(--space-2));">
+          <button class="tab" :class="{ active: activeTab === 'inject' }" data-testid="tab-inject" @click="activeTab = 'inject'">注入内容</button>
+          <button class="tab" :class="{ active: activeTab === 'entries' }" data-testid="tab-entries" @click="activeTab = 'entries'">习惯条目</button>
+        </div>
+
+        <!-- TAB1 注入内容：对话/项目两大卡片左右并列；每卡片上半手动编辑器
+             （用户自设习惯，必须可编辑）、下半系统总结预览（实际注入内容） -->
+        <div v-if="activeTab === 'inject'" class="inject-cards" data-testid="inject-cards">
+          <div v-for="sc in SCOPES" :key="sc.key" class="card" :data-testid="'inject-card-' + sc.key">
+            <div class="card-header">
+              <h3>{{ sc.title }}习惯</h3>
+              <span style="font-size: var(--text-xs); color: var(--text-muted);">{{ sc.hint }}</span>
+            </div>
+            <div class="card-body">
+              <p class="inject-section-label">我的手动习惯 <span style="font-weight: 400; color: var(--text-muted);">（一并注入）</span></p>
+              <textarea
+                v-model="injectState[sc.key].draft"
+                class="form-textarea"
+                rows="5"
+                :placeholder="MANUAL_PLACEHOLDER"
+                :data-testid="'manual-editor-' + sc.key"
+              ></textarea>
+              <div style="display: flex; align-items: center; gap: var(--space-3);">
+                <button
+                  class="btn btn-primary"
+                  :disabled="injectState[sc.key].saving"
+                  :data-testid="'manual-save-' + sc.key"
+                  @click="saveManual(sc.key)"
+                >保存手动习惯</button>
+                <span style="font-size: var(--text-xs); color: var(--text-muted);">{{ MANUAL_EDITOR_HINT }}</span>
+              </div>
+              <p class="inject-section-label" style="margin-top: var(--space-2);">
+                系统总结 <span style="font-weight: 400; color: var(--text-muted);">（实际注入提示词的内容，只读）</span>
+                <span v-if="injectState[sc.key].manualCount" style="font-weight: 400; color: var(--text-muted);">——已含你的手动 {{ injectState[sc.key].manualCount }} 条</span>
+              </p>
+              <pre class="inject-preview" :data-testid="'inject-preview-' + sc.key">{{ injectState[sc.key].preview || '暂无总结——正常使用若干会话后自动生成；上方手动习惯保存后立即生效' }}</pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB2 习惯条目：治理面（统计 / 待确认观察 / 条目表）原样保留 -->
+        <div v-if="activeTab === 'entries'">
         <!-- 挖掘统计卡（批 D；纯展示不注入） -->
         <div v-if="stats" class="card" style="margin-bottom: var(--space-4);" data-testid="stats-card">
           <div class="card-header">
@@ -259,8 +421,8 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
               <span style="color: var(--text-muted);">/ 已消费 {{ stats.lessons?.acked || 0 }}（转 Forge 反思输入）</span>
             </span>
             <span data-testid="stats-sources">
-              条目来源：<strong style="font-variant-numeric: tabular-nums;">自动 {{ stats.habits_by_source?.auto || 0 }}</strong>
-              <span style="color: var(--text-muted);">/ 手动 {{ stats.habits_by_source?.manual || 0 }} / 外部 {{ stats.habits_by_source?.external || 0 }}</span>
+              条目来源：<strong style="font-variant-numeric: tabular-nums;">AI 总结 {{ stats.habits_by_source?.ai || 0 }}</strong>
+              <span style="color: var(--text-muted);">/ 模板兜底 {{ stats.habits_by_source?.template || 0 }} / 观察转正 {{ stats.habits_by_source?.observation || 0 }} / 外部 {{ stats.habits_by_source?.external || 0 }} / 手动 {{ stats.habits_by_source?.manual || 0 }}</span>
             </span>
             <span v-if="stats.observations" data-testid="stats-observations">
               待确认观察：<strong style="font-variant-numeric: tabular-nums;">{{ stats.observations?.pending || 0 }}</strong>
@@ -320,35 +482,31 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
             <div v-else class="table-wrap">
               <table>
                 <thead>
-                  <tr><th style="width: 110px;">维度 / 类别</th><th>习惯</th><th>置信度</th><th>命中</th><th>状态</th><th>操作</th></tr>
+                  <tr><th style="width: 110px;">维度 / 类别</th><th style="width: 44px; white-space: nowrap;" data-testid="src-dot-col-head" title="蓝=内置触发；绿=AI 总结；灰=模板兜底；橙=反思观察；紫=外部；青=手动">来源</th><th>习惯</th><th>置信度</th><th>命中</th><th>状态</th><th>操作</th></tr>
                 </thead>
                 <tbody v-for="g in grouped" :key="g.label">
                   <tr class="group-row">
-                    <td colspan="6" style="font-size: var(--text-xs); font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary, transparent); padding-top: var(--space-3);">
+                    <td colspan="7" style="font-size: var(--text-xs); font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary, transparent); padding-top: var(--space-3);">
                       {{ g.label }} <span style="font-weight: 400; color: var(--text-muted);">（{{ g.items.length }}）</span>
                     </td>
                   </tr>
                   <tr v-for="it in g.items" :key="it.idx" :data-testid="'habit-row-' + it.idx">
                     <td><span class="badge badge-info">{{ categoryLabel(it.h.category) }}</span></td>
+                    <td style="text-align: center;"><span class="src-dot" :class="dotClass(it.h)" :data-testid="'src-dot-' + it.idx" :title="dotTitle(it.h)"></span></td>
                     <td style="max-width: 420px;">
                       {{ it.h.content }}
-                      <span v-if="it.h.auto" class="badge badge-neutral" style="margin-left: var(--space-1);" data-testid="auto-badge">自动挖掘</span>
-                      <span v-if="it.h.source" class="badge badge-info" style="margin-left: var(--space-1);" :data-testid="'source-badge-' + it.idx" title="外部经验（由其他学习子系统抛入，来源已标记）">来自 {{ sourceLabel(it.h.source) }}</span>
                       <span v-if="it.h.pinned" class="badge badge-neutral" style="margin-left: var(--space-1);">📌 pinned</span>
                       <ol v-if="it.h.steps && it.h.steps.length" class="habit-steps" style="margin: var(--space-1) 0 0; padding-left: var(--space-5); font-size: var(--text-xs); color: var(--text-secondary);">
                         <li v-for="(s, si) in it.h.steps" :key="si" :data-testid="'habit-step-' + it.idx + '-' + si">{{ s }}</li>
                       </ol>
-                      <div v-if="it.h.evidence && it.h.evidence.length" style="margin-top: var(--space-1); font-size: var(--text-xs); color: var(--text-muted);">
-                        溯源：{{ it.h.evidence.join('、') }}
-                      </div>
                     </td>
                     <td style="font-variant-numeric: tabular-nums;">{{ (it.h.confidence * 100).toFixed(0) }}%</td>
-                    <td>{{ it.h.hits }}</td>
+                    <td :title="it.h.evidence && it.h.evidence.length ? '溯源（内置规则命中凭据）：' + it.h.evidence.join('、') : undefined" :data-testid="'habit-hits-' + it.idx" :class="{ 'hits-with-evidence': it.h.evidence && it.h.evidence.length }">{{ it.h.hits }}</td>
                     <td><span class="badge" :class="statusClass(it.h.status)" :data-testid="'habit-status-' + it.idx">{{ statusLabel(it.h.status) }}</span></td>
                     <td style="white-space: nowrap;">
-                      <button class="btn" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'pin-' + it.idx" @click="pin(it.h)">{{ it.h.pinned ? '取消钉住' : '钉住' }}</button>
-                      <button class="btn" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'veto-' + it.idx" @click="veto(it.h)">否决</button>
-                      <button class="btn" style="font-size: var(--text-xs);" :data-testid="'forget-' + it.idx" @click="forget(it.h)">遗忘</button>
+                      <button class="btn" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'pin-' + it.idx" :title="pinTitle(it.h)" @click="pin(it.h)">{{ it.h.pinned ? '取消钉住' : '钉住' }}</button>
+                      <button class="btn" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'veto-' + it.idx" :title="VETO_TITLE" @click="veto(it.h)">否决</button>
+                      <button class="btn" style="font-size: var(--text-xs);" :data-testid="'forget-' + it.idx" :title="FORGET_TITLE" @click="forget(it.h)">遗忘</button>
                     </td>
                   </tr>
                 </tbody>
@@ -356,6 +514,7 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
             </div>
           </div>
         </div>
+        </div><!-- /TAB2 习惯条目 -->
       </div>
     </div>
   </div>

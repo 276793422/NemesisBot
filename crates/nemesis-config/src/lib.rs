@@ -226,6 +226,10 @@ pub struct Config {
     /// 是 `terminal` cargo feature）。
     #[serde(default)]
     pub terminal: Option<TerminalConfig>,
+    /// 会话错误记录（None = 全默认——recording=true；纯追加旁路，见
+    /// `SessionErrorConfig`）。
+    #[serde(default)]
+    pub session_error: Option<SessionErrorConfig>,
     /// workflow 引擎运行期参数（None = 全默认——墙钟保险丝 3600s，0=关；
     /// A 批批 4）。
     #[serde(default)]
