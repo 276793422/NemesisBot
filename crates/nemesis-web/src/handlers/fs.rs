@@ -160,14 +160,19 @@ fn normalize_click_path(raw: &str) -> Result<String, String> {
     Ok(norm)
 }
 
-/// 允许打开的根集合：主 workspace + 全部已注册项目目录（绝对路径只放行
-/// 这两类——防诱导打开任意系统文件；相对路径按 session root 解析后再过
-/// 同一包含闸）。
+/// 允许打开的根集合：主 workspace + 全部已注册项目目录 + 各项目附加放行
+/// 目录（绝对路径只放行这三类——防诱导打开任意系统文件；相对路径按
+/// session root 解析后再过同一包含闸）。extra_dirs 与 agent 围栏写面同源
+/// 放行（注册表单一真相源）：agent 能写，人点链接看一眼当然放行
+///（2026-11-25 补齐——此前只认主根，放行目录内点击必拒，语义倒挂）。
 fn allowed_open_roots(main_workspace: &str) -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from(main_workspace)];
     if let Some(bridge) = crate::handlers::projects::projects_bridge() {
         for p in bridge.list() {
-            roots.push(PathBuf::from(p.path));
+            roots.push(PathBuf::from(&p.path));
+            for d in &p.extra_dirs {
+                roots.push(PathBuf::from(d));
+            }
         }
     }
     roots

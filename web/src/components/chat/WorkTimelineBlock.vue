@@ -76,7 +76,8 @@ function formatDuration(ms: number): string {
   if (s < 60) return `${s}秒`
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}分${s % 60}秒`
-  return `${Math.floor(m / 60)}时${m % 60}分`
+  // ≥1h 保留秒（2026-11-25 与资源窗 fmtElapsed 同形状对齐：秒位常驻）。
+  return `${Math.floor(m / 60)}时${m % 60}分${s % 60}秒`
 }
 
 function formatToolMs(ms: number): string {
