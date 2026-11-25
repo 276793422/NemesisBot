@@ -1527,3 +1527,111 @@ async fn command_probe_cwd_none_inherits_parent_process_cwd() {
     assert_eq!(printed.trim(), parent_cwd.to_str().unwrap());
     let _ = std::fs::remove_file(parent_cwd.join(&marker));
 }
+
+// ---- BUG-20261125-061：probe client 重定向策略（行为级回归锁） ----
+//
+// probe 目标是运维配置的监控 URL，凭据内嵌 path/query 形态常见（
+// healthchecks.io /ping/<uuid>、uptime-kuma /api/push/<token>）。防线的
+// 裁决语义由 nemesis-utils::http_redirect 决策纯函数测试钉死；这里在
+// 行为层（真实 HTTP 往返，loopback 双监听）钉住消费面挂线：
+// `probe_http_client()` 构造的 client 必须跨源 stop（原 URL 连同内嵌
+// 凭据不出站）、同源 follow（http→https 同主机不断链）。若回归摘掉
+// `.redirect(no_cross_host_redirect_policy())`（reqwest 默认 = 跨源也
+// 跟随、URL 原样带去目标主机），跨源测试当轮红。
+
+/// 读一次 HTTP 请求（请求头 < 2KB，一段 read 足够）并写出响应，
+/// 返回收到的请求原文。
+async fn serve_one(listener: &tokio::net::TcpListener, response: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut sock, _) = listener.accept().await.expect("accept");
+    let mut buf = [0u8; 2048];
+    let n = AsyncReadExt::read(&mut sock, &mut buf).await.unwrap_or(0);
+    AsyncWriteExt::write_all(&mut sock, response.as_bytes())
+        .await
+        .expect("write response");
+    String::from_utf8_lossy(&buf[..n]).to_string()
+}
+
+/// 跨源 302 必须终停：3xx 透传 → 探测诚实报 down（detail 带 302），
+/// 第二跳主机不得收到任何请求（URL 内嵌凭据 `/ping/SECRET` 不出站——
+/// reqwest 默认策略会带着原 URL 跟随）。
+#[tokio::test]
+async fn probe_client_stops_cross_host_redirect() {
+    let l_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let l_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_b = l_b.local_addr().unwrap().port();
+    let url_a = format!(
+        "http://127.0.0.1:{}/ping/SECRET-uuid-token",
+        l_a.local_addr().unwrap().port()
+    );
+
+    // 第一跳哨兵：断言首跳请求确实带着内嵌凭据路径（证明泄漏类真实存在）。
+    let hop_a = tokio::spawn(async move {
+        let target = format!("http://127.0.0.1:{port_b}/evil");
+        let resp = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        serve_one(&l_a, &resp).await
+    });
+    // 第二跳哨兵：策略生效时永远等不到连接（500ms 超时 = 诚实通过）；
+    // 策略漏挂时 reqwest 立即跟随，哨兵捕获带凭据 URL 的请求 → 断言红。
+    let sentry_b = tokio::spawn(async move {
+        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        serve_one(&l_b, resp).await
+    });
+
+    let client = probe_http_client();
+    let (up, detail) = http_probe(&client, &url_a, 5).await;
+    assert!(
+        !up,
+        "跨源 302 透传为最终响应 → is_success()=false → 诚实报 down"
+    );
+    assert!(
+        detail.contains("302"),
+        "detail 必须带 HTTP 302 根因（翻转载荷可见），got: {detail}"
+    );
+    let first = hop_a.await.expect("first hop");
+    assert!(
+        first.contains("/ping/SECRET-uuid-token"),
+        "首跳请求必须携带内嵌凭据路径（证明本防线的泄漏类真实），got: {first}"
+    );
+    let leaked = tokio::time::timeout(std::time::Duration::from_millis(500), sentry_b).await;
+    if let Ok(Ok(second_hop_req)) = leaked {
+        panic!(
+            "BUG-20261125-061：跨源重定向把探测请求（含内嵌凭据 URL）带去了第三方主机，第二跳收到: {second_hop_req}"
+        );
+        // 超时/哨兵被丢 = 第二跳无连接 = 凭据未出站 ✓
+    }
+}
+
+/// 同源 302 必须跟随：单监听两次 accept，第二跳命中同源新路径
+/// （http→https 同主机等合规场景不断链——策略不是一刀切 Policy::none()）。
+#[tokio::test]
+async fn probe_client_follows_same_origin_redirect() {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/ping/SECRET-uuid-token");
+
+    let server = tokio::spawn(async move {
+        let resp302 = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/real\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let first = serve_one(&l, &resp302).await;
+        let resp200 = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+        let second = serve_one(&l, resp200).await;
+        (first, second)
+    });
+
+    let client = probe_http_client();
+    let (up, detail) = http_probe(&client, &url, 5).await;
+    assert!(up, "同源重定向必须跟随到 200 → up，detail: {detail}");
+    let (first, second) = server.await.expect("server");
+    assert!(
+        first.contains("/ping/SECRET-uuid-token"),
+        "首跳携带原始路径，got: {first}"
+    );
+    assert!(
+        second.contains("/real"),
+        "第二跳命中同源新路径，got: {second}"
+    );
+}
