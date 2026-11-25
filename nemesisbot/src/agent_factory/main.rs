@@ -916,9 +916,11 @@ pub fn build_agent_loop(
             nemesis_web::handlers::forge::set_forge_test_runner(test_runner);
             // B 线画像 sweep（OnceLock 一次守卫；enabled=false 时 sweep 内部 no-op）。
             // S8：反思通道的 LLM 调用同落 aux 账本（data_store 随任务带出）。
+            // estop 闸同源注入（急停冻结 sweep——学习对话闸同语义覆盖面）。
             crate::profile_service::ensure_sweep_spawned(
                 shared.home.clone(),
                 shared.data_store.clone(),
+                shared.estop.clone(),
             );
             info!(
                 "[AgentFactory] Forge provider updated to model {}",

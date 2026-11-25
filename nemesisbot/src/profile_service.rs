@@ -19,10 +19,13 @@ static SWEEP_SPAWNED: OnceLock<()> = OnceLock::new();
 
 /// gateway 装配点调用：保证 sweep 任务只 spawn 一份。`data_store` 随任务
 /// 带出——反思通道的 LLM 调用落 aux 账本（forge_review 归因族，经 judge
-/// 回落链 → ForgeProviderBridge 同一链路）。
+/// 回落链 → ForgeProviderBridge 同一链路）。`estop` 急停闸（2026-11-25
+/// R2880）：engaged 时每 tick 诚实跳过（与 cron 域 autopilot/dreaming
+/// 触发闸同语义；release 后下一 tick 照常补采——滚动证据窗锚点不动）。
 pub fn ensure_sweep_spawned(
     home: PathBuf,
     data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
+    estop: std::sync::Arc<nemesis_agent::estop::EstopState>,
 ) {
     if SWEEP_SPAWNED.set(()).is_err() {
         return; // 已 spawn（loop 重建多次调用只生效一次）
@@ -54,9 +57,11 @@ pub fn ensure_sweep_spawned(
             let h = home.clone();
             let rh = handle.clone();
             let ds = data_store.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || sweep_tick(&h, &rh, ds.as_ref()))
-                .await
-                .unwrap_or_else(|e| Err(format!("sweep task panicked: {e}")))
+            let es = estop.clone();
+            if let Err(e) =
+                tokio::task::spawn_blocking(move || sweep_tick(&h, &rh, ds.as_ref(), &es))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("sweep task panicked: {e}")))
             {
                 tracing::warn!("[UserProfile] sweep failed: {e}");
             }
@@ -73,14 +78,21 @@ fn load_scan_interval_secs(home: &Path) -> u64 {
         .unwrap_or(3600)
 }
 
-/// 单 tick：caller 现场解析（模型热切即时生效，无陈旧 Arc）+ forge 编排
-/// 调用。caller 解析失败 = warn + None（反思通道本 tick 跳过，确定性挖掘
-/// 照跑——不陪葬）。
+/// 单 tick：急停闸（engaged = 整个 tick 跳过——反思 LLM 与确定性挖掘都是
+/// 自主 agent 活动，急停不变量「engaged → 自主活动不发起」覆盖；滚动证据
+/// 窗锚点不动，release 后下一 tick 照常补采）+ caller 现场解析（模型热切
+/// 即时生效，无陈旧 Arc）+ forge 编排调用。caller 解析失败 = warn + None
+/// （反思通道本 tick 跳过，确定性挖掘照跑——不陪葬）。
 fn sweep_tick(
     home: &Path,
     rt: &tokio::runtime::Handle,
     data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
+    estop: &nemesis_agent::estop::EstopState,
 ) -> Result<usize, String> {
+    if estop.is_engaged() {
+        tracing::info!("[UserProfile] estop engaged — 跳过本轮 sweep（释放后下一 tick 照常）");
+        return Ok(0);
+    }
     let workspace = crate::common::workspace_path(home);
     let caller = match nemesis_web::handlers::forge::resolve_judge_caller(
         &home.to_string_lossy(),
@@ -102,3 +114,6 @@ fn sweep_tick(
         caller.as_ref(),
     )
 }
+
+#[cfg(test)]
+mod tests;
