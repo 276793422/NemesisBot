@@ -1360,8 +1360,11 @@ pub fn merge_artifacts_by_id(
     secondary: Vec<nemesis_types::forge::Artifact>,
 ) -> Vec<nemesis_types::forge::Artifact> {
     let mut merged = primary;
-    let seen: std::collections::HashSet<String> = merged.iter().map(|a| a.id.clone()).collect();
-    merged.extend(secondary.into_iter().filter(|a| !seen.contains(&a.id)));
+    // seen 随 extend 更新（BUG-20261125-054）：只查 primary 的 seen 挡不住
+    // secondary 内部互相重复的 id（盘上注册表手工编辑/损坏可现）——逐条
+    // insert，重复 id 只保留首个。
+    let mut seen: std::collections::HashSet<String> = merged.iter().map(|a| a.id.clone()).collect();
+    merged.extend(secondary.into_iter().filter(|a| seen.insert(a.id.clone())));
     merged
 }
 

@@ -60,6 +60,21 @@ impl Cluster {
                 （announce 可被局域网内任意主机侦听/伪造）。生产部署建议在 \
                  config.cluster.json 配置 token（CLI: `nemesisbot cluster token set`）。"
             );
+        } else if secret.chars().count() < 32 {
+            // R1425 裁决（2026-11-25 用户拍板）：KDF 保持 token 直作 SHA-256
+            // 输入（无 HKDF 展开，wire 与 Go 蓝本兼容优先）；弱 token 启动期
+            // loud 警告。加密强度由 token 熵决定——短 token 可暴力枚举，
+            // AES-256 形态只是混淆。阈值 32 字符：标准生成形态
+            // `cluster token generate` = 32 字节 CSPRNG 的 base64 = 44 字符，
+            // 低于 32 即明显短于生成器输出（<24 字节熵）。
+            tracing::warn!(
+                "[Cluster] discovery token 偏短（{} 字符，标准生成形态为 44）—— \
+                UDP 发现加密强度受限于 token 熵，短 token 可被暴力枚举 \
+                （AES-256 密钥材料 = SHA-256(token)，token 短则密钥可枚举）。\
+                建议 `nemesisbot cluster token generate --save` 换强 token \
+                （全节点需同步更新；旧 token 节点的帧将被静默丢弃）。",
+                secret.chars().count()
+            );
         }
 
         match crate::discovery::DiscoveryService::new(arc_self, discovery_config) {

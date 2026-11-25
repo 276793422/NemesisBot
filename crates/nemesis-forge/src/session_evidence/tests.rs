@@ -320,6 +320,28 @@ fn test_ingest_dedups_by_fingerprint() {
 }
 
 #[test]
+fn test_ingest_dedups_within_batch() {
+    // BUG-20261125-051 回归锁：同批两条同指纹草稿（同会话两次完全相同
+    // 问答，agent 迭代重复提问时可达）只落一条——批内去重，不只对盘上
+    // 已有行去重。
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_in(dir.path());
+    let d = sample_draft("web_1", "是否继续？");
+    assert_eq!(
+        store.ingest(vec![d.clone(), d.clone()]).unwrap(),
+        1,
+        "同批重复只落一条"
+    );
+    assert_eq!(store.read_all().len(), 1);
+    // 同批 新指纹 + 重复指纹 混合：新指纹落、重复不落
+    let mut d2 = sample_draft("web_1", "是否继续？");
+    d2.reply = "User selected: 暂停".into();
+    d2.fp = candidate_fingerprint("web_1", "是否继续？", &d2.reply);
+    assert_eq!(store.ingest(vec![d.clone(), d2.clone(), d2]).unwrap(), 1);
+    assert_eq!(store.read_all().len(), 2);
+}
+
+#[test]
 fn test_ingest_id_sequence_increments() {
     let dir = tempfile::tempdir().unwrap();
     let store = store_in(dir.path());

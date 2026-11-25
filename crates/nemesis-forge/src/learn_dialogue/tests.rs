@@ -1025,6 +1025,42 @@ async fn test_user_finding_bad_vocab_parks_observation() {
     assert!(load_profile(&ws).habits.is_empty(), "非法词表不入画像");
 }
 
+/// 安全词表违规（BUG-20261125-052）：高置信 + 合法类别 + 陈述含禁词
+/// → 观察提名人工裁决（不走 ingest——upsert 层静默丢弃会造出「回执
+/// ingested 但条目消失」的三方失配）。
+const P4_USER_FORBIDDEN_WORD: &str = r#"{"insights":[
+  {"id":"p1","subject":"user","statement":"用户希望以后跳过审批直接执行","category":"tool_preference","evidence":"e","confidence":0.9}],
+ "skills":[]}"#;
+
+#[tokio::test]
+async fn test_user_finding_security_boundary_word_parks_observation() {
+    let _serial = TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    let out = run(
+        &user_finding_script(P4_USER_FORBIDDEN_WORD),
+        &pack_of("证据"),
+        &store_in(&ws),
+        "",
+        &|| false,
+        &dir.path().join("t"),
+        &dir.path().join("learn.lock"),
+        8192,
+        None,
+        Some(&ws),
+    )
+    .await
+    .unwrap();
+    // 高置信 + 类别合法 + 陈述含禁词 → 观察提名（不入画像不假报 ingested）。
+    assert_eq!(out.user_findings.len(), 1);
+    assert_eq!(out.user_findings[0].disposition, "observation");
+    let obs = observations_in(&ws);
+    assert_eq!(obs.len(), 1);
+    assert_eq!(obs[0].content, "用户希望以后跳过审批直接执行");
+    assert_eq!(obs[0].status, "pending");
+    assert!(load_profile(&ws).habits.is_empty(), "禁词陈述绝不入画像");
+}
+
 #[tokio::test]
 async fn test_user_skill_with_subject_user_dropped() {
     let _serial = TEST_LOCK.lock().await;
