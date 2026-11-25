@@ -9,13 +9,16 @@
  *   4. 设置子页签（detect 枚举卡片：可用/二期徽标 + 自定义路径卡）
  *   5. 日志子页签（spawn/attach 编排留痕时间线）
  *   6. 聊天侧 BrowserPickPanel（侧栏 🌐 按钮开面板 + 点名行）
+ *   7. 死实例（外杀进程树）→ 死卡「↻ 重新打开」+ footer 常驻「打开浏览器」
+ *      → 点重开 → 同 kind 新实例（2026-11-25 批 A+B；两张 07/08）
  *
- * Edge 缺席 = 诚实 SKIP 场景 2/3/6 实例部分（空态/设置照截）。
+ * Edge 缺席 = 诚实 SKIP 场景 2/3/6/7 实例部分（空态/设置照截）。
  * 收尾 browser.close 优雅关闭（Edge 进程树不残留）。
  */
 import { test, expect, type Page } from './fixtures'
 import fs from 'node:fs'
 import path from 'node:path'
+import { execSync } from 'node:child_process'
 import { newAuthedPage, gotoRoute, wsapi } from './helpers'
 const SHOT_DIR = path.join('test-results', 'browser-visual', 'shots')
 
@@ -29,6 +32,13 @@ test('浏览器接管六景截图：空态/实例卡/点名tab/设置/日志/点
   fs.mkdirSync(SHOT_DIR, { recursive: true })
   const page = await newAuthedPage(browser)
   await page.setViewportSize({ width: 1440, height: 900 })
+  // 本 spec 兼任资源窗首屏判宽修复（2026-11-25）的真浏览器回归锁：景 6 的
+  // gotoRoute 整页加载 = 1440 视口首屏（可用宽 1200 落滞后带），修复前被
+  // 误判宽屏走并排——资源窗并排（ChatPanel 944 + min 300）+ 会话侧栏 260
+  // 超出可用宽，把无缩窄保护的点名面板列挤成 0 宽（景 6 toBeVisible 失败
+  // 实录）；修复后首屏硬判窄 → 资源窗静默收起走 overlay，点名面板完整
+  // 240px。若回归，景 6 面板不可见即红。
+  await page.evaluate(() => localStorage.setItem('nb_resources_panel', '0'))
   // closeBrowser 的 window.confirm 原生守卫——Playwright 默认 dismiss（=取消）。
   page.on('dialog', (d) => d.accept())
 
@@ -91,6 +101,44 @@ test('浏览器接管六景截图：空态/实例卡/点名tab/设置/日志/点
     await expect(page.locator('.browserpick-session').first()).toBeVisible({ timeout: 15_000 })
   }
   await shot(page, '06-browser-pick-panel.png')
+
+  // —— 景 7：死实例「↻ 重新打开」+ footer 常驻「打开浏览器」（2026-11-25
+  // 批 A+B 视觉自测）——taskkill 外杀 Edge 进程树（= 用户手关窗口）→ reaper
+  // 置 alive=false → 点名面板死卡渲染「已退出」+ 重开钮（批 B）+ footer
+  // 常驻启动钮（批 A——旧实现按钮只在空态，死会话保留注册表 = 永无入口）。
+  // 点重开 → 同 kind 新实例起，死卡保留（注册表只认显式 close）。
+  if (hasSession) {
+    const sr = await wsapi(page, 'browser', 'sessions', {})
+    const first = ((sr.data as { sessions?: { id: string; pid?: number; alive?: boolean }[] })?.sessions ?? [])[0]
+    if (first?.pid) {
+      // 外杀进程树；进程已先消失（异常路径）不硬测本景。
+      try {
+        execSync(`taskkill /PID ${first.pid} /T /F`, { stdio: 'ignore' })
+      } catch {
+        /* already gone */
+      }
+      await expect
+        .poll(
+          async () => {
+            const r = await wsapi(page, 'browser', 'sessions', {})
+            const list = (r.data as { sessions?: { alive?: boolean }[] })?.sessions ?? []
+            return list.length > 0 && list.every((s) => s.alive === false)
+          },
+          { timeout: 30_000, intervals: [1_000, 2_000, 5_000] },
+        )
+        .toBe(true)
+      // 面板 3s 轮询把死态带进 UI：死卡重开钮 + footer 常驻钮齐备。
+      await expect(page.locator('[data-test="browser-pick-reopen"]')).toBeVisible({ timeout: 15_000 })
+      await expect(page.locator('[data-test="browser-pick-open"]')).toBeVisible()
+      await shot(page, '07-browser-pick-dead-reopen.png')
+      // 批 B 主路径：点「↻ 重新打开」→ 同 kind 新实例（spawn 真浏览器 ~60s 级）。
+      await page.locator('[data-test="browser-pick-reopen"]').click()
+      await expect(page.locator('.browserpick-session:not(.dead)').first()).toBeVisible({ timeout: 90_000 })
+      // 死卡保留（注册表语义：死实例不自动清册）+ 新实例并存。
+      await expect(page.locator('[data-test="browser-pick-reopen"]')).toBeVisible()
+      await shot(page, '08-browser-pick-reopened.png')
+    }
+  }
 
   // —— 收尾：优雅关闭全部会话（浏览器进程树不留残；spawn 失败路径也照跑——
   // 防上轮半开实例残留孤儿进程）——
