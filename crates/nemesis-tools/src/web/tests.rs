@@ -493,12 +493,12 @@ fn test_validate_url_metadata_endpoint() {
 
 #[test]
 fn test_validate_url_ipv6_localhost() {
-    // url crate returns host as ":1" (without brackets) for IPv6
-    // The validator checks for "[:1]" (with brackets), so IPv6 localhost
-    // is NOT caught by the current blocking list. This test documents that behavior.
-    let result = validate_url("http://[::1]/admin");
-    // With the current implementation, ":1" != "[:1]", so it passes validation
-    assert!(result.is_ok());
+    // 旧版把 `[::1]` 放行钉成「documented behavior」（BUG-20261125-028 形态②：
+    // 极简解析器 split(':') 抠出 "["，blocked 表的 "[::1]" 永不命中）。
+    // 现用 url crate 真实解析（typed Host::Ipv6）+ std 分类，IPv6 loopback
+    // 必须被拦。同语义：全零展开形态。
+    assert!(validate_url("http://[::1]/admin").is_err());
+    assert!(validate_url("http://[0:0:0:0:0:0:0:1]/admin").is_err());
 }
 
 #[test]
@@ -551,6 +551,128 @@ fn test_validate_url_invalid_scheme() {
     assert!(validate_url("ftp://example.com/file").is_err());
 }
 
+// ---------------------------------------------------------------------------
+// BUG-20261125-028 回归锁：web_fetch SSRF 字面量闸六形态绕过。旧自写极简
+// 解析器（split('/').next() + split(':').next() 抠 host + 字符串精确/前缀
+// 匹配）对下列全部形态放行；url crate 真实解析（WHATWG 语义）+ std 分类
+// 后全部必须被拦。公开域/IP 仍放行（防矫枉过正）。
+// ---------------------------------------------------------------------------
+
+/// 形态①：userinfo——凭据内嵌时旧解析器把 `x@127.0.0.1` 整串当 host，
+/// 精确匹配永不命中；reqwest 真实解析后连接目标就是 127.0.0.1。typed
+/// Host 解析结构性消灭（userinfo 在解析期与 host 分离）。
+#[test]
+fn b028_userinfo_loopback_blocked() {
+    assert!(validate_url("http://x@127.0.0.1/admin").is_err());
+    assert!(validate_url("http://user:pass@10.0.0.5/").is_err());
+    assert!(validate_url("http://user:p@ss@192.168.0.1/").is_err()); // '@' 在密码里，url crate 按最后一个 '@' 分离
+}
+
+/// 形态②：IPv6 括号剥离——旧解析器 split(':') 得 "["（同 tests.rs 上方
+/// 翻转的 pinned 测试）；typed Host::Ipv6 + std is_loopback 拦截。
+#[test]
+fn b028_ipv6_bracket_forms_blocked() {
+    assert!(validate_url("http://[::1]:8080/").is_err());
+    assert!(validate_url("http://[::ffff:127.0.0.1]/").is_err()); // IPv4-mapped
+    assert!(validate_url("http://[::ffff:10.0.0.1]/").is_err()); // mapped → 私有段
+    assert!(validate_url("http://[fe80::1]/").is_err()); // v6 link-local
+    assert!(validate_url("http://[fd00::5]/").is_err()); // v6 ULA
+    assert!(validate_url("http://[::7f00:1]/").is_err()); // IPv4-compatible = 127.0.0.1
+    assert!(validate_url("http://[2002:7f00:1::]/").is_err()); // 6to4 内嵌 v4
+}
+
+/// 形态③：非点分十进制 IPv4——`2130706433`/`0x7f000001`/`0177.0.0.1` 语义
+/// 等价 127.0.0.1（WHATWG IPv4 解析器规范化），字符串匹配全部放行；
+/// url crate 规范化为 typed Host::Ipv4 后 std 分类拦截。
+#[test]
+fn b028_non_dotted_decimal_ipv4_blocked() {
+    assert!(validate_url("http://2130706433/").is_err()); // 十进制 = 127.0.0.1
+    assert!(validate_url("http://0x7f000001/").is_err()); // 十六进制 = 127.0.0.1
+    assert!(validate_url("http://0177.0.0.1/").is_err()); // 八进制 = 127.0.0.1
+    assert!(validate_url("http://0x7f.1/").is_err()); // 混合进制 = 127.0.0.1
+}
+
+/// 形态④：尾点域名——WHATWG 允许 `localhost.` 与 `localhost` 同解析目标，
+/// 旧精确匹配放行；单尾点剥离后匹配。`*.localhost` 子域同拦。
+#[test]
+fn b028_trailing_dot_and_subdomain_localhost_blocked() {
+    assert!(validate_url("http://localhost./admin").is_err());
+    assert!(validate_url("http://LOCALHOST./").is_err()); // 大小写归一
+    assert!(validate_url("http://sub.localhost/").is_err());
+    assert!(validate_url("http://localhost.localdomain/").is_err());
+}
+
+/// 形态⑤：link-local 段——旧 blocked 表只精确挡 `169.254.169.254`，段内
+/// 其余（云环境任意实例 metadata/链路服务）放行；is_link_local 全段拦截。
+#[test]
+fn b028_link_local_range_blocked() {
+    assert!(validate_url("http://169.254.10.1/").is_err());
+    assert!(validate_url("http://169.254.254.254/").is_err());
+    // metadata 精确形态保持（既有测试另钉）
+    assert!(validate_url("http://169.254.169.254/latest/meta-data/").is_err());
+}
+
+/// 形态⑥修复面：私有段误伤消除——旧 `starts_with("172.2")`/`("172.3")`
+/// 把公网 `172.32.0.0/12` 之外地址一并拦掉；typed 分类后精确 RFC1918
+/// （172.16.0.0/12 = 第二字节 16..=31）。CGNAT/保留段新覆盖同钉。
+#[test]
+fn b028_public_172_ranges_pass_and_reserved_blocked() {
+    // 公网 172.x 必须放行（旧实现误伤）
+    assert!(validate_url("http://172.200.5.5/").is_ok());
+    assert!(validate_url("http://172.32.1.1/").is_ok());
+    assert!(validate_url("http://172.40.9.9/").is_ok());
+    // 私有 172.16.0.0/12 边界保持
+    assert!(validate_url("http://172.15.255.255/").is_ok()); // 段前一位=公网
+    assert!(validate_url("http://172.16.0.1/").is_err());
+    assert!(validate_url("http://172.31.255.255/").is_err());
+    assert!(validate_url("http://172.32.0.0/").is_ok()); // 段后一位=公网
+    // CGNAT RFC 6598 + 多播 + 保留段（新增覆盖）
+    assert!(validate_url("http://100.64.0.1/").is_err());
+    assert!(validate_url("http://100.127.255.255/").is_err());
+    assert!(validate_url("http://100.128.0.1/").is_ok()); // CGNAT 段外=公网
+    assert!(validate_url("http://224.0.0.1/").is_err()); // 多播
+    assert!(validate_url("http://240.0.0.1/").is_err()); // reserved
+    assert!(validate_url("http://198.18.0.1/").is_err()); // benchmarking
+    assert!(validate_url("http://192.0.2.1/").is_err()); // TEST-NET-1
+    assert!(validate_url("http://10.255.255.255/").is_err()); // RFC1918 保持
+    assert!(validate_url("http://192.168.255.255/").is_err()); // RFC1918 保持
+}
+
+/// 公开目标照常放行 + 非法形态诚实报错（防矫枉过正/回归面）。
+#[test]
+fn b028_public_targets_still_pass() {
+    assert!(validate_url("https://example.com/page").is_ok());
+    assert!(validate_url("http://example.com:8080/x").is_ok());
+    assert!(validate_url("https://www.rust-lang.org/").is_ok());
+    assert!(validate_url("http://docs.example.co.uk:443/a?b=c#d").is_ok());
+    assert!(validate_url("not a url").is_err());
+    assert!(validate_url("http://:8080/x").is_err()); // 真·空 host（WHATWG EmptyHost）
+    // 注：`http:///path` 在 WHATWG 语义下 = `http://path/`（特殊 scheme 跳过
+    // 多余斜杠，浏览器同款），host 是真域名 "path"，不是空 host——照常放行。
+    assert!(validate_url("http:///path").is_ok());
+    assert!(validate_url("ftp://example.com/file").is_err()); // scheme 闸
+    assert!(validate_url("file:///etc/passwd").is_err()); // scheme 闸
+}
+
+/// execute 全链回归锁（b028 形态③端到端）：绕过形态在 validate_url 被
+/// 拦、不发起网络请求（错误消息带 SSRF 标识）。
+#[tokio::test]
+async fn b028_execute_blocks_bypass_forms_before_request() {
+    let tool = WebFetchTool::new().expect("client build");
+    // 十进制 loopback（形态③，绕过形态中最不易被肉眼识别的）
+    let result = tool
+        .execute(&serde_json::json!({"url": "http://2130706433:8080/admin"}))
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("SSRF"));
+    // userinfo loopback（形态①）
+    let result = tool
+        .execute(&serde_json::json!({"url": "http://x@127.0.0.1:9/"}))
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("SSRF"));
+}
+
 #[test]
 fn test_url_parse_http() {
     let u = url::Url::parse("http://example.com/path").unwrap();
@@ -570,7 +692,12 @@ fn test_url_parse_no_scheme() {
 
 #[test]
 fn test_url_parse_empty_host() {
-    assert!(url::Url::parse("http:///path").is_err());
+    // 真·空 host 形态（WHATWG EmptyHost failure）
+    assert!(url::Url::parse("http://:8080/x").is_err());
+    // `http:///path` 不是空 host：WHATWG 特殊 scheme 跳过多余斜杠，
+    // 等价 `http://path/`（host = "path"）——钉真实语义防回归。
+    let u = url::Url::parse("http:///path").unwrap();
+    assert_eq!(u.host_str(), Some("path"));
 }
 
 #[test]
@@ -606,7 +733,7 @@ async fn test_web_fetch_ssrf_192_168() {
         .execute(&serde_json::json!({"url": "http://192.168.1.1/router"}))
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("private IP"));
+    assert!(result.for_llm.contains("SSRF"));
 }
 
 #[tokio::test]
@@ -616,7 +743,7 @@ async fn test_web_fetch_ssrf_10_range() {
         .execute(&serde_json::json!({"url": "http://10.0.0.1/internal"}))
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("private IP"));
+    assert!(result.for_llm.contains("SSRF"));
 }
 
 #[tokio::test]

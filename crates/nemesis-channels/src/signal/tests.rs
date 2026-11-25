@@ -48,13 +48,6 @@ fn test_receive_url() {
 
 #[test]
 fn test_process_envelope_direct() {
-    let config = SignalConfig {
-        api_url: "http://localhost:8080".to_string(),
-        phone_number: "+1234567890".to_string(),
-        allow_from: Vec::new(),
-    };
-    let ch = SignalChannel::new(config, test_bus()).unwrap();
-
     let envelope = SignalEnvelopeInner {
         source: Some("Alice".to_string()),
         source_number: Some("+9876543210".to_string()),
@@ -68,10 +61,11 @@ fn test_process_envelope_direct() {
         sync_message: None,
     };
 
-    let (sender, chat, content) = ch.process_envelope(&envelope).unwrap();
+    let (sender, chat, content, ts) = process_envelope(&envelope).unwrap();
     assert_eq!(sender, "+9876543210");
     assert_eq!(chat, "+9876543210");
     assert_eq!(content, "Hello");
+    assert_eq!(ts, 1234567890);
 }
 
 #[test]
@@ -103,13 +97,6 @@ fn test_signal_config_fields() {
 
 #[test]
 fn test_process_envelope_group_message() {
-    let config = SignalConfig {
-        api_url: "http://localhost:8080".into(),
-        phone_number: "+1234567890".into(),
-        allow_from: Vec::new(),
-    };
-    let ch = SignalChannel::new(config, test_bus()).unwrap();
-
     let envelope = SignalEnvelopeInner {
         source: Some("Bob".into()),
         source_number: Some("+555".into()),
@@ -120,26 +107,20 @@ fn test_process_envelope_group_message() {
             message: Some("Group hello".into()),
             group_info: Some(SignalGroupInfo {
                 group_id: Some("group-1".into()),
-                name: Some("Test Group".into()),
+                group_name: Some("Test Group".into()),
             }),
         }),
         sync_message: None,
     };
-    let (sender, chat, content) = ch.process_envelope(&envelope).unwrap();
+    let (sender, chat, content, ts) = process_envelope(&envelope).unwrap();
     assert_eq!(sender, "+555");
     assert_eq!(chat, "group-1");
     assert_eq!(content, "Group hello");
+    assert_eq!(ts, 999);
 }
 
 #[test]
 fn test_process_envelope_no_data_message() {
-    let config = SignalConfig {
-        api_url: "http://localhost:8080".into(),
-        phone_number: "+1234567890".into(),
-        allow_from: Vec::new(),
-    };
-    let ch = SignalChannel::new(config, test_bus()).unwrap();
-
     let envelope = SignalEnvelopeInner {
         source: None,
         source_number: None,
@@ -148,7 +129,7 @@ fn test_process_envelope_no_data_message() {
         data_message: None,
         sync_message: None,
     };
-    assert!(ch.process_envelope(&envelope).is_none());
+    assert!(process_envelope(&envelope).is_none());
 }
 
 #[test]
@@ -215,4 +196,156 @@ fn signal_api_url_trailing_slash_normalized() {
     };
     let ch2 = SignalChannel::new(cfg2, test_bus()).unwrap();
     assert_eq!(ch2.receive_url(), ch.receive_url());
+}
+
+/// BUG-20261125-019 回归锁：start/stop 必须维护 base running 旗标 + 幂等双启
+/// 守卫（BUG-20261121-050 同构家族横向扫漏网补齐——manager 的 start_all 守卫 /
+/// any_channel_running / status 上报三消费点都读 trait is_running）。
+/// 服务端点指 loopback 死端口（后台 receive loop 连接失败零外网，start 本体
+/// 不阻塞）；二次 start 走幂等守卫诚实跳过（不 spawn 第二个 receive loop）。
+#[tokio::test]
+async fn b019_start_stop_maintain_base_running_flag_and_guard_duplicate_start() {
+    let config = SignalConfig {
+        api_url: "http://127.0.0.1:1".to_string(),
+        phone_number: "+10000000000".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _) = tokio::sync::broadcast::channel(16);
+    let ch = SignalChannel::new(config, tx).unwrap();
+    assert!(!ch.base.is_running());
+
+    ch.start().await.unwrap();
+    assert!(
+        ch.base.is_running(),
+        "start 后 trait is_running 必须为 true（BUG-20261125-019）"
+    );
+    ch.start().await.unwrap();
+    assert!(ch.base.is_running());
+
+    ch.stop().await.unwrap();
+    assert!(
+        !ch.base.is_running(),
+        "stop 后 trait is_running 必须为 false"
+    );
+}
+
+/// BUG-20261125-025 回归锁：真实线上 wire 形态（signal-cli-rest-api swagger
+/// `receive.MessageEnvelope`，camelCase 字段名）必须可反序列化并产出消息。
+/// 修复前：结构体 snake_case 无 rename_all → serde 精确匹配，线上
+/// `dataMessage`/`sourceNumber`/`groupInfo` 键静默忽略 → `data_message` 恒
+/// None → receive loop 每条 continue = 100% 静默丢消息；旧测试 fixture 用
+/// 结构体构造器自建值（与 wire 脱锚）解释了假绿。
+#[test]
+fn b025_wire_camelcase_envelope_deserializes_and_processes() {
+    let raw = r#"{
+        "envelope": {
+            "source": "+4912345678",
+            "sourceDevice": 2,
+            "sourceName": "Alice",
+            "sourceNumber": "+4912345678",
+            "sourceUuid": "0c6d2654-4c1a-4a06-a797-9c1dcd1e7c99",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": "Hello from wire",
+                "expiresInSeconds": 0,
+                "viewOnce": false
+            }
+        }
+    }"#;
+    let env: SignalEnvelope =
+        serde_json::from_str(raw).expect("线上 swagger wire 形态必须可反序列化");
+    let inner = env.envelope.expect("envelope 必须解出");
+    assert_eq!(
+        inner.source_number.as_deref(),
+        Some("+4912345678"),
+        "sourceNumber 必须落 source_number 字段（修复前恒 None）"
+    );
+    assert!(
+        inner.data_message.is_some(),
+        "dataMessage 必须落 data_message 字段（修复前恒 None = 100% 丢消息）"
+    );
+
+    let (sender, chat, content, ts) = process_envelope(&inner).unwrap();
+    assert_eq!(sender, "+4912345678");
+    assert_eq!(chat, "+4912345678");
+    assert_eq!(content, "Hello from wire");
+    assert_eq!(ts, 1700000000000);
+}
+
+/// BUG-20261125-025 回归锁（群消息 + sender 回落链）：wire `groupInfo.groupId`
+/// 作为群 chat_id；sender 走 sourceNumber → source → sourceUuid 回落链
+/// （隐藏号码账户只有 UUID 形态身份，修复前 sender 恒 "unknown"）。
+#[test]
+fn b025_wire_group_message_and_sender_fallback_chain() {
+    let raw = r#"{
+        "envelope": {
+            "sourceUuid": "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+            "timestamp": 1700000000001,
+            "dataMessage": {
+                "timestamp": 1700000000001,
+                "message": "group hi",
+                "groupInfo": {
+                    "groupId": "c2FmZQ==",
+                    "groupName": "Test Group",
+                    "revision": 3
+                }
+            }
+        }
+    }"#;
+    let env: SignalEnvelope = serde_json::from_str(raw).expect("群消息 wire 形态必须可反序列化");
+    let (sender, chat, content, _ts) =
+        process_envelope(&env.envelope.expect("envelope 必须解出")).unwrap();
+    assert_eq!(
+        sender, "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+        "无 sourceNumber/source 时必须回落 sourceUuid"
+    );
+    assert_eq!(chat, "c2FmZQ==", "群 chat_id 必须取 groupId");
+    assert_eq!(content, "group hi");
+}
+
+/// BUG-20261125-025 回归锁（sender 回落链全形态）：三字段齐备取优先级最高
+/// 的 sourceNumber；全缺 = "unknown"（诚实兜底，与修复前行为一致）。
+#[test]
+fn b025_sender_chain_priority_and_unknown_fallback() {
+    let mk = |sn: Option<&str>, s: Option<&str>, su: Option<&str>| SignalEnvelopeInner {
+        source: s.map(|v| v.to_string()),
+        source_number: sn.map(|v| v.to_string()),
+        source_uuid: su.map(|v| v.to_string()),
+        timestamp: None,
+        data_message: Some(SignalDataMessage {
+            timestamp: Some(1),
+            message: Some("m".into()),
+            group_info: None,
+        }),
+        sync_message: None,
+    };
+    assert_eq!(
+        envelope_sender(&mk(Some("+111"), Some("+222"), Some("u1"))),
+        "+111",
+        "sourceNumber 优先级最高"
+    );
+    assert_eq!(
+        envelope_sender(&mk(None, Some("+222"), Some("u1"))),
+        "+222",
+        "source 次之"
+    );
+    assert_eq!(
+        envelope_sender(&mk(None, None, Some("u1"))),
+        "u1",
+        "sourceUuid 兜底"
+    );
+    let empty = SignalEnvelopeInner {
+        source: None,
+        source_number: None,
+        source_uuid: None,
+        timestamp: None,
+        data_message: None,
+        sync_message: None,
+    };
+    assert_eq!(
+        envelope_sender(&empty),
+        "unknown",
+        "全缺 = unknown 诚实兜底"
+    );
 }

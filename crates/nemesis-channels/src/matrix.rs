@@ -301,47 +301,47 @@ impl MatrixChannel {
     ) -> Vec<(String, String, String)> {
         let mut messages = Vec::new();
 
-        if let Some(ref rooms) = sync.rooms {
-            if let Some(ref join) = rooms.join {
-                for (room_id, room_data) in join {
-                    if let Some(ref timeline) = room_data.timeline {
-                        for event in &timeline.events {
-                            if event.event_type != "m.room.message" {
-                                continue;
-                            }
-
-                            let sender = match event.sender {
-                                Some(ref s) => s,
-                                None => continue,
-                            };
-
-                            // Ignore our own messages
-                            if sender == bot_user_id {
-                                continue;
-                            }
-
-                            // allow_from access control — single source of truth
-                            // is `MatrixChannel::sender_allowed` (shared with start()).
-                            if !Self::sender_allowed(&self.config.allow_from, sender) {
-                                continue;
-                            }
-
-                            let content = match event.content {
-                                Some(ref c) => {
-                                    if c.msgtype.as_deref() != Some("m.text") {
-                                        continue;
-                                    }
-                                    c.body.as_deref().unwrap_or("")
-                                }
-                                None => continue,
-                            };
-
-                            if content.is_empty() {
-                                continue;
-                            }
-
-                            messages.push((sender.clone(), room_id.clone(), content.to_string()));
+        if let Some(ref rooms) = sync.rooms
+            && let Some(ref join) = rooms.join
+        {
+            for (room_id, room_data) in join {
+                if let Some(ref timeline) = room_data.timeline {
+                    for event in &timeline.events {
+                        if event.event_type != "m.room.message" {
+                            continue;
                         }
+
+                        let sender = match event.sender {
+                            Some(ref s) => s,
+                            None => continue,
+                        };
+
+                        // Ignore our own messages
+                        if sender == bot_user_id {
+                            continue;
+                        }
+
+                        // allow_from access control — single source of truth
+                        // is `MatrixChannel::sender_allowed` (shared with start()).
+                        if !Self::sender_allowed(&self.config.allow_from, sender) {
+                            continue;
+                        }
+
+                        let content = match event.content {
+                            Some(ref c) => {
+                                if c.msgtype.as_deref() != Some("m.text") {
+                                    continue;
+                                }
+                                c.body.as_deref().unwrap_or("")
+                            }
+                            None => continue,
+                        };
+
+                        if content.is_empty() {
+                            continue;
+                        }
+
+                        messages.push((sender.clone(), room_id.clone(), content.to_string()));
                     }
                 }
             }
@@ -386,12 +386,12 @@ impl Channel for MatrixChannel {
         let running = self.running.clone();
         let since_token = self.since_token.clone();
 
-        // Do initial sync to get the since token, skipping old messages
-        if since_token.read().is_none() {
-            if let Ok(token) = self.initial_sync().await {
-                *since_token.write() = Some(token);
-            }
-        }
+        // BUG-20261125-021：冷启动拿 since token 的职责移入 spawn 的 sync
+        // loop（loop 内带 backoff 重试直到拿到 token 或通道停止）。此处不再
+        // 做一次性 initial_sync——`if let Ok` 静默吞失败后 token 缺失，loop
+        // 无 since 的首次 /sync 是全量初始同步语义（每房间最近 timeline 全部
+        // 当新消息投递）＝homeserver 启动瞬间一次抖动就把历史消息洪水喂给
+        // agent。loop 内实现见下方预取段。
 
         tokio::spawn(async move {
             let mut backoff = std::time::Duration::from_secs(1);
@@ -400,6 +400,71 @@ impl Channel for MatrixChannel {
             loop {
                 if !*running.read() {
                     break;
+                }
+
+                // BUG-20261125-021：冷启动预取段——since token 缺失时不准进
+                // 主循环。带 backoff 重试拿 token（timeout=0 + limit:0 的
+                // initial sync 形态，不拉事件），拿到才继续；通道停止即退；
+                // 失败 loud warn 留痕（不再静默）。无 since 的 /sync 是全量
+                // 初始同步语义，历史事件没有新旧之分会被当新消息逐条投递。
+                if since_token.read().is_none() {
+                    loop {
+                        if !*running.read() {
+                            break;
+                        }
+                        let url = format!(
+                            "{}/_matrix/client/v3/sync?timeout=0&filter={{\"room\":{{\"timeline\":{{\"limit\":0}}}}}}",
+                            homeserver
+                        );
+                        let got = match http
+                            .get(&url)
+                            .header("Authorization", format!("Bearer {}", access_token))
+                            .send()
+                            .await
+                        {
+                            Ok(r) if r.status().is_success() => {
+                                match r.json::<serde_json::Value>().await {
+                                    Ok(body) => match body["next_batch"].as_str() {
+                                        Some(next) => {
+                                            *since_token.write() = Some(next.to_string());
+                                            info!(
+                                                "[MatrixChannel] initial sync ok, token acquired"
+                                            );
+                                            true
+                                        }
+                                        None => {
+                                            warn!(
+                                                "[MatrixChannel] initial sync response missing next_batch"
+                                            );
+                                            false
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warn!("[MatrixChannel] initial sync parse error: {e}");
+                                        false
+                                    }
+                                }
+                            }
+                            Ok(r) => {
+                                warn!("[MatrixChannel] initial sync returned {}", r.status());
+                                false
+                            }
+                            Err(e) => {
+                                warn!("[MatrixChannel] initial sync error: {e}");
+                                false
+                            }
+                        };
+                        if got {
+                            break;
+                        }
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(max_backoff);
+                    }
+                    // 预取因停止退出时连主循环一起退出（不进无 token 的全量拉取）。
+                    if !*running.read() {
+                        break;
+                    }
+                    backoff = std::time::Duration::from_secs(1);
                 }
 
                 // Build /sync URL
@@ -439,7 +504,16 @@ impl Channel for MatrixChannel {
                 let body: serde_json::Value = match resp.json().await {
                     Ok(b) => b,
                     Err(e) => {
+                        // BUG-20261125-020：parse 失败路径对称退避——请求错误
+                        // （422）与 HTTP 非 success（430）都有 backoff，唯独
+                        // 200-非JSON（代理故障页 / 响应截断 / 中间盒注入）裸
+                        // continue 立即重发＝紧密循环洪水打 homeserver（每次
+                        // 请求毫秒级往返，long-poll 的 30s 等待被故障端点绕
+                        // 过）。此处 backoff 已在 437 行重置为 1s，先 sleep 再
+                        // 翻倍，与两条错误路径同构。
                         warn!("[MatrixChannel] sync parse error: {e}");
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(max_backoff);
                         continue;
                     }
                 };

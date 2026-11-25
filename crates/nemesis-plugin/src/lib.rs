@@ -14,6 +14,9 @@ pub mod resources;
 pub mod mail;
 pub mod wrapper;
 
+#[cfg(test)]
+mod roaming_tests;
+
 pub use host_services::{HOST_SERVICES_VERSION, HostServices, build_host_services};
 pub use mail::{HOST_MAIL_ABI_VERSION, HostMailVTable, MailPluginHandle};
 pub use plugin::{BasePlugin, Plugin, PluginManager, ToolInvocation};

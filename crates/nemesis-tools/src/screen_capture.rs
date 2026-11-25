@@ -329,7 +329,6 @@ impl ScreenCaptureTool {
                 "file_path": output_path.to_string_lossy().to_string()
             });
 
-            let resolved_hwnd;
             if !hwnd.is_empty() {
                 mcp_args["hwnd"] = serde_json::Value::String(hwnd.to_string());
             } else if !window_title.is_empty() {
@@ -339,16 +338,25 @@ impl ScreenCaptureTool {
                 });
                 match caller.call_tool("find_window_by_title", &find_args).await {
                     Ok(find_result) => {
-                        resolved_hwnd = if let Ok(parsed) =
+                        let resolved_hwnd = if let Ok(parsed) =
                             serde_json::from_str::<serde_json::Value>(&find_result)
                         {
                             parsed["hwnd"].as_str().unwrap_or("").to_string()
                         } else {
                             String::new()
                         };
-                        if !resolved_hwnd.is_empty() {
-                            mcp_args["hwnd"] = serde_json::Value::String(resolved_hwnd.clone());
+                        if resolved_hwnd.is_empty() {
+                            // BUG-20261125-031：标题解析失败此前静默放行——
+                            // mcp_args 不带 hwnd 继续调 capture_screenshot_to_file
+                            // = MCP 按自身默认捕获**全屏**，却以 "Window screenshot
+                            // saved" 假成功上报。诚实报错（与 get_window_text 的
+                            // unresolved 行为同构）。
+                            return ToolResult::error(&format!(
+                                "could not resolve window handle for title '{}'",
+                                window_title
+                            ));
                         }
+                        mcp_args["hwnd"] = serde_json::Value::String(resolved_hwnd);
                     }
                     Err(e) => {
                         return ToolResult::error(&format!(
@@ -446,7 +454,14 @@ Write-Output "OK"
     /// `$(...)` subexpressions, so a benign title containing `$` (e.g. a
     /// browser tab "$100 off") would corrupt the error — or execute injected
     /// script — on the failure path.
-    fn build_window_find_part(hwnd: &str, window_title: &str) -> String {
+    ///
+    /// BUG-20261125-029：hwnd 分支此前只剥 `HWND(`/`)`/`0x` 三个前缀就**裸插
+    /// 值**进脚本——`"1234; calc"` 形态变成 `[IntPtr]0x1234; calc`，PowerShell
+    /// `-Command` 下 `;` 后随语句恒执行（活体探针实证）。命令守卫只审 exec
+    /// 类工具的命令行，screen_capture 内部 spawn 的 PowerShell 不在其视线
+    /// 内，本函数的十六进制校验是该参数的唯一注入闸：合法句柄 = 纯十六
+    /// 进制（≤16 位，u64 上界），其余诚实报错（`Err`），绝不拼进脚本。
+    fn build_window_find_part(hwnd: &str, window_title: &str) -> Result<String, String> {
         if !hwnd.is_empty() {
             // Parse hwnd from "HWND(0x...)" format or plain hex (with or
             // without the 0x prefix — the format! below adds its own, and a
@@ -456,7 +471,15 @@ Write-Output "OK"
                 .trim_start_matches("HWND(")
                 .trim_end_matches(')')
                 .trim_start_matches("0x");
-            format!("$handle = [IntPtr]0x{}", hwnd_clean)
+            if hwnd_clean.is_empty()
+                || hwnd_clean.len() > 16
+                || !hwnd_clean.chars().all(|c| c.is_ascii_hexdigit())
+            {
+                return Err(format!(
+                    "invalid hwnd: {hwnd} (expected hex like 'HWND(0x12345)' or '0x12345')"
+                ));
+            }
+            Ok(format!("$handle = [IntPtr]0x{}", hwnd_clean))
         } else {
             // `-like` 模式位：单引号转义只封字符串注入面，`*`/`?`/`[`/`]`
             // 仍是通配符（标题含 `[兼容模式]` 一类方括号时被解释成字符集
@@ -476,11 +499,11 @@ Write-Output "OK"
                     c => vec![c],
                 })
                 .collect();
-            format!(
+            Ok(format!(
                 r#"$proc = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{wildcard_title}*' -and $_.MainWindowHandle -ne 0 }} | Select-Object -First 1
 if (-not $proc) {{ Write-Error 'Window not found: {quoted_title}'; exit 1 }}
 $handle = $proc.MainWindowHandle"#
-            )
+            ))
         }
     }
 
@@ -500,7 +523,11 @@ $handle = $proc.MainWindowHandle"#
             .replace('\'', "''");
         let fmt_enum = Self::image_format_enum(format);
 
-        let find_part = Self::build_window_find_part(hwnd, window_title);
+        // BUG-20261125-029：非法 hwnd 在拼脚本前诚实报错（不发起 PowerShell）。
+        let find_part = match Self::build_window_find_part(hwnd, window_title) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::error(&e),
+        };
 
         let script = format!(
             r#"
@@ -613,7 +640,24 @@ impl Tool for ScreenCaptureTool {
         };
 
         // Determine output format
-        let format = args["format"].as_str().unwrap_or("png").to_string();
+        //
+        // BUG-20261125-030：format 此前未在工具内校验，直接进输出文件扩展名
+        // （`screenshot_{ts}.{format}`）——Windows 把 `\` `/` 都当路径分隔符，
+        // `"png\..\..\evil"` 形态借 `..` 归一把 `$bitmap.Save` 引到 workspace
+        // 外任意路径。agent 路径有 args_validator 的 enum 闸兜着，workflow
+        // 工具节点路径（tool_adapter 文档明示无 args_validator）直通；security
+        // 管线按 FileWrite 分类看到的是内部生成的 workspace/temp 目标，对
+        // 扩展名穿越盲。白名单 = schema enum ∪ image_format_enum 支持集
+        // （png/jpg/jpeg/bmp），小写归一后放行，其余诚实报错。
+        let format_raw = args["format"].as_str().unwrap_or("png");
+        let format = match format_raw.to_lowercase().as_str() {
+            "png" | "jpg" | "jpeg" | "bmp" => format_raw.to_lowercase(),
+            other => {
+                return ToolResult::error(&format!(
+                    "invalid format: {other} (supported: png, jpg, bmp)"
+                ));
+            }
+        };
 
         // Prepare output path
         let output_path = match self.prepare_output_path(&format) {

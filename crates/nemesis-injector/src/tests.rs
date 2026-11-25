@@ -75,3 +75,24 @@ fn shellcode_image_rejects_non_ascii_path() {
         "诚实报非 ASCII: {err}"
     );
 }
+
+/// BUG-20261125-014 回归锁：env 收集必须 vars_os + lossy——构造一个会让
+/// `std::env::vars()` 当场 panic 的非 Unicode 环境变量**值**（非配对高代
+/// 理项码元，Windows 环境块合法形态），收集后不得 panic 且该值按块的
+/// lossy 意图降级为 '?'（非 ASCII → '?' 同源语义）。变量在场断言同时
+/// 防真空通过（set_var 失败 = 毒未注入 = 锁不住）。
+#[test]
+fn collect_env_pairs_survives_non_unicode_env() {
+    use std::os::windows::ffi::OsStringExt;
+    let name = "NEMESIS_INJECTOR_LOSSY_PROBE";
+    let bad_value = std::ffi::OsString::from_wide(&[0xD8_00u16]);
+    unsafe { std::env::set_var(name, &bad_value) };
+    let pairs = collect_env_pairs();
+    let want = format!("{name}=\u{FFFD}");
+    assert!(
+        pairs.contains(&want),
+        "非 Unicode 环境变量值必须以 lossy 形态进块（'?' 降级），实际命中: {:?}",
+        pairs.iter().find(|s| s.starts_with(name))
+    );
+    unsafe { std::env::remove_var(name) };
+}

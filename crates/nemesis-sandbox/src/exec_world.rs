@@ -188,7 +188,12 @@ pub fn path_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
 /// SANDBOX/HOME/RESTRICT/REEXEC/EXTRA_ROOTS/AGENT_ID/LEASE/BACKEND/CONSOLE
 /// 九个后来陆续加入的运输层键——脚本继承后跑 `nemesisbot` CLI 会被误路由
 /// 进角色 worker（main.rs 短路加 args 条件是根修，这里是纵深：workflow
-/// 直 spawn 车道不再成为漏网传播面）。
+/// 直 spawn 车道不再成为漏网传播面）。BUG-20261125-015：九键补漏本身也
+/// 漏了 `DENY_PATTERNS`（2026-11-08 接线的 exec deny 词表透传，与
+/// EXTRA_ROOTS 同族同源 env_pairs）——嵌套场景下外层执行体的 deny 词表
+/// 会泄进脚本 env（消费点 exec_worker 只认 deny 方向=过度限制，但表契约
+/// 「新增运输层 env 必须同步入表」被违反；`executor_internal_env_table_
+/// is_complete` 兜底测试的字面清单同步补齐）。
 ///
 /// 刻意**枚举**而非 `NEMESISBOT_` 前缀判定：前缀内还有用户配置语义的
 /// `NEMESISBOT_HOME`（CLI home 定位优先级 2）等非运输层变量——剥掉会改变
@@ -205,6 +210,7 @@ pub const EXECUTOR_INTERNAL_ENV: &[&str] = &[
     "NEMESISBOT_EXECUTOR_RESTRICT",
     "NEMESISBOT_EXECUTOR_REEXEC",
     "NEMESISBOT_EXECUTOR_EXTRA_ROOTS",
+    "NEMESISBOT_EXECUTOR_DENY_PATTERNS",
     "NEMESISBOT_EXECUTOR_AGENT_ID",
     "NEMESISBOT_LEASE",
     "NEMESISBOT_SANDBOX_BACKEND",

@@ -387,20 +387,20 @@ impl FeishuChannel {
     /// Extracts sender ID from a Feishu event sender.
     pub fn extract_sender_id(sender: &FeishuEventSender) -> &str {
         if let Some(ref sid) = sender.sender_id {
-            if let Some(ref uid) = sid.user_id {
-                if !uid.is_empty() {
-                    return uid;
-                }
+            if let Some(ref uid) = sid.user_id
+                && !uid.is_empty()
+            {
+                return uid;
             }
-            if let Some(ref oid) = sid.open_id {
-                if !oid.is_empty() {
-                    return oid;
-                }
+            if let Some(ref oid) = sid.open_id
+                && !oid.is_empty()
+            {
+                return oid;
             }
-            if let Some(ref uid) = sid.union_id {
-                if !uid.is_empty() {
-                    return uid;
-                }
+            if let Some(ref uid) = sid.union_id
+                && !uid.is_empty()
+            {
+                return uid;
             }
         }
         "unknown"
@@ -413,10 +413,10 @@ impl FeishuChannel {
             None => return String::new(),
         };
 
-        if message.message_type.as_deref() == Some("text") {
-            if let Ok(text_content) = serde_json::from_str::<FeishuTextContent>(content) {
-                return text_content.text;
-            }
+        if message.message_type.as_deref() == Some("text")
+            && let Ok(text_content) = serde_json::from_str::<FeishuTextContent>(content)
+        {
+            return text_content.text;
         }
 
         content.clone()
@@ -862,7 +862,7 @@ fn extract_json_from_protobuf(data: &[u8]) -> Option<String> {
                     return Some(value.to_string());
                 }
                 // Try as nested object with event key
-                if value.is_object() && value.as_object().map_or(false, |m| !m.is_empty()) {
+                if value.as_object().is_some_and(|m| !m.is_empty()) {
                     return Some(value.to_string());
                 }
             }

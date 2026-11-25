@@ -285,7 +285,7 @@ impl RoamingPluginHandle {
     }
 
     pub fn identity_set(self, secret_key_hex: &str) -> Result<String, String> {
-        let arg = format!(r#"{{"secret_key_hex":"{secret_key_hex}"}}"#);
+        let arg = identity_set_arg(secret_key_hex);
         self.call_json(self.identity_set, &arg, "roaming_identity_set")
     }
 
@@ -343,6 +343,13 @@ fn json_arg(v: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// identity_set 入参装配（pub(crate)：回归锁 roaming_tests 直测）。
+/// secret_key_hex 来自 WSAPI `node.update_identity` 用户输入——裸 format! 拼
+/// JSON 的 `"`/`\` 注入面；trust_* 同文件三处都走 json_arg，此处对称。
+pub(crate) fn identity_set_arg(secret_key_hex: &str) -> String {
+    format!(r#"{{"secret_key_hex":{}}}"#, json_arg(secret_key_hex))
 }
 
 /// 从插件返回的裸指针收集 JSON 字符串（插件侧静态缓冲 per-call 覆盖——立即拷出）。

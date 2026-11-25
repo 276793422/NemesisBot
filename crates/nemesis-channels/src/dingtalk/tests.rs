@@ -541,3 +541,47 @@ fn b053_distinct_ids_and_missing_id_pass() {
     assert!(rx.try_recv().is_ok(), "ID 全缺失必须保守放行");
     assert!(rx.try_recv().is_ok(), "ID 全缺失保守放行（宁重复不丢）");
 }
+
+/// BUG-20261125-027 回归锁：钉钉 v1.0 /v1.0/oauth2/accessToken 响应 wire
+/// 形态为 camelCase `accessToken`/`expireIn`（权威真相源 = 官方 Go SDK
+/// alibabacloud-go/dingtalk oauth2_1_0/client.go GetAccessTokenResponseBody
+/// json tag）。原 snake_case 无 rename → serde 精确匹配字段名，线上键静默
+/// 忽略 → `access_token` 恒 None → refresh_token() 报
+/// "no access_token in response"、流 loop Step 1 取 unwrap_or_default()
+/// 空串 → "auth returned empty token, backing off" 死循环，通道永远无法
+/// 上线。修复后：线上 camelCase 形态必须解出 token；旧 snake_case 形态经
+/// alias 兼容；缺 token 响应诚实 None（上游 filter 语义不变）。
+#[test]
+fn b027_wire_camelcase_token_response_deserializes() {
+    // 线上 camelCase 形态（官方 SDK json tag 权威源）
+    let body: AccessTokenResponse =
+        serde_json::from_str(r#"{"accessToken": "at-wire-123", "expireIn": 7200}"#)
+            .expect("线上 camelCase wire 形态必须可反序列化");
+    assert_eq!(
+        body.access_token.as_deref(),
+        Some("at-wire-123"),
+        "accessToken 必须落 access_token 字段（修复前恒 None）"
+    );
+    assert_eq!(body.expire_in, Some(7200), "expireIn 必须落 expire_in 字段");
+
+    // 两个消费点语义：refresh_token() 的 filter 非 empty（229 行）
+    let token = body
+        .access_token
+        .clone()
+        .filter(|t| !t.is_empty())
+        .expect("线上 token 必须通过非空 filter");
+    assert_eq!(token, "at-wire-123");
+    // 流 loop Step 1 的 unwrap_or_default（523 行）不再得到空串
+    assert!(!body.access_token.clone().unwrap_or_default().is_empty());
+
+    // 旧 snake_case 形态经 alias 兼容（双形态惯例，同文件身份字段同款）
+    let legacy: AccessTokenResponse =
+        serde_json::from_str(r#"{"access_token": "at-legacy", "expire_in": 3600}"#)
+            .expect("旧 snake_case 形态必须经 alias 兼容");
+    assert_eq!(legacy.access_token.as_deref(), Some("at-legacy"));
+    assert_eq!(legacy.expire_in, Some(3600));
+
+    // 缺 token 响应（错误信封等）诚实 None
+    let missing: AccessTokenResponse = serde_json::from_str(r#"{"expireIn": 7200}"#).unwrap();
+    assert!(missing.access_token.is_none(), "缺 token 必须诚实 None");
+}

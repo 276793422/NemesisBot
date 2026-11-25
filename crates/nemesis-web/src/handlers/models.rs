@@ -1098,7 +1098,13 @@ impl ModelsHandler {
             llm_ref: swap.llm_ref.clone(),
             api_key: swap.api_key.clone(),
             api_base: swap.api_base.clone(),
-            workspace: String::new(),
+            // workspace 必须透传（BUG-20261125-018）：CLI 型 lane
+            // （claude-cli/codex-cli）的子进程 cwd 直接消费它（claude_cli
+            // current_dir / codex_cli -C）——留空 = 热切后 CLI 子进程落在
+            // gateway 进程 cwd，与冷启动（agent_factory workspace_dir）
+            // 行为分裂。ctx.workspace 由 gateway 装配链填入（WebServerConfig
+            // → per-request ctx，值=home/workspace），与冷启动同源。
+            workspace: ctx.workspace.clone().unwrap_or_default(),
             connect_mode: swap.connect_mode.clone(),
             protocol: swap.protocol.clone(),
             timeout_secs: swap.timeout_secs,
@@ -1115,7 +1121,8 @@ impl ModelsHandler {
                 // 后链静默消失直至重启）。装配语义单点
                 // providers::assemble_fallback_chain，级别解析同
                 // canonical_swap_params 的 typed 口径。
-                let provider = Self::swap_with_fallback_chain(cfg, name, provider);
+                let provider =
+                    Self::swap_with_fallback_chain(cfg, name, &factory_cfg.workspace, provider);
                 // 统一默认槽（方案A 核心）：与主 loop 同一 provider Arc，
                 // 槽消费者（default_following wrapper）经此自动跟随热切，
                 // 不再需要逐消费者手写联动。
@@ -1164,11 +1171,12 @@ impl ModelsHandler {
     /// `fallback_to` 别名并交由 `providers::assemble_fallback_chain`
     /// 装配（启动路径 agent_factory::wrap_fallback_chain 同源单点）。
     /// config 不是合法 typed 形态 / 键缺失 / 级别为空 = 原样返回 primary
-    ///（热切行为不变）。级别 workspace 传空——与本 lane 主 provider 构造
-    /// 口径一致（CLI 型 provider 在热切 lane 本就不完整，既有行为不动）。
+    ///（热切行为不变）。级别 workspace 与主 provider 同源透传
+    ///（BUG-20261125-018：CLI 型 lane 子进程 cwd 消费该字段）。
     fn swap_with_fallback_chain(
         raw_cfg: &serde_json::Value,
         name: &str,
+        workspace: &str,
         primary: Arc<dyn nemesis_providers::router::LLMProvider>,
     ) -> Arc<dyn nemesis_providers::router::LLMProvider> {
         use nemesis_providers::fallback_provider::FallbackLevel;
@@ -1205,7 +1213,10 @@ impl ModelsHandler {
                         llm_ref: format!("{}/{}", fr.provider_name, fr.model_name),
                         api_key: fr.api_key.clone(),
                         api_base: fr.api_base.clone(),
-                        workspace: String::new(),
+                        // 与主 provider 构造同源透传（BUG-20261125-018）：CLI
+                        // 型 lane 子进程 cwd 消费该字段——fallback level 留空
+                        // 会让故障转移后的 CLI 子进程 cwd 与主 provider 分裂。
+                        workspace: workspace.to_string(),
                         connect_mode: fr.connect_mode,
                         protocol: fr.protocol.clone(),
                         timeout_secs: fr.timeout_secs,
@@ -1781,7 +1792,13 @@ pub async fn probe_model_entry(
         llm_ref: swap.llm_ref.clone(),
         api_key: swap.api_key.clone(),
         api_base: swap.api_base.clone(),
-        workspace: String::new(),
+        // workspace 与 set_default 热切同源透传（BUG-20261125-018）：CLI 型
+        // lane 子进程 cwd 消费它，探测形态贴近真实使用形态（home/workspace
+        // = gateway 冷启动口径）。
+        workspace: Path::new(home)
+            .join("workspace")
+            .to_string_lossy()
+            .to_string(),
         connect_mode: swap.connect_mode.clone(),
         protocol: swap.protocol.clone(),
         timeout_secs: swap.timeout_secs,
@@ -2329,7 +2346,13 @@ pub async fn probe_effort_entry(home: &str, name: &str) -> Result<serde_json::Va
         llm_ref: swap.llm_ref.clone(),
         api_key: swap.api_key.clone(),
         api_base: swap.api_base.clone(),
-        workspace: String::new(),
+        // workspace 与 set_default 热切同源透传（BUG-20261125-018）：CLI 型
+        // lane 子进程 cwd 消费它，探测形态贴近真实使用形态（home/workspace
+        // = gateway 冷启动口径）。
+        workspace: Path::new(home)
+            .join("workspace")
+            .to_string_lossy()
+            .to_string(),
         connect_mode: swap.connect_mode.clone(),
         protocol: swap.protocol.clone(),
         timeout_secs: swap.timeout_secs,

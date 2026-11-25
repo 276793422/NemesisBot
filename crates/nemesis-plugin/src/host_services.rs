@@ -101,19 +101,17 @@ static CONFIG_DIR_PTR: OnceLock<StaticPtr> = OnceLock::new();
 /// and returns function pointers that read from them.
 pub fn build_host_services(workspace_dir: &Path) -> HostServices {
     // Store workspace dir (leaked CString — valid for process lifetime)
-    let ws_cstring = std::ffi::CString::new(
-        workspace_dir
-            .to_str()
-            .expect("workspace path is valid UTF-8"),
-    )
-    .expect("no null bytes in workspace path");
+    // Lossy conversion (BUG-20261125-014 family): a workspace path with
+    // unpaired surrogates must degrade to U+FFFD (downstream FS ops fail
+    // honestly) rather than panic the executor child process.
+    let ws_cstring = std::ffi::CString::new(workspace_dir.to_string_lossy().into_owned())
+        .expect("no null bytes in workspace path");
     let _ = WORKSPACE_DIR_PTR.set(StaticPtr(ws_cstring.into_raw()));
 
     // Store config dir: workspace/config/plugins/
     let config_dir = workspace_dir.join("config").join("plugins");
-    let config_cstring =
-        std::ffi::CString::new(config_dir.to_str().expect("config path is valid UTF-8"))
-            .expect("no null bytes in config path");
+    let config_cstring = std::ffi::CString::new(config_dir.to_string_lossy().into_owned())
+        .expect("no null bytes in config path");
     let _ = CONFIG_DIR_PTR.set(StaticPtr(config_cstring.into_raw()));
 
     HostServices {
