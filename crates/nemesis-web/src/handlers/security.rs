@@ -1016,8 +1016,10 @@ impl SecurityHandler {
     /// 本函数与 runtime 逐键对齐：缺席 = true、显式 bool = 该值。
     /// 全部 layers.* 开关改动需重启网关生效（reload_config 假姿态，计划
     /// §2.5），`effective: "restart"` 提示字段供前端标注生效时机；
-    /// `global.enabled`（主 config.json security.enabled 总闸）是例外，
-    /// 真热生效，另段投影。
+    /// `global.enabled`（主 config.json security.enabled 总闸）同为重启
+    /// 生效（装配期快照：插件装配点唯一 = gateway init_agent Step 9b，
+    /// 运行期 dispatch 闸是内存旗标、生产零写者；`reload_config` 生产
+    /// 零调用 = R537 观察④钉住区），另段投影（BUG-20261126-099）。
     fn layers_projection(workspace: &str) -> Result<serde_json::Value, String> {
         let path = security_config_path(workspace);
         let raw = match nemesis_utils::fsutil::read_config_string(&path) {
@@ -1320,9 +1322,13 @@ impl SecurityHandler {
     }
 
     /// security.enabled 总闸（**主 config.json**，typed Config.security；
-    /// 缺省 true）。与层开关不同：总闸 runtime reload 真热生效——前端标
-    /// 「即时生效」。home 缺席/主 config 读不了 = `available:false`（诚实
-    /// 降级，不猜默认值冒充读到了）。
+    /// 缺省 true）。与层开关同为**重启网关生效**（装配期快照：插件装配
+    /// 点唯一 = gateway init_agent Step 9b，`security.enabled=false` 启动
+    /// = 插件不装配；运行期 dispatch 闸是内存旗标（execute_inner），
+    /// `set_enabled`/`reload_config` 生产零调用——后者是 R537 观察④
+    /// 钉住区，真热语义是否改造待用户裁决）——前端标「重启网关生效」
+    /// （BUG-20261126-099）。home 缺席/主 config 读不了 =
+    /// `available:false`（诚实降级，不猜默认值冒充读到了）。
     fn global_switch_snapshot(ctx: &RequestContext) -> serde_json::Value {
         let Some(home) = ctx.state.home.as_deref() else {
             return serde_json::json!({ "available": false });
