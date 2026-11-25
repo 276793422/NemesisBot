@@ -251,10 +251,10 @@ impl ModuleHandler for ClusterHandler {
                 self.persona_apply(&data, ctx)
             }
             "peers" => self.peers(ctx),
-            "firewall.check" => self.firewall_check(ctx),
+            "firewall.check" => self.firewall_check(ctx).await,
             "firewall.add_rules" => {
                 let data = data.ok_or("missing data")?;
-                self.firewall_add_rules(&data, ctx)
+                self.firewall_add_rules(&data, ctx).await
             }
             "diagnostics.run" => {
                 let data = data.ok_or("missing data")?;
@@ -2843,7 +2843,10 @@ fn format_ago(d: std::time::Duration) -> String {
 
 impl ClusterHandler {
     /// Check network readiness for cluster discovery and RPC.
-    fn firewall_check(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn firewall_check(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let (udp_port, tcp_port) = Self::read_cluster_ports(ctx);
         let mut tests = Vec::new();
 
@@ -2872,7 +2875,20 @@ impl ClusterHandler {
         tests.push(tcp_result);
 
         // Test 5: Platform firewall status
-        let fw_result = check_platform_firewall(udp_port, tcp_port);
+        // BUG-20261125-063：netsh/ufw/iptables/pfctl 是百毫秒~秒级外部命令，
+        // async 上下文直调会卡死 tokio worker（BUG-20261118-172 同族纪律：
+        // 外呼不占 worker），移 spawn_blocking。JoinError（下游 panic）按
+        // 该项失败落账，不让整个探测面消失。
+        let fw_result =
+            tokio::task::spawn_blocking(move || check_platform_firewall(udp_port, tcp_port))
+                .await
+                .unwrap_or_else(|e| {
+                    serde_json::json!({
+                        "name": "platform_firewall",
+                        "pass": false,
+                        "detail": format!("防火墙探测任务失败: {e}"),
+                    })
+                });
         tests.push(fw_result);
 
         let all_pass = tests.iter().all(|t| t["pass"].as_bool().unwrap_or(false));
@@ -2897,7 +2913,7 @@ impl ClusterHandler {
     }
 
     /// Add firewall rules for cluster ports.
-    fn firewall_add_rules(
+    async fn firewall_add_rules(
         &self,
         data: &serde_json::Value,
         ctx: &RequestContext,
@@ -2919,7 +2935,14 @@ impl ClusterHandler {
         let udp_port = parse_port("udp_port", default_udp)?;
         let tcp_port = parse_port("tcp_port", default_tcp)?;
 
-        add_platform_firewall_rules(udp_port as u16, tcp_port as u16)
+        // BUG-20261125-063：netsh add / ufw / iptables 是秒级外部命令（UAC
+        // 臂 ShellExecuteW 本就不等待），async 上下文直调卡死 tokio worker，
+        // 移 spawn_blocking（BUG-20261118-172 同族纪律）。
+        tokio::task::spawn_blocking(move || {
+            add_platform_firewall_rules(udp_port as u16, tcp_port as u16)
+        })
+        .await
+        .map_err(|e| format!("防火墙规则任务失败: {e}"))?
     }
 
     /// Read cluster ports from config file, fallback to defaults.

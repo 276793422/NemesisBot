@@ -145,7 +145,20 @@ pub(super) async fn issue_dispatch(
     };
 
     let cluster = ctx.state.cluster.clone();
-    let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor, None)?;
+    // BUG-20261125-063：core 内含 git 仓库操作（ensure_repo/head_commit_hex/
+    // export_head_tree，仓库越大越慢）+ staging 目录清除（remove_dir_all_
+    // resilient 退避最坏 ~4.4s），async 上下文直调卡死 tokio worker
+    // （BUG-20261118-172 同族纪律：外呼/退避不占 worker），移 spawn_blocking。
+    // 派发是每次发车必经的高频路径，worker 卡顿会放大成整批会话排队。
+    let out = {
+        let store = store.clone();
+        let target = target.clone();
+        tokio::task::spawn_blocking(move || {
+            dispatch_issue_core(&store, cluster.as_ref(), id, &target, &actor, None)
+        })
+        .await
+        .map_err(|e| format!("派发任务执行失败: {e}"))??
+    };
     // D：手动重派 = 人类明确意图 → 失败账清零（「人工处理后计数作废」
     // 在手动路径成真；熔断停车后 reopen 重派不再因存量 count 秒熔断）。与评
     // 审链同源同一 JSON（以 nemesis-board fail_streak 为准）；清账失败不
