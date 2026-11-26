@@ -609,9 +609,22 @@ impl RequestLogger {
                         } else {
                             tc.arguments.clone()
                         };
+                        // 自适应围栏 + 逐行加引前缀（同族横扫 2026-11-26
+                        // BUG-20261126-122）：args 是任意外部内容（可含 ```
+                        // 行或 `# 标题` 行），定长围栏被正文打碎、裸行还会
+                        // 逃出 blockquote 伪造结构。围栏长度取正文最长纯反
+                        // 引号行 +1（md_fence_len），内容行统一加 "> " 前缀
+                        // 留在引用块内。
+                        let fence = "`".repeat(md_fence_len(&args_preview));
+                        let mut quoted = String::new();
+                        for line in args_preview.lines() {
+                            quoted.push_str("> ");
+                            quoted.push_str(line);
+                            quoted.push('\n');
+                        }
                         content.push_str(&format!(
-                            "\n> ToolCall: `{}` ({})\n> ```json\n> {}\n> ```\n",
-                            tc.name, tc.id, args_preview,
+                            "\n> ToolCall: `{}` ({})\n> {fence}json\n{quoted}> {fence}\n",
+                            tc.name, tc.id,
                         ));
                     }
                 }
@@ -639,12 +652,16 @@ impl RequestLogger {
             info.content.clone()
         };
 
+        // 自适应围栏（同族横扫 BUG-20261126-122）：LLM 输出可含任意
+        // markdown（含 `# ` 标题行与反引号行），裸插会打碎文件自身结构
+        // （读端 read_md_section 在标题行断节）。与 Messages 段同一处理。
+        let fence = "`".repeat(md_fence_len(&response_content));
         let mut content = format!(
             "# LLM Response\n\n\
              **Timestamp**: {}\n\
              **Round**: {}\n\
              **Duration**: {:.1}s\n\n\
-             ## Response Content\n\n{}\n\n",
+             ## Response Content\n\n{fence}text\n{}\n{fence}\n\n",
             info.timestamp.to_rfc3339(),
             info.round,
             info.duration_ms as f64 / 1000.0,
@@ -666,8 +683,11 @@ impl RequestLogger {
                 } else {
                     tc.arguments.clone()
                 };
+                // 自适应围栏（同族横扫）：args 此前裸插在 **Arguments**:
+                // 行后，多行 args 的任意行可伪造 **ID**/**Name** 结构行。
+                let fence = "`".repeat(md_fence_len(&args_preview));
                 content.push_str(&format!(
-                    "- **ID**: {}\n  **Name**: {}\n  **Arguments**: {}\n\n",
+                    "- **ID**: {}\n  **Name**: {}\n  **Arguments**:\n\n{fence}json\n{}\n{fence}\n\n",
                     tc.id, tc.name, args_preview
                 ));
             }
@@ -807,8 +827,11 @@ impl RequestLogger {
                 } else {
                     op.arguments.clone()
                 };
+                // 自适应围栏（同族横扫 BUG-20261126-122）：定长 ``` 围栏
+                // 被工具入参里的 ``` 行打碎，正文逃逸伪造结构。
+                let fence = "`".repeat(md_fence_len(&args_preview));
                 content.push_str(&format!(
-                    "### Arguments\n```json\n{}\n```\n\n",
+                    "### Arguments\n{fence}json\n{}\n{fence}\n\n",
                     args_preview
                 ));
             }
@@ -822,11 +845,25 @@ impl RequestLogger {
                 } else {
                     op.result.clone()
                 };
-                content.push_str(&format!("### Result\n```\n{}\n```\n\n", result_preview));
+                // 自适应围栏（同族横扫 BUG-20261126-122）：工具结果含 ```
+                // 行是常态（读 markdown/代码输出），定长围栏被打碎后正文
+                // 逃逸——消费方曾据全文子串 `### Error` 误判任务失败。
+                let fence = "`".repeat(md_fence_len(&result_preview));
+                content.push_str(&format!(
+                    "### Result\n{fence}text\n{}\n{fence}\n\n",
+                    result_preview
+                ));
             }
 
             if !op.error.is_empty() {
-                content.push_str(&format!("### Error\n{}\n\n", op.error));
+                // 自适应围栏（同族横扫 BUG-20261126-122）：错误详情（常含
+                // 工具结果摘录）此前裸插，可伪造后续结构行；围栏化后消费方
+                // （logs.rs local_md_has_error_section）按结构性标题行判定。
+                let fence = "`".repeat(md_fence_len(&op.error));
+                content.push_str(&format!(
+                    "### Error\n{fence}text\n{}\n{fence}\n\n",
+                    op.error
+                ));
             }
 
             if op.duration_ms > 0 {
@@ -851,12 +888,16 @@ impl RequestLogger {
         let index = self.next_index();
         let filename = format!("{}.response.md", index);
 
+        // 自适应围栏（同族横扫 BUG-20261126-122）：最终回复是 LLM 输出
+        // （任意 markdown），裸插打碎文件结构；头部元数据（Total Duration/
+        // LLM Rounds）在正文之前，读端 extract_md_header 先命中真头不受影响。
+        let fence = "`".repeat(md_fence_len(&info.content));
         let content = format!(
             "# Agent Response\n\n\
              **Timestamp**: {}\n\
              **Total Duration**: {:.1}s\n\
              **LLM Rounds**: {}\n\n\
-             ## Response Content\n\n{}\n\n\
+             ## Response Content\n\n{fence}text\n{}\n{fence}\n\n\
              ---\n\n\
              **Channel**: {}\n\
              **Chat ID**: {}\n\

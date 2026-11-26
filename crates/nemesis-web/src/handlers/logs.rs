@@ -860,6 +860,40 @@ fn strip_md_fence_lines(body: &str) -> String {
     }
 }
 
+/// Local.md 是否含**结构性** `### Error` 节标题行（围栏感知 + 精确整行匹配）。
+///
+/// 旧实现 `content.contains("### Error")` 是全文子串扫描——Local.md 的
+/// Result/Arguments 节把工具结果原文嵌进围栏，agent 读取的文档/命令输出里
+/// 出现「### Error」字样是常态（任何含错误章节的 markdown 文档都命中）
+/// → 完成的任务被误标 failed（has_error → status "failed"）。现按行判定：
+/// 标题行（trim 后全等 `### Error`）且不在围栏内才算。围栏语义兼容历史
+/// 定长 ```（3 反引号）与写盘端自适应 ≥4 围栏：开栏 = ≥3 反引号行且
+/// info 串不含反引号；闭栏 = ≥开栏长度的纯反引号行（判定规则与
+/// `read_md_section`/CommonMark 一致，仅开栏阈值放宽到 3 覆盖旧文件）。
+pub(crate) fn local_md_has_error_section(content: &str) -> bool {
+    let mut fence_open: Option<usize> = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let run = trimmed.chars().take_while(|&c| c == '`').count();
+        if run >= 3 {
+            let rest = &trimmed[run..];
+            if let Some(open) = fence_open {
+                if run >= open && rest.chars().all(char::is_whitespace) {
+                    fence_open = None; // 闭栏（≥开栏长度 + 纯反引号行）
+                    continue;
+                }
+            } else if !rest.contains('`') {
+                fence_open = Some(run); // 开栏（info 串可有，反引号不可有）
+                continue;
+            }
+        }
+        if fence_open.is_none() && trimmed == "### Error" {
+            return true;
+        }
+    }
+    false
+}
+
 /// Pull the first user message under `## Message`（列表行预览：上限 2000
 /// 字符，超出裁断并附全文字符量注记——本地记录不少的是落盘与详情页
 /// fullMessage，列表预览保留可读上限即可）。
@@ -2355,7 +2389,7 @@ fn build_cluster_task_entry(
             }
         } else if ftype == "Local.md" {
             if let Ok(content) = std::fs::read_to_string(path)
-                && content.contains("### Error")
+                && local_md_has_error_section(&content)
             {
                 has_error = true;
             }
