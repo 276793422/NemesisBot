@@ -70,6 +70,14 @@ pub async fn send(
         st.from.clone()
     };
 
+    // 信封地址形态闸（复用 store::validate_address 单一真相源——拒空白/
+    // 尖括号/控制字符/路径字符，≤254）：`to`/`from` 原样插值进
+    // `MAIL FROM:<{from}>` / `RCPT TO:<{to}>` 信封命令，含 CR/LF 的形态可
+    // 注入会话命令序列（injection 家族）。畸形形态诚实报错、不发起连接、
+    // 不发出畸形信封。
+    crate::store::validate_address(to).map_err(|e| format!("收件地址非法（{to:?}）：{e}"))?;
+    crate::store::validate_address(&from).map_err(|e| format!("发件地址非法（{from:?}）：{e}"))?;
+
     let config = build_tls_config(&st.ca_cert_path)?;
     let connector = TlsConnector::from(Arc::new(config));
 

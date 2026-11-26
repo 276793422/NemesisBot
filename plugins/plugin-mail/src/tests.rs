@@ -1,7 +1,8 @@
 //! 插件内测试：store 生命周期 / 地址闸 / SMTP e2e（两级判定 + 拒中继 +
 //! 超限 552 + STARTTLS 负例 + 反垃圾闸 + idle 超时）/ POP3 e2e（USER 映射 +
 //! 拒绝 fail-open 锁定 + 并集 UIDL 前缀 + RETR 字节一致 + DELE+QUIT 真删 +
-//! idle 超时）/ 启动准入闸四态 / TLS 装配 fail-closed。
+//! idle 超时 + TOP 出站点填充与 RETR 同口径 + PASS 恒时比对判定面）/
+//! client 信封地址形态闸 / 启动准入闸四态 / TLS 装配 fail-closed。
 //!
 //! 诚实边界：TLS 握手正例（POP3S / STARTTLS 升级）不做进程内 e2e——需要
 //! 证书链夹具（rcgen 非依赖），真机 UAT 用 openssl 两级链覆盖；协议编码函数
@@ -770,6 +771,10 @@ async fn pop3_password_gate() {
     let _ = recv_line(&mut r).await;
     send_line(&mut w, "PASS wrong").await;
     assert!(recv_line(&mut r).await.starts_with("-ERR"));
+    // 等长错密码（时序探针最经典形态）——行为面同样拒绝（恒时比对原语
+    // 只抹平时序，不改变判定语义）。
+    send_line(&mut w, "PASS secrex").await;
+    assert!(recv_line(&mut r).await.starts_with("-ERR"));
     send_line(&mut w, "STAT").await;
     assert!(recv_line(&mut r).await.starts_with("-ERR"));
     // 对密码后放行。
@@ -961,4 +966,102 @@ async fn smtp_inverted_bracket_envelope_does_not_kill_session() {
     send_line(&mut w, "NOOP").await;
     let resp = recv_line(&mut r).await;
     assert!(resp.starts_with("250"), "会话存活：{resp}");
+}
+
+// ---------------------------------------------------------------------------
+// POP3 TOP 出站点填充（与 RETR 同口径）+ PASS 恒时比对 + client 信封地址闸
+// ---------------------------------------------------------------------------
+
+/// TOP 响应必须与 RETR 同走 dot_stuff（模块头契约「RETR/TOP 出站载荷重新
+/// 点填充」）：正文行首 `.` 行（尤其单独 `.` 行）若裸发，客户端剥点还
+/// 原失真、单独 `.` 行被当响应终止符提前终结 + 余下字节被当命令解析
+/// （会话失步）。修复回归锁：还原正确 + 末行在终止符前 + 会话同步。
+#[tokio::test]
+async fn pop3_top_stuffs_leading_dots_and_stays_in_sync() {
+    let (_dir, store) = temp_store();
+    store.addr_add("zoo@corp.example", &domains()).unwrap();
+    // 正文含行首 `.` 行 + 单独 `.` 行（直接 store.deliver 注库 = 盘上原文）。
+    store
+        .deliver(
+            "zoo@corp.example",
+            "From: a@x.com\r\nSubject: top-stuff\r\n\r\n.leading\r\n.\r\nnormal tail\r\n",
+        )
+        .unwrap();
+    let (port, _tx) = spawn_pop3(store, "").await;
+
+    let (mut r, mut w) = pop3_session(port).await;
+    let _ = recv_line(&mut r).await;
+    send_line(&mut w, "TOP 1 10").await;
+    let head = recv_line(&mut r).await;
+    assert!(head.starts_with("+OK"), "TOP 应答：{head}");
+    let payload = read_multiline(&mut r).await;
+    assert!(
+        payload.contains("Subject: top-stuff"),
+        "头区原样：{payload:?}"
+    );
+    assert!(
+        payload.contains(".leading"),
+        "行首点经填充-剥点还原：{payload:?}"
+    );
+    assert!(
+        payload.contains("normal tail"),
+        "末行必须在终止符前到达（提前终结 = 失步）：{payload:?}"
+    );
+    // 会话仍同步：下一命令拿正常应答（修复前残余字节被当命令应答错乱）。
+    send_line(&mut w, "NOOP").await;
+    assert!(recv_line(&mut r).await.starts_with("+OK"), "TOP 后会话同步");
+}
+
+/// PASS 恒时比对原语判定面（等长 XOR 折叠；时序性质不可直接观测，钉
+/// 判定结果与直觉一致——形态与 plugin-roaming constant_time_eq 回归锁同族）。
+#[test]
+fn pop3_constant_time_eq_judgment_surface() {
+    use crate::pop3_server::constant_time_eq;
+    assert!(
+        constant_time_eq("", ""),
+        "空对空 = 相等（开放形态走不到 PASS 比对，原语只管判定）"
+    );
+    assert!(constant_time_eq("secret", "secret"), "等值 true");
+    assert!(
+        !constant_time_eq("secrex", "secret"),
+        "等长异文（时序探针最经典形态）false"
+    );
+    assert!(!constant_time_eq("secret ", "secret"), "尾随空白 = 异文");
+    assert!(!constant_time_eq("secret", "wrong"), "异长 false");
+    assert!(!constant_time_eq("", "secret"), "空对非空 false");
+}
+
+/// client 信封地址形态闸（校验在任何网络动作前）：`to`/`from` 原样插值进
+/// `MAIL FROM:<{...}>` / `RCPT TO:<{...}>`，含 CR/LF 形态可注入会话命令
+/// 序列。畸形诚实报错、不发畸形信封。
+#[tokio::test]
+async fn client_send_rejects_envelope_address_injection() {
+    let st = ClientSettings {
+        enabled: true,
+        smtp_host: "smtp.example.com".into(),
+        username: "u@example.com".into(),
+        ..Default::default()
+    };
+    // CR/LF 注入形态。
+    let err = crate::client::send(&st, "a@b\r\nDATA", "s", "b")
+        .await
+        .expect_err("CR/LF 收件地址必须被拒");
+    assert!(err.contains("收件地址非法"), "{err}");
+    // 尖括号包裹形态（显示名残余）——validate_address 拒。
+    let err = crate::client::send(&st, "<a@b.com>", "s", "b")
+        .await
+        .expect_err("尖括号形态必须被拒");
+    assert!(err.contains("收件地址非法"), "{err}");
+    // 非法发件地址（配置面 from 残留显示名形态）——同样拒。
+    let bad_from = ClientSettings {
+        enabled: true,
+        smtp_host: "smtp.example.com".into(),
+        username: "u@example.com".into(),
+        from: "bot <u@example.com>".into(),
+        ..Default::default()
+    };
+    let err = crate::client::send(&bad_from, "a@b.com", "s", "b")
+        .await
+        .expect_err("畸形发件地址必须被拒");
+    assert!(err.contains("发件地址非法"), "{err}");
 }
