@@ -10,6 +10,13 @@ import {
 // 纯函数直测状态机；composable 用假容器元素（可变 scrollTop/scrollHeight）
 // 直调 onScroll/onWheel/stick——与监听器同一代码路径，jsdom 无需真实布局。
 
+// 采样构造捷径（clientHeight/scrollHeight 可覆盖，模拟几何变化）。
+const S = (scrollTop: number, scrollHeight = 1600, clientHeight = 500) => ({
+  scrollTop,
+  scrollHeight,
+  clientHeight,
+})
+
 function fakeEl() {
   const el: any = {
     scrollTop: 0,
@@ -45,29 +52,69 @@ describe('useStickToBottom 纯函数', () => {
     expect(distanceFromBottom({ scrollTop: 1100, scrollHeight: 1600, clientHeight: 500 })).toBe(0)
   })
 
-  it('距底 ≤ 阈值且非上移 → 恢复跟随；上移采样（即使圈内）恒放弃（2026-11-25 拽底循环根修）', () => {
+  it('距底 ≤ 阈值且非上移 → 恢复跟随；用户上滚（即使圈内）恒放弃（2026-11-25 拽底循环根修）', () => {
     const m = { scrollTop: 1080, scrollHeight: 1600, clientHeight: 500 }
     // 从下方到达（scrollTop 增大）→ 恢复（「滚回底部恢复跟随」语义保持）
-    expect(resolveFollowOnScroll(false, m, 1070)).toBe(true)
-    expect(resolveFollowOnScroll(true, m, 1070)).toBe(true)
+    expect(resolveFollowOnScroll(false, m, S(1070))).toBe(true)
+    expect(resolveFollowOnScroll(true, m, S(1070))).toBe(true)
     // 上移中（1100→1080，圈内）→ 不重臂——上滚手势不可被圈内采样吞掉
     // （旧「无论方向」臂把 onWheel 刚放弃的 follow 立刻重臂回 true，配合
     // 浮钮 v-if 插拔喂 MutationObserver → stick() 形成自触发拽底循环）
-    expect(resolveFollowOnScroll(false, m, 1100)).toBe(false)
-    expect(resolveFollowOnScroll(true, m, 1100)).toBe(false)
+    expect(resolveFollowOnScroll(false, m, S(1100))).toBe(false)
+    expect(resolveFollowOnScroll(true, m, S(1100))).toBe(false)
   })
 
   it('远端上移（scrollTop 减小 >1px）→ 放弃跟随', () => {
     const m = { scrollTop: 300, scrollHeight: 1600, clientHeight: 500 }
-    expect(resolveFollowOnScroll(true, m, 400)).toBe(false)
+    expect(resolveFollowOnScroll(true, m, S(400))).toBe(false)
     // 1px 容差内的抖动不视为上移
-    expect(resolveFollowOnScroll(true, m, 301)).toBe(true)
+    expect(resolveFollowOnScroll(true, m, S(301))).toBe(true)
   })
 
   it('远端下移但未到底 → 保持原状态', () => {
     const m = { scrollTop: 400, scrollHeight: 1600, clientHeight: 500 }
-    expect(resolveFollowOnScroll(true, m, 300)).toBe(true)
-    expect(resolveFollowOnScroll(false, m, 300)).toBe(false)
+    expect(resolveFollowOnScroll(true, m, S(300))).toBe(true)
+    expect(resolveFollowOnScroll(false, m, S(300))).toBe(false)
+  })
+
+  // --- 2026-11-26 收缩误杀根修：意图 vs 几何 -----------------------------
+  // 贴底恒等式 scrollTop = scrollHeight - clientHeight：纯几何变化（内容
+  // 收缩的重钉 / clamp / 锚定补偿 / 窗口 resize）产生的 scrollTop 下移完全
+  // 由恒等式解释（dTop == dGeom），不是用户上滚；旧只看 scrollTop 的守卫
+  // 把它们全判成上滚 → follow 永久解除 → HOOK 处理过程堆积视口下方。
+
+  it('收缩重钉不杀跟随：贴底时 live 卡折叠收缩，stick 重钉是几何非意图', () => {
+    const last = S(1000, 1600, 600) // 贴底（距底 0）
+    // stick() 重钉形态：内容收缩 100，scrollTop 同步下移 100（dTop == dGeom）
+    expect(resolveFollowOnScroll(true, { scrollTop: 900, scrollHeight: 1500, clientHeight: 600 }, last)).toBe(true)
+  })
+
+  it('锚定补偿不杀跟随：未贴底时锚着元素收缩，浏览器补偿量 == 恒等式解释量', () => {
+    const midLast = S(500, 2000, 600) // 距底 900（隔离守卫分支，不走距底恢复臂）
+    expect(resolveFollowOnScroll(true, { scrollTop: 400, scrollHeight: 1900, clientHeight: 600 }, midLast)).toBe(true)
+  })
+
+  it('窗口 resize clamp 不杀跟随：clientHeight 增大使贴底上限下移', () => {
+    expect(
+      resolveFollowOnScroll(true, { scrollTop: 900, scrollHeight: 1600, clientHeight: 700 }, S(1000, 1600, 600)),
+    ).toBe(true)
+  })
+
+  it('未贴底时下方内容收缩的 clamp 同为几何（旧守卫在此误杀同类）', () => {
+    // 距底 400 阅读中，视口下方内容折叠收缩 100 → 上限下移 clamp -100
+    expect(resolveFollowOnScroll(true, { scrollTop: 900, scrollHeight: 1900, clientHeight: 600 }, S(1000, 2000, 600))).toBe(true)
+  })
+
+  it('收缩期间真上滚仍判意图：dTop 比恒等式解释量多减', () => {
+    // 贴底收缩 100（clamp）叠加用户上滚 50 → scrollTop -150 vs dGeom -100
+    expect(resolveFollowOnScroll(true, { scrollTop: 850, scrollHeight: 1500, clientHeight: 600 }, S(1000, 1600, 600))).toBe(false)
+  })
+
+  it('无先前采样（null）→ 跳过意图判定，按距底/原状态裁决', () => {
+    expect(resolveFollowOnScroll(true, { scrollTop: 1100, scrollHeight: 1600, clientHeight: 500 }, null)).toBe(true)
+    const far = { scrollTop: 300, scrollHeight: 1600, clientHeight: 500 }
+    expect(resolveFollowOnScroll(true, far, null)).toBe(true)
+    expect(resolveFollowOnScroll(false, far, null)).toBe(false)
   })
 })
 
@@ -132,6 +179,27 @@ describe('useStickToBottom composable', () => {
     el.scrollTop = 2100
     c.onScroll()
     expect(c.follow.value).toBe(true)
+  })
+
+  it('轮末收缩回归（2026-11-26）：钉底时 live→落地收缩重钉不杀 follow，后续增长照常贴底', () => {
+    const el = fakeEl()
+    const c = useStickToBottom(() => el)
+    el.scrollHeight = 1600
+    c.jumpToBottom() // 贴底跟随（看 HOOK 执行过程的常态）
+    c.onScroll() // 真实浏览器里编程赋值 scrollTop 会触发 scroll 事件同步采样
+    expect(c.follow.value).toBe(true)
+
+    // HOOK 一轮结束：live 块卸载收缩 100 → stick() 重钉（scrollTop 减小！）
+    el.scrollHeight = 1500
+    c.stick()
+    expect(el.scrollTop).toBe(1500)
+    c.onScroll() // 旧守卫在此把几何重钉判成用户上滚 → follow 永久解除
+    expect(c.follow.value).toBe(true) // 修复后：几何，跟随存活
+
+    // 后续内容增长（HOOK 处理过程卡片）照常贴底——可见性恢复
+    el.scrollHeight = 2100
+    c.stick()
+    expect(el.scrollTop).toBe(2100)
   })
 
   it('attach 初采样：容器静止停在远端（滚动位置恢复场景）→ 诚实不跟随', () => {

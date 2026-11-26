@@ -12,6 +12,10 @@
  *           命令含 E2E_APPROVAL_MARKER，由 e2e workspace 的安全 ask 规则拦审批）
  *         - 最后一条 user 含 E2E_TOOL_SPAWN(2) → spawn 工具调用（background=true，
  *           子代理胶囊视觉自测用；SPAWN2 先于 SPAWN 判——子串包含关系）
+ *         - 最后一条 user 含 E2E_TOOL_MULTI → 多工具轮（2026-11-26 scroll-follow
+ *           E2E 用）：连续 MULTI_TOOL_ROUNDS 次 sleep 调用再终答——live 时间线
+ *           多轮展开，轮末折叠是大幅净收缩（复现 HOOK 场景收缩幅度；
+ *           单工具轮收缩≈0 测不到目标场景）
  *         - 最后一条 user 含 E2E_SLOW     → 慢速臂：延迟 20s 再文本回复
  *           （bg 子代理任务文本含此标记 → 子代理运行 ~20s，给 UI 截图留窗口）
  *         - 请求含 E2E_STEER_CONTRACT     → 插话专轮回应（2026-11-21 插话
@@ -80,6 +84,21 @@ const SLOW_TOOL_MS = Number(process.env.SLOW_TOOL_MS ?? 8_000)
 // 工具执行期而非工具结束后。
 const SLOW_TOOL_SLEEP_SECS = Number(process.env.SLOW_TOOL_SLEEP_SECS ?? 3)
 
+// 多工具轮臂（E2E_TOOL_MULTI 标记，2026-11-26 scroll-follow E2E）：连续
+// MULTI_TOOL_ROUNDS 次 sleep 调用再终答。目的：live 时间线多轮展开（每轮
+// think 卡 + 工具行），轮末折叠换装是大幅净收缩——scroll-follow.spec 用它
+// 保证「轮末收缩杀 follow」场景在 app 级真实发生（单工具轮 live 与折叠
+// 形态高度相当，净收缩≈0，旧守卫吃不到 killing sample = 测试空洞）。
+// 每轮延迟 MULTI_ROUND_MS 让 live 行真实逐拍长出；sleep 1s LOW 风险免审批。
+// MULTI_TOOL_ROUNDS 缺省 12：live 时间线每轮只长 ~24px（实测），轮末折叠
+// 的净收缩量 = live 展开高度 −（折叠单行 + 终答气泡），轮数不够收缩量
+// 进不了 ≥100px 闸；scroll-follow.spec 配合种子消息把对话垫到溢出后，sh
+// 才反映收缩（内容不满一屏时 scrollHeight 恒 = clientHeight，收缩对 sh
+// 不可见——2026-11-26 实测两轮全在视口内的教训）。
+const MULTI_TOOL_ROUNDS = Number(process.env.MULTI_TOOL_ROUNDS ?? 12)
+const MULTI_ROUND_MS = Number(process.env.MULTI_ROUND_MS ?? 1_200)
+const MULTI_SLEEP_SECS = Number(process.env.MULTI_SLEEP_SECS ?? 1)
+
 // 插话专轮回应延迟（2026-11-21 插话专轮批）：contract marker 路由——专轮
 // 请求含 [E2E_STEER_CONTRACT]（尾部 system 注入，每阶段轮重建）。延迟应答
 // 给 live 时间线注记行 + 回应行的成对渲染留确定性截图窗口；纯文本回应 =
@@ -147,6 +166,23 @@ const STEER_RESUME_TEXT = 'E2E_STEER_MAIN_DONE：主线任务已完成（插话�
 
 function routeRequest(body) {
   if (lastRole(body) === 'tool') {
+    // 多工具轮（2026-11-26 scroll-follow E2E）：本 turn（最后一条 user 之后）
+    // 的工具结果攒满 MULTI_TOOL_ROUNDS 个才收尾直答，否则继续回 sleep 调用。
+    // ⚠️ 必须只数最后一条 user 之后的 tool 消息——跨 turn 历史里上一轮的
+    // tool 结果混进来会把下一轮的计数直接灌满（实录：turn 2 秒收尾、收缩
+    // 场景失真）。
+    if (bodyHasMarker(body, 'E2E_TOOL_MULTI')) {
+      const msgs = body?.messages ?? []
+      let lastUser = -1
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i]?.role === 'user') {
+          lastUser = i
+          break
+        }
+      }
+      const toolResults = msgs.slice(lastUser + 1).filter((m) => m?.role === 'tool').length
+      return toolResults >= MULTI_TOOL_ROUNDS ? 'final' : 'multi_tool'
+    }
     // 幻影通告复现（2026-11-21）：同 turn 两工具阶段按最后 tool_call 名分派。
     if (bodyHasMarker(body, 'E2E_PHANTOM_BG')) {
       const name = lastToolCallName(body)
@@ -187,6 +223,9 @@ function routeRequest(body) {
   // 边角 spec 验证丢弃徽标与 tail 起点语义；秒级跑完自终，steerable=false。
   if (text.includes('E2E_TOOL_BG_BIG')) return 'bg_tool_big'
   if (text.includes('E2E_TOOL_BG')) return 'bg_tool'
+  // MULTI4 必须先于 SLOW_TOOL/SLOW 判——独立标记无子串冲突，但保持工具臂
+  // 聚簇。首轮（最后一条 user 即任务文本）在此进入 multi_tool。
+  if (text.includes('E2E_TOOL_MULTI')) return 'multi_tool'
   // SLOW_TOOL 必须先于 SLOW 判——'E2E_SLOW_TOOL' 包含 'E2E_SLOW' 子串。
   if (text.includes('E2E_SLOW_TOOL')) return 'slow_tool'
   if (text.includes('E2E_SLOW')) return 'slow_text'
@@ -413,6 +452,36 @@ function messagePayload(route, body) {
                   // 回灌（校验在 ToolEventHook 之前 → 无工具事件无工具行，
                   // 轮 2 请求尾部 role=tool 走 instant final 臂）。
                   arguments: JSON.stringify({ seconds: SLOW_TOOL_SLEEP_SECS }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
+    }
+  }
+  // 多工具轮（2026-11-26 scroll-follow E2E）：与 slow_tool 同形态（sleep
+  // LOW 风险免审批），差异只在轮数——由 routeRequest 按工具结果计数决定
+  // 继续/收尾。call id 带序号（每轮唯一，gateway 去重安全）。
+  if (route === 'multi_tool') {
+    const k = (body?.messages ?? []).filter((m) => m?.role === 'tool').length
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: `call_mock_multi_sleep_${k + 1}`,
+                type: 'function',
+                function: {
+                  name: 'sleep',
+                  arguments: JSON.stringify({ seconds: MULTI_SLEEP_SECS }),
                 },
               },
             ],
@@ -658,6 +727,7 @@ const server = http.createServer((req, res) => {
       }
       // 慢速臂：延迟应答（JSON 与 SSE 两路同延迟）。
       if (route === 'slow_tool') setTimeout(respond, SLOW_TOOL_MS)
+      else if (route === 'multi_tool') setTimeout(respond, MULTI_ROUND_MS)
       else if (route === 'slow_text') setTimeout(respond, SLOW_MS)
       else if (route === 'steer_reply') setTimeout(respond, STEER_REPLY_MS)
       else if (route === 'steer_resume') setTimeout(respond, STEER_RESUME_MS)
