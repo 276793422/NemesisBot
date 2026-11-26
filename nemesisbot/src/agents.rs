@@ -764,11 +764,13 @@ pub fn validate_credential_refs(agent_id: &str, refs: &serde_json::Value) -> Res
 /// （安全子系统）里——security 裁剪形态无 vault 可解析，本函数随之编译期
 /// 消失。
 ///
-/// `#[allow(dead_code)]`： 消费面（常驻执行体 env 凭据装配，注入契约
-/// 随 / 讨论定形）；当前无生产调用方，全链路行为由 tests.rs
-/// `resolve_agent_credential_roundtrip` 钉住（真 vault 落盘 → 解析出真值）。
+/// 生产消费面：`agents::loop_manager::preflight_credentials`（agent loop
+/// 装配期逐条解析 credential_refs，warn+skip 不阻断）——BUG-20261127-003
+/// 修正：此前注释声称「当前无生产调用方」与事实不符（该消费面先于注释
+/// 修订接线），多余 `allow(dead_code)` 已随之摘除。全链路行为由 tests.rs
+/// `agent_credential_resolution_roundtrip_via_real_vault` 钉住（真 vault
+/// 落盘 → 解析出真值）。
 #[cfg(feature = "security")]
-#[allow(dead_code)]
 pub fn resolve_agent_credential(
     workspace: &Path,
     agent_id: &str,
