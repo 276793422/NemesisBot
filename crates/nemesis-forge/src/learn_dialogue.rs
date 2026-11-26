@@ -122,7 +122,10 @@ impl FileLockGuard {
                             age_secs = age,
                             "[learn] learn.lock 陈旧（持锁进程已死亡的残留），接管"
                         );
-                        let _ = std::fs::remove_file(path);
+                        // 韧性删除（fsutil 删除纪律）：AV/索引器瞬时句柄正扫
+                        // lock 文件时单发必败 → attempt 已耗尽误报「对话进行
+                        // 中」；包装内退避重试吸收瞬时窗口，耗尽 warn 留痕。
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(path);
                         continue;
                     }
                     return Err(format!(
