@@ -1193,7 +1193,17 @@ impl RpcClient {
             }
         }
 
-        // Fallback: return first address
+        // F9(b) 无子网交集回落：优先 iroh 漫游形态——iroh 自带 node_id 寻址
+        // （发现层打洞跨网），是设计上的跨网兜底通路（池序注释同口径）；
+        // 此前盲取首个曾把不可达 LAN 地址顶上首选 → SYN 黑洞烧满整个拨号
+        // 预算（60s 翻摆节拍器的选址端根因，2026-11-26 生产实锤）。残留
+        // 毒池形态（含盘上 state.toml 历史池序）由此自愈。
+        if let Some(roaming) = addresses
+            .iter()
+            .find(|a| crate::roaming::bridge::is_roaming_address(a))
+        {
+            return roaming.clone();
+        }
         addresses.first().cloned().unwrap_or_default()
     }
 
