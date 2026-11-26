@@ -2891,8 +2891,33 @@ function handleHistoryResponse(data: any) {
 
   if (chatStore.oldestIndex === 0 || !data.has_more) {
     chatStore.hasMoreHistory = false
-    nextTick(() => scrollToBottom())
+    // BUG-20261127-010：翻页触底不拽人——翻页批次抵达历史起点（oldest_index
+    // = 0 / has_more=false）时，上方 scrollTop 补偿已把视口锚定在刚前插的
+    // 最旧内容上；此前的无条件贴底会把用户从「刚翻到的最旧消息」拽回最新
+    // 回复（scrollToBottom=jumpToBottom 还会强制重臂 follow、清未读）。与
+    // 2026-11-09 滚动批「用户正读着上文被拽到底已多次被点名」同族——该批
+    // 把 resync/watchdog 两处无条件贴底改成了锚恢复+条件贴底，此处是漏网的
+    // 第三处（翻页响应同样流经本尾部块）。初拉/重连全量（paginated=false）
+    // 保持贴底——会话打开/恢复的意图明确，行为不变。
+    // BUG-20261127-010：翻页触底不拽人——翻页批次抵达历史起点（oldest_index
+    // = 0 / has_more=false）时，上方 scrollTop 补偿已把视口锚定在刚前插的
+    // 最旧内容上；此前的无条件贴底会把用户从「刚翻到的最旧消息」拽回最新
+    // 回复（scrollToBottom=jumpToBottom 还会强制重臂 follow、清未读）。与
+    // 2026-11-09 滚动批「用户正读着上文被拽到底已多次被点名」同族——该批
+    // 把 resync/watchdog 两处无条件贴底改成了锚恢复+条件贴底，此处是漏网的
+    // 第三处（翻页响应同样流经本尾部块）。初拉/重连全量（paginated=false）
+    // 保持贴底——会话打开/恢复的意图明确，行为不变。
+    if (!inflight.paginated) nextTick(() => scrollToBottom())
   }
+
+  // BUG-20261127-011：孤儿 resync 响应的 onDone 兑现——双 resync 并发时
+  // （subagent_reply 与 rewind 的重同步重叠等），pendingResync 旗标被首个
+  // 响应消费后，第二个 resync 响应落进上面的合并路径（此时视图已被首个
+  // 响应 replace，合并是全认领重建，视图终态与 resync 分支同构）。onDone
+  // 此前只在 resync 分支兑现 → 第二个请求的 await 方（rewindToTurnStart
+  // 的重发链等）只能干等 10s 安全超时。响应既已落地且视图终态正确，在此
+  // 即时兑现（page/watchdog 登记不带 onDone，本调用对它们是 no-op）。
+  inflight.onDone?.()
 }
 
 // P4（2026-09-21）：全量历史的「已载会话 / 在飞目标会话」钉子——

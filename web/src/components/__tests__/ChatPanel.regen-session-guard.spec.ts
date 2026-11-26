@@ -175,3 +175,62 @@ describe('ChatPanel 回退链跨会话守卫（resync 安全超时缝隙）', ()
     w.unmount()
   })
 })
+
+describe('双 resync 并发：孤儿响应合并路径即时兑现 onDone（BUG-20261127-011）', () => {
+  it('subagent_reply 与重新生成的 resync 重叠：第二响应落地即续作重发链，不等 10s 安全超时', async () => {
+    vi.useFakeTimers()
+    const w = await mountWithS1History()
+    // useToast 的 toasts 是模块级单例（非 Pinia 态）——文件内前序用例的
+    // toast（如「会话已切换」）在 fake timers 下永不过期，会泄漏进本用例
+    // 的负断言。清场后只看本用例新产生的 toast。
+    useToast().toasts.splice(0, useToast().toasts.length)
+
+    // 并发源 1：subagent_reply 定向 push → resyncFromLog A（委派回复落盘）。
+    h.wsHandler!({ type: 'push', cmd: 'subagent_reply', data: { session_id: 's1' } })
+    await flushPromises()
+    const ridA = lastHistoryRequestId()
+    expect(ridA.startsWith('resync_')).toBe(true)
+
+    // fake timers 冻结 Date.now() → rid = 'resync_' + Date.now() 同毫秒同
+    // 值（inFlightHistory 按 request_id 键控会互相覆盖，测试伪影而非产品
+    // 行为）。推进模拟时钟 5ms，让 B 拿到独立 rid。
+    vi.setSystemTime(Date.now() + 5)
+
+    // 并发源 2：assistant 行「↻ 重新生成」→ rewind + resyncFromLog B。
+    // A 已把 pendingResync 旗标置位，B 再置位是 no-op（仍 true）。
+    await clickMsgMenuItem(w, 'assistant', '重新生成')
+    await flushPromises()
+    const ridB = lastHistoryRequestId()
+    expect(ridB.startsWith('resync_')).toBe(true)
+    expect(ridB).not.toBe(ridA)
+
+    // A 的响应先到：消费旗标走 resync replace 分支（含委派回复行）。
+    feedHistory(ridA, [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'assistant', content: 'delegate reply' },
+    ])
+    await flushPromises()
+
+    // B 的响应后到：旗标已被 A 消费 → 落合并路径（孤儿 resync；此时视图
+    // 已被 A 的 replace 定形，B 的合并是全认领重建，视图终态与 resync 分支
+    // 同构）。修复前：onDone 只在 resync 分支兑现 → rewindToTurnStart 的
+    // await 干等 10s 安全超时；修复后：合并路径尾部即时兑现 → 重发链立即
+    // 续作（rewind 到 index 0 之前 = 空日志，B 响应 messages 为空合法）。
+    feedHistory(ridB, [])
+    await flushPromises()
+
+    // 主断言对准真实发送通道：不推进计时器（10s 安全超时不得到场），
+    // 重发链必须已经走完 sendValidated('q1')。
+    const wsSendCalls = vi.mocked(wsSend).mock.calls.filter(
+      (c: any[]) => c[0] === 'q1',
+    )
+    expect(
+      wsSendCalls,
+      '重新生成的重发应在孤儿 resync 响应落地后即时续作（不等 10s）',
+    ).toHaveLength(1)
+    // 会话未切换 → 守卫放行，不得出现「会话已切换」中止 toast。
+    expect(useToast().toasts.some(t => t.message.includes('会话已切换'))).toBe(false)
+    w.unmount()
+  })
+})

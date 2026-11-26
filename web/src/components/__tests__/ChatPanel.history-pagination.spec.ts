@@ -169,3 +169,58 @@ describe('翻页响应不删尾部实时帧（W1）', () => {
     wrapper.unmount()
   })
 })
+
+describe('翻页触底不拽人（BUG-20261127-010）', () => {
+  it('翻页响应抵达历史起点：视口保持离底（浮钮仍在），不强制贴底不重臂 follow', async () => {
+    const { wrapper, handler } = (await mountAndCapture()) as any
+    const chat = useChatStore()
+
+    // 首拉（全量）：oldest_index=20、has_more → 不触贴底块，可翻页。
+    const rid1 = vi.mocked(sendHistoryRequest).mock.calls[0][0] as string
+    handler(historyFrame({ rid: rid1, lastSeq: 50, oldestIndex: 20, hasMore: true }))
+    await flushPromises()
+
+    // 用户上滚离底（wheel 上滚即时放弃跟随）→ 浮钮出现。
+    await wrapper.find('.chat-messages').trigger('wheel', { deltaY: -100 })
+    expect(wrapper.find('.back-to-bottom-wrap').exists()).toBe(true)
+
+    // 滚到顶触发翻页请求。jsdom 滚动度量全零（scrollHeight/clientHeight
+    // = 0 → 距底距离 0）→ scroll 事件的意图守卫会把 follow 重臂 true——
+    // 合成环境伪影（真实浏览器滚到顶时距底超阈值、follow 保持 false），
+    // 故触发翻页请求后再补一次 wheel 上滚恢复 follow=false，再喂响应。
+    const el = wrapper.find('.chat-messages').element as HTMLElement
+    el.scrollTop = 0
+    await wrapper.find('.chat-messages').trigger('scroll')
+    await flushPromises()
+    const rid2 = vi.mocked(sendHistoryRequest).mock.calls[1][0] as string
+    await wrapper.find('.chat-messages').trigger('wheel', { deltaY: -100 })
+    expect(wrapper.find('.back-to-bottom-wrap').exists()).toBe(true)
+
+    handler(historyFrame({ rid: rid2, lastSeq: 50, oldestIndex: 0, hasMore: false }))
+    await flushPromises()
+
+    expect(wrapper.find('.back-to-bottom-wrap').exists(), '翻页触底不得重臂 follow（浮钮须仍在）').toBe(true)
+    // 翻页终态语义不变：游标落位 + 批次前插。
+    expect(chat.hasMoreHistory).toBe(false)
+    expect(chat.oldestIndex).toBe(0)
+    expect(chat.messages).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('初拉（非翻页）抵达历史起点：贴底语义保留（follow 重臂、浮钮消失）', async () => {
+    const { wrapper, handler } = (await mountAndCapture()) as any
+
+    // 首拉响应未到前用户上滚离底 → 浮钮出现。
+    await wrapper.find('.chat-messages').trigger('wheel', { deltaY: -100 })
+    expect(wrapper.find('.back-to-bottom-wrap').exists()).toBe(true)
+
+    // 初拉响应（paginated=false，oldestIndex 发请求时为 null）抵达历史起点
+    // → 无条件贴底语义保留：会话打开/恢复意图明确，follow 重臂。
+    const rid = vi.mocked(sendHistoryRequest).mock.calls[0][0] as string
+    handler(historyFrame({ rid, lastSeq: 50, oldestIndex: 0, hasMore: false }))
+    await flushPromises()
+
+    expect(wrapper.find('.back-to-bottom-wrap').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
