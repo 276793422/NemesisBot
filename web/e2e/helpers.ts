@@ -13,8 +13,11 @@ import { BASE_URL, E2E, EVIDENCE_LOG, SUPERVISOR_BASE } from './env'
 export const AUTH_KEY = 'nemesisbot_auth_token'
 
 /** 已认证页面：localStorage 预置 token → App.vue autoLogin 直进主界面。 */
-export async function newAuthedPage(browser: Browser): Promise<Page> {
-  const context = await browser.newContext()
+export async function newAuthedPage(
+  browser: Browser,
+  opts?: { viewport?: { width: number; height: number } },
+): Promise<Page> {
+  const context = await browser.newContext(opts?.viewport ? { viewport: opts.viewport } : {})
   await context.addInitScript(
     ([key, token]) => {
       // initScript 在本 context 每个文档上执行，包括 gotoRoute 的 about:blank

@@ -5,9 +5,10 @@ import { ref } from 'vue'
  *
  * 参照 use-stick-to-bottom（stackblitz-labs）与 DeepSeek Harness ui-chat
  * 的「滚动归属」设计，收敛为三条规则：
- * 1. 跟随态只在两种时刻放弃：滚轮上滚（即时，手势中断语义）、scroll 事件
- *    里 scrollTop 上移（方向判定，覆盖触摸/键盘滚动）——上移判定优先于
- *    距底阈值（2026-11-25 拽底循环根修，见 resolveFollowOnScroll 注释）；
+ * 1. 跟随态只在两种时刻放弃：滚轮上滚（即时，手势中断语义）、scroll 采样里
+ *    scrollTop 的上移量超出「钉底恒等式」能解释的量（意图判定，覆盖触摸/键盘
+ *    滚动；纯几何下移不杀跟随——2026-11-25 拽底循环根修 + 2026-11-26 收缩
+ *    误杀根修，见 resolveFollowOnScroll 注释）；
  * 2. 非上移采样距底 ≤ NEAR_BOTTOM_PX 即视为回到底部，跟随恢复、未读清零；
  * 3. 跟随态下内容变化即贴底（MutationObserver 监听滚动容器子树）——旧实现
  *    只靠 scroll 事件维护 flag，而内容增长不触发 scroll 事件，「回复到了
@@ -33,23 +34,40 @@ export function distanceFromBottom(m: ScrollMetrics): number {
 }
 
 /**
- * scroll 事件里的跟随态转移。lastScrollTop 是上一次事件采样的 scrollTop
- * （上移判定容差 1px，吸收亚像素抖动）。
+ * scroll 事件里的跟随态转移。last 是上一次事件采样的完整几何
+ * {scrollTop, scrollHeight, clientHeight}（null = 尚无采样，跳过意图判定）。
  *
- * 方向守卫（2026-11-25 拽底循环根修）：上移采样（scrollTop 减小 >1px）
- * 恒判 false——**先于**距底阈值判定。旧顺序「距底 ≤80px → 恢复（无论
- * 方向）」会把用户从底部上滚的前几帧采样（仍在 80px 圈内）当作「回到
- * 底部」，把 onWheel 刚放弃的 follow 立刻重臂回 true，配合浮钮 v-if
- * 插拔喂给 MutationObserver → stick() 形成自触发拽底循环（上滚净位移
- * 零、视图钉死在底部，实机帧级 trace 实锤，见 BUG 文档）。语义不变面：
- * 向下滚回距底 ≤80px 照常恢复跟随；±1px 抖动容差照常。
+ * 意图守卫（2026-11-25 拽底循环根修 + 2026-11-26 收缩误杀根修）：
+ * 用户钉底时贴底恒等式成立——scrollTop = scrollHeight - clientHeight。
+ * 纯几何变化（内容收缩时浏览器 clamp / stick() 重钉 / scroll-anchoring
+ * 补偿）产生的 scrollTop 下移完全由该恒等式解释：ΔscrollTop =
+ * ΔscrollHeight − ΔclientHeight。用户真上滚 u px 时 ΔscrollTop 比恒等式
+ * 解释的量**多减** u。故：
+ *   dTop < -1 且 dTop < dGeom - 1  →  用户意图（放弃跟随）
+ *   其余 scrollTop 下移（dTop == dGeom ± 抖动）  →  纯几何（不杀跟随）
+ * 双 -1 容差分别吸收亚像素抖动与恒等式舍入。只看 scrollTop 的旧守卫
+ * （2026-11-25 形态：scrollTop 减小 >1px 恒放弃）把 HOOK 场景的周期性
+ * 收缩（live 卡折叠 / ≥3 工具卡折叠 / live→落地换装）产生的几何重钉
+ * 误判成上滚 → follow 永久解除 → 后续内容全部堆积视口下方（见 BUG
+ * 文档）；纯增长对话不收缩，故只有 HOOK 场景突出。
+ *
+ * 2026-11-25 语义保持面：用户上滚即使仍在距底 80px 圈内也判意图（旧
+ * 「无论方向」臂把 onWheel 刚放弃的 follow 立刻重臂回 true，配合浮钮
+ * v-if 插拔喂 MutationObserver → stick() 形成自触发拽底循环——上滚净
+ * 位移零、视图钉死在底部，实机帧级 trace 实锤）；向下滚回距底 ≤80px
+ * 照常恢复跟随；±1px 抖动容差照常。
  */
 export function resolveFollowOnScroll(
   prev: boolean,
   m: ScrollMetrics,
-  lastScrollTop: number,
+  last: ScrollMetrics | null,
 ): boolean {
-  if (m.scrollTop < lastScrollTop - 1) return false
+  if (last) {
+    const dTop = m.scrollTop - last.scrollTop
+    const dGeom =
+      m.scrollHeight - last.scrollHeight - (m.clientHeight - last.clientHeight)
+    if (dTop < -1 && dTop < dGeom - 1) return false
+  }
   if (distanceFromBottom(m) <= NEAR_BOTTOM_PX) return true
   return prev
 }
@@ -63,7 +81,7 @@ export interface ViewportAnchor {
 export function useStickToBottom(getContainer: () => HTMLElement | null) {
   const follow = ref(true)
   const unreadBelow = ref(0)
-  let lastScrollTop = 0
+  let lastSample: ScrollMetrics | null = null
   let mo: MutationObserver | null = null
 
   function metrics(): ScrollMetrics | null {
@@ -79,8 +97,8 @@ export function useStickToBottom(getContainer: () => HTMLElement | null) {
   function onScroll() {
     const m = metrics()
     if (!m) return
-    const next = resolveFollowOnScroll(follow.value, m, lastScrollTop)
-    lastScrollTop = m.scrollTop
+    const next = resolveFollowOnScroll(follow.value, m, lastSample)
+    lastSample = m
     if (next && !follow.value) unreadBelow.value = 0
     follow.value = next
   }
@@ -151,7 +169,7 @@ export function useStickToBottom(getContainer: () => HTMLElement | null) {
   function resetFollow() {
     follow.value = true
     unreadBelow.value = 0
-    lastScrollTop = 0
+    lastSample = null
   }
 
   function attach() {
@@ -165,7 +183,7 @@ export function useStickToBottom(getContainer: () => HTMLElement | null) {
     // 等场景停在远端时不假跟随——假跟随会在下一次内容变化时把用户拽到底）。
     const m = metrics()
     if (m) {
-      lastScrollTop = m.scrollTop
+      lastSample = m
       follow.value = distanceFromBottom(m) <= NEAR_BOTTOM_PX
     }
   }
