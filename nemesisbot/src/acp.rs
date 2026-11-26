@@ -986,6 +986,12 @@ pub(crate) struct LineReader<R: AsyncRead + Unpin> {
     cap: usize,
     /// 超限丢弃模式：消费 pending 直到换行为止（只消费不物化）。
     dropping: bool,
+    /// 已确认「无换行」的前缀长度（字节）。超大无换行行按 8KB chunk 渐进
+    /// 累积时，每轮全量重扫 pending 是 O(n²)（BUG-20261126-110：生产
+    /// cap=64MB 时 ≈275GB 字节扫描——实测 debug 构建烧 704 CPU 秒不回帧；
+    /// 读循环单线程队头阻塞，扫描期间所有帧无法处理）。cursor 化后每字节
+    /// 只扫一次；任何 drain/clear/take 缩短 pending 的路径一律归零。
+    scanned: usize,
 }
 
 impl<R: AsyncRead + Unpin> LineReader<R> {
@@ -995,6 +1001,7 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
             pending: Vec::new(),
             cap,
             dropping: false,
+            scanned: 0,
         }
     }
 
@@ -1003,17 +1010,30 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
     pub(crate) async fn next_line(&mut self) -> Result<Option<(bool, String)>, String> {
         loop {
             if self.dropping {
-                // 超限残余：丢到换行为止。
-                if let Some(pos) = self.pending.iter().position(|&b| b == b'\n') {
-                    self.pending.drain(..=pos);
+                // 超限残余：丢到换行为止（cursor 只扫未扫区段——
+                // `[..scanned]` 已在早前迭代证明无换行，cursor 前不可能藏）。
+                if let Some(pos) = self.pending[self.scanned..]
+                    .iter()
+                    .position(|&b| b == b'\n')
+                {
+                    let abs = self.scanned + pos;
+                    self.pending.drain(..=abs);
                     self.dropping = false;
+                    self.scanned = 0;
                 } else {
+                    // 无换行可丢：整段皆弃物，清空（原语义）。
                     self.pending.clear();
+                    self.scanned = 0;
                 }
             }
-            if let Some(pos) = self.pending.iter().position(|&b| b == b'\n') {
-                let mut line: Vec<u8> = self.pending.drain(..pos).collect();
+            if let Some(pos) = self.pending[self.scanned..]
+                .iter()
+                .position(|&b| b == b'\n')
+            {
+                let abs = self.scanned + pos;
+                let mut line: Vec<u8> = self.pending.drain(..abs).collect();
                 self.pending.remove(0); // 吃掉 '\n'
+                self.scanned = 0;
                 let oversized = line.len() > self.cap;
                 line.truncate(self.cap);
                 return Ok(Some((
@@ -1021,10 +1041,13 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
                     String::from_utf8_lossy(&line).into_owned(),
                 )));
             }
+            // 全部 pending 均无换行：cursor 推进到 len，下轮只扫新 chunk。
+            self.scanned = self.pending.len();
             if self.pending.len() > self.cap {
                 // 无换行累积已超限：截断物化到 cap 即刻结算（服务端持有
                 // 内存封顶 cap + 单个 read chunk），转入丢弃模式消费残余。
                 let mut line = std::mem::take(&mut self.pending);
+                self.scanned = 0;
                 line.truncate(self.cap);
                 self.dropping = true;
                 return Ok(Some((true, String::from_utf8_lossy(&line).into_owned())));
@@ -1042,6 +1065,7 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
                 } else {
                     let oversized = self.pending.len() > self.cap;
                     let mut line = std::mem::take(&mut self.pending);
+                    self.scanned = 0;
                     line.truncate(self.cap);
                     Ok(Some((
                         oversized,

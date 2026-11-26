@@ -345,6 +345,50 @@ async fn oversized_frame_is_rejected_and_server_survives() {
     assert!(frame.get("error").is_none(), "合法 initialize 不应报错");
 }
 
+/// BUG-20261126-110 回归：超大无换行行的渐进累积不得 O(n²) 全量重扫。
+/// 旧实现每 8KB chunk 到达后从 pending[0] 重扫全量——cap=4MB 载荷 ≈1.1GB
+/// 字节扫描（debug 数秒级）；生产 cap=64MB ≈275GB（实测 debug 构建烧 704
+/// CPU 秒不回帧，读循环单线程队头阻塞，扫描期间所有帧无法处理）。
+/// 修复 = 扫描 cursor 只查新增区段（每字节至多扫一次）。
+/// 预算 2s：修复后毫秒级；旧实现 debug 必超时（红证实测）。
+/// 注意不能用小 cap（如 256）测本缺陷：单 chunk 即触发 cap 结算，
+/// pending 永不长大——大帽 + 多 chunk 累积才进入二次方区。
+#[tokio::test]
+async fn oversized_multichunk_no_newline_settles_promptly() {
+    let cap = 4 * 1024 * 1024;
+    let mut c = start_server_with_cap(vec![], cap).await;
+    let scenario = async {
+        // 渐进写 cap+100 字节无换行载荷（模拟失控客户端），尾字节换行。
+        let mut remaining: usize = cap + 100;
+        let chunk = vec![b'x'; 64 * 1024];
+        while remaining > 0 {
+            let n = remaining.min(chunk.len());
+            c.write.write_all(&chunk[..n]).await.unwrap();
+            remaining -= n;
+        }
+        c.write.write_all(b"\n").await.unwrap();
+        c.write.flush().await.unwrap();
+        // 第一帧必须是超限 -32700（id null）。
+        let line = c
+            .lines
+            .next_line()
+            .await
+            .expect("连接被服务端关闭")
+            .expect("read 失败");
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(frame["error"]["code"], -32700, "超限帧必须回 parse error");
+        assert!(frame["id"].is_null(), "id 未知 → null");
+    };
+    tokio::time::timeout(Duration::from_secs(2), scenario)
+        .await
+        .expect("2s 未回帧 = O(n²) 全量重扫复现（BUG-20261126-110）");
+    // 服务存活：超限帧之后合法 initialize 正常响应。
+    c.send(&init_request(2)).await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 2, "超限帧后服务必须存活并继续响应");
+    assert!(frame.get("error").is_none());
+}
+
 #[tokio::test]
 async fn unknown_method_request_yields_minus_32601_and_notification_stays_silent() {
     let (mut c, _, _) = start_server(vec![]).await;
