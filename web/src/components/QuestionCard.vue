@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import {
   useQuestions,
   QUESTION_DROPDOWN_THRESHOLD,
@@ -46,10 +46,10 @@ const orderedQuestions = computed(() => {
   return [...terminal, ...normal]
 })
 
-/** 每张卡的选项草稿（question_id → 已勾选选项；提交后随卡清除）。 */
+/** 每张卡的选项草稿（question_id → 已勾选选项；随卡清除）。 */
 const drafts = reactive<Record<string, string[]>>({})
 
-/** B8：每张卡的表单草稿（question_id → 字段 key → 值）。 */
+/** B8：每张卡的表单草稿（question_id → 字段 key → 值；含 secret 明文，随卡清除）。 */
 const formDrafts = reactive<Record<string, Record<string, string>>>({})
 
 /** 表单卡判定：fields 非空 = 表单形态（后端两形态互斥）。 */
@@ -99,6 +99,23 @@ function submit(q: PendingQuestion) {
     delete drafts[q.question_id]
   }
 }
+
+/** 摘卡兜底：卡被 question-resolved 广播（他窗口提交/服务端超时放行）、
+ * 本地超时 pruneExpired、resync 重拉摘除时——不走本地 submit 路径，组件侧
+ * 草稿 map 不会自动清理，secret 明文会驻留内存（违背「草稿随卡清除」声明）。
+ * watch 卡集合，消失的 question_id 同步删两份草稿。 */
+watch(
+  () => pendingQuestions.map((q) => q.question_id).join('|'),
+  () => {
+    const ids = new Set(pendingQuestions.map((q) => q.question_id))
+    for (const id of Object.keys(drafts)) {
+      if (!ids.has(id)) delete drafts[id]
+    }
+    for (const id of Object.keys(formDrafts)) {
+      if (!ids.has(id)) delete formDrafts[id]
+    }
+  },
+)
 
 /** 单选选项卡是否收纳为下拉（B8：>6 项；多选恒 checkbox 列表）。 */
 function asDropdown(q: PendingQuestion): boolean {

@@ -13,6 +13,7 @@
 import { ref, computed, watch } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { appBase } from '../lib/appBase'
 
 const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -66,7 +67,10 @@ async function create() {
 }
 
 function shareUrl(token: string): string {
-  return `${location.origin}/share/?t=${token}`
+  // 桥子路径修正：经桥远程访问时页面挂在 /d/<node_id>/ 下（<base href>
+  // 注入），分享链接必须带 appBase() 前缀才能落在目标设备的 share 页——
+  // 裸拼 origin 会把链接打到中继根（断链）。直连时 appBase() 为空串，零变化。
+  return `${location.origin}${appBase()}/share/?t=${token}`
 }
 
 async function copy(token: string) {
