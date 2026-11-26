@@ -1891,9 +1891,18 @@ mod gated {
 
     /// 进程内单飞：flight 已被持有时 apply 诚实拒绝（estop 未触发、
     /// journal 干净——单飞闸是这一轮唯一的拒绝者）。
+    ///
+    /// 锚确定性：入口锚闸（BUG-5 ①，estop 之后、apply_inner 单飞闸之前）
+    /// 需已知指纹放行——本测的拒绝者必须是单飞闸。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_rejected_when_singleflight_held() {
+        let _shared_updates = UPDATES_SHARED_LOCK.lock().await;
+        let _anchor_guard = RuntimeAnchorGuard::new(
+            "441e577bb0111d305f68fd83c96fd0e1e1c2ccb10f27c7a3dfdc00ff12ab3412".to_string(),
+        );
         let ws = tmp_dir("gate-singleflight");
         let m = manager_for(
             ws.clone(),
