@@ -97,11 +97,29 @@ fn seatbelt_profile_shape() {
     assert!(profile.contains("(allow process-exec*)"));
     assert!(profile.contains("(allow process-fork)"));
     assert!(profile.contains("(allow file-read*)"));
-    // 每个 writable root 一条 subpath literal 放行写
-    assert!(profile.contains("(allow file-write* (subpath (literal \"/Users/x/ws\")))"));
-    assert!(profile.contains("(allow file-write* (subpath (literal \"/Users/x/ws2\")))"));
+    // 每个 writable root 一条 subpath 放行写（BUG-20261126-113：手册语法
+    // `(subpath PATH)` 直接接路径字符串——旧形态 `(subpath (literal ...))`
+    // 是非法嵌套 filter，sandbox-exec parse error 拒整个 profile）。
+    assert!(profile.contains("(allow file-write* (subpath \"/Users/x/ws\"))"));
+    assert!(profile.contains("(allow file-write* (subpath \"/Users/x/ws2\"))"));
     assert!(profile.contains("(deny network*)"));
     assert!(profile.contains("label: seatbelt-test"));
+    // 旧缺陷形态不得再出现。
+    assert!(!profile.contains("(subpath (literal"));
+}
+
+#[test]
+fn seatbelt_profile_escapes_quotes_and_backslashes() {
+    let conf = SandboxConf {
+        writable_roots: vec![std::path::PathBuf::from(r#"/Users/x/we"ird\ws"#)],
+        read_exec_roots: vec![std::path::PathBuf::from("/")],
+        allow_network: true,
+        label: r#"quote"label"#.into(),
+    };
+    let profile = seatbelt_profile(&conf);
+    // 路径与标签里的 `"`/`\` 转义为 SBPL 字符串字面量安全形态。
+    assert!(profile.contains(r#"(allow file-write* (subpath "/Users/x/we\"ird\\ws"))"#));
+    assert!(profile.contains(r#"label: quote\"label"#));
 }
 
 #[test]
