@@ -254,7 +254,8 @@ async fn session_detail_enriches_messages_with_episodic_tags() {
 async fn chain_list_prev_hash_break_reports_prev_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let main = {
-        let sec_dir = dir.path().join("logs/security_logs");
+        // BUG-6：链已迁 workspace/security_chain/（读方 handler 同源新路径）。
+        let sec_dir = dir.path().join("security_chain");
         std::fs::create_dir_all(&sec_dir).unwrap();
         let config = nemesis_security::integrity::AuditChainConfig {
             storage_path: sec_dir.join("audit_chain.jsonl"),

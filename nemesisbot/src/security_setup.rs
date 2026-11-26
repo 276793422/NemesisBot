@@ -82,6 +82,112 @@ pub(crate) fn ensure_security_config(home: &std::path::Path) -> std::path::PathB
     path
 }
 
+/// 审计链家族文件收集（主文件 `audit_chain.jsonl` + `_segNNNN` 轮转段，
+/// 与 integrity.rs load_segments 同款家族口径）：返回排序后的路径列表。
+/// 目录不可读 = 空表（调用方按各自语义处置）。
+#[cfg(feature = "security")]
+fn audit_chain_family_files(old_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(old_dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|en| en.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name == "audit_chain.jsonl"
+                || (name.starts_with("audit_chain") && name.contains("_seg"))
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// BUG-6（2026-11-25 远程 home 取证）一次性迁移：Merkle 审计链整族从
+/// `logs/security_logs/` 搬到 workspace 顶层 `security_chain/`（与 logs
+/// 域分离——logs 级删除/清扫/故障波及不再触链）。
+///
+/// 语义：新位置无主链文件 && 旧位置有主链文件 → 搬（主文件 +
+/// `_segNNNN` 轮转段逐个 rename，同 workspace 同卷 rename 原子，段名
+/// 不变 = 链连续性保持）；新位置已有主链（已迁移/已建新链）或旧位置
+/// 无主链（新装/旧链已被清）→ 无事可做。中途 rename 失败（磁盘故障面
+/// ——正是 BUG-6 场景）：诚实 WARN 已搬/未搬明细，剩余文件保留旧位置
+/// 不删不动（链文件绝不静默丢弃），新位置以已搬文件继续。
+///
+/// 复查补强（2026-11-26）：「新主链已在场」分支若旧目录仍残留本族文件
+/// = 曾发生部分迁移失败（rename 中途断）。不自动搬运（残余段属旧链系，
+/// 混合进新链 = 合并出损坏链），但每次启动 WARN 残留明细——防「部分
+/// 迁移失败的滞留段」静默消失于链面、无人知晓。
+#[cfg(feature = "security")]
+fn migrate_audit_chain_to_security_chain(workspace: &std::path::Path) {
+    let new_dir = nemesis_path::resolve_security_chain_dir_in_workspace(workspace);
+    let old_dir = nemesis_path::resolve_audit_log_dir_in_workspace(workspace);
+    let new_main = new_dir.join("audit_chain.jsonl");
+    let old_main = old_dir.join("audit_chain.jsonl");
+    if new_main.exists() {
+        let leftover = audit_chain_family_files(&old_dir);
+        if !leftover.is_empty() {
+            let names: Vec<String> = leftover
+                .iter()
+                .take(5)
+                .map(|p| p.display().to_string())
+                .collect();
+            warn!(
+                "[Security] audit chain migration: 新主链已在场，但旧目录 {} 残留 {} 个本族文件未迁移（此前部分迁移曾失败？）——防跨链系合并不自动搬运，可人工回查/搬迁（前 5: {}）",
+                old_dir.display(),
+                leftover.len(),
+                names.join(", ")
+            );
+        }
+        return;
+    }
+    if !old_main.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&new_dir) {
+        warn!(
+            "[Security] audit chain migration: 创建 {} 失败: {}（保留旧位置链不动）",
+            new_dir.display(),
+            e
+        );
+        return;
+    }
+    let files = audit_chain_family_files(&old_dir);
+    if files.is_empty() {
+        // 上方 old_main.exists() 已为真，空表只能来自 read_dir 失败。
+        warn!(
+            "[Security] audit chain migration: 读 {} 失败（保留旧位置链不动）",
+            old_dir.display()
+        );
+        return;
+    }
+    let mut moved = 0usize;
+    for src in files {
+        let dest = new_dir.join(src.file_name().unwrap_or_default());
+        match std::fs::rename(&src, &dest) {
+            Ok(()) => moved += 1,
+            Err(e) => {
+                warn!(
+                    "[Security] audit chain migration: {} → {} 失败: {}；已搬 {} 个文件，剩余保留在旧位置（取证可回查，可人工搬迁）",
+                    src.display(),
+                    dest.display(),
+                    e,
+                    moved
+                );
+                return;
+            }
+        }
+    }
+    if moved > 0 {
+        info!(
+            "[Security] audit chain migrated: {} → {}（{} 个文件，链连续性保持；BUG-6 存储独立化）",
+            old_dir.display(),
+            new_dir.display(),
+            moved
+        );
+    }
+}
+
 /// Build the SecurityPlugin exactly as the gateway's Step 9b + 9c: layer
 /// switches + DLP config from `config.security.json`, ABAC rules, audit log
 /// file, scanner chain from `config.scanner.json`.
@@ -129,11 +235,27 @@ pub(crate) async fn build_security_plugin(
         .and_then(|v| v.get("audit_chain_enabled"))
         .and_then(|f| f.as_bool())
         .unwrap_or(false);
+    // BUG-6（2026-11-25 远程 home 取证）一次性迁移：链落盘从
+    // `logs/security_logs/`（与普通日志同目录同权限——logs 级删除/
+    // 清扫/故障波及会让审计链陪葬，本案破坏波中链与行为记录同灭）
+    // 迁 workspace 顶层 `security_chain/`。整族搬迁（主文件 + 轮转
+    // 段），链连续性保持。
+    // 迁移**无条件**执行（复查 2026-11-26，原在 audit_chain_enabled 块
+    // 内）：读方与锚路径无条件指向新位置，关链升级部署的旧链历史也要
+    // 搬到位（迁移是幂等 rename，无副作用面）。
+    let workspace = common::workspace_path(home);
+    migrate_audit_chain_to_security_chain(&workspace);
     if audit_chain_enabled {
         security_config.audit_chain_enabled = true;
-        let chain_path = format!(
-            "{}/workspace/logs/security_logs/audit_chain.jsonl",
-            home.display()
+        let chain_path = nemesis_path::resolve_audit_chain_path_in_workspace(&workspace)
+            .to_string_lossy()
+            .to_string();
+        // 链头外置锚（BUG-6 检测面）：链尾 hash 落 config/（与链目录
+        // 不同故障域）——链被整链清除/截断后锚仍在，回载对账可检测。
+        security_config.audit_chain_anchor_path = Some(
+            nemesis_path::resolve_audit_chain_anchor_path_in_workspace(&workspace)
+                .to_string_lossy()
+                .to_string(),
         );
         // 审计链目录显式自建（复核）：security_logs 目录此前的
         // 唯一创建点是 init_audit_log_file——`audit_log_file_enabled=false`
@@ -891,3 +1013,6 @@ pub(crate) fn load_scanner_full_config(
 
     Some(nemesis_security::scanner::ScannerFullConfig { enabled, engines })
 }
+
+#[cfg(all(test, feature = "security"))]
+mod migration_tests;

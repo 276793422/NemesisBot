@@ -270,8 +270,12 @@ pub async fn test_security_audit_log(ws: &TestWorkspace) -> Vec<TestResult> {
     let mut results = Vec::new();
     print_suite_header(suite);
 
-    // Check if audit log exists and contains entries
-    let audit_path = ws.workspace().join("audit_chain.jsonl");
+    // Check if audit log exists and contains entries（BUG-6 后链落
+    // workspace/security_chain/，不再在 workspace 根）
+    let audit_path = ws
+        .workspace()
+        .join("security_chain")
+        .join("audit_chain.jsonl");
     if audit_path.exists() {
         if let Ok(data) = std::fs::read_to_string(&audit_path) {
             let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();

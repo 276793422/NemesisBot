@@ -4,7 +4,7 @@
 //! - `request_logs/{ts}_{rand}/` (markdown + raw.json files per LLM call)
 //! - `cluster_logs/{device}/{ts_ms}_{task_id}/` (same format, per cluster task)
 //! - `security_logs/security_audit_YYYY-MM-DD.log` (pipe-delimited audit events)
-//! - `security_logs/audit_chain.jsonl` (+ rotations) (integrity chain, optional)
+//! - `security_chain/audit_chain.jsonl` (+ rotations) (integrity chain, optional; BUG-6 存储独立化——原在 security_logs/)
 //! - EpisodicStore (JSONL conversation episodes, via MemoryManager)
 //!
 //! All commands are pure read-only IO. No mutation of state.
@@ -722,7 +722,10 @@ pub(crate) fn backfill_session_usage(ctx: &RequestContext, sessions: &mut [serde
 
 #[cfg(feature = "security")]
 fn audit_chain_path(workspace: &str) -> PathBuf {
-    security_log_dir(workspace).join("audit_chain.jsonl")
+    // BUG-6（2026-11-25 远程 home 取证）：链落盘已迁 workspace 顶层
+    // `security_chain/`（不再与 logs/ 域同生共死）。路径单一真相源
+    // nemesis-path（写方 security_setup 同源拼接）。
+    nemesis_path::resolve_audit_chain_path_in_workspace(std::path::Path::new(workspace))
 }
 
 fn local_node_id(ctx: &RequestContext) -> Option<String> {

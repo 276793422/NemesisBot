@@ -1419,6 +1419,7 @@ impl AgentLoop {
             // 令牌——立即拒绝形态（backoff_eligible=false，无 sleep）也会在
             // stop 后继续盲试，闸必须在环顶而不是只在退避处。
             if self.stop_token.is_cancelled() {
+                self.clear_rate_limit_status(&context.session_key);
                 return Ok((
                     None,
                     "[AgentLoop] stopped; LLM transient retry aborted".to_string(),
@@ -1428,9 +1429,11 @@ impl AgentLoop {
             // BUG-20261107-026：取消/急停环顶闸（stop 同位同型）——立即
             // 拒绝形态（无 sleep 可打断）同样必须在这里挡住。
             if cancel_token.is_cancelled() {
+                self.clear_rate_limit_status(&context.session_key);
                 return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
             }
             if self.security.is_engaged() {
+                self.clear_rate_limit_status(&context.session_key);
                 return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
             }
             retries += 1;
@@ -1440,6 +1443,42 @@ impl AgentLoop {
                 &context.session_key,
                 crate::session_stats::StatCounter::Retries,
             );
+            // BUG-3（2026-11-25 远程 home 取证）「显式进度」三板斧（与
+            // rate-limit 环同款）：真网络等待形态每轮退避 1/2/4s + 每次
+            // 调用最长 600s，用户此前只见哑转圈（11-25 现场：630s 超时
+            // 首呼 × 重试环，前端 18 分钟零反馈）。立即拒绝形态（亚秒级
+            // 重试）刻意不发——闪徽标是噪声。①用户面进度帧（文案对齐
+            // 前端 parseRateLimitFrame 正则，复用徽标+倒计时渲染，前端
+            // 零改动）；②WSAPI agent.retry_status 实时快照；③快照清理
+            // = 全出口 clear（下方各 return + 环出口统一，同 rate-limit
+            // 环不变量）。
+            let backoff_secs = 1u64 << (retries - 1).min(2);
+            if backoff_eligible {
+                let label = "上游异常";
+                self.send_retry_progress(
+                    context,
+                    format!(
+                        "⏳ {label}（{}），第 {retries}/{MAX_TRANSIENT_RETRIES} 次重试，等待 {backoff_secs} 秒…",
+                        self.current_display_model()
+                    ),
+                )
+                .await;
+                info!(
+                    "[AgentLoop] LLM transient retry {retries}/{MAX_TRANSIENT_RETRIES} in {backoff_secs}s: {}",
+                    last_err
+                );
+                self.set_rate_limit_status(
+                    &context.session_key,
+                    RateLimitStatus {
+                        retry: retries,
+                        max_retries: MAX_TRANSIENT_RETRIES,
+                        wait_secs: backoff_secs,
+                        model: self.current_display_model(),
+                        label,
+                        updated_at: std::time::Instant::now(),
+                    },
+                );
+            }
             // 429 文档关联隐患 1（可重试类统一设计）：transient
             // 环对真网络等待加 1s/2s/4s 小退避——此前无 sleep
             // 立即重发，对上游抖动基本无效。立即拒绝（见
@@ -1454,9 +1493,10 @@ impl AgentLoop {
                 // 臂序铁律：cancelled 第一——select! 按书写顺序 poll，sleep
                 // 在前的话停机后被唤醒的 poll 会先注册 timer（panic 点），
                 // 轮不到 cancelled 臂。
-                let backoff = std::time::Duration::from_secs(1u64 << (retries - 1).min(2));
+                let backoff = std::time::Duration::from_secs(backoff_secs);
                 tokio::select! {
                     _ = self.stop_token.cancelled() => {
+                        self.clear_rate_limit_status(&context.session_key);
                         return Ok((
                             None,
                             "[AgentLoop] stopped during LLM transient retry backoff; call aborted"
@@ -1467,9 +1507,11 @@ impl AgentLoop {
                     // BUG-20261107-026：取消/急停臂——急停后不再白等退避
                     // 梯子，立即中断本 turn。
                     _ = cancel_token.cancelled() => {
+                        self.clear_rate_limit_status(&context.session_key);
                         return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
                     }
                     _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                        self.clear_rate_limit_status(&context.session_key);
                         return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
                     }
                     _ = tokio::time::sleep(backoff) => {}
@@ -1515,12 +1557,14 @@ impl AgentLoop {
                 // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
                 // error 帧让前端流半开收口。
                 _ = cancel_token.cancelled() => {
+                    self.clear_rate_limit_status(&context.session_key);
                     if let Some(sink) = stream_sink {
                         sink.error(CANCEL_SINK_MSG);
                     }
                     return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
                 }
                 _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                    self.clear_rate_limit_status(&context.session_key);
                     if let Some(sink) = stream_sink {
                         sink.error(ESTOP_SINK_MSG);
                     }
@@ -1590,6 +1634,10 @@ impl AgentLoop {
                 }
             }
         }
+        // BUG-3：环出口统一清快照（成功 break / 次数耗尽两路都过这里；
+        // 各 return 中断路径已逐点清，读侧过期兜底剩余漏网）——同
+        // rate-limit 环出口不变量。
+        self.clear_rate_limit_status(&context.session_key);
         Ok((maybe_resp, last_err, retries))
     }
 

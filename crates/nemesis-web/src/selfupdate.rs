@@ -1852,6 +1852,42 @@ pub struct SelfUpdateManager {
     /// 顺序判定拒绝旗标（闸①清单缺失/验签失败、闸⑤ sequence 拒绝时置位；
     /// apply 包装层收口时折进 [`ApplyErrorRecord::downgrade_denied`]）。
     pub downgrade_denied: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// BUG-5（2026-11-25 远程 home 取证）下载失败退避记账：连续失败计数。
+    /// 成功清零；达 [`DOWNLOAD_BACKOFF_WARN_STREAK`] 次 WARN 汇总一次。
+    pub download_fail_streak: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// 上次下载失败的 unix 毫秒（退避窗口起点）。
+    pub download_last_fail_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// 「下载源持续不可达」WARN 汇总已发旗标（防每个失败都刷；退避解除清）。
+    pub download_backoff_warned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// 下载失败退避窗口（秒）：窗口内非 force 调用诚实拒绝，不盲试不可达源。
+pub const DOWNLOAD_BACKOFF_SECS: u64 = 1800;
+/// 连续失败达该次数发一次 WARN 汇总（此后不再逐次刷）。
+pub const DOWNLOAD_BACKOFF_WARN_STREAK: u32 = 3;
+
+/// 下载失败分类（复查 2026-11-26）：退避闸的语义是「源不可达/传输失败
+/// 退避」（BUG-5 ②）。良性拒绝（平台形态/附件未产出/已是最新）与本地
+/// 收尾失败（rename/哈希/落盘）不是源不可达——一律计入 streak 会让
+/// 「已最新」查询 + 两次附件轮询 arm 30 分钟锁，退避闸变成误伤正常
+/// 操作的闸。
+#[cfg(feature = "selfupdate")]
+enum DownloadFailure {
+    /// 传输面失败（release 元数据拉取 / 附件流式下载）——计入退避。
+    Transport(String),
+    /// 良性拒绝 / 本地收尾失败——如实上报，不 arm 退避。
+    Other(String),
+}
+
+/// 无信任锚构建的诚实拒绝文案（BUG-5 ①单一真相源，复核 2026-11-26）：
+/// download 与 apply 两入口同文——此前双处字面量，改一处漏一处即漂移。
+/// apply_inner 步骤 1e 的内部验签闸是纵深防御第二道，措辞独立（面向已
+/// 越过入口闸的异常路径，不复用本文案）。
+#[cfg(feature = "selfupdate")]
+fn no_anchor_denial() -> String {
+    "此构建无签名信任锚（编译期未注入 NEMESIS_BUILD_ROOT_ANCHOR 且运行时未设 \
+     NEMESIS_ROOT_ANCHOR）：自更新验签永远拒绝，下载/安装已禁用。请手动更新。"
+        .to_string()
 }
 
 #[cfg(feature = "selfupdate")]
@@ -1887,6 +1923,19 @@ impl SelfUpdateManager {
         if self.estop.is_engaged() {
             self.audit_event("selfupdate", "denied", "download: estop engaged");
             return Err("急停（estop）生效中：更新下载被冻结。释放急停后重试。".to_string());
+        }
+        // BUG-5 ①（2026-11-25 远程 home 取证）：无信任锚构建诚实禁用——
+        // 该形态的 apply 验签永远拒绝（11-25 现场「无信任锚」×4），下载
+        // 是纯无谓动作（停滞 120s 白等）。运行时后配锚（env）即时解禁。
+        if nemesis_verify::builtin_root_anchors().is_empty() {
+            self.audit_event("selfupdate", "denied", "download: no trust anchor");
+            return Err(no_anchor_denial());
+        }
+        // BUG-5 ②：下载失败退避——连续失败后窗口内非 force 调用诚实拒绝，
+        // 不再盲试不可达源（11-17 起每天停滞 120s 刷 WARN 现场）。
+        if !force && let Some(msg) = self.download_backoff_msg() {
+            self.audit_event("selfupdate", "denied", "download: backoff window");
+            return Err(msg);
         }
         let exe_path = std::env::current_exe().map_err(|e| format!("取 current_exe 失败：{e}"))?;
         // BUG-20261125-063：load_pending 含整包 sha256 对账（几十 MB 哈希），
@@ -2001,20 +2050,79 @@ impl SelfUpdateManager {
                 };
                 publish_progress("ready", done, total, None);
                 self.audit_event("selfupdate", "allowed", &msg);
+                // BUG-5 ②：成功清退避记账（streak 归零 + WARN 旗标复位）。
+                self.download_fail_streak
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                self.download_backoff_warned
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 Ok(msg)
             }
-            Err(e) => {
+            Err(failure) => {
+                let (msg, transport) = match failure {
+                    DownloadFailure::Transport(m) => (m, true),
+                    DownloadFailure::Other(m) => (m, false),
+                };
                 clear_updates_dir(exe_path);
                 let mut p = self.download_progress.lock();
                 p.active = false;
                 p.phase = "error".to_string();
-                p.error = Some(e.clone());
+                p.error = Some(msg.clone());
                 drop(p);
-                publish_progress("error", 0, None, Some(&e));
-                self.audit_event("selfupdate", "denied", &format!("download: {e}"));
-                Err(e)
+                publish_progress("error", 0, None, Some(&msg));
+                self.audit_event("selfupdate", "denied", &format!("download: {msg}"));
+                // BUG-5 ②：失败记账 + 达阈值一次 WARN 汇总（此后逐次失败
+                // 不再刷——退避闸挡住重试频率，WARN 只负责状态翻转可见）。
+                // 复查（2026-11-26）：只有传输面失败才记账——良性拒绝
+                // （已最新/附件未产出/平台形态）与本地收尾失败不 arm 退避。
+                if transport {
+                    let streak = self
+                        .download_fail_streak
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    self.download_last_fail_ms
+                        .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                    if streak >= DOWNLOAD_BACKOFF_WARN_STREAK
+                        && !self
+                            .download_backoff_warned
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        tracing::warn!(
+                            "[SelfUpdate] 下载源持续不可达（连续失败 {streak} 次，最近错误: {msg}）：\
+                             已进入 {} 分钟退避窗口，窗口内下载请求将被拒绝（force 豁免）",
+                            DOWNLOAD_BACKOFF_SECS / 60
+                        );
+                    }
+                }
+                Err(msg)
             }
         }
+    }
+
+    /// BUG-5 ②：退避窗口判定（None = 不在退避中可下载）。窗口内返回
+    /// 人读拒绝文案。force 由调用方豁免（强制更新 = 用户意志优先）。
+    fn download_backoff_msg(&self) -> Option<String> {
+        let streak = self
+            .download_fail_streak
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if streak == 0 {
+            return None;
+        }
+        let last = self
+            .download_last_fail_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let since_ms = now_ms().saturating_sub(last);
+        if since_ms >= DOWNLOAD_BACKOFF_SECS * 1000 {
+            return None;
+        }
+        // 剩余时间（复查 2026-11-26）：全窗口「30 分钟」在退避中段是谎报
+        // ——用户看到的是到点时刻，不是窗口长度。窗口判定已保证
+        // since_ms < 窗口，减法安全；div_ceil 保证剩余 ≥1 分钟。
+        Some(format!(
+            "更新下载近期连续失败 {streak} 次（上次 {} 分钟前），退避中（约 {} 分钟后自动恢复）；\
+             如需立即重试请使用强制更新。",
+            since_ms / 60_000,
+            (DOWNLOAD_BACKOFF_SECS * 1000 - since_ms).div_ceil(60_000)
+        ))
     }
 
     async fn download_to_pending_inner(
@@ -2022,10 +2130,12 @@ impl SelfUpdateManager {
         exe_path: &Path,
         current_commit: &str,
         force: bool,
-    ) -> Result<String, String> {
-        // Android 走 APK 发行形态，主包通道整体不适用。
+    ) -> Result<String, DownloadFailure> {
+        // Android 走 APK 发行形态，主包通道整体不适用（良性拒绝：不 arm 退避）。
         if TARGET_ASSET.is_empty() {
-            return Err("当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string());
+            return Err(DownloadFailure::Other(
+                "当前平台（Android）走 APK 发行形态，不走主包自更新通道。".to_string(),
+            ));
         }
         // 同源解析（check / 早闸 / 下载同一对象）。下载代理调用时读盘
         //（selfupdate 段热生效语义：下载是逐次操作，保存即对下次生效）。
@@ -2033,12 +2143,13 @@ impl SelfUpdateManager {
             nemesis_config::proxy_file::load_selfupdate_proxy(&self.workspace.join("config"));
         let meta =
             crate::handlers::release_fetch::fetch_release_for_asset(TARGET_ASSET, proxy.as_deref())
-                .await?;
+                .await
+                .map_err(DownloadFailure::Transport)?;
         if !meta.has_asset(TARGET_ASSET) {
-            return Err(format!(
+            return Err(DownloadFailure::Other(format!(
                 "最新 Release（{}）尚未产出 {TARGET_ASSET} 附件（CI 尚未产出该包）",
                 meta.tag_name
-            ));
+            )));
         }
         // 同版新鲜度闸：force（强制更新）跳过——同版也重下（重装当前版本
         // 是强制更新的合法意志）。
@@ -2046,14 +2157,19 @@ impl SelfUpdateManager {
             && let Some(latest) = meta.body_commit()
             && commit_matches(current_commit, &latest)
         {
-            return Err(format!(
+            return Err(DownloadFailure::Other(format!(
                 "当前已是最新版本（commit {}），无需下载。",
                 &latest[..latest.len().min(12)]
-            ));
+            )));
         }
         let url = meta
             .asset_url(TARGET_ASSET)
-            .ok_or_else(|| format!("Release {} 缺少 {TARGET_ASSET} 下载地址", meta.tag_name))?
+            .ok_or_else(|| {
+                DownloadFailure::Other(format!(
+                    "Release {} 缺少 {TARGET_ASSET} 下载地址",
+                    meta.tag_name
+                ))
+            })?
             .to_string();
         let release_tag = meta.tag_name.clone();
         let target_commit = meta.body_commit().unwrap_or_default();
@@ -2110,17 +2226,17 @@ impl SelfUpdateManager {
             proxy.as_deref(),
         )
         .await
-        .map_err(|e| format!("下载 {TARGET_ASSET} 失败：{e}"))?;
+        .map_err(|e| DownloadFailure::Transport(format!("下载 {TARGET_ASSET} 失败：{e}")))?;
         // .part → pending 包正式名（读侧只见完整文件）。
         let final_pkg = pending_package_path(exe_path, TARGET_ASSET);
         std::fs::rename(&part, &final_pkg).map_err(|e| {
-            format!(
+            DownloadFailure::Other(format!(
                 "待装包就位失败（{} → {}）：{e}",
                 part.display(),
                 final_pkg.display()
-            )
+            ))
         })?;
-        let pkg_sha256 = sha256_file(&final_pkg)?;
+        let pkg_sha256 = sha256_file(&final_pkg).map_err(DownloadFailure::Other)?;
         let pending = PendingUpdate {
             asset: TARGET_ASSET.to_string(),
             release_tag,
@@ -2130,7 +2246,7 @@ impl SelfUpdateManager {
             downloaded_at_ms: now_ms(),
         };
         // meta 后写：见 meta 必有完整 zip。
-        save_pending(exe_path, &pending)?;
+        save_pending(exe_path, &pending).map_err(DownloadFailure::Other)?;
         let desc = format!(
             "待装包已就绪（{}，commit {}，{}MB）",
             pending.release_tag,
@@ -2233,6 +2349,11 @@ impl SelfUpdateManager {
                 .await
                 .unwrap_or(None);
             if pending.is_none() {
+                // BUG-5 ②：auto-download 臂同受退避闸（用户重复点「开始更新」
+                // 不再盲撞不可达源；force = 强制更新意志，豁免）。
+                if !force && let Some(msg) = self.download_backoff_msg() {
+                    return Err(msg);
+                }
                 self.audit_event("selfupdate", "allowed", "no pending: auto-download");
                 self.download_to_pending(&exe_path, current_commit, force)
                     .await?;
@@ -2711,12 +2832,33 @@ impl SelfUpdateManager {
         allow_downgrade: bool,
         force: bool,
     ) -> Result<String, String> {
-        self.downgrade_denied
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        *self.last_apply_error.lock() = None;
-        let result = self
-            .apply_inner(current_version, current_commit, allow_downgrade, force)
-            .await;
+        // 前置闸（复查 2026-11-26 闸序收口）：estop 最前（急停是最高优先级
+        // 拒绝理由，无锚构建的诚实禁用文案不得遮蔽急停语义），锚闸次之。
+        // 两个前置拒绝都落入下方统一 Err 臂——挂死修复语义 = **所有** apply
+        // 拒绝必须入案 last_apply_error + SSE error 进度（此前 estop 在
+        // apply_inner 步骤 1a 被拒时走的正是同一条臂；包装层 early-return
+        // 会静默绕过入案，status 粘滞上一轮失败）。
+        let denial: Option<String> = if self.estop.is_engaged() {
+            self.audit_event("selfupdate", "denied", "apply: estop engaged");
+            Some("急停（estop）生效中：自更新被冻结。释放急停后重试。".to_string())
+        } else if nemesis_verify::builtin_root_anchors().is_empty() {
+            // BUG-5 ①（2026-11-25 远程 home 取证）：无信任锚构建诚实禁用——
+            // 11-25 现场 apply「无信任锚」×4：验签管线永远拒绝，整个编排
+            // （含 auto-download）都是无谓动作。运行时后配锚即时解禁。
+            self.audit_event("selfupdate", "denied", "apply: no trust anchor");
+            Some(no_anchor_denial())
+        } else {
+            None
+        };
+        let result = if let Some(msg) = denial {
+            Err(msg)
+        } else {
+            self.downgrade_denied
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            *self.last_apply_error.lock() = None;
+            self.apply_inner(current_version, current_commit, allow_downgrade, force)
+                .await
+        };
         if let Err(e) = &result {
             *self.last_apply_error.lock() = Some(ApplyErrorRecord {
                 message: e.clone(),
@@ -3075,4 +3217,7 @@ fn spawn_new_version(new_exe: &Path) -> Result<u32, String> {
 }
 
 #[cfg(test)]
-mod tests;
+// pub(crate)（复查 2026-11-26）：handlers::selfupdate 的 status 投影测试与
+// 本模块 gated 测试族共持 UPDATES_SHARED_LOCK（updates/ 真实 exe 目录共享面
+// 串行化），需要跨模块可见。
+pub(crate) mod tests;

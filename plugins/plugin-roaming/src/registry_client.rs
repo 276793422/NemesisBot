@@ -4,8 +4,9 @@
 //!
 //! 语义对齐宿主被搬走前的实现（`nemesis_cluster::roaming::rendezvous::
 //! sync_once`——错误文案逐字对齐，宿主 tests 断言可平移）；循环节奏 = 插件
-//! 自持 watch 停止闸 + interval ticker（首 tick 即时），失败限频告警
-//! （首败 + 每 10 连败）与宿主 start_rendezvous_loop 同款。
+//! 自持 watch 停止闸 + 连败指数退避（BUG-7 2026-11-25：30s 一拍无限重试
+//! 数天刷 2000+ 条告警——现 30s→5min 封顶，首败 + 退避档位变化 + 触顶后
+//! 每 10 连败心跳才打日志，恢复/降级状态翻转各一条汇总）。
 //!
 //! 身份一致性闸（载荷 `member.iroh_id` == 插件盘上身份）在 `registry_start`
 //! FFI 入口同步裁决（err_code `identity_mismatch` 直接回宿主，不埋循环内）
@@ -17,12 +18,34 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde::Deserialize;
 
-use crate::roaming::{ROAMING_LOG_INFO, ROAMING_LOG_WARN};
 use crate::ROAMING_LOG_ERROR;
+use crate::roaming::{ROAMING_LOG_INFO, ROAMING_LOG_WARN};
 use crate::types::RendezvousMember;
 
 /// 默认同步间隔（宿主 config.cluster.json 同值语义）。
 const DEFAULT_INTERVAL_SECS: u64 = 30;
+
+/// 连败退避封顶（BUG-7 2026-11-25 远程 home 取证）：指数退避最长 5 分钟
+/// ——中继不可达是外部问题，30s 一拍无限重试数天刷 2000+ 条 WARN/ERROR
+/// 淹没有效信号（本案取证干扰判读）+ 无意义网络重试浪费资源。
+const MAX_BACKOFF_SECS: u64 = 300;
+
+/// 连败退避间隔（BUG-7）：连续第 N 次失败后，下一次尝试的等待 =
+/// base × 2^(N-1)，封顶 max(base, 5min)。封顶取 max 是为尊重用户显式
+/// 配的慢节拍（base > 5min 时退避不再加码——退避的语义是「比常态更稀」，
+/// 不是把用户配的节拍改短）。首败不追加延迟（N=1 → 2^0 = 1 倍）。
+/// 纯函数（loop 体从它取等待；单测钉死阶梯与封顶）。
+pub(crate) fn backoff_after_fail(
+    base: std::time::Duration,
+    fail_streak: u64,
+) -> std::time::Duration {
+    if fail_streak == 0 {
+        return base;
+    }
+    let factor = 1u32 << (fail_streak - 1).min(4);
+    base.saturating_mul(factor)
+        .min(base.max(Duration::from_secs(MAX_BACKOFF_SECS)))
+}
 
 /// 循环运行状态槽（Phase 2 观测性：失败态出插件——此前 fail_streak/last_error
 /// 只进日志，宿主状态面永远只见「最后成功」形态，Dashboard 失败徽标是死分支）。
@@ -183,9 +206,10 @@ async fn run_loop(
     };
     let interval =
         Duration::from_secs(config.interval_secs.unwrap_or(DEFAULT_INTERVAL_SECS).max(1));
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut fail_streak: u64 = 0;
+    // 首拍即时（原 interval 首 tick 即时语义保持）；此后每轮等待按连败
+    // 退避取值（BUG-7）。
+    let mut first_tick = true;
     crate::plugin_log(
         ROAMING_LOG_INFO,
         "rendezvous",
@@ -197,12 +221,27 @@ async fn run_loop(
         ),
     );
     loop {
-        tokio::select! {
-            _ = ticker.tick() => {}
-            _ = stop_rx.changed() => break,
+        if !first_tick {
+            let wait = backoff_after_fail(interval, fail_streak);
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {}
+                _ = stop_rx.changed() => break,
+            }
         }
+        first_tick = false;
         match sync_once(&client, &config.registry_url, &config.token, &config.member).await {
             Ok(members) => {
+                // 状态翻转（降级 → 恢复）：一条汇总（BUG-7）。
+                if fail_streak > 0 {
+                    crate::plugin_log(
+                        ROAMING_LOG_INFO,
+                        "rendezvous",
+                        &format!(
+                            "名册同步恢复：连续失败 {fail_streak} 次后成功（成员 {} 个）",
+                            members.len()
+                        ),
+                    );
+                }
                 fail_streak = 0;
                 let mut st = status.lock();
                 st.fail_streak = 0;
@@ -220,12 +259,19 @@ async fn run_loop(
                     st.last_error = e.clone();
                     st.last_fail_ms = now_ms();
                 }
-                // 失败限频告警（首败 + 每 10 连败）——与宿主旧循环同款。
-                if fail_streak == 1 || fail_streak.is_multiple_of(10) {
+                // 告警面收敛（BUG-7）：首败 + 退避档位变化（升级）+ 触顶后
+                // 每 10 连败心跳——稳态退避期不再每拍刷屏（此前 30s 一条，
+                // 数天 2000+ 条）。状态槽每拍照常更新（Dashboard 面可见）。
+                let next_wait = backoff_after_fail(interval, fail_streak);
+                let prev_wait = backoff_after_fail(interval, fail_streak - 1);
+                if fail_streak == 1 || next_wait != prev_wait || fail_streak.is_multiple_of(10) {
                     crate::plugin_log(
                         ROAMING_LOG_WARN,
                         "rendezvous",
-                        &format!("名册同步失败（连续 {fail_streak} 次）: {e}"),
+                        &format!(
+                            "名册同步失败（连续 {fail_streak} 次）: {e}；{}s 后重试",
+                            next_wait.as_secs()
+                        ),
                     );
                 }
             }

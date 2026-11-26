@@ -79,7 +79,7 @@ impl ClusterRequestLoggerObserver {
     /// loop for a task. The observer reads `task_id` and `device_id` when
     /// handling the next `ConversationStart` event to construct the log path.
     pub fn set_task_context(&self, task_id: String, device_id: String) {
-        let mut ctx = self.current_task.lock().unwrap();
+        let mut ctx = self.current_task.lock().unwrap_or_else(|e| e.into_inner());
         *ctx = Some(TaskContext { task_id, device_id });
     }
 
@@ -88,7 +88,7 @@ impl ClusterRequestLoggerObserver {
     /// Called after task execution completes (success or failure). Prevents
     /// the next task from inheriting stale context.
     pub fn clear_task_context(&self) {
-        let mut ctx = self.current_task.lock().unwrap();
+        let mut ctx = self.current_task.lock().unwrap_or_else(|e| e.into_inner());
         *ctx = None;
     }
 
@@ -157,7 +157,7 @@ impl ClusterRequestLoggerObserver {
     /// Returns the number of active conversations being tracked.
     #[allow(dead_code)]
     pub fn active_count(&self) -> usize {
-        self.active.lock().unwrap().len()
+        self.active.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Construct the session directory path from the current task context.
@@ -167,7 +167,11 @@ impl ClusterRequestLoggerObserver {
     /// - `session_name` = `"{ts_ms}_{sanitized_task_id}"` (or random fallback
     ///   when no task context is set, used by `_unknown` path)
     fn build_session_paths(&self) -> (PathBuf, Option<String>) {
-        let ctx = self.current_task.lock().unwrap().clone();
+        let ctx = self
+            .current_task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
 
         let device_id = ctx
             .as_ref()
@@ -217,7 +221,7 @@ impl ClusterRequestLoggerObserver {
             content: data.content.clone(),
         });
 
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         active.insert(
             trace_id.to_string(),
             ConversationState {
@@ -229,7 +233,7 @@ impl ClusterRequestLoggerObserver {
     }
 
     fn handle_llm_request(&self, trace_id: &str, data: &LLMRequestEventData) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.get_mut(trace_id) {
             state.last_request_time = Some(Local::now());
 
@@ -274,7 +278,7 @@ impl ClusterRequestLoggerObserver {
     }
 
     fn handle_llm_response(&self, trace_id: &str, data: &LLMResponseEventData) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.get_mut(trace_id) {
             if self.config.save_raw {
                 let response_time = chrono::Local::now();
@@ -340,7 +344,7 @@ impl ClusterRequestLoggerObserver {
     }
 
     fn handle_tool_call(&self, trace_id: &str, data: &ToolCallEventData) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.get_mut(trace_id) {
             let op = OperationInfo {
                 op_type: "tool_call".to_string(),
@@ -373,7 +377,7 @@ impl ClusterRequestLoggerObserver {
         timestamp: chrono::DateTime<Local>,
         data: &ConversationEndData,
     ) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.remove(trace_id) {
             let total_duration_ms = if data.total_duration_ms == 0 {
                 timestamp

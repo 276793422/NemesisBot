@@ -1039,8 +1039,7 @@ async fn main() -> Result<()> {
                 n,
                 ws.home()
                     .join("workspace")
-                    .join("logs")
-                    .join("security_logs")
+                    .join("security_chain")
                     .join("audit_chain.jsonl")
                     .display()
             ),
