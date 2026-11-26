@@ -2120,7 +2120,7 @@ fn test_take_bare_launch_flag_consumes_env_marker() {
     // 标记在：take=true 且 env 被焚。
     unsafe { std::env::set_var(common::BARE_LAUNCH_ENV, "1") };
     assert!(common::take_bare_launch_flag());
-    unsafe { assert!(std::env::var(common::BARE_LAUNCH_ENV).is_err()) };
+    assert!(std::env::var(common::BARE_LAUNCH_ENV).is_err());
 
     // 焚毁后再 take=false（后代继承链已断）。
     assert!(!common::take_bare_launch_flag());
