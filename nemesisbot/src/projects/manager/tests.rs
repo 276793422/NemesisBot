@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::{ProjectLoopManager, route_decision, session_key_from_stem};
+use super::{ProjectLoopManager, honest_error_outbound, route_decision, session_key_from_stem};
 use crate::agent_factory::SharedResources;
 use crate::projects::registry;
 use nemesis_types::channel::InboundMessage;
@@ -859,6 +859,14 @@ mod wave_a {
         assert_eq!(out.channel, "web");
         assert_eq!(out.chat_id, "c1");
         assert!(out.content.contains("不可用"), "实际：{}", out.content);
+        // BUG-20261126-111：诚实报错必须随行来源会话键（web.rs 投影
+        // receive 帧的 session_id 章；丢章=前端 D-3 归属过滤/busy 清算失效，
+        // 报错气泡落错面板）。与 loop 侧出站路径同一约定。
+        assert_eq!(
+            out.meta.session_key.as_deref(),
+            Some("agent:main:session:gone1"),
+            "不可用出站必须携带来源 session_key"
+        );
         // system 消息即使有归属也绝不进项目路径（无出站、无转发）。
         mgr.remember_session("agent:main:session:sys1", "p_gone001");
         let sys = msg("system", "agent:main:session:sys1");
@@ -879,6 +887,12 @@ mod wave_a {
         mgr.route_one(&m).await;
         let out = orx.recv().await.expect("接收端关闭必须按不可用出站");
         assert!(out.content.contains("不可用"), "实际：{}", out.content);
+        // BUG-20261126-111：closed-receiver 臂走同一 send_unroutable 漏斗，
+        // session_key 随行约定同验。
+        assert_eq!(
+            out.meta.session_key.as_deref(),
+            Some("agent:main:session:closed1")
+        );
     }
 
     #[tokio::test]
@@ -1563,4 +1577,30 @@ fn reload_workspace_for_registry_hit_and_fallback() {
     let empty = std::collections::HashMap::new();
     let degenerate = super::reload_workspace_for(&empty, "proj-a", std::path::Path::new("W:/ws"));
     assert_eq!(degenerate, PathBuf::from("W:/ws"), "空 registry 全回落");
+}
+
+// BUG-20261126-111：诚实报错出站构造单点——session_key 随行约定。
+#[test]
+fn honest_error_outbound_stamps_session_key_and_skips_empty() {
+    // 常规臂：非空键随行（server.rs 剥前缀后投影 receive 帧 session_id）。
+    let stamped = honest_error_outbound(
+        "web",
+        "c1",
+        "agent:main:session:abc",
+        "⚠ 项目「x」当前不可用（目录缺失或已移除），消息未能投递。",
+    );
+    assert_eq!(
+        stamped.meta.session_key.as_deref(),
+        Some("agent:main:session:abc"),
+        "非空 session_key 必须随行盖章"
+    );
+    assert_eq!(stamped.channel, "web");
+    assert_eq!(stamped.chat_id, "c1");
+
+    // 空键臂：无会话锚的通道消息保持缺省，不造 Some("")。
+    let bare = honest_error_outbound("web", "c2", "", "内容");
+    assert!(
+        bare.meta.session_key.is_none(),
+        "空 session_key 不得造假章 Some(\"\")"
+    );
 }

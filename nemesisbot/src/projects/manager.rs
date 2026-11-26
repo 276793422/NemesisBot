@@ -724,8 +724,12 @@ impl ProjectLoopManager {
             chat_id = %msg.chat_id,
             "[ProjectLoops] {content}"
         );
-        self.bus
-            .publish_outbound(OutboundMessage::new(&msg.channel, &msg.chat_id, &content));
+        self.bus.publish_outbound(honest_error_outbound(
+            &msg.channel,
+            &msg.chat_id,
+            &msg.session_key,
+            &content,
+        ));
     }
 
     /// 冲突裁决任务派发（`route_one` 冲突臂）：扣留消息，后台逐文件
@@ -808,8 +812,12 @@ impl ProjectLoopManager {
             chat_id = %msg.chat_id,
             "[ProjectLoops] {content}"
         );
-        self.bus
-            .publish_outbound(OutboundMessage::new(&msg.channel, &msg.chat_id, &content));
+        self.bus.publish_outbound(honest_error_outbound(
+            &msg.channel,
+            &msg.chat_id,
+            &msg.session_key,
+            &content,
+        ));
     }
 
     /// 取项目 loop 的调度转发端（`channels` 表；与 AgentLoop 实例解耦，
@@ -1609,7 +1617,11 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
     // 回注消息（裁决完成 = 开工闸语义满足：非冲突文件已对齐、冲突文件
     // 按裁决落定——①已覆盖 / ②挂起受停车语义保护，turn 末 commit 不回
     // 传覆盖宿主）。
-    let (channel, chat_id) = (t.msg.channel.clone(), t.msg.chat_id.clone());
+    let (channel, chat_id, session_key) = (
+        t.msg.channel.clone(),
+        t.msg.chat_id.clone(),
+        t.msg.session_key.clone(),
+    );
     match t.tx {
         Some(tx) => {
             if tx.send(t.msg).await.is_err() {
@@ -1619,8 +1631,12 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
                     "⚠ 项目「{}」的会话在冲突裁决期间被停止，原消息未能投递（冲突处理结果已保留）。",
                     t.name
                 );
-                t.bus
-                    .publish_outbound(OutboundMessage::new(&channel, &chat_id, &content));
+                t.bus.publish_outbound(honest_error_outbound(
+                    &channel,
+                    &chat_id,
+                    &session_key,
+                    &content,
+                ));
             }
         }
         None => {
@@ -1648,13 +1664,38 @@ fn conflict_cancel_outbound(
         chat_id = %msg.chat_id,
         "[ProjectLoops] 项目「{name}」双改冲突裁决未收场：{note}"
     );
-    bus.publish_outbound(OutboundMessage::new(
+    bus.publish_outbound(honest_error_outbound(
         &msg.channel,
         &msg.chat_id,
+        &msg.session_key,
         &format!(
             "⚠ 项目「{name}」存在宿主与 VM 双改冲突，{note}。重新发送消息可再次触发开工对齐。"
         ),
     ));
+}
+
+/// 项目路由层诚实出站报错的**统一构造单点**（BUG-20261126-111）：四个报错
+/// 位点（unroutable / sync_blocked / 冲突停止 / 冲突取消）此前全部用裸
+/// `OutboundMessage::new`——来源会话的 `session_key` 被丢弃，出站无 meta 可
+/// 盖，web.rs 投影出的 receive 帧缺 `session_id` 字段。前端 L6++ 按帧归属
+/// 过滤+清算 busy 的 D-3 路径因此失效：报错气泡落进「当前打开的面板」而非
+/// 归属会话，面板在别的会话时还会清算错会话的 busy（归属会话 busy 悬挂到
+/// B2 硬上限）。与 loop 侧全部出站路径（admission/compact/rate_limit/
+/// loop_continuation 均带 `session_key: Some(完整键)`）对齐；server.rs 剥
+/// `agent:main:session:` 前缀后投影 session_id。空键（无会话锚的通道消息
+/// ——项目归属只可能来自 web 会话绑定，实践中恒非空）保持缺省，不造
+/// `Some("")`。
+fn honest_error_outbound(
+    channel: &str,
+    chat_id: &str,
+    session_key: &str,
+    content: &str,
+) -> OutboundMessage {
+    let mut outbound = OutboundMessage::new(channel, chat_id, content);
+    if !session_key.is_empty() {
+        outbound.meta.session_key = Some(session_key.to_string());
+    }
+    outbound
 }
 
 /// 项目 loop 监督任务体（BUG-20261123-003 引入，BUG-20261126 重设计；
