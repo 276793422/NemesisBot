@@ -1462,6 +1462,44 @@ fn move_habit_scope_idempotent_when_already_in_target() {
     assert_eq!(target.habits.len(), 1, "不产生第二份");
 }
 
+/// 幂等回显取命中条目而非 habits[0]（BUG-20261126-139 回归锁）：目标
+/// 画像用**子串**命中（非精确归一相等）且命中条目不在首位时，回显
+/// content 必须是命中条目全文——此前 `unwrap_or(0)` 裸取首位，回显的
+/// 是无关条目（moved=false 语义正确，但 CLI/WSAPI 回显面取错下标）。
+#[test]
+fn move_habit_scope_idempotent_substring_echo_hits_entry_not_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    // 对话侧无命中（避免双份命中 Err）；项目侧 [无关条目, 命中条目]——
+    // 命中条目在下标 1，子串「简洁」partial 命中（非精确相等）。
+    save_profile(
+        ws,
+        &UserProfile {
+            habits: vec![habit("对话侧无关条目", 0.6)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    save_profile_scope(
+        ws,
+        ProfileScope::Project,
+        &UserProfile {
+            habits: vec![habit("无关条目乙", 0.6), habit("保持代码简洁清晰", 0.8)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let out = move_habit_scope(ws, "简洁", ProfileScope::Project).unwrap();
+    assert!(!out.moved, "目标已持有 = 幂等");
+    assert_eq!(
+        out.content, "保持代码简洁清晰",
+        "幂等回显必须是命中条目全文，不是 habits[0]"
+    );
+    // 条目不搬移（幂等，两份画像不变）。
+    assert_eq!(load_profile_scope(ws, ProfileScope::Project).habits.len(), 2);
+    assert_eq!(load_profile_scope(ws, ProfileScope::Dialogue).habits.len(), 1);
+}
+
 /// 来源子串命中多条 = Err（搬移是单条操作）。
 #[test]
 fn move_habit_scope_ambiguous_substring_is_err() {

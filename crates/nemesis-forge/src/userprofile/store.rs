@@ -1000,12 +1000,22 @@ pub fn move_habit_scope(
         }
     };
     let (src_hits, src_exact) = locate(&source.habits);
-    let (tgt_hits, _tgt_exact) = locate(&target.habits);
+    let (tgt_hits, tgt_exact) = locate(&target.habits);
     if src_hits > 0 && tgt_hits > 0 {
         return Err("两份画像都命中该子串（治理重复）：先经 veto/forget 清理一侧再搬移".into());
     }
     if tgt_hits > 0 {
-        let content = target.habits[_tgt_exact.unwrap_or(0)].content.clone();
+        let idx = tgt_exact.unwrap_or_else(|| {
+            // 无精确命中：子串唯一命中——找出那一条的下标（与来源侧
+            // 搬移定位同款；此前的 unwrap_or(0) 在命中条目不在首位时
+            // 回显别的条目全文，BUG-20261126-139）。
+            target
+                .habits
+                .iter()
+                .position(|h| h.content.trim().to_lowercase().contains(&needle))
+                .expect("tgt_hits>0 已保证存在")
+        });
+        let content = target.habits[idx].content.clone();
         return Ok(MoveScopeOutcome {
             moved: false,
             from: to_scope.slug(),
