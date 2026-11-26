@@ -4820,9 +4820,10 @@ fn write_security_audit_log(
 }
 
 /// Write audit_chain.jsonl with N events. (Separate from the audit log; this is the integrity chain.)
-fn write_security_logs(workspace: &Path, chain_events: &[nemesis_security::integrity::AuditEvent]) {
-    let sec_dir = workspace.join("logs/security_logs");
-    fs::create_dir_all(&sec_dir).unwrap();
+/// BUG-6：链落 workspace/security_chain/（读方 handler 同源新路径）。
+fn write_audit_chain(workspace: &Path, chain_events: &[nemesis_security::integrity::AuditEvent]) {
+    let chain_dir = workspace.join("security_chain");
+    fs::create_dir_all(&chain_dir).unwrap();
 
     // Chain: compute prev_hash and hash using the same algorithm as AuditChain.
     let mut chain = String::new();
@@ -4844,7 +4845,7 @@ fn write_security_logs(workspace: &Path, chain_events: &[nemesis_security::integ
         chain.push_str(&serde_json::to_string(&ev).unwrap());
         chain.push('\n');
     }
-    fs::write(sec_dir.join("audit_chain.jsonl"), chain).unwrap();
+    fs::write(chain_dir.join("audit_chain.jsonl"), chain).unwrap();
 }
 
 fn make_audit_event(
@@ -4956,7 +4957,7 @@ async fn test_logs_chain_list_three_valid_events() {
         make_audit_event("file_write", "/b", "allow"),
         make_audit_event("file_write", "/c", "allow"),
     ];
-    write_security_logs(dir.path(), &events);
+    write_audit_chain(dir.path(), &events);
 
     let ctx = make_ctx(&dir);
     let handler = LogsHandler;
@@ -4978,7 +4979,8 @@ async fn test_logs_chain_list_three_valid_events() {
 async fn test_logs_chain_list_detects_broken_hash() {
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path());
-    let sec_dir = dir.path().join("logs/security_logs");
+    // BUG-6：链夹具随读方迁 workspace/security_chain/。
+    let sec_dir = dir.path().join("security_chain");
     fs::create_dir_all(&sec_dir).unwrap();
 
     // Hand-craft 2 events: first OK, second has a corrupted hash.
@@ -5029,7 +5031,7 @@ async fn test_logs_chain_verify_valid() {
         make_audit_event("a", "t1", "allow"),
         make_audit_event("b", "t2", "deny"),
     ];
-    write_security_logs(dir.path(), &events);
+    write_audit_chain(dir.path(), &events);
 
     let ctx = make_ctx(&dir);
     let handler = LogsHandler;
@@ -5047,7 +5049,8 @@ async fn test_logs_chain_verify_valid() {
 async fn test_logs_chain_verify_finds_first_broken() {
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path());
-    let sec_dir = dir.path().join("logs/security_logs");
+    // BUG-6：链夹具随读方迁 workspace/security_chain/。
+    let sec_dir = dir.path().join("security_chain");
     fs::create_dir_all(&sec_dir).unwrap();
     // 3 events; the second has a broken hash.
     let ev1 = make_audit_event("a", "t1", "allow");

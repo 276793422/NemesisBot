@@ -1385,3 +1385,63 @@ fn test_copy_dir_symlink_cycle_skipped_not_recursed() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// 回归锁 BUG-20261126-093：文件符号链接一律不物化（旧实现目录链接防环
+// 之外「普通 symlink 文件仍按内容照常拷贝」——fs::copy 跟随目标把界外
+// 内容吸进目的树并物化成普通文件，下游 diff/清单面按 symlink_metadata
+// 跳链接无法再识别，界外敏感文件经变更集/基线档外泄）。文件链接无
+// junction 等价物（Windows symlink_file 需开发者模式/管理员）——创建
+// 失败诚实 SKIP，环境不满足不装红。
+#[cfg(windows)]
+fn make_file_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+    std::os::windows::fs::symlink_file(target, link).is_ok()
+}
+
+#[cfg(unix)]
+fn make_file_link(target: &std::path::Path, link: &std::path::Path) -> bool {
+    std::os::unix::fs::symlink(target, link).is_ok()
+}
+
+#[test]
+fn test_copy_dir_file_symlink_skipped_not_materialized() {
+    let root = temp_root("file-symlink-leak");
+    let src = root.join("src");
+    let dst = root.join("dst");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("normal.txt"), "ok").unwrap();
+    // 界外目标（源树之外）——模拟收件箱里被注入的界外链接。
+    let outside = root.join("outside_secret.txt");
+    std::fs::write(&outside, "SECRET-CONTENT-OUTSIDE").unwrap();
+    let link = src.join("leak.txt");
+    if !make_file_link(&outside, &link) {
+        eprintln!("SKIP: 文件符号链接创建失败（Windows 需开发者模式/管理员）");
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+
+    copy_dir_recursive(&src, &dst).unwrap();
+    // 链接条目不物化：dst 无 leak.txt；普通文件照常复制。
+    assert!(!dst.join("leak.txt").exists(), "文件链接被物化进目的树");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("normal.txt")).unwrap(),
+        "ok"
+    );
+    // 双保险：界外内容不出现在目的树任何文件里。
+    let mut stack = vec![dst.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = entry.path();
+            if p.is_dir() && !p.is_symlink() {
+                stack.push(p);
+            } else {
+                let body = std::fs::read_to_string(&p).unwrap_or_default();
+                assert!(
+                    !body.contains("SECRET-CONTENT-OUTSIDE"),
+                    "界外内容出现在目的树: {}",
+                    p.display()
+                );
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

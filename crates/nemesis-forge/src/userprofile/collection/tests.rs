@@ -810,3 +810,154 @@ fn prune_signals_and_events_older_than_cutoff() {
     assert_eq!(prune_events_older_than(&empty_ws, 1).unwrap(), 0);
     assert_eq!(prune_signals_older_than(&empty_ws, 1).unwrap(), 0);
 }
+
+// ---------- scope 分流（批二 D5，2026-11-25） ----------
+
+/// 在 session_logs 摆 sidecar meta 文件（`{stem}.meta.json`）。
+fn seed_meta(ws: &std::path::Path, stem: &str, body: &str) {
+    let dir = ws.join("logs").join("session_logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{stem}.meta.json")), body).unwrap();
+}
+
+/// scope 分流（D5 回归锁）：sidecar `project_id` 非空 = 项目会话；
+/// sidecar 缺席 / project_id 空 / project_id 非字符串 / sidecar 损坏 JSON
+/// = 对话会话（诚实缺省）。对话 scope 收前三类，项目 scope 只收项目会话
+/// ——行互不串流。
+#[test]
+fn collect_scope_routes_by_sidecar_project_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    seed_rows(
+        ws,
+        "plain.jsonl",
+        &[user_row("2026-10-25T10:00:00Z", "对话 Plain")],
+    );
+    seed_rows(
+        ws,
+        "proj.jsonl",
+        &[user_row("2026-10-25T10:01:00Z", "项目 Proj")],
+    );
+    seed_meta(ws, "proj", r#"{"project_id": "1", "project_path": "D:/w"}"#);
+    seed_rows(
+        ws,
+        "empty.jsonl",
+        &[user_row("2026-10-25T10:02:00Z", "对话 Empty")],
+    );
+    seed_meta(ws, "empty", r#"{"project_id": ""}"#);
+    seed_rows(
+        ws,
+        "nullid.jsonl",
+        &[user_row("2026-10-25T10:03:00Z", "对话 NullId")],
+    );
+    seed_meta(ws, "nullid", r#"{"project_id": 7}"#);
+    seed_rows(
+        ws,
+        "broken.jsonl",
+        &[user_row("2026-10-25T10:04:00Z", "对话 Broken")],
+    );
+    seed_meta(ws, "broken", "not-json");
+    // 含点会话键（回归锁 2026-11-25）：sidecar 路径必须一步
+    // `with_extension("meta.json")` 构造——两步「先剥后接」会把
+    // `dot.key.jsonl` 错位成 `dot.meta.json`（`key` 被当扩展名替换掉），
+    // sidecar 永远读不见、项目会话被误归对话。
+    seed_rows(
+        ws,
+        "dot.key.jsonl",
+        &[user_row("2026-10-25T10:05:00Z", "项目 Dotted")],
+    );
+    seed_meta(ws, "dot.key", r#"{"project_id": "1"}"#);
+    seed_rows(
+        ws,
+        "dot.plain.jsonl",
+        &[user_row("2026-10-25T10:06:00Z", "对话 Dotted")],
+    );
+
+    let dialogue =
+        collect_dialogue_after_scope(ws, 0, super::super::store::ProfileScope::Dialogue).unwrap();
+    let mut d_contents: Vec<&str> = dialogue.iter().map(|r| r.content.as_str()).collect();
+    d_contents.sort();
+    assert_eq!(
+        d_contents,
+        vec![
+            "对话 Broken",
+            "对话 Dotted",
+            "对话 Empty",
+            "对话 NullId",
+            "对话 Plain"
+        ],
+        "对话 scope = 无 sidecar/空/非串/损坏 meta 的会话（含含点键无 sidecar 会话）"
+    );
+    assert!(
+        dialogue
+            .iter()
+            .all(|r| r.session != "proj" && r.session != "dot.key"),
+        "项目会话不进对话流（含含点键项目会话）"
+    );
+
+    let project =
+        collect_dialogue_after_scope(ws, 0, super::super::store::ProfileScope::Project).unwrap();
+    assert_eq!(project.len(), 2, "项目 scope 只收项目会话");
+    // 行按时间升序（out.sort_by_key(ts_ms)）。
+    assert_eq!(project[0].session, "proj");
+    assert_eq!(project[0].content, "项目 Proj");
+    assert_eq!(project[1].session, "dot.key");
+    assert_eq!(project[1].content, "项目 Dotted");
+}
+
+/// 便捷包装等价：`collect_dialogue_after` == scope 版 Dialogue（存量消费
+/// 方零迁移的行为锚）。
+#[test]
+fn collect_dialogue_after_wrapper_is_dialogue_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    seed_rows(
+        ws,
+        "proj.jsonl",
+        &[user_row("2026-10-25T10:00:00Z", "项目行")],
+    );
+    seed_meta(ws, "proj", r#"{"project_id": "1"}"#);
+    seed_rows(
+        ws,
+        "plain.jsonl",
+        &[user_row("2026-10-25T10:01:00Z", "对话行")],
+    );
+    let wrapper = collect_dialogue_after(ws, 0).unwrap();
+    let scoped =
+        collect_dialogue_after_scope(ws, 0, super::super::store::ProfileScope::Dialogue).unwrap();
+    assert_eq!(wrapper, scoped);
+    assert_eq!(wrapper.len(), 1);
+    assert_eq!(wrapper[0].content, "对话行");
+}
+
+/// sidecar 路径构造不变量（回归锁 2026-11-25，穷举键形态）：读端一步
+/// `with_extension("meta.json")` 必须与写端 `format!("{safe}.meta.json")`
+/// （chat_log::meta_path）对**所有 sanitize 合法 safe key** 逐字节相等。
+/// sanitize 值域特征：无前导点、点只出现在字母数字之后（含尾点）——这里
+/// 按值域直接取代表形态；两步「先剥后接」对含点键错位（`a.b.jsonl` →
+/// `a.meta.json`），此测试防该形态以任何变体回潮。
+/// （`session_evidence::sidecar_scope` 同族不变量由其 tests 含点键端到端
+/// 用例钉住；读端实现同形。）
+#[test]
+fn sidecar_path_one_step_equals_writer_construction_for_all_key_forms() {
+    let forms = [
+        "abc",                    // 无点（uuid/数字键常态）
+        "web_550e8400-e29b-41d4", // 下划线+连字符
+        "a.b",                    // 内部点（email/域名型键）
+        "user@qq.com",            // email 型（两步错位重灾区）
+        "abc.",                   // 尾点（sanitize 允许：点跟在字母数字后）
+        "x.jsonl",                // 键里带 ".jsonl"（双扩展名）
+        "会话.1",                 // Unicode 字母数字 + 点
+        "a.b.c.d",                // 多点
+    ];
+    for s in forms {
+        let log_str = format!("{s}.jsonl");
+        let reader_form = std::path::Path::new(&log_str).with_extension("meta.json");
+        let writer_form = format!("{s}.meta.json");
+        assert_eq!(
+            reader_form,
+            std::path::Path::new(&writer_form),
+            "键形态 {s:?}: 读端一步构造必须等于写端 format! 形态"
+        );
+    }
+}

@@ -5,7 +5,15 @@
 //! / `profile.enable` / `profile.disable` / `profile.route`
 //! / `profile.telemetry_get` / `profile.telemetry_set` / `profile.stats`
 //! / `profile.observations` / `profile.observation_respond`
-//! / `profile.prune_queue`。
+//! / `profile.prune_queue` / `profile.manual_get` / `profile.manual_save`
+//! / `profile.preview`。
+//!
+//! scope 参数化（双 scope 拆分批三，2026-11-25）：卡片类命令
+//! （list/veto/forget/pin/observation_respond 确认臂/manual_get/
+//! manual_save/preview）接受 `data.scope`（`"dialogue"`|`"project"`，
+//! 缺省 dialogue 兼容旧前端；显式未知值 loud 拒绝）。enable/disable/
+//! stats/route/telemetry_*/prune_queue/observations 无 scope——开关与
+//! 统计是全局面（stats 双画像合并聚合）。
 //!
 //! 语义裁决：习惯生成**免确认**自动生效；本 handler 只承担**后门动作**
 //! （veto/forget/pin）与开关管理（enable/disable）。展示面走 `list`
@@ -33,6 +41,7 @@
 //! （缺省 true；存储即隐私闸——关 = 不落盘，不止不挖掘）。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_forge::userprofile::store::ProfileScope;
 use nemesis_forge::userprofile::{store, surface, telemetry};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -81,40 +90,57 @@ impl ProfileHandler {
             .unwrap_or(true)
     }
 
-    fn list(&self, ctx: &RequestContext) -> Result<Option<Value>, String> {
+    fn list(&self, ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
+        let scope = scope_from(data)?;
         let ws = self.workspace(ctx)?;
-        let profile = surface::list(&ws);
+        let profile = surface::list(&ws, scope);
+        // 逐条投影 source_kind（话术 AI 化批三 §4.5：五态来源徽标的单一
+        // 派生在 surface::source_kind，与 profile.stats 五桶统计同口径——
+        // 前端只认这个字段，不再自行从 auto/source 推导）。
+        let habits: Vec<Value> = profile
+            .habits
+            .iter()
+            .map(|h| {
+                let mut v = serde_json::to_value(h).unwrap_or_else(|_| serde_json::json!({}));
+                v["source_kind"] = serde_json::json!(surface::source_kind(h));
+                v
+            })
+            .collect();
         Ok(Some(json!({
+            "scope": scope_name(scope),
             "enabled": self.enabled_now(ctx),
             "ui_telemetry": self.ui_telemetry_now(ctx),
             "enabled_at": profile.enabled_at,
-            "habits": profile.habits,
+            "habits": habits,
         })))
     }
 
     fn veto(&self, ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
         let sub = content_sub(data)?;
+        let scope = scope_from(data)?;
         let ws = self.workspace(ctx)?;
         // home = append_event 总闸（复查 2026-11-25 批 F3：学习关闭不落）。
-        let hit = surface::veto(&ws, Some(&self.home(ctx)?), &sub)?;
+        let hit = surface::veto(&ws, scope, Some(&self.home(ctx)?), &sub)?;
         Ok(Some(json!({ "vetoed": hit })))
     }
 
     fn forget(&self, ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
         let sub = content_sub(data)?;
+        let scope = scope_from(data)?;
         let ws = self.workspace(ctx)?;
-        let hit = surface::forget(&ws, Some(&self.home(ctx)?), &sub)?;
+        let hit = surface::forget(&ws, scope, Some(&self.home(ctx)?), &sub)?;
         Ok(Some(json!({ "forgotten": hit })))
     }
 
     fn pin(&self, ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
         let sub = content_sub(data)?;
+        let scope = scope_from(data)?;
         let pinned = data
             .and_then(|d| d.get("pinned"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         let ws = self.workspace(ctx)?;
-        let hit = surface::pin(&ws, &sub, pinned)?;
+        let hit = surface::pin(&ws, scope, &sub, pinned)?;
         Ok(Some(json!({ "updated": hit, "pinned": pinned })))
     }
 
@@ -240,8 +266,11 @@ impl ProfileHandler {
             .and_then(|v| v.as_bool())
             .ok_or_else(|| "missing boolean 'approved'".to_string())?;
         let ws = self.workspace(ctx)?;
+        let scope = scope_from(data)?;
         let resolved = if approved {
-            surface::confirm_observation(&ws, id)?
+            // 确认臂带 scope（入哪份画像）；忽略臂无 scope（观察队列/
+            // 负样本事件是全局面，D7）。
+            surface::confirm_observation(&ws, scope, id)?
         } else {
             surface::dismiss_observation(&ws, Some(&self.home(ctx)?), id)?.map(|_| ())
         };
@@ -292,6 +321,87 @@ impl ProfileHandler {
             "pruned_reflections": pruned_reflections,
         })))
     }
+
+    /// 手动习惯回显（TAB1 上半编辑器；双 scope D8/D9）。返回
+    /// `[类别] 内容` 行数组，前端 textarea 直接按行回显——行语法解析
+    /// （含裁行/折叠/类别缺省）的单一真相源在 store 侧，前端零复制。
+    fn manual_get(
+        &self,
+        ctx: &RequestContext,
+        data: Option<&Value>,
+    ) -> Result<Option<Value>, String> {
+        let scope = scope_from(data)?;
+        let ws = self.workspace(ctx)?;
+        let profile = store::try_load_profile_scope(&ws, scope)?;
+        Ok(Some(json!({
+            "scope": scope_name(scope),
+            "lines": store::manual_lines(&profile),
+        })))
+    }
+
+    /// 手动习惯保存（TAB1 上半编辑器整体替换语义；`store::manual_save`
+    /// 按行 diff：新增 upsert / 消失删除，只动 source=manual 条目）。
+    /// 损坏行 = Err（报行号 fail-loud，前端 toast）；撞文机器条目经
+    /// `conflicts` 诚实回报（不重复建）。
+    fn manual_save(
+        &self,
+        ctx: &RequestContext,
+        data: Option<&Value>,
+    ) -> Result<Option<Value>, String> {
+        let scope = scope_from(data)?;
+        let lines: Vec<String> = data
+            .and_then(|d| d.get("lines"))
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "missing array 'lines'".to_string())?
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default().to_string())
+            .collect();
+        let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let ws = self.workspace(ctx)?;
+        let now = chrono::Local::now().to_rfc3339();
+        let out = store::manual_save(&ws, scope, &line_refs, &now)?;
+        Ok(Some(json!({
+            "scope": scope_name(scope),
+            "added": out.added,
+            "removed": out.removed,
+            "removed_contents": out.removed_contents,
+            "conflicts": out.conflicts,
+        })))
+    }
+
+    /// 注入内容预览（TAB1 下半只读编辑器；D10）。后端渲染——安全过滤/
+    /// pinned 排序/单行折叠的单一真相源在 `store::render_section`，前端
+    /// 不复制渲染规则。预览只渲染**自动条目**（手动条目在上半编辑器自己
+    /// 看得到），手动条数以注记行附尾（「另有手动 N 条一并注入」）。
+    fn preview(&self, ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
+        let scope = scope_from(data)?;
+        let ws = self.workspace(ctx)?;
+        let profile = store::try_load_profile_scope(&ws, scope)?;
+        let mut auto_profile = profile.clone();
+        auto_profile
+            .habits
+            .retain(|h| h.source != store::SOURCE_MANUAL);
+        let mut text = store::render_section(&auto_profile);
+        // 手动注记计数口径 = 会被注入的手动条目（active/decaying——vetoed
+        // /expired 不进注入面，render_section 同款过滤）。
+        let manual_count = profile
+            .habits
+            .iter()
+            .filter(|h| h.source == store::SOURCE_MANUAL)
+            .filter(|h| h.status == store::STATUS_ACTIVE || h.status == store::STATUS_DECAYING)
+            .count();
+        if manual_count > 0 {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("（另有手动 {manual_count} 条一并注入）"));
+        }
+        Ok(Some(json!({
+            "scope": scope_name(scope),
+            "preview": text,
+            "manual_count": manual_count,
+        })))
+    }
 }
 
 fn content_sub(data: Option<&Value>) -> Result<String, String> {
@@ -301,6 +411,34 @@ fn content_sub(data: Option<&Value>) -> Result<String, String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .ok_or_else(|| "missing or empty 'content'".to_string())
+}
+
+/// 卡片类命令的 scope 解析（批三）：`data.scope` 缺失 = 对话（兼容旧
+/// 前端）；空串 = 对话；`"dialogue"`/`"project"`（大小写不敏感）；显式
+/// 未知值/非字符串 loud 拒绝（不静默纠偏——前端拼错 scope 名要当场红，
+/// 不是悄悄读错画像）。
+fn scope_from(data: Option<&Value>) -> Result<ProfileScope, String> {
+    let Some(v) = data.and_then(|d| d.get("scope")) else {
+        return Ok(ProfileScope::Dialogue);
+    };
+    let Some(s) = v.as_str() else {
+        return Err("'scope' 必须是字符串（dialogue|project）".to_string());
+    };
+    match s.trim().to_lowercase().as_str() {
+        "" | "dialogue" => Ok(ProfileScope::Dialogue),
+        "project" => Ok(ProfileScope::Project),
+        other => Err(format!(
+            "unknown scope '{other}'（合法值：dialogue|project，缺省 dialogue）"
+        )),
+    }
+}
+
+/// scope → wire 名（响应投影/前端回显用）。
+fn scope_name(scope: ProfileScope) -> &'static str {
+    match scope {
+        ProfileScope::Dialogue => "dialogue",
+        ProfileScope::Project => "project",
+    }
 }
 
 /// `profile.prune_queue` 的 cutoff 计算（复查 2026-11-24 抽出纯函数便于单
@@ -336,6 +474,9 @@ impl ModuleHandler for ProfileHandler {
             "observations",
             "observation_respond",
             "prune_queue",
+            "manual_get",
+            "manual_save",
+            "preview",
         ]
     }
 
@@ -346,7 +487,7 @@ impl ModuleHandler for ProfileHandler {
         ctx: &RequestContext,
     ) -> Result<Option<Value>, String> {
         match cmd {
-            "list" => self.list(ctx),
+            "list" => self.list(ctx, data.as_ref()),
             "veto" => self.veto(ctx, data.as_ref()),
             "forget" => self.forget(ctx, data.as_ref()),
             "pin" => self.pin(ctx, data.as_ref()),
@@ -359,6 +500,9 @@ impl ModuleHandler for ProfileHandler {
             "observations" => self.observations(ctx),
             "observation_respond" => self.observation_respond(ctx, data.as_ref()),
             "prune_queue" => self.prune_queue(ctx, data.as_ref()),
+            "manual_get" => self.manual_get(ctx, data.as_ref()),
+            "manual_save" => self.manual_save(ctx, data.as_ref()),
+            "preview" => self.preview(ctx, data.as_ref()),
             _ => Err(format!("unknown command: profile.{cmd}")),
         }
     }

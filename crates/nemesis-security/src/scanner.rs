@@ -2114,8 +2114,16 @@ impl ScanChain {
 
     /// Get extension rules from the first engine config that has ClamAV-style
     /// extension settings. Returns empty rules if none found.
+    ///
+    /// `configs` 是 HashMap，`values()` 迭代序是进程随机态——多引擎都配了
+    /// scan_extensions/skip_extensions 时，「首个含规则的引擎」随重启洗牌 =
+    /// 生效扫描面漂移。按引擎名排序迭代（字典序最小含规则引擎恒胜，
+    /// BUG-20261125-078）。
     pub fn get_extension_rules(&self) -> ExtensionRules {
-        for raw in self.configs.values() {
+        let mut names: Vec<&String> = self.configs.keys().collect();
+        names.sort();
+        for name in names {
+            let raw = &self.configs[name];
             let scan_ext: Vec<String> = raw
                 .get("scan_extensions")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())

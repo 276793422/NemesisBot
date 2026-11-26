@@ -567,7 +567,7 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
     //     (installed later by the gateway once the EventHub exists).
     //   - Console layer: stderr + GoStyleFormatter (human-readable text). Enabled when
     //     `enable_console` is true.
-    //   - File layer: RollingFileAppender (daily rotation) + JsonLinesFormatter. Produces
+    //   - File layer: ResilientRollingWriter (daily rotation) + JsonLinesFormatter. Produces
     //     `nemesisbot.YYYY-MM-DD.log` files where each line is a JSON-serialized SseLogEvent,
     //     byte-identical to what SSE pushes to the dashboard. This is what enables history
     //     loading + seq-based dedup.
@@ -621,11 +621,14 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
                     prefix
                 );
 
-                let appender = nemesis_logger::RollingFileAppender::new(
-                    nemesis_logger::Rotation::DAILY,
-                    dir,
-                    prefix,
-                );
+                // BUG-2（2026-11-25 远程 home 取证）：tracing-appender 的
+                // RollingFileAppender 写失败完全静默且内部 writer 私有不可
+                // 恢复——一次 I/O 故障（11-25 20:46 半行截断现场）后日志
+                // 管线永久静默、观测全盲。换 nemesis-logger 自带的
+                // ResilientRollingWriter：文件形态一致（{prefix}.{YYYY-MM-DD}），
+                // 写失败自动 reopen 重试、连续失败转降级（限频 stderr 告警
+                // + 定期探活），恢复后写中断标记行（Dashboard 历史可见）。
+                let appender = nemesis_logger::ResilientRollingWriter::new(dir, prefix);
 
                 layers.push(Box::new(
                     tracing_subscriber::fmt::layer()

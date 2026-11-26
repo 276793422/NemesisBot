@@ -279,6 +279,7 @@ async fn register_shared_tools_exec_inherits_editor_gate() {
         extra_roots: Vec::new(),
         editor_gate: Some(gate_allow()),
         goals_guard: None,
+        protect_log_tree: false,
     };
     let cfg = super::SharedToolConfig {
         workspace: Some(ws.to_string_lossy().to_string()),
@@ -303,6 +304,7 @@ async fn register_shared_tools_exec_inherits_editor_gate() {
         extra_roots: Vec::new(),
         editor_gate: None,
         goals_guard: None,
+        protect_log_tree: false,
     };
     let cfg_plain = super::SharedToolConfig {
         workspace: Some(ws.to_string_lossy().to_string()),

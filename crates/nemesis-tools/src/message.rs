@@ -165,7 +165,15 @@ impl Tool for MessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to user on a chat channel. Use this when you want to communicate something."
+        // BUG-20261126-100 诚实注记：本 MessageTool（nemesis-tools 版）
+        // 全仓零注册（仅自测试触达，loop 注册的是 loop_tools::MessageTool）；
+        // 旧描述同假声明，与 loop_tools 版一并对齐 journal-only 语义。
+        // 另注：本类型发送面取决于 set_send_callback——callback 缺席时
+        // execute 诚实报错「Message sending not configured」（非静默）。
+        "Record a note for the user in the session transcript (visible on \
+         Dashboard tool cards). This does NOT deliver a chat/IM message \
+         mid-turn — the user only receives your final reply, so put \
+         anything user-facing there instead."
     }
 
     fn parameters(&self) -> serde_json::Value {

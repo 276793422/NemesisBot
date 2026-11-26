@@ -26,7 +26,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use nemesis_exec_protocol::MAX_FRAME_BYTES;
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::context::RequestContext;
@@ -119,8 +120,12 @@ pub struct DaclSpawnRequest {
 /// DACL 定向档 spawn 结果（与 nemesis-sandbox `TxnOutcome` 字段同构——
 /// agent 侧类型本地定义，gateway 闭包负责逐字段转译）。
 pub struct DaclSpawnOutcome {
-    /// stdout 首行（executor 协议响应行；`None` = 无响应退出）。
+    /// stdout 首行（executor 协议响应行；`None` = 无响应退出）。超帧帽
+    /// 被截断时内容不完整——消费方须结合 [`Self::response_truncated`] 判定。
     pub response: Option<String>,
+    /// 首行超帧帽被截断（BUG-20261126-090：协议失步诚实旗标——消费方
+    /// 应拒绝解析而非当正常响应）。
+    pub response_truncated: bool,
     pub exit_code: Option<u32>,
     pub stderr_tail: String,
 }
@@ -245,6 +250,12 @@ pub struct ExecutorChannel {
     /// 侧据此放开围栏只读闸；true / 缺省 = 不设 env，子进程按 true 处理
     /// （老网关 spawn 的子进程字节不变）。
     pub restrict_child: bool,
+    /// 审计面日志树保护镜像（2026-11-26）：镜像 gateway 侧
+    /// `WorkspaceBoundary.protect_log_tree`。false 时 `env_pairs()` 写
+    /// `NEMESISBOT_PROTECT_LOG_TREE=0`，子进程侧据此豁免（项目会话形态
+    /// root=项目目录，项目自身 logs/ 是项目内容不设防）；true / 缺省 =
+    /// 不设 env，子进程按 true 处理（老网关/主 ws 形态字节不变）。
+    pub protect_log_tree_child: bool,
     /// exec deny 自定义词表透传（2026-11-08 接线激活）：`Some(patterns)`
     /// 时 `env_pairs()` 写 `NEMESISBOT_EXECUTOR_DENY_PATTERNS`（\x1f 分隔，
     /// executor 分离形态下子进程 deny 词表与主进程同源——不透传则
@@ -284,6 +295,7 @@ impl ExecutorChannel {
             mxc_spawn: None,
             extra_roots: Vec::new(),
             restrict_child: true,
+            protect_log_tree_child: true,
             deny_patterns_child: None,
             timeout: Duration::from_secs(24 * 3600),
         }
@@ -299,6 +311,14 @@ impl ExecutorChannel {
     /// config 读主进程边界开关传入；true = 缺省不设 env，字节不变）。
     pub fn with_restrict_child(mut self, restrict: bool) -> Self {
         self.restrict_child = restrict;
+        self
+    }
+
+    /// 审计面日志树保护镜像（2026-11-26）：项目 loop 装配侧传 false
+    /// （root=项目目录，项目 logs/ 不设防）；主 ws 装配 = true 缺省不设
+    /// env，字节不变。
+    pub fn with_protect_log_tree_child(mut self, protect: bool) -> Self {
+        self.protect_log_tree_child = protect;
         self
     }
 
@@ -411,6 +431,11 @@ impl ExecutorChannel {
         // executor 子进程仍拒写界外」的分叉。
         if !self.restrict_child {
             env.push(("NEMESISBOT_EXECUTOR_RESTRICT".to_string(), "0".to_string()));
+        }
+        // 审计面日志树保护镜像：只在 false 时设（省 env 不含语义，子进程
+        // 缺省 true = 主 ws 形态旧行为）。
+        if !self.protect_log_tree_child {
+            env.push(("NEMESISBOT_PROTECT_LOG_TREE".to_string(), "0".to_string()));
         }
         // 围栏第二根透传（平台原生路径分隔符 join；空 = 不设 env——
         // 子进程缺省空 vec，单根行为与旧版逐字节一致）。join 失败（路径
@@ -605,6 +630,44 @@ impl ExecutorChannel {
         StderrTail::spawn(child.stderr.take())
     }
 
+    /// per-call 响应行带帽读（stdio 与 pipe 读侧统一形态；BUG-20261126-090）。
+    ///
+    /// `None` = 纯 EOF（对端未产出任何行——调用方按「无响应退出」处理）；
+    /// `Some((line, truncated))` = 一行就绪（含 EOF 收尾的部分行），
+    /// `truncated` = 行超 `cap` 被截断（前 `cap` 字节保留，剩余字节静默
+    /// 丢弃直到行尾/EOF——毒丸行不再进内存，游标落在行尾后）。行字节收齐
+    /// 后一次性 lossy 转换（分块 lossy 劈多字节字符的纪律见 line_cap 模块）。
+    ///
+    /// 帽 = 协议帧契约 [`MAX_FRAME_BYTES`]（thin crate 单一真相源；合法
+    /// 响应 = 单工具结果，exec 输出帽 10K 量级，远低于帧帽）。对手模型 =
+    /// 执行体隔离自身要防的对手（thin crate MAX_FRAME_BYTES 注释同款）：
+    /// 执行体进程内失控代码（exec 命令同权限可注入 executor 进程）或被
+    /// 替换的二进制可向 gateway-facing 写端灌无换行巨行——裸
+    /// `lines().next_line()` 无界积累即可打爆 gateway 内存（同族先例：
+    /// stderr 64KB 帽 = BUG-20261122-020；mxc 响应行 64KB 帽；persistent
+    /// /VM = MAX_FRAME_BYTES）。`cap` 参数化仅为测试注入小帽。
+    async fn read_resp_line_capped<R>(
+        reader: &mut R,
+        cap: usize,
+    ) -> std::io::Result<Option<(String, bool)>>
+    where
+        R: tokio::io::AsyncBufRead + Unpin,
+    {
+        let Some((mut raw, truncated)) =
+            nemesis_utils::line_cap::read_line_capped(reader, cap).await?
+        else {
+            return Ok(None);
+        };
+        if raw.last() == Some(&b'\n') {
+            raw.pop();
+        }
+        if raw.last() == Some(&b'\r') {
+            raw.pop();
+        }
+        let line = String::from_utf8_lossy(&raw).into_owned();
+        Ok(Some((line, truncated)))
+    }
+
     /// stdio transport (sandbox=false, or non-Windows userland sandbox): write
     /// stdin, read stdout. `userland_sandbox` sets the env marker the child
     /// (`exec_worker`) reads at startup to self-apply landlock/bwrap.
@@ -642,8 +705,14 @@ impl ExecutorChannel {
             .stdout
             .take()
             .ok_or_else(|| "executor child has no stdout".to_string())?;
-        let mut reader = BufReader::new(stdout).lines();
-        let resp_line = match tokio::time::timeout(self.timeout, reader.next_line()).await {
+        // 读侧带帧帽（BUG-20261126-090）：超帽巨行诚实截断报错，不无界积累。
+        let mut reader = BufReader::new(stdout);
+        let outcome = tokio::time::timeout(
+            self.timeout,
+            Self::read_resp_line_capped(&mut reader, MAX_FRAME_BYTES),
+        )
+        .await;
+        let (resp_line, resp_truncated) = match outcome {
             Err(_) => {
                 let _ = child.start_kill();
                 return Err(format!(
@@ -667,10 +736,16 @@ impl ExecutorChannel {
                     stderr_tail.snapshot()
                 ));
             }
-            Ok(Ok(Some(line))) => line,
+            Ok(Ok(Some(pair))) => pair,
         };
 
         let _ = child.wait().await;
+        if resp_truncated {
+            return Err(format!(
+                "executor response line exceeded the frame cap ({MAX_FRAME_BYTES} bytes, \
+                 tool={tool}) — protocol breach, truncated instead of unbounded accumulation"
+            ));
+        }
         Self::parse_response(&resp_line)
     }
 
@@ -710,7 +785,17 @@ impl ExecutorChannel {
             .map_err(|e| format!("dacl spawn task join error (tool={tool}): {e}"))?
             .map_err(|e| format!("dacl spawn transaction failed (tool={tool}): {e}"))?;
         match outcome.response {
-            Some(line) => Self::parse_response(&line),
+            Some(line) => {
+                // 响应行超帧帽 = 协议失步（BUG-20261126-090，DACL 读侧
+                // drain_first_line_capped 已截断记账）——诚实拒绝不解析。
+                if outcome.response_truncated {
+                    return Err(format!(
+                        "executor response line exceeded the frame cap ({MAX_FRAME_BYTES} bytes, \
+                         tool={tool}) — protocol breach, truncated instead of unbounded accumulation"
+                    ));
+                }
+                Self::parse_response(&line)
+            }
             None => Err(format!(
                 "executor (workspace-dacl) exited without a response \
                  (exit={:?}, tool={tool}); stderr: {}",
@@ -879,36 +964,41 @@ impl ExecutorChannel {
                 .map_err(|e| format!("flush executor pipe: {e}"))?;
         }
 
-        // 5. Read response line (timeout).
-        let resp_line = {
+        // 5. Read response line (timeout; capped — BUG-20261126-090).
+        let read_out = {
             let mut srv = server.lock().await;
-            let mut reader = BufReader::new(&mut *srv).lines();
-            match tokio::time::timeout(self.timeout, reader.next_line()).await {
-                Err(_) => {
-                    let _ = child.start_kill();
-                    return Err(format!(
-                        "executor timed out after {:?} (tool={tool})",
-                        self.timeout
-                    ));
-                }
-                Ok(Err(e)) => {
-                    let _ = child.start_kill();
-                    return Err(format!("read executor pipe: {e}"));
-                }
-                Ok(Ok(None)) => {
-                    let _ = child.start_kill();
-                    // 带退出状态 + stderr tail（静默死亡=panic/OOM/启动失败的
-                    // 唯一诊断面；stdio 路径同款格式）。
-                    let status = child.wait().await;
-                    return Err(format!(
-                        "executor child closed pipe without a response (tool={tool}, \
-                         exit={:?}); stderr: {}",
-                        status.map(|s| s.to_string()),
-                        stderr_tail.snapshot()
-                    ));
-                }
-                Ok(Ok(Some(line))) => line,
+            let mut reader = BufReader::new(&mut *srv);
+            tokio::time::timeout(
+                self.timeout,
+                Self::read_resp_line_capped(&mut reader, MAX_FRAME_BYTES),
+            )
+            .await
+        };
+        let (resp_line, resp_truncated) = match read_out {
+            Err(_) => {
+                let _ = child.start_kill();
+                return Err(format!(
+                    "executor timed out after {:?} (tool={tool})",
+                    self.timeout
+                ));
             }
+            Ok(Err(e)) => {
+                let _ = child.start_kill();
+                return Err(format!("read executor pipe: {e}"));
+            }
+            Ok(Ok(None)) => {
+                let _ = child.start_kill();
+                // 带退出状态 + stderr tail（静默死亡=panic/OOM/启动失败的
+                // 唯一诊断面；stdio 路径同款格式）。
+                let status = child.wait().await;
+                return Err(format!(
+                    "executor child closed pipe without a response (tool={tool}, \
+                     exit={:?}); stderr: {}",
+                    status.map(|s| s.to_string()),
+                    stderr_tail.snapshot()
+                ));
+            }
+            Ok(Ok(Some(pair))) => pair,
         };
 
         // 6. Close our end so the child's loop sees EOF and exits; then reap.
@@ -916,6 +1006,12 @@ impl ExecutorChannel {
         //    closing the pipe it would block forever and child.wait() hangs.)
         drop(server);
         let _ = child.wait().await;
+        if resp_truncated {
+            return Err(format!(
+                "executor response line exceeded the frame cap ({MAX_FRAME_BYTES} bytes, \
+                 tool={tool}) — protocol breach, truncated instead of unbounded accumulation"
+            ));
+        }
         Self::parse_response(&resp_line)
     }
 }

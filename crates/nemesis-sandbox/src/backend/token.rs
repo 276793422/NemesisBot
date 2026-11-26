@@ -120,6 +120,10 @@ const SE_GROUP_INTEGRITY: u32 = 0x20;
 
 use super::Availability;
 
+/// executor 协议响应行帧帽（thin crate 单一真相源；协议契约消费点——
+/// BUG-20261126-090 读侧带帽）。
+use nemesis_exec_protocol::MAX_FRAME_BYTES;
+
 // ---------------------------------------------------------------------------
 // 受限令牌
 // ---------------------------------------------------------------------------
@@ -377,8 +381,13 @@ pub(crate) fn sid_to_string(sid: PSID) -> Option<String> {
 #[derive(Debug)]
 pub struct TxnOutcome {
     /// stdout 首行（EOF 前收到才有）。executor 协议里是 `ExecutorResponse`
-    /// JSON 行；测试场景多为 None（libtest 子进程不写协议行）。
+    /// JSON 行；测试场景多为 None（libtest 子进程不写协议行）。超帧帽被
+    /// 截断时是前 [`nemesis_exec_protocol::MAX_FRAME_BYTES`] 字节（内容
+    /// 不完整——消费方须结合 [`Self::response_truncated`] 判定）。
     pub response: Option<String>,
+    /// 首行超帧帽被截断（BUG-20261126-090：协议失步诚实旗标——内容不
+    /// 完整，消费方应拒绝解析而非当正常响应）。
+    pub response_truncated: bool,
     /// 进程退出码（收尸成功才 Some）。
     pub exit_code: Option<u32>,
     /// stderr 尾部（诊断用，前 4KB 内）。
@@ -518,28 +527,13 @@ pub fn stdio_txn_raw(
     //    stdout 首行经 channel 回主线程（recv 有界等待，不等孙进程拖死）。
     //    句柄先在主线程包成 owned File（HANDLE 裸指针不 Send；File Send）再
     //    move 进线程。
-    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<(Option<String>, bool)>();
     let stdout_file = to_file(stdout_r);
     let stderr_file = to_file(stderr_r);
     let stdout_reader = std::thread::spawn(move || {
-        use std::io::BufRead;
         let mut reader = std::io::BufReader::new(stdout_file);
-        let mut line = String::new();
-        let mut got: Option<String> = None;
-        // 必须排水到 EOF（只留首行）：提前收手会关闭读端，子进程后续输出
-        // 撞破管道（ERROR_NO_DATA 232）以 101 退出——真实 exit code 被污染。
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if got.is_none() {
-                        got = Some(line.trim_end_matches(['\n', '\r']).to_string());
-                    }
-                }
-            }
-        }
-        let _ = line_tx.send(got);
+        let outcome = drain_first_line_capped(&mut reader, MAX_FRAME_BYTES);
+        let _ = line_tx.send(outcome);
     });
     // stderr 排水线程：内容写共享缓冲 + 完成信号。take(4096) 限总量，但
     // read_to_end 的 EOF 可能被继承写端的孙进程拖住——无界 `join` 会在进程
@@ -581,9 +575,9 @@ pub fn stdio_txn_raw(
 
     // 子进程已退 → 它持有的管道写端全部关闭 → 读线程即达 EOF。有界等待：
     // 极端迟到（比如孙进程继承了写端还活着）也不挂死事务。
-    let response = line_rx
+    let (response, response_truncated) = line_rx
         .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap_or(None);
+        .unwrap_or((None, false));
     let _ = stdout_reader; // 已达 EOF 或 detach；不 join（同上理由）
     // stderr 有界收尾（见上方排水线程注释）：完成信号最多等 5s，超时取
     // 已积累部分（Mutex 仍在被写就取到哪算哪）。
@@ -600,9 +594,44 @@ pub fn stdio_txn_raw(
     unsafe { CloseHandle(pi.hProcess) };
     Ok(TxnOutcome {
         response,
+        response_truncated,
         exit_code: have_code.then_some(code),
         stderr_tail,
     })
+}
+
+/// stdout 首行带帽捕获 + 排水到 EOF（BUG-20261126-090）：超帽首行只进
+/// 前 `cap` 字节（`truncated` 旗标回传，消费方拒绝解析），后续字节静默
+/// 丢弃到行尾/EOF——毒丸巨行不再无界积累打爆宿主内存。**必须排水到
+/// EOF**（只留首行的既有纪律不变）：提前收手会关闭读端，子进程后续输出
+/// 撞破管道（ERROR_NO_DATA 232）以 101 退出——真实 exit code 被污染。
+/// 行字节收齐后一次性 lossy（分块 lossy 劈多字节字符的纪律见 line_cap
+/// 模块；非 UTF-8 输出一行从 InvalidData 读取错误降级为解析层失败，
+/// BUG-20261113-135 同族纪律）。`cap` 参数化仅为测试注入小帽。
+pub(super) fn drain_first_line_capped<R: std::io::BufRead>(
+    reader: &mut R,
+    cap: usize,
+) -> (Option<String>, bool) {
+    let mut got: Option<String> = None;
+    let mut truncated = false;
+    loop {
+        match nemesis_utils::line_cap::read_line_capped_sync(reader, cap) {
+            Ok(None) | Err(_) => break,
+            Ok(Some((mut raw, trunc))) => {
+                if got.is_none() {
+                    truncated = trunc;
+                    if raw.last() == Some(&b'\n') {
+                        raw.pop();
+                    }
+                    if raw.last() == Some(&b'\r') {
+                        raw.pop();
+                    }
+                    got = Some(String::from_utf8_lossy(&raw).into_owned());
+                }
+            }
+        }
+    }
+    (got, truncated)
 }
 
 // ---------------------------------------------------------------------------

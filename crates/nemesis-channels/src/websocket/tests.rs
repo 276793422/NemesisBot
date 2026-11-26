@@ -2016,3 +2016,32 @@ async fn bug232_same_second_reconnect_ids_differ() {
 
     ch.stop().await.unwrap();
 }
+
+/// BUG-20261126-108：幂等双启守卫——固定端口双启第二次 bind AddrInUse →
+/// start() 误报「启动失败」而通道实际健康（第一次 listener 在跑），调用方
+/// 按 Err 处置可能误停健康通道。BUG-20261125-019 曾以「撞墙报错方向安全」
+/// 豁免本通道，BUG-20261126-107 以 wechat/wecom 同形态翻案豁免口径（AddrInUse
+/// 形态也修），本通道是 107 横扫清单盲区。守卫在位时第二次 start 诚实跳过。
+#[tokio::test]
+async fn test_start_idempotent_double_start_skips_duplicate_bind() {
+    let port = find_free_port();
+    let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: String::new(),
+        auth_token: String::new(),
+        allow_from: vec![],
+        sync_to: vec![],
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.expect("first start must succeed");
+    assert!(ch.is_running());
+    // 第二次 start：无守卫时 bind AddrInUse → Err 误报；守卫在位 → Ok 跳过
+    ch.start()
+        .await
+        .expect("duplicate start must be skipped idempotently (BUG-20261126-108)");
+    assert!(ch.is_running());
+    ch.stop().await.unwrap();
+    assert!(!ch.is_running());
+}

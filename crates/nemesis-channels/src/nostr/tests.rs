@@ -711,6 +711,80 @@ async fn test_mock_relay_end_to_end() {
         .expect("mock relay 端到端整体超时（20s）——检查连接/订阅/泵时序");
 }
 
+/// BUG-20261126-107 回归锁：start() 必须幂等——双启时每 relay 只建**一条**
+/// 连接。守卫缺失时第二次 start 会再 spawn 一组 relay 任务 → 每 relay 双
+/// 连接 + 出站帧双发。计数 = accept+WS 握手后持有连接（不交互），第二次
+/// start 后静默窗口内连接数必须仍为 1。
+#[tokio::test]
+async fn test_start_idempotent_double_start_single_relay_connection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let flow = async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_c = accepted.clone();
+        let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+        let accept_task = tokio::spawn(async move {
+            let mut held = Vec::new(); // 握手成功的连接持有到测试结束（防重连噪声）
+            loop {
+                tokio::select! {
+                    acc = listener.accept() => match acc {
+                        Ok((stream, _)) => {
+                            accepted_c.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(ws) = tokio_tungstenite::accept_async(stream).await {
+                                held.push(ws);
+                            }
+                        }
+                        Err(_) => break,
+                    },
+                    _ = &mut stop_rx => break,
+                }
+            }
+            held
+        });
+
+        let cfg = NostrConfig {
+            relays: vec![format!("ws://{addr}")],
+            private_key: TEST_SK_A.to_string(),
+            allow_from: Vec::new(),
+            reconnect_secs: 1,
+        };
+        let ch = NostrChannel::new(cfg, test_bus()).unwrap();
+
+        // 第一次 start：等首条连接建立。
+        ch.start().await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while accepted.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "首次 start 未建立 relay 连接"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // 第二次 start：守卫必须跳过（不再 spawn relay 任务）。
+        ch.start().await.unwrap();
+
+        // 静默窗（> reconnect_secs）：守卫缺失时第二条连接早已到达。
+        tokio::time::sleep(std::time::Duration::from_millis(1300)).await;
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            1,
+            "双启后每 relay 连接数必须仍为 1（第二次 start 应被幂等守卫跳过）"
+        );
+
+        ch.stop().await.unwrap();
+        let _ = stop_tx.send(());
+        drop(accept_task.await.unwrap());
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), flow)
+        .await
+        .expect("双启守卫测试整体超时（15s）");
+}
+
 #[tokio::test]
 async fn test_send_requires_running_and_recipient() {
     let ch = NostrChannel::new(valid_config(TEST_SK_A), test_bus()).unwrap();

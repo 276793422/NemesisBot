@@ -904,8 +904,15 @@ fn route_user_finding(
             auto: false,
             kind: crate::userprofile::store::KIND_HABIT.into(),
             source: String::new(), // ingest 强制 source 参数（权威）
+            rule_id: String::new(),
         };
-        match crate::userprofile::store::ingest_external_entry(ws, entry, LEARN_DIALOGUE_SOURCE) {
+        // 对话教训（学习自对话会话）→ 对话画像（双 scope 拆分 2026-11-25）。
+        match crate::userprofile::store::ingest_external_entry(
+            ws,
+            crate::userprofile::store::ProfileScope::Dialogue,
+            entry,
+            LEARN_DIALOGUE_SOURCE,
+        ) {
             Ok(()) => {
                 tracing::info!(
                     proposal = %fi.id,

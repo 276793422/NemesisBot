@@ -1042,3 +1042,400 @@ fn copy_dir_recursive_skips_symlink_cycles() {
     );
     assert!(!dst.join("loop").exists(), "目录链接必须跳过");
 }
+
+// ---- BUG-20261126：人格归档的项目会话过滤 ----
+//
+// 裁定：项目数据全局通用（换人格继续处理同一项目 = 多人协同），对话数据
+// 人格私有。旧实现整目录归档 sessions/ 与 logs/session_logs/ 把项目绑定
+// 会话一并收进 personas/<人格>/——侧栏项目组消失。
+// 判定真相源 = 根 sidecar 的 project_id 非空；stem 提取一律后缀 strip
+//（BUG-20261125-079 家族纪律：含点会话键不得用 with_extension 两步构造）。
+
+/// 在根上构造一个会话的完整文件族（logs 侧 3 件 + store 侧 3 件，dedup
+/// BUG-20261126-104 补漏后入族）。
+fn bug26_write_session_family(ws: &std::path::Path, safe_stem: &str, project_id: Option<&str>) {
+    let logs = ws.join("logs").join("session_logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let meta = match project_id {
+        Some(pid) => format!(r#"{{"title":"t","project_id":"{}"}}"#, pid),
+        None => r#"{"title":"t"}"#.to_string(),
+    };
+    std::fs::write(logs.join(format!("{}.meta.json", safe_stem)), meta).unwrap();
+    std::fs::write(logs.join(format!("{}.jsonl", safe_stem)), "line1\n").unwrap();
+    std::fs::write(logs.join(format!("{}.pending", safe_stem)), "p").unwrap();
+    let store = ws.join("sessions");
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join(format!("{}.json", safe_stem)), "{}").unwrap();
+    std::fs::write(
+        store.join(format!("{}.dedup.json", safe_stem)),
+        r#"{"items":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(store.join(format!("todo_{}.json", safe_stem)), "[]").unwrap();
+}
+
+/// 断言会话文件族完整在根（6 件核心文件）。
+fn bug26_assert_family_at_root(ws: &std::path::Path, safe_stem: &str) {
+    let logs = ws.join("logs").join("session_logs");
+    let store = ws.join("sessions");
+    for (name, desc) in [
+        (format!("{}.meta.json", safe_stem), "meta"),
+        (format!("{}.jsonl", safe_stem), "jsonl"),
+        (format!("{}.pending", safe_stem), "pending"),
+    ] {
+        assert!(
+            logs.join(&name).is_file(),
+            "{} 应留在根 logs/session_logs：{}",
+            desc,
+            name
+        );
+    }
+    for (name, desc) in [
+        (format!("{}.json", safe_stem), "store"),
+        (format!("{}.dedup.json", safe_stem), "dedup"),
+        (format!("todo_{}.json", safe_stem), "todo"),
+    ] {
+        assert!(
+            store.join(&name).is_file(),
+            "{} 应留在根 sessions：{}",
+            desc,
+            name
+        );
+    }
+}
+
+#[test]
+fn bug26_stem_extractors_handle_dotted_session_keys() {
+    // 079 家族纪律回归锁：含点会话键必须按后缀 strip，不得被当扩展名拆开。
+    assert_eq!(session_stem_of_log_file_name("a.b.jsonl"), Some("a.b"));
+    assert_eq!(session_stem_of_log_file_name("a.b.meta.json"), Some("a.b"));
+    assert_eq!(session_stem_of_log_file_name("x.pending"), Some("x"));
+    assert_eq!(session_stem_of_log_file_name("x.iqueue"), Some("x"));
+    assert_eq!(session_stem_of_log_file_name("x.notices"), Some("x"));
+    // .taking 瞬态崩溃残留三变体（pending=with_extension 换扩展；iqueue/
+    // notices=追加后缀）。顺序敏感回归锁：双段变体必须先于裸 .taking
+    // 判定，否则 strip 出错误 stem。
+    assert_eq!(session_stem_of_log_file_name("x.taking"), Some("x"));
+    assert_eq!(session_stem_of_log_file_name("x.iqueue.taking"), Some("x"));
+    assert_eq!(session_stem_of_log_file_name("x.notices.taking"), Some("x"));
+    assert_eq!(
+        session_stem_of_log_file_name("a.b.iqueue.taking"),
+        Some("a.b")
+    );
+    assert_eq!(session_stem_of_store_file_name("a.b.json"), Some("a.b"));
+    assert_eq!(
+        session_stem_of_store_file_name("todo_a.b.json"),
+        Some("a.b")
+    );
+    // dedup 幂等窗口 sidecar（BUG-20261126-104 补漏）。顺序敏感回归锁：
+    // .dedup.json 双段后缀必须先于裸 .json，否则 {safe}.dedup.json 被
+    // strip 成错误 stem {safe}.dedup → 项目会话去重状态被误判人格私有。
+    assert_eq!(session_stem_of_store_file_name("x.dedup.json"), Some("x"));
+    assert_eq!(
+        session_stem_of_store_file_name("a.b.dedup.json"),
+        Some("a.b")
+    );
+    assert_eq!(session_stem_of_meta_file_name("a.b.meta.json"), Some("a.b"));
+    // 未知形态不归类（按人格私有的旧整文件语义处理）。
+    assert_eq!(session_stem_of_log_file_name("whatever.txt"), None);
+    assert_eq!(session_stem_of_store_file_name("notes.md"), None);
+}
+
+#[test]
+fn bug26_ensure_persona_store_initial_archive_leaves_project_sessions_at_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    std::fs::write(ws.join("IDENTITY.md"), "id").unwrap();
+    bug26_write_session_family(ws, "chat-dialog", None);
+    bug26_write_session_family(ws, "proj-live", Some("p-abc"));
+
+    ensure_persona_store(&ws.to_string_lossy()).unwrap();
+
+    // 对话会话照旧归档进 default（人格私有语义不变）。
+    assert!(
+        ws.join("personas/default/logs/session_logs/chat-dialog.jsonl")
+            .is_file(),
+        "对话会话应归档进人格目录"
+    );
+    assert!(
+        ws.join("personas/default/sessions/chat-dialog.json")
+            .is_file()
+    );
+    // 项目绑定会话留根，且不进人格目录（首次初始化同样不收编项目数据）。
+    bug26_assert_family_at_root(ws, "proj-live");
+    assert!(
+        !ws.join("personas/default/logs/session_logs/proj-live.jsonl")
+            .exists()
+    );
+    assert!(!ws.join("personas/default/sessions/proj-live.json").exists());
+}
+
+#[test]
+fn bug26_activate_switch_preserves_project_sessions_and_parks_dialogue() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let ws_str = ws.to_string_lossy().to_string();
+    std::fs::write(ws.join("IDENTITY.md"), "default-id").unwrap();
+    bug26_write_session_family(ws, "dialog-a", None);
+    bug26_write_session_family(ws, "proj-live", Some("p-1"));
+    ensure_persona_store(&ws_str).unwrap();
+
+    // 建第二个人格并切换（事故场景：用户换人格继续处理同一项目）。
+    let researcher = ws.join("personas/researcher");
+    std::fs::create_dir_all(&researcher).unwrap();
+    std::fs::write(researcher.join("IDENTITY.md"), "researcher-id").unwrap();
+
+    activate_persona_workspace(&ws_str, "researcher").unwrap();
+
+    // 项目会话纹丝不动在根（BUG 主诉：切换人格不得影响项目信息/会话）。
+    bug26_assert_family_at_root(ws, "proj-live");
+    // 对话会话归档进 default（人格私有）并从根消失。
+    assert!(
+        ws.join("personas/default/logs/session_logs/dialog-a.jsonl")
+            .is_file()
+    );
+    assert!(ws.join("personas/default/sessions/dialog-a.json").is_file());
+    assert!(!ws.join("logs/session_logs/dialog-a.jsonl").exists());
+    // 活体人格确实切了过去。
+    assert_eq!(
+        std::fs::read_to_string(ws.join("IDENTITY.md")).unwrap(),
+        "researcher-id"
+    );
+}
+
+#[test]
+fn bug26_activate_roundtrip_project_session_never_moves() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let ws_str = ws.to_string_lossy().to_string();
+    std::fs::write(ws.join("IDENTITY.md"), "default-id").unwrap();
+    bug26_write_session_family(ws, "dialog-a", None);
+    bug26_write_session_family(ws, "proj-live", Some("p-1"));
+    ensure_persona_store(&ws_str).unwrap();
+    let researcher = ws.join("personas/researcher");
+    std::fs::create_dir_all(&researcher).unwrap();
+    std::fs::write(researcher.join("IDENTITY.md"), "researcher-id").unwrap();
+
+    // A→B→A→B 往返：项目会话全程钉在根；对话会话随人格往复。
+    activate_persona_workspace(&ws_str, "researcher").unwrap();
+    bug26_assert_family_at_root(ws, "proj-live");
+    assert!(!ws.join("logs/session_logs/dialog-a.jsonl").exists());
+
+    activate_persona_workspace(&ws_str, "default").unwrap();
+    bug26_assert_family_at_root(ws, "proj-live");
+    assert!(
+        ws.join("logs/session_logs/dialog-a.jsonl").is_file(),
+        "切回 default 对话会话应恢复"
+    );
+
+    activate_persona_workspace(&ws_str, "researcher").unwrap();
+    bug26_assert_family_at_root(ws, "proj-live");
+    // 项目文件从未进任何人格目录。
+    assert!(
+        !ws.join("personas/default/logs/session_logs/proj-live.jsonl")
+            .exists()
+    );
+    assert!(
+        !ws.join("personas/researcher/logs/session_logs/proj-live.jsonl")
+            .exists()
+    );
+    assert!(!ws.join("personas/default/sessions/proj-live.json").exists());
+    assert!(
+        !ws.join("personas/researcher/sessions/proj-live.json")
+            .exists()
+    );
+    // dedup 幂等窗口 sidecar 同钉在根（BUG-20261126-104 回归锁：漏了它
+    // 会被误判人格私有——归档进旧人格、从根清除、新人格无镜像可还）。
+    assert!(
+        !ws.join("personas/default/sessions/proj-live.dedup.json")
+            .exists()
+    );
+    assert!(
+        !ws.join("personas/researcher/sessions/proj-live.dedup.json")
+            .exists()
+    );
+}
+
+#[test]
+fn bug26_repair_moves_back_legacy_layout_complete_family() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    // legacy 布局：store 已初始化（_active.json 在），项目会话整体被旧版
+    // 收进了 personas/default（事发 home 的真实形态）。
+    let pdir = ws.join("personas/default");
+    let plogs = pdir.join("logs").join("session_logs");
+    let pstore = pdir.join("sessions");
+    std::fs::create_dir_all(&plogs).unwrap();
+    std::fs::create_dir_all(&pstore).unwrap();
+    std::fs::write(ws.join("personas/_active.json"), r#"{"name":"default"}"#).unwrap();
+    std::fs::write(
+        plogs.join("legacy-proj.meta.json"),
+        r#"{"project_id":"p-x"}"#,
+    )
+    .unwrap();
+    std::fs::write(plogs.join("legacy-proj.jsonl"), "archived\n").unwrap();
+    std::fs::write(plogs.join("legacy-proj.pending"), "p").unwrap();
+    std::fs::write(plogs.join("legacy-proj.iqueue"), "q").unwrap();
+    std::fs::write(plogs.join("legacy-proj.notices"), "n").unwrap();
+    // .taking 瞬态崩溃残留（take rename 后删除前终止）同样随族回根——
+    // drain_orphan_pending 每 10s 兜底扫描只看根，不回根 = 排队消息滞留。
+    std::fs::write(plogs.join("legacy-proj.taking"), "r").unwrap();
+    std::fs::write(pstore.join("legacy-proj.json"), "{}").unwrap();
+    // dedup 幂等窗口 sidecar（BUG-20261126-104 补漏）：归档里的项目会话
+    // 去重状态必须随族回根，否则回根会话的红利重放窗口为空。
+    std::fs::write(
+        pstore.join("legacy-proj.dedup.json"),
+        r#"{"items":[["m1",1]]}"#,
+    )
+    .unwrap();
+    std::fs::write(pstore.join("todo_legacy-proj.json"), "[]").unwrap();
+
+    let moved = repair_project_sessions(&ws.to_string_lossy()).unwrap();
+
+    assert_eq!(moved, 9, "logs 侧 6 件 + store 侧 3 件应全部搬回");
+    bug26_assert_family_at_root(ws, "legacy-proj");
+    assert!(ws.join("logs/session_logs/legacy-proj.iqueue").is_file());
+    assert!(ws.join("logs/session_logs/legacy-proj.notices").is_file());
+    // 源已清（搬回不是复制）。
+    assert!(!plogs.join("legacy-proj.jsonl").exists());
+    assert!(!pstore.join("legacy-proj.json").exists());
+    assert!(!pstore.join("legacy-proj.dedup.json").exists());
+}
+
+#[test]
+fn bug26_repair_is_idempotent_and_root_wins_collisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let plogs = ws.join("personas/default/logs").join("session_logs");
+    std::fs::create_dir_all(&plogs).unwrap();
+    std::fs::write(ws.join("personas/_active.json"), r#"{"name":"default"}"#).unwrap();
+    std::fs::write(plogs.join("proj.meta.json"), r#"{"project_id":"p-x"}"#).unwrap();
+    std::fs::write(plogs.join("proj.jsonl"), "persona-copy\n").unwrap();
+    // 根上已有同名会话（根是活体权威）：撞车保留根。
+    std::fs::create_dir_all(ws.join("logs").join("session_logs")).unwrap();
+    std::fs::write(ws.join("logs/session_logs/proj.jsonl"), "root-live\n").unwrap();
+
+    let moved = repair_project_sessions(&ws.to_string_lossy()).unwrap();
+    assert_eq!(moved, 1, "只有 meta 搬回（jsonl 根已在跳过）");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("logs/session_logs/proj.jsonl")).unwrap(),
+        "root-live\n",
+        "撞车必须保留根上活体"
+    );
+    assert!(plogs.join("proj.jsonl").is_file(), "人格侧副本不动");
+
+    // 幂等：再跑一遍零搬运。
+    let moved2 = repair_project_sessions(&ws.to_string_lossy()).unwrap();
+    assert_eq!(moved2, 0, "回迁必须幂等");
+}
+
+#[test]
+fn bug26_repair_leaves_dialogue_sessions_in_persona() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let plogs = ws.join("personas/default/logs").join("session_logs");
+    std::fs::create_dir_all(&plogs).unwrap();
+    std::fs::write(ws.join("personas/_active.json"), r#"{"name":"default"}"#).unwrap();
+    // 对话会话（无 project_id）：留在人格目录，人格私有语义不变。
+    std::fs::write(plogs.join("dialog.meta.json"), r#"{"title":"t"}"#).unwrap();
+    std::fs::write(plogs.join("dialog.jsonl"), "d\n").unwrap();
+    // 损坏 meta：诚实按对话处理（不猜）。
+    std::fs::write(plogs.join("broken.meta.json"), "not-json").unwrap();
+    std::fs::write(plogs.join("broken.jsonl"), "b\n").unwrap();
+
+    let moved = repair_project_sessions(&ws.to_string_lossy()).unwrap();
+    assert_eq!(moved, 0);
+    assert!(plogs.join("dialog.jsonl").is_file());
+    assert!(plogs.join("broken.jsonl").is_file());
+    assert!(!ws.join("logs/session_logs/dialog.jsonl").exists());
+}
+
+// ---- BUG-20261126-093：case 变体调用 vs 大小写不敏感文件系统（NTFS）----
+//
+// persona 目录解析在 Windows 上大小写不敏感（`personas/coder` 与
+// `personas/Coder` 是同一目录），而 active 标记比对是精确 `==`——case
+// 变体调用会绕过「激活中人格先恢复 default」「编辑同步活体」两条语义。
+// 与 BUG-20261125-069（default 保留名闸 ASCII 变体）同族相邻位点，修复
+// 口径同款：ASCII 大小写变体视为同一人格。目录解析仍大小写不敏感（
+// Windows 文件系统语义），比对口径与物理目录对齐。
+
+/// Windows-only：目录查找大小写不敏感才能命中 case 变体目录。
+#[cfg(windows)]
+fn persona_case_variant_setup(handler: &PersonaHandler, ws: &str) {
+    handler.ensure_initialized(ws).unwrap();
+    // 安装 Coder 人格（手工物化最小目录）并激活。
+    let coder_dir = resolve_path(ws, "personas/Coder").unwrap();
+    std::fs::create_dir_all(&coder_dir).unwrap();
+    std::fs::write(coder_dir.join("IDENTITY.md"), "# Coder Identity").unwrap();
+    handler.cmd_activate(ws, "Coder").unwrap();
+    // 激活前置确认：marker 与活体均在位。
+    assert_eq!(handler.read_active(ws).unwrap(), "Coder");
+    assert_eq!(
+        std::fs::read_to_string(resolve_path(ws, "IDENTITY.md").unwrap()).unwrap(),
+        "# Coder Identity"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn case_variant_remove_of_active_persona_restores_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_str().unwrap();
+    let handler = PersonaHandler::new();
+    persona_case_variant_setup(&handler, ws);
+
+    // case 变体 remove：目录解析命中同一物理目录，active 比对必须同样
+    // 命中（否则跳过 default 恢复——marker 悬空指向已删人格）。
+    handler.cmd_remove(ws, "coder").unwrap();
+
+    assert_eq!(
+        handler.read_active(ws).unwrap(),
+        "default",
+        "case 变体 remove 激活中人格必须先恢复 default（marker 不悬空）"
+    );
+    assert!(
+        !resolve_path(ws, "personas/coder").unwrap().exists(),
+        "目标人格目录必须已删除"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn case_variant_file_save_syncs_active_live_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_str().unwrap();
+    let handler = PersonaHandler::new();
+    persona_case_variant_setup(&handler, ws);
+
+    // case 变体 file.save：存档副本（personas/CODER → Coder）与活体
+    // （workspace 根）是同一人格——比对必须命中，活体同步不能漏。
+    handler
+        .cmd_file_save(ws, "CODER", "IDENTITY.md", "# Patched")
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(resolve_path(ws, "IDENTITY.md").unwrap()).unwrap(),
+        "# Patched",
+        "case 变体保存激活中人格必须同步 workspace 根活体文件"
+    );
+}
+
+/// Linux 对照（保守分歧声明）：目录查找大小写敏感，case 变体 remove
+/// 诚实报 not found——与 BUG-20261125-069 注记的平台分歧口径一致。
+#[cfg(not(windows))]
+#[test]
+fn case_variant_remove_missing_dir_is_honest_not_found() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_str().unwrap();
+    let handler = PersonaHandler::new();
+    handler.ensure_initialized(ws).unwrap();
+    let coder_dir = resolve_path(ws, "personas/Coder").unwrap();
+    std::fs::create_dir_all(&coder_dir).unwrap();
+    std::fs::write(coder_dir.join("IDENTITY.md"), "# Coder Identity").unwrap();
+    handler.cmd_activate(ws, "Coder").unwrap();
+
+    let err = handler.cmd_remove(ws, "coder").unwrap_err();
+    assert!(err.contains("not found"), "实际错误：{err}");
+    // 原目录不受影响。
+    assert!(resolve_path(ws, "personas/Coder").unwrap().exists());
+}

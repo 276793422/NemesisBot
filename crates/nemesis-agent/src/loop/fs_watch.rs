@@ -136,6 +136,22 @@ impl AgentLoop {
         *self.profile_root.write() = Some(root);
     }
 
+    /// 注入用户画像 scope（双 scope 拆分 2026-11-25）：项目 loop 装配时
+    /// 设 `ProfileScope::Project`——读主 workspace 根下的
+    /// `config/user_profile_project.json`（对话画像不动）；不调用 = 默认
+    /// Dialogue（主/集群/headless 行为不变）。scope 装配期钉死，运行期
+    /// 不切（无热切需求；mtime 缓存键含 scope 兜底防未来热切串值）。
+    pub fn set_profile_scope(&self, scope: super::ProfileScope) {
+        *self.profile_scope.write() = scope;
+    }
+
+    /// 当前画像 scope（`user_profile_section_now` forge 臂唯一消费；
+    /// 无 forge 构建下恒死代码，条件 allow 压掉——同 profile_store_root）。
+    #[cfg_attr(not(feature = "forge"), allow(dead_code))]
+    pub(crate) fn profile_scope(&self) -> super::ProfileScope {
+        *self.profile_scope.read()
+    }
+
     /// 用户画像存储根（2026-11-24 项目会话注入缺口修复）：显式注入优先，
     /// 回落 workspace_root。`user_profile_section_now` 唯一消费（画像文件
     /// 定位与 mtime 缓存键同根——根不变则缓存键语义不变）。

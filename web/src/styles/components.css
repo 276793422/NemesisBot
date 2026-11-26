@@ -299,6 +299,89 @@
   color: var(--text-muted);
 }
 
+/* 来源色点（ProfileView 习惯表，2026-11-25 用户裁定，替代徽标链）：
+ * 蓝=内置触发（rule_id 在场）/ 绿=AI 总结 / 灰=模板兜底（legacy 位）/
+ * 橙=反思观察 / 紫=外部回抛 / 青=手动条目（用户在注入内容页手写）。
+ * 取中明度色，暗/亮主题下均可见。 */
+.src-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.dot-rule { background: #3b82f6; }
+.dot-ai { background: #22c55e; }
+.dot-template { background: #94a3b8; }
+.dot-observation { background: #f59e0b; }
+.dot-external { background: #a78bfa; }
+.dot-manual { background: #14b8a6; }
+
+/* 注入内容页双卡片（ProfileView TAB1，2026-11-25 用户拍板双 scope）：
+ * 对话/项目两大卡片左右并列，窄屏纵向堆叠。卡片内上半 = 手动习惯编辑器
+ * （用户可写，保存后一并注入），下半 = 系统总结预览（后端 render_section
+ * 渲染产物，只读——用户看这里就知道实际注入的提示词内容）。 */
+.inject-cards {
+  display: flex;
+  gap: var(--space-4);
+  align-items: stretch;
+  margin-bottom: var(--space-4);
+}
+
+.inject-cards > .card {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.inject-cards .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+}
+
+@media (max-width: 900px) {
+  .inject-cards {
+    flex-direction: column;
+  }
+}
+
+.inject-section-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.inject-preview {
+  background: var(--bg-secondary, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  min-height: 120px;
+  flex: 1;
+  margin: 0;
+}
+
+/* 溯源提示（ProfileView 命中列，2026-11-25 用户裁定）：带内置规则证据的
+ * 命中数加虚线下划线提示可悬停——溯源明细只在 title tooltip 展示，
+ * 不占正文版面。 */
+.hits-with-evidence {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--text-muted, #999);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
 /* 决策可见性三徽标（2026-10-15 批）：✋ 待你决策 = 实底 amber + 脉冲，
  * 全页最高视觉权重（needs_user 强信号）；📋 计划待确认 = info 系描边强化
  * （plan_ready 中信号）；⚠ 停滞 = 中性灰描边（attention 弱信号，只提示

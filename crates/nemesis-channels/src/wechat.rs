@@ -24,7 +24,9 @@
 //! 已知边界（诚实声明）：
 //! - 停机语义同 line.rs：`stop()` 置 running=false 后，监听 socket 在下一个
 //!   连接到来后才释放（accept 阻塞语义）；测试用随机端口规避占用。
-//! - 单次 read 上限 64KB：超长请求体截断 → 400（文本消息场景足够）。
+//! - 请求读取走 `http_min` 有界重组读（wechat/line 共用单一真相源，
+//!   BUG-20261126-106）：单次 read 不耐 TCP 分段已根修；重组后仍受 64KB
+//!   帽约束，超帽 → 400（文本消息场景足够）。
 //! - 注入检测/凭据扫描等安全层在 gateway 侧 8 层管线，通道层不重复判断。
 //! - HMAC 签名是**防伪造**而非防重放：timestamp/nonce 参与摘要但无时效窗、
 //!   无 nonce 去重——截获的合法回调可无限重放（上公网前必须补齐时效窗/
@@ -645,19 +647,28 @@ impl WeChatChannel {
         base: &BaseChannel,
         running: &parking_lot::RwLock<bool>,
     ) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         if !*running.read() {
             return;
         }
 
-        let mut buf = vec![0u8; 65536];
+        // BUG-20261126-106：旧形态单次 `read()` 只拿内核缓冲区当时的字节——
+        // >1.4KB 的回调跨 TCP segment 到达时拿到部分请求，body 解析必败 400
+        // → 消息永久丢失且平台重试同样分段无法自愈。改 http_min 有界重组读
+        // （line 同源单一真相源）：Oversize → 400，其余失败（EOF/超时/IO）
+        // 静默断开，与旧 Ok(0)|Err 形态一致。
         let mut stream = stream;
-        let n = match stream.read(&mut buf).await {
-            Ok(0) | Err(_) => return,
-            Ok(n) => n,
+        let request_data: &[u8] = &match crate::http_min::read_request_bounded(&mut stream).await {
+            Ok(b) => b,
+            Err(crate::http_min::MinReadError::Oversize) => {
+                warn!("[WeChatChannel] 回调请求超过 64KB 帽，拒绝（400）");
+                let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+                let _ = stream.write_all(resp.as_bytes()).await;
+                return;
+            }
+            Err(_) => return,
         };
-        let request_data = &buf[..n];
         let request_str = String::from_utf8_lossy(request_data);
 
         // 请求行：METHOD /path?query HTTP/1.x
@@ -800,6 +811,12 @@ impl Channel for WeChatChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // 幂等双启守卫（BUG-20261126-107，nostr 同批家族缺角）：双启会
+        // 重复装配回调服务端（固定端口 → AddrInUse；port 0 → 静默双监听）。
+        if self.base.is_running() {
+            info!("[WeChatChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
         let scheme = self.config.signature_scheme()?;
         info!(
             listen = %self.config.callback_listen_addr_resolved(),

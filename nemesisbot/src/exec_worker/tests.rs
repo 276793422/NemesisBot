@@ -1237,6 +1237,37 @@ fn restrict_env_zero_disables() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261126-096 同族：日志树保护闸 env 镜像解析——缺省 true（主/集群
+// worker 形态，gateway 不注入 env）；显式 "0" = 项目 loop 豁免镜像。
+// 与 restrict 镜像同契约（省 env 不含语义，不静默纠偏）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn protect_log_tree_env_defaults_true_when_unset_or_other_values() {
+    assert!(
+        protect_log_tree_from_env(None),
+        "env 未设 = true（主/集群 worker 形态缺省保护）"
+    );
+    assert!(
+        protect_log_tree_from_env(Some(std::ffi::OsStr::new(""))),
+        "空串视同缺省"
+    );
+    assert!(protect_log_tree_from_env(Some(std::ffi::OsStr::new("1"))));
+    assert!(
+        protect_log_tree_from_env(Some(std::ffi::OsStr::new("false"))),
+        "非 \"0\" 值视同 true（不静默纠偏，与 restrict 镜像同族）"
+    );
+}
+
+#[test]
+fn protect_log_tree_env_zero_disables() {
+    assert!(
+        !protect_log_tree_from_env(Some(std::ffi::OsStr::new("0"))),
+        "显式 \"0\" = 项目 loop 豁免镜像"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // exec deny 自定义词表 env 解析（2026-11-08 接线激活）：gateway 侧只在
 // 自定义激活形态注入（\x1f 分隔），缺席 = None = 内置默认词表。
 // ---------------------------------------------------------------------------

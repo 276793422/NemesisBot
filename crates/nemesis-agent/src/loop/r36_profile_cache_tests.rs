@@ -165,3 +165,70 @@ async fn profile_root_override_reads_main_workspace_profile_for_project_loops() 
         "no override = fallback to workspace_root (main/cluster loops unchanged)"
     );
 }
+
+/// 双 scope 注入分流回归锁（2026-11-25 批一）：scope=Project 的 loop 读
+/// `user_profile_project.json`（项目画像），对话画像文件在场也不串值；
+/// 默认（Dialogue）读对话画像文件——两份独立数据的注入侧语义钉死。
+#[tokio::test]
+async fn profile_scope_routes_to_project_profile_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let main_ws = dir.path().join("main-ws");
+    std::fs::create_dir_all(main_ws.join("config")).unwrap();
+    // 对话画像：老条目；项目画像：不同内容条目（同根不同文件）。
+    std::fs::write(
+        main_ws.join("config").join("user_profile.json"),
+        serde_json::json!({
+            "enabled_at": "2026-10-25T00:00:00+08:00",
+            "habits": [{
+                "category": "style",
+                "content": "对话画像条目标记词甲",
+                "confidence": 0.8, "hits": 1,
+                "first_seen": "2026-10-25T00:00:00+08:00",
+                "last_seen": "2026-10-25T00:00:00+08:00",
+                "status": "active", "pinned": false
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        main_ws.join("config").join("user_profile_project.json"),
+        serde_json::json!({
+            "enabled_at": "2026-10-25T00:00:00+08:00",
+            "habits": [{
+                "category": "workflow",
+                "content": "项目画像条目标记词乙",
+                "confidence": 0.8, "hits": 1,
+                "first_seen": "2026-10-25T00:00:00+08:00",
+                "last_seen": "2026-10-25T00:00:00+08:00",
+                "status": "active", "pinned": false
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let cfg_path = main_ws.join("config").join("config.json");
+    write_config(&cfg_path, true);
+
+    // 默认 scope（Dialogue）= 读对话画像。
+    let dialogue_loop = cov_mock_loop();
+    dialogue_loop.set_workspace_root(main_ws.clone());
+    dialogue_loop.set_config_path(cfg_path.clone());
+    let d = dialogue_loop.user_profile_section_now();
+    assert!(
+        d.contains("对话画像条目标记词甲") && !d.contains("项目画像条目标记词乙"),
+        "default scope must read dialogue profile only, got: {d:?}"
+    );
+
+    // scope=Project（项目 loop 装配形态：主 workspace 根 + 项目 scope）
+    // = 只读项目画像。
+    let project_loop = cov_mock_loop();
+    project_loop.set_workspace_root(main_ws.clone());
+    project_loop.set_config_path(cfg_path.clone());
+    project_loop.set_profile_scope(super::ProfileScope::Project);
+    let p = project_loop.user_profile_section_now();
+    assert!(
+        p.contains("项目画像条目标记词乙") && !p.contains("对话画像条目标记词甲"),
+        "Project scope must read project profile only, got: {p:?}"
+    );
+}

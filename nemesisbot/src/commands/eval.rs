@@ -693,7 +693,12 @@ async fn run_phases(
     // long skill run needs far more than observe_secs (verified: github
     // skill + observe-secs 60 made the shell watchdog-fire at 60s while the
     // agent was still working).
-    let timeout_str = (common_args.observe_secs + 600).to_string();
+    // BUG-20261126-081：`--observe-secs` 是无上界 u64，导出熔断（env 总
+    // 熔断 +600 / host 等待熔断 +660）裸加在巨值下 debug panic / release
+    // 回绕成提前熔断。收拢 eval_fuses 单一算术点饱和守卫（时长语义：巨值
+    // ≈永不触发，无策略上界可施；wait_timeout_ms 已把巨 Duration 双方向
+    // 钳到 u32::MAX-1，饱和值安全下游）。
+    let (timeout_str, fuse) = eval_fuses(common_args.observe_secs);
     let env_cfg: Vec<(&str, &str)> = vec![
         ("NEMESISBOT_EVAL_BOX", eval_box),
         ("NEMESISBOT_EVAL_EVENTS_FILE", &events_str),
@@ -708,7 +713,6 @@ async fn run_phases(
     // Total-timeout fuse: observe_secs + slack for the agent spawn.
     // Keep in step with the monitor shell's total fuse (see TIMEOUT_SECS
     // above) — same +600 slack.
-    let fuse = std::time::Duration::from_secs(common_args.observe_secs + 660);
     let shell_exit = wait_with_timeout(shell_hp, fuse).await;
 
     // 6m — monitor events (env-error marker → abort with reason).
@@ -1558,6 +1562,21 @@ fn wait_timeout_ms(d: std::time::Duration) -> u32 {
     } else {
         ms as u32
     }
+}
+
+/// BUG-20261126-081 单一算术点：eval 观察熔断的导出对。
+/// 返回 `(monitor env 总熔断字符串, host 等待熔断 Duration)`。
+/// `--observe-secs` 是无上界 u64（clap 默认 1800），裸 `+600`/`+660`
+/// 在巨值下 debug panic / release 回绕成**提前熔断**（回绕变小）——
+/// 与熔断语义正好相反。时长语义下巨值 ≈ 永不触发，无策略上界可施，
+/// saturating 对齐家族守卫形态（rules.rs interval 上界哨兵 /
+/// touchpoints 秒值钳制同族先例）。
+#[cfg(target_os = "windows")]
+fn eval_fuses(observe_secs: u64) -> (String, std::time::Duration) {
+    (
+        observe_secs.saturating_add(600).to_string(),
+        std::time::Duration::from_secs(observe_secs.saturating_add(660)),
+    )
 }
 
 #[cfg(target_os = "windows")]

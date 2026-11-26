@@ -279,6 +279,16 @@ impl GatewayCtx {
         {
             let capture_enabled = cfg.debug.as_ref().is_none_or(|d| d.capture.enabled);
             nemesis_agent::capture_sink::CaptureSink::init(home.join("workspace"), capture_enabled);
+            // 会话错误记录（v1 纯追加旁路）：episode 四元组（事件/sid/
+            // 请求/应答）落 logs/session_errors/。session_error.recording
+            // 缺省 true；记录器任何故障 fail-open（warn 放行），与
+            // capture_sink 同纪律。
+            let se_enabled = cfg
+                .session_error
+                .as_ref()
+                .map(|s| s.recording)
+                .unwrap_or(true);
+            nemesis_agent::r#loop::session_error_recorder::init(home.join("workspace"), se_enabled);
             if capture_enabled {
                 info!("[Gateway] Diagnostic capture armed (failure-triggered → logs/capture/)");
             }
@@ -289,6 +299,23 @@ impl GatewayCtx {
         let mut args: Vec<String> = common::collect_args_lossy().into_iter().skip(2).collect();
         args.extend(extra_args.iter().cloned());
         let _log_flags = common::init_logger_from_config(&config_path, &args);
+
+        // Step 5a-前置：人格归档存量回迁（BUG-20261126 配套，幂等）。
+        // 位置纪律：必须在 `init_logger_from_config` **之后**（首版放
+        // gateway.rs run() 预装配块，早于 subscriber 安装，回迁日志蒸发
+        // ——e2e S5 抓出后挪此处）且早于一切会话 meta 扫描消费方
+        // （owner index / start_all 在 assemble 之后的装配步）。
+        {
+            let ws = common::workspace_path(&home);
+            match nemesis_web::handlers::persona::repair_project_sessions(&ws.to_string_lossy()) {
+                Ok(n) if n > 0 => tracing::info!(
+                    "[Gateway] persona archive repair: {} project session file(s) restored to workspace root",
+                    n
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("[Gateway] persona archive repair failed: {}", e),
+            }
+        }
 
         // Step 5a：独立代理配置 env 段注入（代理设置三项改造批B）。
         // 位置纪律：必须在 `init_logger_from_config` **之后**（注入日志要被

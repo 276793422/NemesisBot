@@ -7,8 +7,9 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use chrono::{DateTime, Local};
 use nemesis_types::utils;
@@ -191,6 +192,44 @@ pub struct FinalResponseInfo {
     pub chat_id: String,
 }
 
+/// BUG-8 写失败记账（Arc 包装——spawn_blocking fire-and-forget 闭包要求
+/// 'static，记账状态必须能 clone 进闭包）。
+#[derive(Default)]
+struct WriteStats {
+    /// 连续失败计数（成功清零）。
+    consecutive_failures: AtomicU32,
+    /// 累计失败总数（诊断用）。
+    failures_total: AtomicU64,
+    /// 上次写失败 WARN 的 unix 毫秒（限频 [`WRITE_WARN_THROTTLE_MS`]）。
+    last_warn_ms: AtomicU64,
+    /// 失败发生过（恢复标记：失败后首次成功 → WARN「写恢复」）。
+    was_failing: AtomicBool,
+    /// 在飞写盘数（含挂死的）——饱和闸用。spawn_blocking fire-and-forget
+    /// 的挂死写会占住 tokio blocking 线程直到线程池耗尽（默认 512），饿死
+    /// 应用其他 spawn_blocking 任务；本计数把**本 logger**的在飞写盘钳在
+    /// [`MAX_IN_FLIGHT_WRITES`] 内，超限丢弃 + 记账（故障隔离：单个挂死
+    /// 磁盘不得拖垮共享线程池）。
+    in_flight: AtomicUsize,
+}
+
+/// 在飞写盘饱和闸（BUG-8 复核补强）：挂死写占线程不释放，本 logger 自身
+/// 最多同时占 64 个 blocking 线程——远低于 tokio 默认 blocking 池上限
+/// （512），饿死面收敛到「后续日志条丢弃」（记账限频 WARN 可见），不外溢
+/// 到无关 spawn_blocking 任务。
+const MAX_IN_FLIGHT_WRITES: usize = 64;
+
+/// 在飞计数释放 guard（构造性保证）：Drop 时减计数——写闭包内任何一段
+/// 代码 panic（unwind）计数也会被释放，杜绝「一次闭包 panic → 计数永久
+/// 泄漏 → 64 条后全部丢弃」这个与 BUG-8 同族的静默死亡模式。饱和闸的
+/// 提前丢弃臂不经 guard（直接 fetch_sub 回退）。
+struct InFlightGuard(Arc<WriteStats>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Handles logging of LLM requests and responses to markdown files.
 pub struct RequestLogger {
     config: LoggingConfig,
@@ -202,8 +241,59 @@ pub struct RequestLogger {
     session_dir: Mutex<Option<PathBuf>>,
     file_index: AtomicI32,
     enabled: bool,
+    /// BUG-8（2026-11-25 远程 home 取证）：写失败记账——一次写盘故障（D 盘
+    /// 渐进故障现场：写半截 hang）不得静默吞掉，也不得把全局锁带死。
+    write_stats: std::sync::Arc<WriteStats>,
     #[allow(dead_code)]
     start_time: DateTime<Local>,
+}
+
+/// 写失败 WARN 限频间隔（毫秒）。
+const WRITE_WARN_THROTTLE_MS: u64 = 300_000;
+
+/// 纯写盘（开文件 + 全量写）。移出锁与调用方的独立函数——同步/异步两路共用。
+fn write_to_disk(path: &Path, content: &str) -> Result<(), String> {
+    let mut file = fs::File::create(path).map_err(|e| format!("Failed to create file: {}", e))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write file: {}", e))
+}
+
+/// BUG-8 写盘结果记账：失败 → 连续计数 +1、限频 WARN；成功 → 失败后首次
+/// 成功发恢复 WARN + 清零。WARN 走 tracing（BUG-2 修复后的 ResilientRollingWriter
+/// 管线自身有韧性，WARN 可落盘）。
+fn record_write_result(stats: &WriteStats, err: Option<&String>, path: &Path) {
+    match err {
+        Some(e) => {
+            let n = stats.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+            stats.failures_total.fetch_add(1, Ordering::Relaxed);
+            stats.was_failing.store(true, Ordering::Relaxed);
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let last = stats.last_warn_ms.load(Ordering::Relaxed);
+            if now_ms.saturating_sub(last) >= WRITE_WARN_THROTTLE_MS {
+                stats.last_warn_ms.store(now_ms, Ordering::Relaxed);
+                warn!(
+                    "[RequestLogger] 日志文件写入失败（连续 {} 次，累计 {} 次）：{}（file={}）",
+                    n,
+                    stats.failures_total.load(Ordering::Relaxed),
+                    e,
+                    path.display()
+                );
+            }
+        }
+        None => {
+            stats.consecutive_failures.store(0, Ordering::Relaxed);
+            if stats.was_failing.swap(false, Ordering::Relaxed) {
+                warn!(
+                    "[RequestLogger] 日志文件写入恢复（此前累计失败 {} 次，file={}）",
+                    stats.failures_total.load(Ordering::Relaxed),
+                    path.display()
+                );
+            }
+        }
+    }
 }
 
 impl RequestLogger {
@@ -217,6 +307,7 @@ impl RequestLogger {
                 session_dir: Mutex::new(None),
                 file_index: AtomicI32::new(0),
                 enabled: false,
+                write_stats: std::sync::Arc::new(WriteStats::default()),
                 start_time: Local::now(),
             };
         }
@@ -230,6 +321,7 @@ impl RequestLogger {
             session_dir: Mutex::new(None),
             file_index: AtomicI32::new(0),
             enabled: true,
+            write_stats: std::sync::Arc::new(WriteStats::default()),
             start_time: Local::now(),
         }
     }
@@ -258,6 +350,7 @@ impl RequestLogger {
             session_dir: Mutex::new(None),
             file_index: AtomicI32::new(0),
             enabled: true,
+            write_stats: std::sync::Arc::new(WriteStats::default()),
             start_time: Local::now(),
         }
     }
@@ -285,6 +378,7 @@ impl RequestLogger {
                 session_dir: Mutex::new(None),
                 file_index: AtomicI32::new(0),
                 enabled: false,
+                write_stats: std::sync::Arc::new(WriteStats::default()),
                 start_time: Local::now(),
             };
         }
@@ -296,6 +390,7 @@ impl RequestLogger {
             session_dir: Mutex::new(None),
             file_index: AtomicI32::new(0),
             enabled: true,
+            write_stats: std::sync::Arc::new(WriteStats::default()),
             start_time: Local::now(),
         }
     }
@@ -349,7 +444,7 @@ impl RequestLogger {
             return Ok(()); // Silent failure
         }
 
-        *self.session_dir.lock().unwrap() = Some(session_dir);
+        *self.session_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(session_dir);
         Ok(())
     }
 
@@ -779,21 +874,74 @@ impl RequestLogger {
     }
 
     /// Write content to a file in the session directory.
+    ///
+    /// BUG-8（2026-11-25 远程 home 取证）：写盘**移出锁**——原实现锁内做
+    /// `File::create` + `write_all`，一次写盘 hang（D 盘渐进故障现场）会
+    /// 把 `session_dir` 互斥锁永久带死，此后**所有**日志调用（含只读的
+    /// `session_dir()`）全部阻塞，agent loop 整体停摆。现锁内只 clone
+    /// 目录路径；写盘在有 tokio runtime 的上下文经 `spawn_blocking`
+    /// fire-and-forget（hang 的写只占一个 blocking 线程，不再阻塞调用方
+    /// 与其他日志调用；文件名含原子递增 index，天然无并发竞争），无
+    /// runtime（sync 测试 / 纯 CLI）保持同步写。失败/恢复记账统一走
+    /// [`Self::record_write_result`]（Arc<[`WriteStats>]>，连续计数 +
+    /// 限频 WARN + 恢复标记）；在飞写盘钳在 [`MAX_IN_FLIGHT_WRITES`] 内
+    /// （饱和 = 存储层挂死堆积 → 丢弃 + 记账，不拖垮共享 blocking 池）。
+    ///
+    /// 关停边界（诚实声明，复核 2026-11-26）：fire-and-forget 在飞写**不
+    /// 等 shutdown**——进程退出（gateway teardown `process::exit`）时在飞
+    /// 写随线程死亡丢弃。可接受：健康盘上单条写 ms 级、teardown 秒级，
+    /// 覆盖在飞绰绰有余；挂死盘上写本来就没有产物（丢弃是既有语义）。
+    /// 审计完整性以 session_logs / 审计链等带落盘闸的通道为准，本文件是
+    /// 观测投影，不承诺 crash/exit 前最后一条在场。
     fn write_file(&self, filename: &str, content: &str) -> Result<(), String> {
-        let session_dir = self.session_dir.lock().unwrap();
-        if let Some(ref dir) = *session_dir {
-            let path = dir.join(filename);
-            let mut file =
-                fs::File::create(&path).map_err(|e| format!("Failed to create file: {}", e))?;
-            file.write_all(content.as_bytes())
-                .map_err(|e| format!("Failed to write file: {}", e))?;
+        let session_dir = {
+            let guard = self.session_dir.lock().unwrap_or_else(|e| e.into_inner());
+            guard.clone()
+        };
+        let Some(dir) = session_dir else {
+            return Ok(());
+        };
+        let path = dir.join(filename);
+        let content = content.to_string();
+        let stats = Arc::clone(&self.write_stats);
+        // 饱和闸（BUG-8 复核补强）：在飞写 ≥64 = 存储层挂死堆积，本条
+        // 丢弃 + 记账（限频 WARN），不再往 blocking 池压任务——挂死写占
+        // 线程不释放，无闸会拖到池耗尽饿死无关任务。
+        if stats.in_flight.fetch_add(1, Ordering::SeqCst) >= MAX_IN_FLIGHT_WRITES {
+            stats.in_flight.fetch_sub(1, Ordering::SeqCst);
+            let err =
+                format!("写盘队列饱和（在飞 ≥{MAX_IN_FLIGHT_WRITES}，疑似存储层挂死）——本条丢弃");
+            record_write_result(&stats, Some(&err), &path);
+            return Ok(());
         }
-        Ok(())
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) => {
+                h.spawn_blocking(move || {
+                    // guard 先建：闭包内 panic（unwind）也经 Drop 释放在飞计数。
+                    let _in_flight = InFlightGuard(Arc::clone(&stats));
+                    let r = write_to_disk(&path, &content);
+                    record_write_result(&stats, r.as_ref().err(), &path);
+                });
+                Ok(())
+            }
+            Err(_) => {
+                let _in_flight = InFlightGuard(Arc::clone(&stats));
+                let r = write_to_disk(&path, &content);
+                record_write_result(&stats, r.as_ref().err(), &path);
+                r
+            }
+        }
     }
 
     /// Returns the session directory path, if a session has been created.
+    ///
+    /// BUG-8：锁 poisoned 不永久死（`into_inner` 恢复）——只读口被一次
+    /// panic 带死后，其余调用全挂的形态必须消除。
     pub fn session_dir(&self) -> Option<PathBuf> {
-        self.session_dir.lock().unwrap().clone()
+        self.session_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -925,3 +1073,7 @@ pub fn check_request_log_consistency(
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+// BUG-8（2026-11-25 远程 home 取证）回归：写盘移出锁 + 失败记账 + 恢复
+// 自愈（同步/异步两路 + 只读口不被拖死）。
+#[cfg(test)]
+mod write_fail_tests;

@@ -228,6 +228,16 @@ impl Channel for WebSocketChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // 幂等双启守卫（BUG-20261126-108，BUG-20261126-107 家族纪律）：
+        // 固定端口双启第二次 bind AddrInUse → start() 误报「启动失败」而
+        // 通道实际健康（第一次 listener 在跑），调用方按 Err 处置可能误停
+        // 健康通道。BUG-20261125-019 曾以「撞墙报错方向安全」豁免本通道，
+        // 107 以 wechat/wecom 同形态（固定端口 AddrInUse 也修）翻案豁免
+        // 口径——本通道是 107 横扫清单盲区（表内零命中），本批补齐。
+        if self.base.is_running() {
+            info!("[WebSocketChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let listener = TcpListener::bind(&addr)
             .await

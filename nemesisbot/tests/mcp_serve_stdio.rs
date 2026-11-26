@@ -8,7 +8,7 @@
 //! 2. `sessions_list` 只读工具合法 JSON 响应（预置 session_log）。
 //! 3. `memory_search` 轻量回落路径（无 enhanced memory 配置）。
 //! 4. `run` 工具全链：MockAiServer 脚本模型驱动 read_file 工具调用 → 最终
-//!    回复返回 + `workspace/logs/security_logs/audit_chain.jsonl` 落账——
+//!    回复返回 + `workspace/security_chain/audit_chain.jsonl` 落账——
 //!    **安全 8 层在 mcp-serve 的 run 路径真实执行的行为证据**（K1 同源
 //!    装配；结构断言见 `src/mcp_serve/tests.rs`）。
 //! 5. `security.enabled=false` 对照组：run 照常完成但审计链不落——证明
@@ -503,10 +503,11 @@ fn run_tool_executes_task_and_writes_audit_chain() {
         mock.hits()
     );
 
-    // 安全 8 层行为证据：read_file 调用经 pipeline → Layer 8 审计链落账。
+    // 安全 8 层行为证据：read_file 调用经 pipeline → Layer 8 审计链落账
+    // （BUG-6 后链落 workspace/security_chain/，不再在 logs/security_logs/）。
     let chain = home
         .home()
-        .join("workspace/logs/security_logs/audit_chain.jsonl");
+        .join("workspace/security_chain/audit_chain.jsonl");
     let content = std::fs::read_to_string(&chain).unwrap_or_else(|e| {
         panic!(
             "审计链应存在（{}）：{e}\nstderr tail:\n{}",
@@ -562,7 +563,7 @@ fn run_tool_security_disabled_leaves_no_audit_chain() {
 
     let chain = home
         .home()
-        .join("workspace/logs/security_logs/audit_chain.jsonl");
+        .join("workspace/security_chain/audit_chain.jsonl");
     assert!(
         !chain.exists(),
         "security 关闭时审计链不应落盘: {}",

@@ -60,7 +60,9 @@
 //!   删会让修复前入站的旧形态条目（todo 副本不在条目内）把孤儿永久滞留。
 //!
 //! **刻意不清扫的 logs/ 子目录**（诚实边界，2026-11-06 三轮横扫裁决）：
-//! `security_logs/`（Merkle 审计链，自动删=自毁证据链）、
+//! `security_logs/`（安全审计判定流，自动删=自毁证据链；Merkle 审计链
+//! 已迁 `workspace/security_chain/`（BUG-6 2026-11-25：与 logs 域分离，
+//! 本 sweeper 域外，任何清扫/波及不再触链），
 //! `sandbox_denials.jsonl`（安全拒绝取证台账，同审计链口径）、
 //! `skin_scripts.log`（皮肤脚本同意审计证据，同审计链口径）、`dossiers/`
 //! （用户交付物）、board archive `timeline.jsonl`（同 dossiers 口径）、

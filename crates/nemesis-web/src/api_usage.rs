@@ -46,6 +46,16 @@ pub struct LogsQuery {
 
 // Handlers
 
+/// BUG-20261126-082 单一算术点：缺省统计窗口起点 = end − 24h。
+/// `end` 是 HTTP query 用户可控 i64（`UsageQuery`/`LogsQuery`/`TrendsQuery`
+/// 三入口共用），裸 `end - 86400` 在巨负值（≈ i64::MIN）下 debug panic /
+/// release 回绕成巨大正值 → 恒空窗假象。saturating 对齐家族守卫形态
+/// （R735 入口钳制 / BUG-006 饱和乘同族先例）。pub(crate)：sibling
+/// 测试模块 api_usage_extra_tests 可达。
+pub(crate) fn default_window_start(end: i64, user_start: Option<i64>) -> i64 {
+    user_start.unwrap_or_else(|| end.saturating_sub(86_400))
+}
+
 /// GET /api/usage/summary
 pub async fn handle_api_usage_summary(
     State(state): State<Arc<AppState>>,
@@ -58,7 +68,7 @@ pub async fn handle_api_usage_summary(
     let end = params
         .end
         .unwrap_or_else(|| chrono::Local::now().timestamp());
-    let start = params.start.unwrap_or(end - 86400);
+    let start = default_window_start(end, params.start);
 
     match ds.query_summary(start, end) {
         Ok(summary) => Json(serde_json::json!({
@@ -91,7 +101,7 @@ pub async fn handle_api_usage_trends(
     let end = params
         .end
         .unwrap_or_else(|| chrono::Local::now().timestamp());
-    let start = params.start.unwrap_or(end - 86400);
+    let start = default_window_start(end, params.start);
     let group_by = params.group_by.as_deref().unwrap_or("hour");
 
     match ds.query_trends(start, end, group_by) {
@@ -124,7 +134,7 @@ pub async fn handle_api_usage_logs(
     let end = params
         .end
         .unwrap_or_else(|| chrono::Local::now().timestamp());
-    let start = params.start.unwrap_or(end - 86400);
+    let start = default_window_start(end, params.start);
     let page = params.page.unwrap_or(1).max(1);
     // clamp(1, 100) 对齐 board/workflow_chat 家族形态（只 .min(100) 钳上界
     // 的半截钳制 = BUG-20261108-025：负 page_size 透传 store 后 LIMIT -N

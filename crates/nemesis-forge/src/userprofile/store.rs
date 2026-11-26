@@ -97,6 +97,13 @@ pub struct HabitEntry {
     /// 外部抛入（Forge 经验，经 [`ingest_external_entry`] 强制标记）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+    /// 稳定规则身份证（话术 AI 化批一 §4.1）：挖掘兜底产物带来源挖掘器
+    /// 的规则 id（如 `stat.language` / `opener.task`）；反思/观察/回抛/
+    /// legacy 条目为空串。归并路由见 [`upsert_habit`]（带 id 按 id 匹配，
+    /// 模板措辞微调不产生重复条目）；legacy 回填在加载侧按静态模板表补齐
+    /// （[`super::mining::static_template_rule_id`]）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rule_id: String,
 }
 
 fn default_status() -> String {
@@ -131,6 +138,7 @@ impl HabitEntry {
             auto: true,
             kind: KIND_HABIT.into(),
             source: String::new(),
+            rule_id: String::new(),
         }
     }
 
@@ -209,9 +217,45 @@ pub fn sweep_window_start_ms(profile: &UserProfile, now_ms: i64) -> Option<i64> 
     Some(lower.max(anchor))
 }
 
-/// 画像文件路径（唯一拼接点）。
+/// 画像作用域（双 scope 拆分，2026-11-25 用户拍板）：对话会话与项目会话
+/// 各自独立画像文件 + 独立水线 + 独立挖掘/反思管线。文件级拆分（非条目
+/// 级 scope 字段）——水线（last_sweep_ms/last_reflect_ms）在 UserProfile
+/// 根上，文件级隔离让两 scope 的增量窗/反思触发天然互不干扰。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileScope {
+    /// 对话组会话（主 loop / 集群 / headless；现有 `user_profile.json`
+    /// 零迁移——存量条目全归对话画像）。
+    Dialogue,
+    /// 项目组会话（L6++ 项目 loop；资产仍存主 workspace
+    /// `config/user_profile_project.json`，项目目录零污染）。
+    Project,
+}
+
+impl ProfileScope {
+    /// 画像文件名（`profile_path_scope` 单一拼接点消费）。
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::Dialogue => "user_profile.json",
+            Self::Project => "user_profile_project.json",
+        }
+    }
+}
+
+/// 手动条目来源标记（批「注入内容页」D8）：TAB1 手动习惯编辑器落库形态。
+/// 用户意志锚点级保护（D9）：decay 跳过、AI 反思改写排除、兜底 upsert
+/// 撞文丢弃、prune 不占名额；治理唯一入口 = 编辑器整体替换（[`manual_save`]）。
+pub const SOURCE_MANUAL: &str = "manual";
+
+/// 画像文件路径（唯一拼接点）。`= profile_path_scope(workspace, Dialogue)`
+/// ——兼容薄转发（存量调用点语义不变）。
 pub fn profile_path(workspace: &Path) -> PathBuf {
-    workspace.join("config").join("user_profile.json")
+    profile_path_scope(workspace, ProfileScope::Dialogue)
+}
+
+/// 画像文件路径（scope 化真相源）：对话 = `config/user_profile.json`，
+/// 项目 = `config/user_profile_project.json`（同目录，主 workspace 锚）。
+pub fn profile_path_scope(workspace: &Path, scope: ProfileScope) -> PathBuf {
+    workspace.join("config").join(scope.file_name())
 }
 
 /// 读取画像（**写路径禁用**）：缺失 = 空画像；损坏 = Err 带路径。
@@ -220,7 +264,15 @@ pub fn profile_path(workspace: &Path) -> PathBuf {
 /// 的路径（sweep/veto/forget/pin/enable）必须用本函数**——损坏静默当空
 /// 再 save 会把全量习惯清空（四路评审 B- 根修）。
 pub fn try_load_profile(workspace: &Path) -> Result<UserProfile, String> {
-    let path = profile_path(workspace);
+    try_load_profile_scope(workspace, ProfileScope::Dialogue)
+}
+
+/// [`try_load_profile`](fn@try_load_profile) 的 scope 化真相源。
+pub fn try_load_profile_scope(
+    workspace: &Path,
+    scope: ProfileScope,
+) -> Result<UserProfile, String> {
+    let path = profile_path_scope(workspace, scope);
     // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → 写路径
     // 全拒绝 / 读路径静默空画像，BUG-20261103-334 同族）。
     let content = match nemesis_utils::fsutil::read_config_string(&path) {
@@ -228,27 +280,71 @@ pub fn try_load_profile(workspace: &Path) -> Result<UserProfile, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(UserProfile::default()),
         Err(e) => return Err(format!("read {}: {e}", path.display())),
     };
-    serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))
+    let mut profile: UserProfile =
+        serde_json::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))?;
+    backfill_legacy_static_rules(&mut profile);
+    Ok(profile)
+}
+
+/// legacy 静态回填（话术 AI 化批一 §4.4 / §八 #7#13，**内存侧不落盘**）：
+/// `rule_id` 为空且 content 与静态模板表逐字（归一）相等的条目，补
+/// `rule_id` + `auto=true`——修复挖掘器产物条目在 rule_id 字段引入前的
+/// 徽标假阴性。幂等（已有 id / 无匹配原样跳过）；**参数化家族不做骨架
+/// 匹配**（route.pair/shell.default/terminal.family 含运行期填充值，逐字
+/// 比对永远不中），靠归并时 rule_id 采纳有机回填。读路径不写盘，下次
+/// 任意保存（sweep/veto/…）自然持久化。
+fn backfill_legacy_static_rules(profile: &mut UserProfile) {
+    for h in &mut profile.habits {
+        if h.rule_id.is_empty()
+            && let Some(rule) = super::mining::static_template_rule_id(&h.content)
+        {
+            h.rule_id = rule.to_string();
+            h.auto = true;
+        }
+    }
 }
 
 /// 读取画像（缺失/损坏 = 空画像；不 panic 不误伤）。
 ///
 /// ⚠ 仅限纯展示/统计读取；读后回写的调用方必须走 [`try_load_profile`]。
 pub fn load_profile(workspace: &Path) -> UserProfile {
-    try_load_profile(workspace).unwrap_or_default()
+    load_profile_scope(workspace, ProfileScope::Dialogue)
+}
+
+/// [`load_profile`](fn@load_profile) 的 scope 化真相源。
+pub fn load_profile_scope(workspace: &Path, scope: ProfileScope) -> UserProfile {
+    try_load_profile_scope(workspace, scope).unwrap_or_default()
 }
 
 /// 写画像（config 家族写串行锁；原子落盘）。
 pub fn save_profile(workspace: &Path, profile: &UserProfile) -> Result<(), String> {
-    let _serial = nemesis_config::config_write_lock();
-    save_profile_locked(workspace, profile)
+    save_profile_scope(workspace, ProfileScope::Dialogue, profile)
 }
 
-/// [`save_profile`] 的锁内版：调用方**已持** [`nemesis_config::config_write_lock`]
-/// 时使用（锁不可重入——锁内函数再走 `save_profile` 会自死锁；四路评审
-/// B- 根修配套）。
+/// [`save_profile`](fn@save_profile) 的 scope 化真相源。
+pub fn save_profile_scope(
+    workspace: &Path,
+    scope: ProfileScope,
+    profile: &UserProfile,
+) -> Result<(), String> {
+    let _serial = nemesis_config::config_write_lock();
+    save_profile_locked_scope(workspace, scope, profile)
+}
+
+/// [`save_profile`](fn@save_profile) 的锁内版：调用方**已持**
+/// [`nemesis_config::config_write_lock`] 时使用（锁不可重入——锁内函数
+/// 再走 `save_profile` 会自死锁；四路评审 B- 根修配套）。
 pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<(), String> {
-    let path = profile_path(workspace);
+    save_profile_locked_scope(workspace, ProfileScope::Dialogue, profile)
+}
+
+/// [`save_profile_locked`](fn@save_profile_locked) 的 scope 化真相源。
+pub fn save_profile_locked_scope(
+    workspace: &Path,
+    scope: ProfileScope,
+    profile: &UserProfile,
+) -> Result<(), String> {
+    let path = profile_path_scope(workspace, scope);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
     }
@@ -265,6 +361,12 @@ pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<()
 /// config 值截断（此前本函数内嵌硬编码 [`prune_and_cap`]
 /// (=10)，`max_entries` 配 >10 的用户 disable→enable 循环后习惯被静默
 /// 截回 10，与配置矛盾）。
+///
+/// 双锚点（双 scope 拆分 D3）：开关全局一根弦，但两份画像文件各有独立
+/// 水线——**项目画像缺 enabled_at 锚点 = sweep_window_start_ms 恒 None =
+/// 项目画像永不采集**。enable 时两份同步写锚点（幂等仅向前；项目文件
+/// 缺失 = 创建空画像 + 锚点）。disable 只动 config（sweep no-op），画像
+/// 文件与锚点原样保留。
 pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfile, String> {
     // RMW 全程持锁（锁外读改写会丢并发写入；save_profile 锁不可重入，
     // 内层走 save_profile_locked）。
@@ -275,6 +377,13 @@ pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfil
     }
     prune_and_cap_with_max(&mut profile, max_entries.max(1));
     save_profile_locked(workspace, &profile)?;
+    // 项目画像锚点同步（D3）：同锁内第二份文件。失败不回滚对话画像
+    // （锚点写入幂等，下轮 enable/项目 sweep 修复）——但诚实上抛。
+    let mut project = try_load_profile_scope(workspace, ProfileScope::Project)?;
+    if project.enabled_at.is_none() {
+        project.enabled_at = profile.enabled_at.clone();
+        save_profile_locked_scope(workspace, ProfileScope::Project, &project)?;
+    }
     Ok(profile)
 }
 
@@ -289,6 +398,10 @@ pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfil
 /// 非 auto 条目按置信度截 [`MAX_ENTRIES`]（config 可调），auto 条目
 /// （固定规则/挖掘器产物）单独截 [`AUTO_MAX_ENTRIES`]，vetoed 不占任何
 /// 名额。pinned 条目优先保留（用户意志不被截断）。
+///
+/// 手动条目三分桶（双 scope 拆分 D9）：`source=manual`（TAB1 编辑器
+/// 用户手写）独立成桶**不截断**（用户意志不限量——写多少注入多少，上限
+/// 由用户自己把握）；截断只作用于机器产物两桶。
 pub fn prune_and_cap(profile: &mut UserProfile) {
     prune_and_cap_with_max(profile, MAX_ENTRIES);
 }
@@ -304,7 +417,11 @@ pub fn prune_and_cap_with_max(profile: &mut UserProfile, max_entries: usize) {
         .habits
         .drain(..)
         .partition(|h| h.status != STATUS_VETOED);
-    let (mut manual, mut auto): (Vec<_>, Vec<_>) = kept.into_iter().partition(|h| !h.auto);
+    // 三分桶：手动（用户手写，不截）/ 非-auto（反思/观察/外部/AI）/
+    // auto（挖掘器固定产物）。
+    let (mut handwritten, kept): (Vec<_>, Vec<_>) =
+        kept.into_iter().partition(|h| h.source == SOURCE_MANUAL);
+    let (mut non_auto, mut auto): (Vec<_>, Vec<_>) = kept.into_iter().partition(|h| !h.auto);
     // 各桶内 pinned 优先（用户意志不被截断），其次置信度。
     let sort_key = |a: &HabitEntry, b: &HabitEntry| {
         b.pinned.cmp(&a.pinned).then_with(|| {
@@ -313,23 +430,75 @@ pub fn prune_and_cap_with_max(profile: &mut UserProfile, max_entries: usize) {
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
     };
-    manual.sort_by(|a, b| sort_key(a, b));
+    handwritten.sort_by(|a, b| sort_key(a, b));
+    non_auto.sort_by(|a, b| sort_key(a, b));
     auto.sort_by(|a, b| sort_key(a, b));
-    manual.truncate(max_entries);
+    non_auto.truncate(max_entries);
     auto.truncate(AUTO_MAX_ENTRIES);
-    profile.habits = manual;
+    profile.habits = handwritten;
+    profile.habits.extend(non_auto);
     profile.habits.extend(auto);
     profile.habits.extend(vetoed);
 }
 
-/// upsert：语义相同（同 category + 内容归一相等）取高置信度、hits+1、
-/// 刷新 last_seen；不同则插入。vetoed 条目命中时**保持 vetoed**（仅
-/// decaying→active 转换）——与 `prune_and_cap` 的驻留语义配套构成否决
-/// 抑制链：驻留 + 不复活 = 同内容候选永不重生成。
+/// upsert 归并统计刷新：置信度取高、hits+1、刷新 last_seen；steps/evidence
+/// 取并集（保序去重 + 清洗截断）。
 ///
-/// 结构化字段合并（批二）：steps 取并集（去重保序、清洗截断）——反思
-/// 通道对同一仪式的步骤细化能累积进既有条目；evidence 同并集（溯源
-/// 累积）；auto 取 OR（一旦被挖掘器命中过，配额归 auto 桶）。
+/// `allow_auto_flip` = auto 翻桶**单向性**（话术 AI 化 §4.4 / §八 #10）：
+/// 仅 `existing.rule_id` 为空（未被任何规则认领的 legacy/反思条目）允许
+/// 兜底产物把 auto 翻 true；已被规则/AI 认领的条目（rule_id 非空 + 批二
+/// 起 auto=false 的 AI 改写条目）归并只刷新统计，不翻桶不改话术——AI
+/// 话术被兜底信号命中后若翻回 auto=true，会挂着「模板兜底」徽标撒谎。
+fn merge_habit_stats(existing: &mut HabitEntry, entry: HabitEntry, allow_auto_flip: bool) {
+    // max 后钳制：LLM 反思通道候选可能带 >1.0 的越界置信度（四路
+    // 评审 B- 根修）。
+    existing.confidence = existing.confidence.max(entry.confidence).clamp(0.0, 1.0);
+    existing.hits += 1;
+    if !entry.last_seen.is_empty() {
+        existing.last_seen = entry.last_seen;
+    }
+    if existing.status == STATUS_DECAYING {
+        existing.status = STATUS_ACTIVE.to_string();
+    }
+    // 结构化合并：steps 并集（保序去重 + 清洗）。
+    for s in HabitEntry::sanitize_steps(&entry.steps) {
+        if !existing.steps.iter().any(|e| e == &s) {
+            existing.steps.push(s);
+        }
+    }
+    existing.steps = HabitEntry::sanitize_steps(&existing.steps);
+    // evidence 并集（溯源累积，超限保尾部）：新证据比旧证据信息量
+    // 高（近期行为更能代表当前习惯），头部淘汰而非尾部截断——尾部
+    // 截断会把刚并入的新溯源当溢出项丢掉。
+    for ev in &entry.evidence {
+        if !existing.evidence.iter().any(|e| e == ev) {
+            existing.evidence.push(ev.clone());
+        }
+    }
+    if existing.evidence.len() > MAX_EVIDENCE {
+        let start = existing.evidence.len() - MAX_EVIDENCE;
+        existing.evidence.drain(..start);
+    }
+    if allow_auto_flip {
+        existing.auto = existing.auto || entry.auto;
+    }
+}
+
+/// upsert：语义相同取高置信度、hits+1、刷新 last_seen；不同则插入。
+/// vetoed 条目命中时**保持 vetoed**（仅 decaying→active 转换）——与
+/// `prune_and_cap` 的驻留语义配套构成否决抑制链：驻留 + 不复活 = 同内容
+/// 候选永不重生成。
+///
+/// 归并路由（话术 AI 化批一 §4.4 upsert 三分）：
+/// - **挖掘兜底产物**（`rule_id` 非空）：先按 `rule_id` 匹配归并（模板
+///   措辞后续微调不产生重复条目）；同 id 未命中回落 content 匹配
+///   （legacy 条目 `rule_id` 为空 → 采纳新 id + 允许 auto 翻桶 = 有机回填）。
+/// - **反思/观察/回抛产物**（`rule_id` 空）：按 content 归一匹配（现状
+///   不变）；命中 `rule_id` 为空的条目时 auto 翻桶语义保持（auto OR）。
+///
+/// 结构化字段合并：steps 取并集（去重保序、清洗截断）——反思通道对同一
+/// 仪式的步骤细化能累积进既有条目；evidence 同并集（溯源累积）；auto
+/// 翻桶单向性见 [`merge_habit_stats`]。
 pub fn upsert_habit(profile: &mut UserProfile, mut entry: HabitEntry) {
     let norm = |s: &str| s.trim().to_lowercase();
     // 双保险（批 A）：非 habit 主语分型一律拒入——lesson 即便被反思解析层
@@ -341,45 +510,159 @@ pub fn upsert_habit(profile: &mut UserProfile, mut entry: HabitEntry) {
     if violates_security_boundary(&entry.content) {
         return; // 硬边界：安全语义候选直接丢弃
     }
-    for existing in profile.habits.iter_mut() {
-        if existing.category == entry.category && norm(&existing.content) == norm(&entry.content) {
-            // max 后钳制：LLM 反思通道候选可能带 >1.0 的越界置信度（四路
-            // 评审 B- 根修）。
-            existing.confidence = existing.confidence.max(entry.confidence).clamp(0.0, 1.0);
-            existing.hits += 1;
-            if !entry.last_seen.is_empty() {
-                existing.last_seen = entry.last_seen;
-            }
-            if existing.status == STATUS_DECAYING {
-                existing.status = STATUS_ACTIVE.to_string();
-            }
-            // 结构化合并：steps 并集（保序去重 + 清洗）。
-            for s in HabitEntry::sanitize_steps(&entry.steps) {
-                if !existing.steps.iter().any(|e| e == &s) {
-                    existing.steps.push(s);
-                }
-            }
-            existing.steps = HabitEntry::sanitize_steps(&existing.steps);
-            // evidence 并集（溯源累积，超限保尾部）：新证据比旧证据信息量
-            // 高（近期行为更能代表当前习惯），头部淘汰而非尾部截断——尾部
-            // 截断会把刚并入的新溯源当溢出项丢掉。
-            for ev in &entry.evidence {
-                if !existing.evidence.iter().any(|e| e == ev) {
-                    existing.evidence.push(ev.clone());
-                }
-            }
-            if existing.evidence.len() > MAX_EVIDENCE {
-                let start = existing.evidence.len() - MAX_EVIDENCE;
-                existing.evidence.drain(..start);
-            }
-            existing.auto = existing.auto || entry.auto;
-            return;
+    // 手动条目撞文（双 scope 拆分 D9）：用户已手写同义条目 → 机器产物
+    // 直接丢弃（不归并不重复插）。手动话术是用户原文，机器不归并（不会
+    // 刷 stats/翻桶），同义信号已由手写条目表达——再插一条 = 重复注入。
+    if profile
+        .habits
+        .iter()
+        .any(|h| h.source == SOURCE_MANUAL && norm(&h.content) == norm(&entry.content))
+    {
+        return;
+    }
+    // ① 带规则身份证的产物：先按 rule_id 匹配（同 id 归并：existing 已被
+    //    规则认领 → 不采纳不翻桶，AI 改写条目的措辞/桶位原样保留）。
+    if !entry.rule_id.is_empty()
+        && let Some(existing) = profile
+            .habits
+            .iter_mut()
+            .find(|h| h.rule_id == entry.rule_id)
+    {
+        merge_habit_stats(existing, entry, false);
+        return;
+    }
+    // ② content 归一匹配（反思产物主路径 + 带 id 产物同 id 未命中的回落）。
+    if let Some(pos) = profile
+        .habits
+        .iter()
+        .position(|h| h.category == entry.category && norm(&h.content) == norm(&entry.content))
+    {
+        let existing = &mut profile.habits[pos];
+        // rule_id 采纳 + auto 翻桶单向性：仅 existing 未被规则认领
+        // （rule_id 空）时采纳新 id 并允许 auto 翻 true。
+        let adoptable = existing.rule_id.is_empty();
+        if adoptable && !entry.rule_id.is_empty() {
+            existing.rule_id = entry.rule_id.clone();
         }
+        merge_habit_stats(existing, entry, adoptable);
+        return;
     }
     entry.confidence = entry.confidence.clamp(0.0, 1.0);
     entry.steps = HabitEntry::sanitize_steps(&entry.steps);
     entry.evidence.truncate(MAX_EVIDENCE);
     profile.habits.push(entry);
+}
+
+/// 反思改写结局（话术 AI 化批二 §4.3）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum RewriteOutcome {
+    /// 至少一条被原地改写（含被吞合并）：返回全部点名 id（调用方在 claimed
+    /// 集合登记，同拍后续结论不再二次消费同 id——首条生效余者按纯 AI）。
+    Rewrote(Vec<String>),
+    /// 点名 id 在画像中无可改写目标（vetoed/pinned 持有者不算）→ 调用方
+    /// 按 [`upsert_habit`] 插入 AI 条目（`rule_id` = 首个点名 id）并认领
+    /// 全部 id；若 vetoed/pinned 条目已持有该 id，upsert ① 的 rule_id
+    /// 匹配会把统计并进持有者——措辞/桶位不动，不产生同 id 重复条目。
+    NoHit,
+    /// 改写内容触安全硬边界（或非 habit 主语）：**不删不改不插**——被吞
+    /// 条目原样保留（宁可不改写，不可借改写删内容）。
+    Rejected,
+}
+
+/// 反思结论原地改写（话术 AI 化批二 §4.3）：AI 点名 rule_ids → 画像中
+/// 按规则 id 找既有条目原地改写措辞。多 id 合并覆盖时，被吞条目按 id 删除、
+/// evidence/steps 并入目标。
+///
+/// 语义细节：
+/// - **全量位置扫描**：每个 id 扫全部匹配位（不只首个）——首个可改写位
+///   （非 vetoed 且非 pinned）= 改写目标，其余可改写位 = 被吞；vetoed /
+///   pinned 持有者整位跳过（vetoed = 否决抑制链保护；pinned = 用户钉住
+///   的措辞不许 AI 静默改写）。
+/// - **改写即 AI 桶**：`auto=false`（挂「AI 总结」徽标；兜底信号后续命中
+///   经 [`merge_habit_stats`] 的 allow_auto_flip=false 不翻回模板桶——
+///   §4.4 翻桶单向性）。
+/// - **hits 保留**：改写不是新信号命中，目标 hits 计数原样（与 upsert 的
+///   hits+1 语义区分）；evidence/steps 累积保留 + 被吞并入（尾部超限淘汰
+///   头部，同源 [`merge_habit_stats`] 纪律）。
+/// - **同源过闸**：`violates_security_boundary`（拒绝=Rejected 全不动）+
+///   fold/sanitize/clamp（与解析层清洗同源，双保险）。
+pub fn apply_reflected_rewrite(
+    profile: &mut UserProfile,
+    entry: HabitEntry,
+    rule_ids: &[String],
+    now: &str,
+) -> RewriteOutcome {
+    // 双保险与 upsert_habit 同源：非 habit 主语 / 安全硬边界 = 全不动。
+    if entry.kind != KIND_HABIT || violates_security_boundary(&entry.content) {
+        return RewriteOutcome::Rejected;
+    }
+    let ids: Vec<String> = rule_ids
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return RewriteOutcome::NoHit; // 无 id 无从改写（调用方不该走到这）
+    }
+    let eligible = |h: &HabitEntry| {
+        h.status != STATUS_VETOED
+            && !h.pinned
+            && h.source != SOURCE_MANUAL
+            && ids.iter().any(|id| id == &h.rule_id)
+    };
+    // 全量位置扫描：首个可改写位 = 目标，其余 = 被吞；vetoed/pinned 不进
+    // 两个集合（原样保留）。
+    let positions: Vec<usize> = (0..profile.habits.len())
+        .filter(|i| eligible(&profile.habits[*i]))
+        .collect();
+    let Some(target_pos) = positions.first().copied() else {
+        return RewriteOutcome::NoHit;
+    };
+    let swallow_pos = &positions[1..];
+
+    // 先摘被吞（降序 remove 保持其余索引稳定），evidence/steps 并入素材
+    // 先收集——目标位在被吞位之前时，摘除不移动更小索引，目标位仍有效。
+    let mut merged_evidence = entry.evidence.clone();
+    let mut merged_steps = entry.steps.clone();
+    for pos in swallow_pos.iter().rev() {
+        let swallowed = profile.habits.remove(*pos);
+        merged_evidence.extend(swallowed.evidence);
+        merged_steps.extend(swallowed.steps);
+    }
+
+    let t = &mut profile.habits[target_pos];
+    // 措辞与类别替换（fold 同源双保险——解析层已清洗）。
+    t.content = HabitEntry::fold_one_line(&entry.content, MAX_CONTENT_CHARS);
+    t.category = entry.category.clone();
+    // 统计累积（无 hits+1——改写不是信号命中）；decaying 复活；auto 强制
+    // false（AI 总结桶；翻桶单向性 §4.4）。
+    t.confidence = t.confidence.max(entry.confidence).clamp(0.0, 1.0);
+    if !entry.last_seen.is_empty() {
+        t.last_seen = entry.last_seen.to_string();
+    } else if !now.is_empty() {
+        t.last_seen = now.to_string();
+    }
+    if t.status == STATUS_DECAYING {
+        t.status = STATUS_ACTIVE.to_string();
+    }
+    t.auto = false;
+    for s in HabitEntry::sanitize_steps(&merged_steps) {
+        if !t.steps.iter().any(|e| e == &s) {
+            t.steps.push(s);
+        }
+    }
+    t.steps = HabitEntry::sanitize_steps(&t.steps);
+    for ev in &merged_evidence {
+        if !ev.is_empty() && !t.evidence.iter().any(|e| e == ev) {
+            t.evidence.push(ev.clone());
+        }
+    }
+    // 超限保尾部（新证据信息量高，头部淘汰——merge_habit_stats 同纪律）。
+    if t.evidence.len() > MAX_EVIDENCE {
+        let start = t.evidence.len() - MAX_EVIDENCE;
+        t.evidence.drain(..start);
+    }
+    RewriteOutcome::Rewrote(ids)
 }
 
 /// 外部经验抛入（批 A 接口二：Forge → userprofile）。`source` **强制**
@@ -394,6 +677,7 @@ pub fn upsert_habit(profile: &mut UserProfile, mut entry: HabitEntry) {
 /// 原条目 source（本地证据链优先，外部来源不覆盖自产标记）。
 pub fn ingest_external_entry(
     workspace: &Path,
+    scope: ProfileScope,
     mut entry: HabitEntry,
     source: &str,
 ) -> Result<(), String> {
@@ -405,9 +689,9 @@ pub fn ingest_external_entry(
     entry.source = source.to_string(); // 强制：参数是权威，不透传调用方残留值
     // RMW 全程持锁（veto/forget 同族纪律）；损坏画像 = Err 不回写。
     let _serial = nemesis_config::config_write_lock();
-    let mut profile = try_load_profile(workspace)?;
+    let mut profile = try_load_profile_scope(workspace, scope)?;
     upsert_habit(&mut profile, entry);
-    save_profile_locked(workspace, &profile)
+    save_profile_locked_scope(workspace, scope, &profile)
 }
 
 /// 衰减 sweep：last_seen 距今 >decay_days 天 → decaying；>2×decay_days →
@@ -424,6 +708,10 @@ pub fn decay_sweep_with_days(
     decay_days: i64,
 ) {
     for h in profile.habits.iter_mut() {
+        // 手动条目不衰减（D9：用户意志锚点级——手写的永不过期）。
+        if h.source == SOURCE_MANUAL {
+            continue;
+        }
         if h.status == STATUS_VETOED || h.status == STATUS_EXPIRED || h.pinned {
             continue;
         }
@@ -488,13 +776,17 @@ pub fn render_section(profile: &UserProfile) -> String {
 /// 条目，upsert 命中同内容保持 vetoed，重生成被压制；详见
 /// [`prune_and_cap`]）。返回是否命中。空子串 = Err（`contains("")` 恒真
 /// 会全量命中，CLI/WSAPI 双入口共用此防线）。匹配大小写不敏感。
-pub fn veto_habit(workspace: &Path, content_sub: &str) -> Result<bool, String> {
+pub fn veto_habit(
+    workspace: &Path,
+    scope: ProfileScope,
+    content_sub: &str,
+) -> Result<bool, String> {
     if content_sub.trim().is_empty() {
         return Err("veto 匹配子串为空（会命中全部条目），拒绝执行".into());
     }
     // RMW 全程持锁（四路评审 B- 根修）；损坏画像 = Err 不回写。
     let _serial = nemesis_config::config_write_lock();
-    let mut p = try_load_profile(workspace)?;
+    let mut p = try_load_profile_scope(workspace, scope)?;
     let needle = content_sub.to_lowercase();
     let mut hit = false;
     for h in p.habits.iter_mut() {
@@ -504,38 +796,47 @@ pub fn veto_habit(workspace: &Path, content_sub: &str) -> Result<bool, String> {
         }
     }
     if hit {
-        save_profile_locked(workspace, &p)?;
+        save_profile_locked_scope(workspace, scope, &p)?;
     }
     Ok(hit)
 }
 
 /// forget：按内容子串整条删除（与 veto 不同：删除后同语义候选可重新生成）。
 /// 空子串 = Err（同 [`veto_habit`] 防线）。匹配大小写不敏感。
-pub fn forget_habit(workspace: &Path, content_sub: &str) -> Result<bool, String> {
+pub fn forget_habit(
+    workspace: &Path,
+    scope: ProfileScope,
+    content_sub: &str,
+) -> Result<bool, String> {
     if content_sub.trim().is_empty() {
         return Err("forget 匹配子串为空（会命中全部条目），拒绝执行".into());
     }
     let _serial = nemesis_config::config_write_lock();
-    let mut p = try_load_profile(workspace)?;
+    let mut p = try_load_profile_scope(workspace, scope)?;
     let needle = content_sub.to_lowercase();
     let before = p.habits.len();
     p.habits
         .retain(|h| !h.content.to_lowercase().contains(&needle));
     let removed = p.habits.len() < before;
     if removed {
-        save_profile_locked(workspace, &p)?;
+        save_profile_locked_scope(workspace, scope, &p)?;
     }
     Ok(removed)
 }
 
 /// pin / unpin：按内容子串切换钉住（钉住 = 不衰减、渲染置顶）。
 /// 空子串 = Err（同 [`veto_habit`] 防线）。匹配大小写不敏感。
-pub fn set_pinned(workspace: &Path, content_sub: &str, pinned: bool) -> Result<bool, String> {
+pub fn set_pinned(
+    workspace: &Path,
+    scope: ProfileScope,
+    content_sub: &str,
+    pinned: bool,
+) -> Result<bool, String> {
     if content_sub.trim().is_empty() {
         return Err("pin 匹配子串为空（会命中全部条目），拒绝执行".into());
     }
     let _serial = nemesis_config::config_write_lock();
-    let mut p = try_load_profile(workspace)?;
+    let mut p = try_load_profile_scope(workspace, scope)?;
     let needle = content_sub.to_lowercase();
     let mut hit = false;
     for h in p.habits.iter_mut() {
@@ -545,9 +846,145 @@ pub fn set_pinned(workspace: &Path, content_sub: &str, pinned: bool) -> Result<b
         }
     }
     if hit {
-        save_profile_locked(workspace, &p)?;
+        save_profile_locked_scope(workspace, scope, &p)?;
     }
     Ok(hit)
+}
+
+/// 手动习惯保存（TAB1 手动编辑器整体替换语义；双 scope 拆分 D8/D9）。
+///
+/// 按行 diff：解析 `lines` 每行（`[类别] 内容`，类别可选缺省
+/// [`DEFAULT_MANUAL_CATEGORY`]；空行跳过）→ 新行 upsert（`source=manual`、
+/// `confidence=1.0`、`kind=habit`、恒 active）；消失行整条删除（只删
+/// `source=manual`——机器产物不经本通道动）。已存在的手动条目（按内容
+/// 归一匹配）原样保留（first_seen 不刷新）。
+///
+/// 防线：违规行（安全边界）= Err 拒整批（报行号，fail-loud——手写安全
+/// 语义内容不允许静默跳过进注入面）；与机器条目撞文容忍并存（调用方
+/// 经返回的 `conflicts` 诚实提示）。
+pub fn manual_save(
+    workspace: &Path,
+    scope: ProfileScope,
+    lines: &[&str],
+    now: &str,
+) -> Result<ManualSaveOutcome, String> {
+    // 先全量解析校验（fail-loud 在任何写动作之前）。
+    let mut parsed: Vec<(String, String)> = Vec::new(); // (category, content)
+    for (i, raw) in lines.iter().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (category, content) =
+            parse_manual_line(line).map_err(|e| format!("第 {} 行: {e}", i + 1))?;
+        if violates_security_boundary(&content) {
+            return Err(format!(
+                "第 {} 行触安全硬边界，整批拒绝保存（手写内容不允许进注入面）",
+                i + 1
+            ));
+        }
+        let content = HabitEntry::fold_one_line(&content, MAX_CONTENT_CHARS);
+        parsed.push((category, content));
+    }
+    let norm = |s: &str| s.trim().to_lowercase();
+    let _serial = nemesis_config::config_write_lock();
+    let mut profile = try_load_profile_scope(workspace, scope)?;
+    // diff 删除：现有手动条目按 norm(content) 不在新行集 → 删。
+    let wanted: std::collections::HashSet<String> = parsed.iter().map(|(_, c)| norm(c)).collect();
+    let before = profile.habits.len();
+    let removed_existing: Vec<String> = profile
+        .habits
+        .iter()
+        .filter(|h| h.source == SOURCE_MANUAL && !wanted.contains(&norm(&h.content)))
+        .map(|h| h.content.clone())
+        .collect();
+    profile
+        .habits
+        .retain(|h| h.source != SOURCE_MANUAL || wanted.contains(&norm(&h.content)));
+    let removed = before - profile.habits.len();
+    // diff 新增：新行集不在现有（任意来源同文 → 视为已表达，不重复建
+    // 手动条目；与机器条目撞文 = conflicts 诚实回报）。
+    let mut added = 0usize;
+    let mut conflicts: Vec<String> = Vec::new();
+    for (category, content) in &parsed {
+        let existing_any = profile
+            .habits
+            .iter()
+            .any(|h| norm(&h.content) == norm(content));
+        if existing_any {
+            let is_manual = profile
+                .habits
+                .iter()
+                .any(|h| h.source == SOURCE_MANUAL && norm(&h.content) == norm(content));
+            if !is_manual {
+                conflicts.push(content.clone());
+            }
+            continue; // 已表达（手动保留原条目 / 机器条目撞文不重复建）
+        }
+        let mut entry = HabitEntry::auto_entry(category, content, 1.0, 0, now);
+        entry.auto = false;
+        entry.source = SOURCE_MANUAL.into();
+        profile.habits.push(entry);
+        added += 1;
+    }
+    save_profile_locked_scope(workspace, scope, &profile)?;
+    Ok(ManualSaveOutcome {
+        added,
+        removed,
+        removed_contents: removed_existing,
+        conflicts,
+    })
+}
+
+/// [`manual_save`] 结果（诊断/前端诚实提示）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ManualSaveOutcome {
+    /// 新建手动条目数。
+    pub added: usize,
+    /// 删除的消失行数。
+    pub removed: usize,
+    /// 被删除条目的原文（前端可回显撤销线索）。
+    pub removed_contents: Vec<String>,
+    /// 与既有机器条目撞文的手动行（未重复建，诚实提示）。
+    pub conflicts: Vec<String>,
+}
+
+/// 手动行默认类别（无 `[类别]` 前缀时）。
+pub const DEFAULT_MANUAL_CATEGORY: &str = "manual";
+
+/// 手动行语法解析：`[类别] 内容`（类别可选）。返回 (类别, 内容)。
+/// Err = 空内容 / 形式错误。
+fn parse_manual_line(line: &str) -> Result<(String, String), String> {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        let category = rest[..end].trim();
+        let content = rest[end + 1..].trim();
+        if category.is_empty() {
+            return Err("类别段为空（[ ] 内需要类别名）".into());
+        }
+        if content.is_empty() {
+            return Err("内容为空".into());
+        }
+        let category = HabitEntry::fold_one_line(category, 24);
+        return Ok((category, content.to_string()));
+    }
+    let content = line.trim();
+    if content.is_empty() {
+        return Err("内容为空".into());
+    }
+    Ok((DEFAULT_MANUAL_CATEGORY.into(), content.to_string()))
+}
+
+/// 手动条目 → 编辑器行文本（TAB1 上半编辑器回显形态：`[类别] 内容`）。
+pub fn manual_lines(profile: &UserProfile) -> Vec<String> {
+    profile
+        .habits
+        .iter()
+        .filter(|h| h.source == SOURCE_MANUAL)
+        .map(|h| format!("[{}] {}", h.category, h.content))
+        .collect()
 }
 
 #[cfg(test)]

@@ -16,12 +16,22 @@
 //! - **GIF / 动画 WebP 不降采样**（重编码丢动画帧 = 静默语义变更），诚实拒绝。
 //!   动画 WebP 判据见 [`webp_is_animated`]。
 //! - 解码失败（合法 magic 但坏 body）诚实拒绝。
+//! - **EXIF orientation 烘焙**（BUG-20261126-103）：竖拍手机照片的
+//!   orientation 标记在重编码前 `apply_orientation` 烘焙进像素（重编码不
+//!   透传标记，直接缩放会静默旋转产物）；无标记 = NoTransforms 零变化。
 //! - 开关 `agents.image_downscale`（默认**开**）由调用方 fresh-read 后以
 //!   `uploads_dir: Option<&Path>` 传入——`None` = 开关关，调用方零行为变化。
 //!
 //! 缩放核为 Lanczos3；阶梯语义（4096→2048→1024 / JPEG q85 / 8MB 底线）为本侧 provider 适配。
 
+// Cursor 只被 image-process 门控的解码路径消费（R2953 残留：无门控导入在
+// 关 feature 组合下 clippy unused_imports 告警，BUG-20261126-104 一并收拾）。
+#[cfg(feature = "image-process")]
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
+
+#[cfg(feature = "image-process")]
+use image::ImageDecoder as _;
 
 #[cfg(feature = "image-process")]
 use crate::image_path_detector;
@@ -191,8 +201,24 @@ pub(crate) fn downscale_gate_with(
     // 全量读入 + 解码（维度安全阀已过，内存有界）。
     let bytes =
         std::fs::read(src).map_err(|e| format!("无法读取图片 ({}): {}", src.display(), e))?;
-    let img = image::load_from_memory(&bytes)
+    // EXIF orientation 烘焙（BUG-20261126-103）：image crate 解码**不**自动
+    // 应用 EXIF 方向标记（相机/手机照片像素按传感器原始方向存储，视觉方向
+    // 全靠标记表达），JpegEncoder 重编码也不透传——直接 resize+re-encode
+    // 会产出**静默旋转**的产物（竖拍照片横躺，模型收到的图与原图视觉方向
+    // 不一致）。解码器读 orientation（JPEG EXIF / PNG eXIf / TIFF，trait
+    // 默认实现无标记 = NoTransforms）→ `apply_orientation` 把变换烘焙进
+    // 像素再走缩放编码——产物不携带标记也方向正确。
+    let mut decoder = image::ImageReader::new(Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("图片格式嗅探失败 ({}): {}", src.display(), e))?
+        .into_decoder()
+        .map_err(|e| format!("图片解码器构建失败 ({}): {}", src.display(), e))?;
+    let orientation = decoder
+        .orientation()
+        .map_err(|e| format!("读取图片方向元数据失败 ({}): {}", src.display(), e))?;
+    let mut img = image::DynamicImage::from_decoder(decoder)
         .map_err(|e| format!("图片解码失败 ({}): {}", src.display(), e))?;
+    img.apply_orientation(orientation);
     let flat = flatten_white(img);
 
     // 阶梯缩放 + JPEG q85：第一级可能不缩（longest ≤ 4096 但字节超限时

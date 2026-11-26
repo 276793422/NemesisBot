@@ -8,12 +8,13 @@ import { useToast } from '../composables/useToast'
 // 2026-11-21 重指：⑬=危险闸，凭据隔离撤号列尾）：
 // 闸门状态表（①…⑬ + 不占号的凭据隔离行，行跳对应页）+ 只读
 // 状态区（estop/Plan/Full Access/免打扰——用户拍板 2：总览只显示状态，
-// 操作面留侧栏/ChatPanel/审批页）+ 全局总闸（即时生效，编辑走设置页）+
+// 操作面留侧栏/ChatPanel/审批页）+ 全局总闸（重启网关生效，编辑走设置页）+
 // 审计链校验 + 高级 JSON 编辑器（自旧 SecurityView 迁移，唯一写入口）。
 //
 // 数据面 = `security.overview` 聚合快照（只读）+ `security.config.get`
 // （JSON 编辑器载体）。层开关语义为 raw 投影（缺席=启用），展示不再二次
-// 猜测；生效时机除总闸外一律「重启网关生效」。
+// 猜测；生效时机（含总闸）一律「重启网关生效」（BUG-20261126-099：
+// 总闸是装配期快照——插件装配点唯一、运行期旗标零写者，并非热生效）。
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -324,7 +325,7 @@ onMounted(async () => {
                   <span class="layer-status" :class="globalSwitch.available ? (globalSwitch.enabled ? 'tone-on' : 'tone-off') : 'tone-na'">
                     {{ globalSwitch.available ? (globalSwitch.enabled ? '开启' : '关闭') : '不可读' }}
                   </span>
-                  <span class="effective-chip live">即时生效</span>
+                  <span class="effective-chip">重启网关生效</span>
                   <router-link class="state-link" to="/settings">设置页编辑 →</router-link>
                 </div>
                 <div class="state-row">
@@ -529,9 +530,6 @@ onMounted(async () => {
   border-radius: 999px;
   border: 1px dashed var(--success, #2da44e);
   color: var(--success, #2da44e);
-}
-.effective-chip.live {
-  border-color: var(--success, #2da44e);
 }
 .chain-line {
   font-size: var(--text-sm);

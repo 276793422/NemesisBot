@@ -212,7 +212,7 @@ impl RequestLoggerObserver {
             content: data.content.clone(),
         });
 
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         active.insert(
             trace_id.to_string(),
             ConversationState {
@@ -224,7 +224,7 @@ impl RequestLoggerObserver {
     }
 
     fn handle_llm_request(&self, trace_id: &str, data: &LLMRequestEventData) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.get_mut(trace_id) {
             if self.config.save_raw {
                 // Raw mode: write request file immediately so it's captured
@@ -269,7 +269,7 @@ impl RequestLoggerObserver {
     }
 
     fn handle_llm_response(&self, trace_id: &str, data: &LLMResponseEventData) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.get_mut(trace_id) {
             if self.config.save_raw {
                 // Raw mode: write response file only (request already written in handle_llm_request)
@@ -358,7 +358,7 @@ impl RequestLoggerObserver {
     }
 
     fn handle_tool_call(&self, trace_id: &str, data: &ToolCallEventData) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.get_mut(trace_id) {
             let op = OperationInfo {
                 op_type: "tool_call".to_string(),
@@ -391,7 +391,7 @@ impl RequestLoggerObserver {
         timestamp: chrono::DateTime<Local>,
         data: &ConversationEndData,
     ) {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = active.remove(trace_id) {
             let total_duration_ms = if data.total_duration_ms == 0 {
                 timestamp
@@ -415,7 +415,7 @@ impl RequestLoggerObserver {
 
     /// Returns the number of active conversations being tracked.
     pub fn active_count(&self) -> usize {
-        self.active.lock().unwrap().len()
+        self.active.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

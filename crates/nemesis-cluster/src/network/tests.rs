@@ -709,15 +709,17 @@ fn test_s4_find_available_port_skips_busy_port() {
     );
 }
 
-/// Holding all 100 scanned ports makes the TCP finder fail with the
+/// Holding all scanned ports makes the TCP finder fail with the
 /// exhaustion error (network.rs 388-391).
 ///
 /// 确定性窗口：原版用 `:0` 探测起点——Windows 的
 /// ephemeral 发号区（49152-65535）恰是同二进制里其它并行测试 `:0` 绑定的
 /// 落点：holder 循环跳过的瞬时占用口可能在 finder 运行前被释放 →
-/// Ok(被跳过的口)（r15 workspace 实发 Ok(start+100)；r11 全绿纯靠调度运气）。
-/// 改在 ephemeral 区外的确定性区间找一段**连续 100 口全部由本测试持有**的
-/// 窗口（任何一口绑定失败=窗口作废向后挪），断言与环境/调度解耦。
+/// Ok(被跳过的口)。改在 ephemeral 区外的确定性区间找一段**连续 1000 口
+/// 全部由本测试持有**的窗口（finder 扫描窗 = take(1000)，持有窗必须覆盖
+/// 它才能确定性枯竭——BUG-20261126-094：旧窗宽 100 < 1000，持满后 finder
+/// 在持有窗外确定性 bind 成功返回 Ok(start+100)，曾被误归因「调度运气」）。
+/// 任何一口绑定失败=窗口作废向后挪，断言与环境/调度解耦。
 #[test]
 fn test_s4_find_available_port_all_busy_errors() {
     let (holders, start) = hold_full_tcp_window(20000, 21000);
@@ -732,12 +734,19 @@ fn test_s4_find_available_port_all_busy_errors() {
 
 /// 从 base..=cap 找一段连续 100 个全部可由本测试绑定的 TCP 端口并全部占住。
 /// 返回 (holders, start)。找不到即 panic（环境端口极端受限，非调度问题）。
+/// finder 扫描窗宽（network.rs 两个 finder 均 `(start..=u16::MAX).take(1000)`）。
+/// 持有窗必须 ≥ 此值才能确定性触发 exhaustion——BUG-20261126-094 根因：
+/// 旧窗宽 100 < 1000，持满 100 口后 finder 在持有窗外（start+100 起仍自由）
+/// 确定性 bind 成功返回 `Ok(start+100)`，旧注释把这一数学必然误归因
+/// 「瞬时占用释放 / 调度运气」。
+const FINDER_SCAN_WINDOW: u16 = 1000;
+
 fn hold_full_tcp_window(base: u16, cap: u16) -> (Vec<std::net::TcpListener>, u16) {
     let mut scan = base;
-    while scan.saturating_add(100) <= cap {
+    while scan.saturating_add(FINDER_SCAN_WINDOW) <= cap {
         let mut holders = Vec::new();
         let mut full = true;
-        for offset in 0..100u16 {
+        for offset in 0..FINDER_SCAN_WINDOW {
             match std::net::TcpListener::bind(format!("0.0.0.0:{}", scan + offset)) {
                 Ok(l) => holders.push(l),
                 Err(_) => {
@@ -752,7 +761,7 @@ fn hold_full_tcp_window(base: u16, cap: u16) -> (Vec<std::net::TcpListener>, u16
         scan += 1;
     }
     panic!(
-        "no 100-port bindable TCP window in {}..{} (environment exhausted?)",
+        "no {FINDER_SCAN_WINDOW}-port bindable TCP window in {}..{} (environment exhausted?)",
         base, cap
     );
 }
@@ -772,13 +781,14 @@ fn test_s4_find_available_udp_port_all_busy_errors() {
     drop(holders);
 }
 
-/// UDP 版 hold_full_tcp_window：占满连续 100 口才返回。
+/// UDP 版 hold_full_tcp_window：占满连续 FINDER_SCAN_WINDOW 口才返回
+/// （BUG-20261126-094 同根同修）。
 fn hold_full_udp_window(base: u16, cap: u16) -> (Vec<std::net::UdpSocket>, u16) {
     let mut scan = base;
-    while scan.saturating_add(100) <= cap {
+    while scan.saturating_add(FINDER_SCAN_WINDOW) <= cap {
         let mut holders = Vec::new();
         let mut full = true;
-        for offset in 0..100u16 {
+        for offset in 0..FINDER_SCAN_WINDOW {
             match std::net::UdpSocket::bind(format!("0.0.0.0:{}", scan + offset)) {
                 Ok(s) => holders.push(s),
                 Err(_) => {
@@ -793,7 +803,7 @@ fn hold_full_udp_window(base: u16, cap: u16) -> (Vec<std::net::UdpSocket>, u16) 
         scan += 1;
     }
     panic!(
-        "no 100-port bindable UDP window in {}..{} (environment exhausted?)",
+        "no {FINDER_SCAN_WINDOW}-port bindable UDP window in {}..{} (environment exhausted?)",
         base, cap
     );
 }

@@ -209,6 +209,34 @@ export const useChatStore = defineStore('chat', () => {
   function clearLiveThinking() {
     if (liveThinking.value) liveThinking.value = ''
   }
+  // 插话窗正文流预览（2026-11-25 插话中间过程补全）：⚡ 注记到插话回应
+  // 之间 = 插话专轮处理窗，此前整窗零输出（非流式模型连思考增量都没有）
+  // ——用户看到的是「⚡ 之后大段空白然后回应突然落出」。补两面：
+  // - steerWindowActive：窗口旗标。ingestSteerNote（⚡ 注记 live 帧到场）
+  //   置位 / ingestSteerResponse（回应收口）复位——ChatPanel 只在窗口内
+  //   摄取 provider 流正文相位（主终答正文不消费的「receive 帧权威」
+  //   拍板不碰，B3 2026-11-09）。
+  // - steerLiveText：当前流的正文增长预览（边生成边长出来；流 start =
+  //   换流重开清旧尾巴——插话专轮内叙述流/回应流多次换流时预览恒对准
+  //   当前流；回应落地后由注记轮 steer_response 段接棒，预览让位）。
+  //   上限同 liveThinking（8000 尾窗）。清空点与 liveThinking 同族：
+  //   ingestWorkRoundText / flushPendingWork / adoptWorkSnapshot /
+  //   replaceMessages / reset。
+  const steerWindowActive = ref(false)
+  const steerLiveText = ref('')
+  function ingestSteerBodyDelta(text: string) {
+    if (!text) return
+    let s = steerLiveText.value + text
+    if (s.length > LIVE_THINKING_CAP) s = s.slice(s.length - LIVE_THINKING_CAP)
+    steerLiveText.value = s
+  }
+  function clearSteerLive() {
+    if (steerLiveText.value) steerLiveText.value = ''
+  }
+  function closeSteerWindow() {
+    steerWindowActive.value = false
+    clearSteerLive()
+  }
   // N5（2026-10-13 机会项）：进行中轮次的交付物缓冲（present_files 登记
   // 事件先于 assistant 回复帧到达——落盘后发布、回复帧最后发布，顺序由
   // 后端单 turn 串行保证；回复落地时 flush 挂载；reset 清空——语义同
@@ -429,6 +457,8 @@ export const useChatStore = defineStore('chat', () => {
       // B3：重同步后 live 思考不可信（同 pendingWork——进行中内容由
       // work_current 活查询 + 环回放重建）。
       clearLiveThinking()
+      // 插话窗同族（2026-11-25）：重同步整缓冲清空点窗口必关。
+      closeSteerWindow()
       pendingDeliverables.value = []
     }
     // M6：行号锚随消息列表重推——watchdog 路径（fresh 对象无行号）归 null
@@ -651,6 +681,9 @@ export const useChatStore = defineStore('chat', () => {
     // B3：轮发布即思考卡的让位信号——流式思考已随轮进入时间线（无论本帧
     // 是否被 seq 去重抑制，live 缓冲都该清；重复帧到来时 live 早已清空）。
     clearLiveThinking()
+    // 插话窗正文预览同族（2026-11-25）：插话专轮内的叙述/思考轮发布即清
+    // 预览（同一内容已随轮进时间线；预览随后由下一流重开重建——回应流）。
+    clearSteerLive()
     if (!content && !reasoning) return
     if (typeof seq === 'number') {
       if (roundTextSeqs.has(seq)) return
@@ -674,6 +707,9 @@ export const useChatStore = defineStore('chat', () => {
     const w = ensurePendingWork()
     w.rounds.push({ text: '', tools: [], steer_note: note })
     w.ended_at_ms = Date.now()
+    // 插话处理窗开闸（2026-11-25）：窗口内 provider 流正文相位被摄取为
+    // 注记行下 live 预览（插话中间过程补全）。
+    steerWindowActive.value = true
   }
 
   /** 摄取插话专轮收口回应（2026-11-21 插话专轮批）。与后端
@@ -681,7 +717,8 @@ export const useChatStore = defineStore('chat', () => {
    *  steer_response 段（注记轮后的中间轮不偏移——两段专轮各归各轮）；
    *  无注记轮可落（live 注记帧丢失等）追加独立回应轮兜底。live 载体 =
    *  steer_response receive 帧（瞬态，不落盘行——落盘载体是 assistant 行
-   *  work 键的同名段，历史回看经 work 键渲染）。 */
+   *  work 键的同名段，历史回看经 work 键渲染）。回应到场 = 插话处理窗
+   *  关闸（2026-11-25）：正文流预览让位给落地的回应段。 */
   function ingestSteerResponse(response: string) {
     if (!response) return
     const w = ensurePendingWork()
@@ -690,11 +727,13 @@ export const useChatStore = defineStore('chat', () => {
       if (r.steer_note && !r.steer_response) {
         r.steer_response = response
         w.ended_at_ms = Date.now()
+        closeSteerWindow()
         return
       }
     }
     w.rounds.push({ text: '', tools: [], steer_response: response })
     w.ended_at_ms = Date.now()
+    closeSteerWindow()
   }
 
   /** 摄取工具开始。分组规则与后端 ensure_tool_round 同构：末轮有叙述或
@@ -778,20 +817,45 @@ export const useChatStore = defineStore('chat', () => {
     // B3：回复落地 = 本 turn 流式面收尾（异常路径 error 后无 RoundText 时
     // live 思考卡在此兜底清空，正常路径已被轮发布清过——幂等）。
     clearLiveThinking()
+    // 插话窗同族收口（2026-11-25）：turn 收尾窗必关——插话窗旗标漏关会
+    // 把下一 turn 的主终答正文流误摄进已不存在的插话预览。
+    closeSteerWindow()
     return w && w.rounds.length ? w : undefined
   }
 
   /** chat.work_current 活查询回包：整体接管 pending 时间线（切走再切回的
    *  全量恢复——后端活累加器无环滑窗限制）。work 为 null / 无轮 = 清空
-   *  现值（无进行中 turn 是事实）；调用方负责迟到快照的作废闸。 */
-  function adoptWorkSnapshot(work: WorkTimeline | null | undefined) {
+   *  现值（无进行中 turn 是事实）；调用方负责迟到快照的作废闸。
+   *  preserveLiveStreams（2026-11-25 观看端闪屏修复）：思考流/插话流进行中
+   *  时跳过 liveThinking 清空、插话窗按快照事实复位——占位轮询周期拍的
+   *  adopt 若无条件清空，思考卡/插话预览每拍被抹、下一个 delta 才重建
+   *  = 4s 周期闪。缺省（恢复/死轮清算场景）保持旧行为全清。 */
+  function adoptWorkSnapshot(
+    work: WorkTimeline | null | undefined,
+    opts?: { preserveLiveStreams?: boolean },
+  ) {
     pendingWork.value = work && work.rounds.length ? work : null
     // R575：快照轮来自后端活累加器，与环 seq 无映射——接管后幂等集必须
     // 重新放行（不清会拿旧集合误抑后续合法轮）。
     roundTextSeqs.clear()
+    if (opts?.preserveLiveStreams) {
+      // live 思考缓冲是进行中真相（增量通道活着）——清了要等下一个 delta
+      // 才重建，正是观看端闪屏根源；轮发布时 ingestWorkRoundText 会清。
+      // 插话窗按快照事实复位：注记轮已收口（带回应段）= 窗口事实上结束
+      // → 关；未收口 = 窗口事实上开着 → 不动（开关由 ingestSteerNote /
+      // ingestSteerResponse 精确管理，保守关会每拍抹掉预览）。
+      if (!pendingWork.value?.rounds.some((r) => r.steer_note && !r.steer_response)) {
+        closeSteerWindow()
+      }
+      return
+    }
     // B3：快照不含 live 思考（sink 缓冲在 WorkRecorder 之外）——切走再切回
     // 后旧 live 卡不可信，清空；流仍在跑则下一 think_delta 重建。
     clearLiveThinking()
+    // 插话窗同族（2026-11-25）：快照轮的注记轮若已带回应段，窗口按快照
+    // 事实复位；未带的（处理中）由 ChatPanel 在下一 delta 到场时重新摄取
+    // ——窗口旗标按快照重建是保守关（漏窗口只损失预览，误开窗会串流）。
+    closeSteerWindow()
   }
 
   /** N5：收集交付物（`deliverables` push 帧，ChatPanel 按 session 过滤后
@@ -833,6 +897,9 @@ export const useChatStore = defineStore('chat', () => {
     roundTextSeqs.clear()
     // B3：会话切换丢掉上一会话的 live 思考（与 pendingWork 同生命周期）。
     clearLiveThinking()
+    // 插话窗同族（2026-11-25）：换会话窗口必关——旗标与预览不得跨会话
+    // 泄漏（旧会话的插话窗吃到新会话的正文流 = 串流）。
+    closeSteerWindow()
     pendingDeliverables.value = []
     // B2：切会话丢掉上一会话的恢复中旗标（骨架不得跨会话泄漏）。
     workRestoring.value = false
@@ -860,6 +927,8 @@ export const useChatStore = defineStore('chat', () => {
     pendingWork,
     pendingDeliverables,
     liveThinking,
+    steerWindowActive,
+    steerLiveText,
     workRestoring,
     agentMode,
     sendMode,
@@ -891,6 +960,10 @@ export const useChatStore = defineStore('chat', () => {
     /** B3：流式思考增量摄取 + 清空（ChatPanel think_* 相位帧入口）。 */
     ingestLiveThinkingDelta,
     clearLiveThinking,
+    /** 插话窗正文流预览（2026-11-25）：ChatPanel provider 流正文相位
+     *  入口（仅 steerWindowActive 窗口内调用）+ 换流重开清空。 */
+    ingestSteerBodyDelta,
+    clearSteerLive,
     ingestWorkToolOutput,
     flushPendingWork,
     adoptWorkSnapshot,

@@ -1034,10 +1034,10 @@ pub(crate) fn exec_output_passed(output: &str) -> bool {
 /// DELETE，受限侧读回后自删通常成功；属主异常等失败场景留 gateway 侧清扫
 /// （DaclSpawnFn spawn 前清超龄文件）兜底。
 pub(super) struct ShellOutputCapture {
-    out_file: Option<std::fs::File>,
-    err_file: Option<std::fs::File>,
-    out_path: PathBuf,
-    err_path: PathBuf,
+    pub(super) out_file: Option<std::fs::File>,
+    pub(super) err_file: Option<std::fs::File>,
+    pub(super) out_path: PathBuf,
+    pub(super) err_path: PathBuf,
 }
 
 impl ShellOutputCapture {
@@ -1056,7 +1056,13 @@ impl ShellOutputCapture {
         }
         let ws = std::env::var("NEMESISBOT_EXECUTOR_WORKSPACE")
             .map_err(|_| "workspace-dacl 模式缺 NEMESISBOT_EXECUTOR_WORKSPACE".to_string())?;
-        let dir = Path::new(&ws).join(".exec_out");
+        Self::create_restricted(Path::new(&ws)).map(Some)
+    }
+
+    /// [`current()`] 的实现核（测试缝：免 env 全局态污染，直接给工作区根
+    /// ——env 置位是进程全局副作用，测试直连本构造避免与并行用例互踩）。
+    pub(super) fn create_restricted(ws: &Path) -> Result<Self, String> {
+        let dir = ws.join(".exec_out");
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("受限输出目录 {} 创建失败: {e}", dir.display()))?;
         let name = format!(
@@ -1073,12 +1079,12 @@ impl ShellOutputCapture {
             .map_err(|e| format!("受限输出文件 {} 创建失败: {e}", out_path.display()))?;
         let err_file = std::fs::File::create(&err_path)
             .map_err(|e| format!("受限输出文件 {} 创建失败: {e}", err_path.display()))?;
-        Ok(Some(Self {
+        Ok(Self {
             out_file: Some(out_file),
             err_file: Some(err_file),
             out_path,
             err_path,
-        }))
+        })
     }
 
     /// 把捕获文件接上命令的 stdout/stderr（覆盖 make_piped_shell_command
@@ -1106,11 +1112,11 @@ impl ShellOutputCapture {
     /// wait 后读回 (stdout, stderr)；受限侧删除尽力而为（失败=残留，见结构
     /// 注释——DELETE 不在 write-restricted 写类评估集合，基线 mask 保含
     /// DELETE 自删通常成功，属主异常等场景失败由 gateway 超龄清扫兜底）。
-    /// stdout 读失败按空串 + stderr 注记（读不回
+    /// stdout 读失败按空串 + 注记（读不回
     /// 不该让整次已成功执行的命令变 Err）。
     pub(super) fn read_back(self) -> (String, String) {
-        let out = std::fs::read(&self.out_path);
-        let err = std::fs::read(&self.err_path);
+        let out = read_capture_file_capped(&self.out_path);
+        let err = read_capture_file_capped(&self.err_path);
         let mut stdout = match &out {
             Ok(b) => decode_child_output(b),
             Err(_) => String::new(),
@@ -1132,6 +1138,32 @@ impl ShellOutputCapture {
         }
         (stdout, stderr)
     }
+}
+
+/// 受限捕获文件读回的读侧内存闸（BUG-20261126-102）：对齐 piped 形态的
+/// 家族排水帽语义（`PIPE_CAPTURE_CAP_BYTES` 丢头保尾 + `pipe_cap::
+/// truncated_head_marker` 单一真相源截断标记）——`yes` 类高吞吐输出在
+/// exec 超时窗口（上限 600s）内可向捕获文件写出 GB 级字节，裸 `fs::read`
+/// 整读会在下游截断判定**之前**把全量体量拉进 executor 子进程内存（同
+/// read_file `READ_FILE_MAX_BYTES` 读侧闸的理由：截断救不了已进内存的）。
+/// 超帽文件 seek 到尾部只读帽值字节（读窗口 = 帽值，磁盘 IO 亦有界）；
+/// ≤帽文件维持裸 `fs::read` 原语义；metadata/open 失败按 Err 走「读回
+/// 失败」注记臂，尾段短读按尽力而为收集语义容错（与 `drain_capped` 一致）。
+pub(super) fn read_capture_file_capped(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let cap = nemesis_utils::pipe_cap::PIPE_CAPTURE_CAP_BYTES as u64;
+    let meta = std::fs::metadata(path)?;
+    if meta.len() <= cap {
+        return std::fs::read(path);
+    }
+    let skip = meta.len() - cap;
+    let mut f = std::fs::File::open(path)?;
+    f.seek(SeekFrom::Start(skip))?;
+    let mut buf = Vec::with_capacity(cap as usize);
+    let _ = f.read_to_end(&mut buf);
+    let mut out = nemesis_utils::pipe_cap::truncated_head_marker(skip).into_bytes();
+    out.extend_from_slice(&buf);
+    Ok(out)
 }
 
 /// exec / exec_async / run_checks / run_script / git 五处共用的 console

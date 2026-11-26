@@ -58,16 +58,26 @@ impl FileCheckpointStore {
         self.exec_dir(execution_id).join(".corrupt")
     }
 
-    /// Atomically write `bytes` to `final_path` via tmp-file + rename.
-    /// `tmp_suffix` disambiguates concurrent writes for different checkpoints.
-    fn atomic_write(final_path: &Path, bytes: &[u8], tmp_suffix: &str) -> Result<(), StoreError> {
-        if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let tmp_path = final_path.with_extension(format!("{}.tmp", tmp_suffix));
-        fs::write(&tmp_path, bytes)?;
-        fs::rename(&tmp_path, final_path)?;
-        Ok(())
+    /// Atomically write `bytes` to `final_path`。
+    ///
+    /// BUG-20261126-101：委托 `nemesis_utils::file::write_file_atomic`
+    /// 单一出口（goals BUG-20261106-001 / BUG-20261109-024 同族收敛，
+    /// 横向扫描补齐的最后一个漏收敛成员）。此前自制 tmp+rename 三缺口：
+    /// ① 固定临时名 `final_path.with_extension(<id>.tmp)`——同 checkpoint
+    ///    id 并发写（多实例同 workspace 双 gateway / 同 id 重试）交错在
+    ///    同一 tmp 上，先完成者的 rename 可把另一方写到一半的半截 JSON
+    ///    提交成正式 checkpoint（load 端 quarantine 只兜住可检出的损坏，
+    ///    恢复目标仍丢该 checkpoint）；第二个写者 rename ENOENT 诚实失败
+    ///    但 run 已被半截文件污染；
+    /// ② 无 flush/sync_all 先于 rename——断电级只保进程崩溃语义；
+    /// ③ 无失败清理——`fs::write` 中途失败残留 `.tmp` 垃圾（latest()
+    ///    按 json 扩展名过滤不受污染，仅目录卫生问题）。
+    /// 唯一临时名（pid+序数+nanos）+ create_new + sync_all + 失败清理
+    /// 结构性消除该家族；unix 0o644（workspace 资产非凭据，goals/ziwei/
+    /// plugins-wasm 同惯例）。
+    fn atomic_write(final_path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+        nemesis_utils::file::write_file_atomic(&final_path.to_string_lossy(), bytes, 0o644)
+            .map_err(|e| StoreError::Io(std::io::Error::other(e)))
     }
 
     /// Move an unparseable file to `{exec}/.corrupt/` so it stops breaking
@@ -111,10 +121,8 @@ impl CheckpointStore for FileCheckpointStore {
     async fn save(&self, checkpoint: Checkpoint) -> Result<String, StoreError> {
         let id = checkpoint.id.clone();
         let path = self.checkpoint_path(&checkpoint.execution_id, &id);
-        // Tmp suffix uses the checkpoint id (already sanitized) so concurrent
-        // saves of different checkpoints don't collide on the same tmp file.
         let bytes = serde_json::to_vec_pretty(&checkpoint)?;
-        Self::atomic_write(&path, &bytes, &sanitize_path_component(&id))?;
+        Self::atomic_write(&path, &bytes)?;
         Ok(id)
     }
 

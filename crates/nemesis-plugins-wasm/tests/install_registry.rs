@@ -2493,3 +2493,67 @@ fn bom_prefixed_manifest_parses_via_load_from_dir() {
     let (m, _) = PluginManifest::load_from_dir(dir.path()).expect("BOM 前缀不得拒绝合法 manifest");
     assert_eq!(m.slug, "bom-plugin");
 }
+
+// 回归锁 BUG-20261126-093 同族：legacy 载荷迁移的 copy 兜底路径文件符号
+// 链接一律不物化。copy 兜底只在 rename 失败（跨卷/占用）时触发——测试用
+// 打开句柄锁住 slug 内文件强制 Windows rename 失败走 copy 路径（POSIX
+// rename 允许带句柄重命名 → Unix 无法强制 copy 路径，诚实 SKIP）。
+#[cfg(windows)]
+#[test]
+fn legacy_payload_migration_copy_path_skips_file_symlinks() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("workspace");
+    let legacy = ws.join("plugins");
+    let slug = legacy.join("demo");
+    std::fs::create_dir_all(&slug).expect("mkdir slug");
+    std::fs::write(slug.join("payload.txt"), "ok").expect("write payload");
+    std::fs::write(legacy.join("lockfile.json"), "{}").expect("write lockfile");
+    // 界外目标 + slug 内文件链接（copy 旧实现跟随物化 → 渗入载荷目录）。
+    let outside = tmp.path().join("outside_secret.txt");
+    std::fs::write(&outside, "SECRET-CONTENT-OUTSIDE").expect("write outside");
+    let link = slug.join("leak.txt");
+    if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+        eprintln!("SKIP: 文件符号链接创建失败（需开发者模式/管理员）");
+        return;
+    }
+
+    // 打开句柄锁住 slug 内文件 → rename(整目录) 报占用错 → copy 兜底。
+    // 句柄显式管理：断言完成后 drop 再让 TempDir 清理。
+    let _guard = std::fs::File::open(slug.join("payload.txt")).expect("open guard");
+
+    PluginManager::new_with_dirs(
+        &ws,
+        &ws.join("plugins_wasm"),
+        PluginLimits::default(),
+        Arc::new(NoSecrets),
+    )
+    .expect("manager（迁移在 build_dirs 内同步完成）");
+
+    // copy 兜底产物：payload 照常复制，链接不物化、界外内容不入树。
+    let migrated = ws.join("plugins_wasm").join("demo");
+    assert!(
+        migrated.join("payload.txt").exists(),
+        "copy 兜底路径未触发（rename 意外成功）或 payload 丢失"
+    );
+    assert!(
+        !migrated.join("leak.txt").exists(),
+        "文件链接被物化进载荷目录"
+    );
+    let mut stack = vec![ws.join("plugins_wasm")];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).expect("readdir").flatten() {
+            let p = entry.path();
+            if p.is_dir() && !p.is_symlink() {
+                stack.push(p);
+            } else {
+                let body = std::fs::read_to_string(&p).unwrap_or_default();
+                assert!(
+                    !body.contains("SECRET-CONTENT-OUTSIDE"),
+                    "界外内容出现在载荷树: {}",
+                    p.display()
+                );
+            }
+        }
+    }
+    drop(_guard);
+}

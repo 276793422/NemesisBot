@@ -182,8 +182,8 @@ async fn b18_dispatch_refuses_off_whitelist_builtin_at_mini() {
         "mini 硬调白名单外内置工具必须被拒，实际: {out}"
     );
     assert!(
-        out.contains("spawn") && out.contains("/model"),
-        "拒绝文案必须带工具名 + 指路换档，实际: {out}"
+        out.contains("spawn") && out.contains("model management"),
+        "拒绝文案必须带工具名 + 指路换档（/model slash 已停用 → 指路模型管理页），实际: {out}"
     );
 
     // big 档同一调用放行执行（空白名单直通）。

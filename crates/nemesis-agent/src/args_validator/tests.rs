@@ -62,6 +62,54 @@ fn bad_enum_is_invalid() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BUG-20261126-097 回归锁：数值型 enum 违规消息必须渲染全部合法值。
+// 旧形态 filter_map(as_str) 把整数全滤掉 → 「must be one of: 」（空）
+// ——模型自纠循环拿不到合法值清单。生产可达面：cron 工具 max_rounds
+// enum [5,10,20]（misc.rs）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn numeric_enum_violation_renders_all_values() {
+    let s = json!({
+        "type": "object",
+        "properties": {
+            "max_rounds": {"type": "integer", "enum": [5, 10, 20]}
+        }
+    });
+    match check(&s, r#"{"max_rounds":15}"#) {
+        Outcome::Invalid { message, class } => {
+            assert_eq!(class, "B");
+            assert!(
+                message.contains("must be one of: 5 | 10 | 20"),
+                "数值型 enum 合法值必须全部渲染: {message}"
+            );
+        }
+        other => panic!("expected Invalid, got {:?}", other),
+    }
+    // 命中合法值不误报（Value 相等比较对整数有效）。
+    assert!(matches!(check(&s, r#"{"max_rounds":10}"#), Outcome::Valid));
+}
+
+#[test]
+fn string_enum_message_stays_bare_byte_compat() {
+    // 字符串 enum 渲染保持裸形（无引号）——既有消息字节不变的兼容锚。
+    let s = sample_schema();
+    match check(&s, r#"{"path":"a","action":"nope"}"#) {
+        Outcome::Invalid { message, .. } => {
+            assert!(
+                message.contains("must be one of: create | delete | list"),
+                "字符串 enum 裸形渲染必须保持: {message}"
+            );
+            assert!(
+                !message.contains("\"create\""),
+                "不得带 JSON 引号: {message}"
+            );
+        }
+        other => panic!("expected Invalid, got {:?}", other),
+    }
+}
+
 #[test]
 fn unknown_field_typo_is_autofixed() {
     // "patch" is edit-distance 1 from "path" — should autofix.

@@ -106,7 +106,13 @@ async fn unknown_command_rejected() {
 }
 
 #[tokio::test]
+// 与 gated 测试族共持 updates/ 共享锁（复查 2026-11-26）：status 投影的
+// pending 面 = 真实 exe 旁 updates/ 读盘（生产语义），gated 测试写同一目录
+// ——不持锁会吃进别人的 pending 残留（实录：gated panic 跳过清理 → 本测
+// pending 非空假红）。
+#[allow(clippy::await_holding_lock)]
 async fn status_shape_is_honest_when_unwired() {
+    let _shared = crate::selfupdate::tests::UPDATES_SHARED_LOCK.lock().await;
     let h = SelfupdateHandler;
     let ctx = make_ctx();
     let out = h

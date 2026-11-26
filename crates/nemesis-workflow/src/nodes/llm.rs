@@ -395,6 +395,31 @@ pub(crate) fn placeholder_refs(cond: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
+/// 提取表达式里**含首尾空白**的占位符原文（如 `"{{ flag }}"`）。扫描形态
+/// 与 [`placeholder_refs`] 同构，判据是 `inner != inner.trim()`。
+///
+/// 替换语义是裁决过的 exact-match（不 trim，`resolve_prompt_template`
+/// 契约钉），所以带首尾空白的占位符**运行期必然解析不到**——lint 草稿期
+/// 预警与可证伪性 Err 归因提示共用本单一真相源，两个诊断面不说两套话。
+pub(crate) fn padded_placeholders(cond: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = cond;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            break;
+        };
+        let inner = &after[..end];
+        // 全空白内文（`{{ }}`）不算 padded：trim 后为空键，属另一形态的
+        // 畸形（「去掉空白」建议对其无修复意义），不收。
+        if !inner.trim().is_empty() && inner != inner.trim() {
+            out.push(format!("{{{{{}}}}}", inner));
+        }
+        rest = &after[end + 2..];
+    }
+    out
+}
+
 /// Resolve a node-config string: credential reference first, then `{{var}}`
 /// template.
 ///

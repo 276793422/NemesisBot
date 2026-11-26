@@ -71,7 +71,17 @@ impl Default for MessageTool {
 #[async_trait]
 impl Tool for MessageTool {
     fn description(&self) -> String {
-        "Send a message to user on a chat channel. Use this when you want to communicate something."
+        // BUG-20261126-100：旧描述「Send a message to user on a chat
+        // channel」是假声明——send 回调自 Rust 移植 INIT 起零生产接线
+        // （全仓仅测试安装），本工具从不投递任何通道；内容只作为工具
+        // 结果落转录（Dashboard 工具卡可见，IM 通道中途不可见）。用户
+        // 面投递只发生在回合终局（finish_message）。接线是否补齐属
+        // 用户拍板项（.claude/bug_hunt_decisions.md [D]），描述先行
+        // 诚实化。
+        "Record a note for the user in the session transcript (visible on \
+         Dashboard tool cards). This does NOT deliver a chat/IM message \
+         mid-turn — the user only receives your final reply, so put \
+         anything user-facing there instead."
             .to_string()
     }
 

@@ -733,10 +733,15 @@ pub fn get_interface_priority(name: &str) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// Find an available port starting from the given port.
-/// Tries port, port+1, port+2,... up to 100 attempts.
+/// Tries up to 1000 consecutive ports (port..port+999, 饱和截断于 65535)。
+///
+/// 窗宽依据（BUG-20261126-088）：CI 2026-11-25 实录 100 口窗被 Windows VM
+/// 的 WinNAT/Hyper-V excludedportrange（开机随机保留 50000+ 段）整段罩住
+/// → 100 次 bind 全拒 WSAEACCES → "no available UDP port found starting
+/// from 50000"（CI 45674140586 shard7）。保留段典型 ≤500 口；千口窗被
+/// 整段罩住的概率大幅降低，对调用方语义不变（仍是"找起点后第一个可用"）。
 pub fn find_available_port(start_port: u16) -> Result<u16, String> {
-    for offset in 0..100u16 {
-        let port = start_port.saturating_add(offset);
+    for port in (start_port..=u16::MAX).take(1000) {
         let addr = format!("0.0.0.0:{}", port);
 
         // Try to bind to check if port is available
@@ -754,10 +759,9 @@ pub fn find_available_port(start_port: u16) -> Result<u16, String> {
     ))
 }
 
-/// Find an available UDP port.
+/// Find an available UDP port.（窗宽依据同 [`find_available_port`]）
 pub fn find_available_udp_port(start_port: u16) -> Result<u16, String> {
-    for offset in 0..100u16 {
-        let port = start_port.saturating_add(offset);
+    for port in (start_port..=u16::MAX).take(1000) {
         let addr = format!("0.0.0.0:{}", port);
 
         match std::net::UdpSocket::bind(&addr) {

@@ -176,9 +176,19 @@ pub fn validate(schema: &Value, args: &Value) -> Vec<Violation> {
                 if let Some(allowed) = prop_schema.get("enum").and_then(|e| e.as_array())
                     && !allowed.iter().any(|a| a == val)
                 {
+                    // BUG-20261126-097：旧形态 filter_map(as_str) 会把数值型
+                    // enum（如 cron max_rounds 的 [5,10,20]）全滤掉 → 消息渲染
+                    // 成「must be one of: 」（空）——模型拿不到合法值清单，
+                    // 自纠循环失去依据（validation_failures 预算被无信息重试
+                    // 烧光）。字符串保持裸形（既有消息字节不变，测试钉死），
+                    // 非 string 值按 JSON 字面量形态渲染（5 / true / null）。
                     let allowed_str: Vec<String> = allowed
                         .iter()
-                        .filter_map(|a| a.as_str().map(String::from))
+                        .map(|a| {
+                            a.as_str()
+                                .map(String::from)
+                                .unwrap_or_else(|| a.to_string())
+                        })
                         .collect();
                     out.push(Violation::NotInEnum {
                         field: key.clone(),

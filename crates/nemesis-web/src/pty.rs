@@ -97,17 +97,20 @@ impl PtySessionManager {
         self.inner.lock().map(|m| m.len()).unwrap_or(0)
     }
 
-    /// kill 全部会话（estop 触发路径；单会话断连走 SessionGuard unregister
-    /// + 会话任务内 kill，不经这里）。
-    pub fn kill_all(&self) {
+    /// kill 全部会话（estop 直杀 + 停机收尾路径；单会话断连走
+    /// SessionGuard unregister + 会话任务内 kill，不经这里）。
+    /// 返回收杀会话数（幂等：清场后再次调用返回 0）。
+    pub fn kill_all(&self) -> usize {
         let map = match self.inner.lock() {
             Ok(mut m) => std::mem::take(&mut *m),
-            Err(_) => return,
+            Err(_) => return 0,
         };
+        let n = map.len();
         for (id, mut h) in map {
             tracing::info!("[Pty] estop/session-sweep killing session {id}");
             let _ = h.killer.kill();
         }
+        n
     }
 }
 
@@ -124,15 +127,20 @@ fn manager() -> Option<&'static Arc<PtySessionManager>> {
     PTY_MANAGER.get()
 }
 
-/// 宿主侧急停杀链：estop 触发时由 gateway 侧 watcher
-/// （post_agent.rs，与 vm-display 同款纪律）调用。会话任务的自醒（select
-/// 循环内 estop watch）在 `socket.send().await`（客户端 TCP 背压——网络
-/// 挂起/浏览器休眠是常态）期间不被轮询，stalled client 会话的自醒杀
-/// 不掉——模块头安全声明「急停触发 → 全部 PTY 会话立即 kill」必须有
-/// 宿主侧兜底直杀。
-pub fn kill_all_for_estop() {
-    if let Some(mgr) = manager() {
-        mgr.kill_all();
+/// 宿主侧会话直杀：estop 触发（gateway 侧 watcher，post_agent.rs，与
+/// vm-display 同款纪律）与 gateway 优雅停机收尾（run_runtime Step 24，
+/// BUG-20261126-098）共用。两个触发面是同一机理根因的两个表现：会话
+/// 任务的收尾 tail（child.kill + reap 线程）只在 select 循环正常 break
+/// 时执行——estop 下 stalled client 的会话自醒（select 循环内 estop
+/// watch）在 `socket.send().await`（客户端 TCP 背压——网络挂起/浏览器
+/// 休眠是常态）期间不被轮询；停机下 runtime 把会话 future 整体 drop，
+/// tail 根本不运行（SessionGuard Drop 只摘牌不 kill）。模块头安全声明
+/// 「急停触发 → 全部 PTY 会话立即 kill」与停机链「子进程不 gateway
+/// 存活」（LSP C5 同款）必须有宿主侧兜底直杀。返回收杀会话数。
+pub fn kill_all_sessions() -> usize {
+    match manager() {
+        Some(mgr) => mgr.kill_all(),
+        None => 0,
     }
 }
 

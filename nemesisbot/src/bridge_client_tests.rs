@@ -1907,8 +1907,36 @@ mod w5r2 {
         let mut p = test_params("w5b-dead", port);
         p.relay_url = format!("ws://127.0.0.1:{port}");
         let handle = tokio::spawn(run_loop(p, fast_timing()));
-        // 留足时间走完「连接失败 → 上报 → 退避 → 再失败」若干轮。
-        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // 上报半段：拨号失败必翻 Disconnected（run_loop 首报 Connecting；
+        // 「连接失败：」前缀是拨号 Ok(Err) 分支独有文案，与握手超时/断开
+        // 文案区分，排除槽内残留快照误判——w5b 是持锁期间唯一拨死端口的
+        // 用例）。旧版盲 sleep+abort 零断言 = 永不可能失败。
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Disconnected report never arrived (dial-failure reporting broken?)"
+            );
+            if let Some(st) = nemesis_web::relay::client_status()
+                && st.state == nemesis_web::relay::BridgeClientState::Disconnected
+                && st
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("连接失败"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // 退避半段：fast_timing 退避 10–50ms——再等一个退避窗后 loop 仍在
+        // 运行（未退出）= 退避重试分支存活。
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(
+            !handle.is_finished(),
+            "run_loop exited instead of backing off and retrying"
+        );
         handle.abort();
         let _ = handle.await;
     }

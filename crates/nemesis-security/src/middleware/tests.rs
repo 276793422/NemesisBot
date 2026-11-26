@@ -209,6 +209,48 @@ fn test_get_security_summary() {
     assert_eq!(summary["workspace"], "/tmp/workspace");
 }
 
+/// BUG-20261125-078 回归锁：get_security_summary 的 pending 数组必须按
+/// 请求 id 确定性排序。active_requests 是 HashMap，无序迭代 = 审批卡
+/// 列表顺序随进程重启洗牌。
+#[test]
+fn test_get_security_summary_pending_sorted_by_id() {
+    let config = AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        ..Default::default()
+    };
+    let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+    let mw = SecurityMiddleware::with_preset(
+        auditor.clone(),
+        "test_user",
+        "cli",
+        "/tmp/workspace",
+        PermissionPreset::Unrestricted,
+    );
+    // 乱序提交（id 字典序 z < m < a 的逆序），pending 输出必须升序。
+    for id in ["z-req", "m-req", "a-req"] {
+        let req = OperationRequest {
+            id: id.to_string(),
+            op_type: OperationType::FileWrite,
+            danger_level: DangerLevel::High,
+            user: "test".to_string(),
+            source: "cli".to_string(),
+            target: "/tmp/test".to_string(),
+            timestamp: None,
+            ..Default::default()
+        };
+        let _ = auditor.request_permission(&req);
+    }
+    let summary = mw.get_security_summary();
+    let pending = summary["pending"].as_array().expect("pending is array");
+    assert_eq!(pending.len(), 3, "三个 ask 请求都应进 pending 列表");
+    let ids: Vec<&str> = pending
+        .iter()
+        .map(|r| r["id"].as_str().expect("id is string"))
+        .collect();
+    assert_eq!(ids, ["a-req", "m-req", "z-req"], "pending 必须按 id 升序");
+}
+
 #[test]
 fn test_user_source_workspace() {
     let mw = make_middleware(PermissionPreset::Standard);

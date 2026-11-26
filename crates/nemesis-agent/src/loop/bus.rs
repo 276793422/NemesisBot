@@ -287,6 +287,7 @@ impl AgentLoop {
             vault_domain_config_path: parking_lot::RwLock::new(None),
             session_home_root: parking_lot::RwLock::new(None),
             profile_root: parking_lot::RwLock::new(None),
+            profile_scope: parking_lot::RwLock::new(super::ProfileScope::default()),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -305,7 +306,10 @@ impl AgentLoop {
             workflow_engine: parking_lot::RwLock::new(None),
             config_gen: parking_lot::RwLock::new(None),
             #[cfg(feature = "forge")]
-            user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
+            user_profile_cache: parking_lot::RwLock::new((
+                (None, None, super::ProfileScope::default()),
+                String::new(),
+            )),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
             small_model_resolver: parking_lot::RwLock::new(None),
@@ -1259,6 +1263,13 @@ impl AgentLoop {
         if check_sent_in_round {
             // Check if a tool (e.g., MessageTool) already sent a response for this
             // session in the current round. Mirrors Go's alreadySent check.
+            //
+            // BUG-20261126-100 诚实注记：当前恒假——无生产标记者
+            // （mark_sent_in_round 生产零调用、MessageTool send 回调零
+            // 接线），本检查是假死机制而非活去重；设计意图（工具发送
+            // 轮吞并终局发布）由 push_connector_receipt_card 的绕行注记
+            // 背书，接线与否待用户拍板。检查照常执行：一旦接线补齐
+            // 这里立即复活，无需改动本路径。
             let already_sent = self.sent_in_round.has_sent_in_round(&msg.session_key);
             // Only clear this session's flag, not all sessions.
             // Go clears per-tool-instance state, so clearing only the current

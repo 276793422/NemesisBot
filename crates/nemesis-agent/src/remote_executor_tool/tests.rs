@@ -957,3 +957,86 @@ fn env_pairs_omits_deny_patterns_when_none_or_empty() {
         "空 vec 形态（默认词表）不得写 env"
     );
 }
+
+// ============================================================
+// BUG-20261126-090 回归锁：per-call 响应行带帽读（read_resp_line_capped）
+// ============================================================
+//
+// 对手模型 = 执行体隔离自身要防的对手：执行体侧失控/被替换的写者向
+// gateway-facing 通道灌无换行巨行，裸 lines().next_line() 无界积累即可
+// 打爆 gateway 内存（同族先例：stderr 64KB 帽 BUG-20261122-020 / mxc
+// 响应行 64KB 帽 / persistent+VM MAX_FRAME_BYTES）。生产帽 = 协议帧帽
+// MAX_FRAME_BYTES；本组单测以小帽注入验证 helper 全臂语义。
+
+use std::io::Cursor;
+
+#[tokio::test]
+async fn resp_line_under_cap_returns_full_line() {
+    let mut r = Cursor::new(b"\"ok\":true\n".to_vec());
+    let out = ExecutorChannel::read_resp_line_capped(&mut r, 64)
+        .await
+        .unwrap();
+    assert_eq!(out, Some(("\"ok\":true".to_string(), false)));
+}
+
+#[tokio::test]
+async fn resp_line_over_cap_is_truncated_with_flag() {
+    // 11 字节行 > 8 字节帽：前 8 字节保留 + truncated 旗标，不 panic 不丢旗。
+    let mut r = Cursor::new(b"abcdefghij\n".to_vec());
+    let out = ExecutorChannel::read_resp_line_capped(&mut r, 8)
+        .await
+        .unwrap();
+    assert_eq!(out, Some(("abcdefgh".to_string(), true)));
+}
+
+#[tokio::test]
+async fn resp_line_pure_eof_is_none() {
+    let mut r = Cursor::new(Vec::new());
+    let out = ExecutorChannel::read_resp_line_capped(&mut r, 64)
+        .await
+        .unwrap();
+    assert_eq!(out, None, "纯 EOF = 无响应（调用方按无响应退出处理）");
+}
+
+#[tokio::test]
+async fn resp_line_eof_partial_line_is_some() {
+    // EOF 收尾的部分行（无换行）仍返回——与裸 next_line 同语义。
+    let mut r = Cursor::new(b"partial".to_vec());
+    let out = ExecutorChannel::read_resp_line_capped(&mut r, 64)
+        .await
+        .unwrap();
+    assert_eq!(out, Some((("partial".to_string()), false)));
+}
+
+#[tokio::test]
+async fn resp_line_cursor_aligned_after_truncation() {
+    // 超帽毒丸行后，下一行仍可读（read_line_capped 丢弃至行尾、游标对齐
+    // ——毒丸行不破坏后续协议行）。
+    let mut r = Cursor::new(b"poison-poison-poison\nnext\n".to_vec());
+    let first = ExecutorChannel::read_resp_line_capped(&mut r, 8)
+        .await
+        .unwrap();
+    assert_eq!(first, Some((("poison-p".to_string()), true)));
+    let second = ExecutorChannel::read_resp_line_capped(&mut r, 64)
+        .await
+        .unwrap();
+    assert_eq!(second, Some((("next".to_string()), false)));
+}
+
+#[tokio::test]
+async fn resp_line_multibyte_boundary_not_split_by_lossy() {
+    // 多字节字符跨帽边界：一次性 lossy（字节收齐后整行转换）把截断点
+    // 换成替换符，不静默损坏前半字符（line_cap 模块纪律）。
+    let mut line = "你".repeat(4).into_bytes(); // 12 字节 UTF-8
+    line.push(b'\n');
+    let mut r = Cursor::new(line);
+    let out = ExecutorChannel::read_resp_line_capped(&mut r, 7)
+        .await
+        .unwrap();
+    let (line, truncated) = out.unwrap();
+    assert!(truncated);
+    // 前 7 字节 = 2 个完整「你」（6 字节）+ 1 字节残躯 → 整行 lossy 后
+    // 残躯变 U+FFFD，前两字符完好。
+    assert!(line.starts_with("你你"), "line: {line:?}");
+    assert!(line.contains('\u{FFFD}'), "line: {line:?}");
+}

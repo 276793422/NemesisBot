@@ -156,7 +156,8 @@ fn main() {
 
     // ------------------------------------------------------------------
     // 构建形态清单（system.features WSAPI 数据源）：解析
-    // scripts/customize/features.toml（feature 清单单一真相源，50 条），
+    // scripts/customize/features.toml（feature 清单单一真相源，条数随
+    // customize 演进，不在此固化），
     // 逐条以 CARGO_FEATURE_<ID 大写下划线> env（cargo 为本包每个启用的
     // feature 设置）判定**本构建的真实编译态**，写 OUT_DIR/features.json
     // 供 embedded.rs include_str! 嵌入。清单缺失（罕见： customize 目录
@@ -166,6 +167,11 @@ fn main() {
 
     // Embed icon on Windows
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        // 图标是本脚本输入（winresource 嵌入 PE 资源）：本脚本已 emit rerun
+        // 指令集 → cargo 默认全包监视失效，图标不声明则换图标不重探、产物
+        // 静默保留旧图标（BUG-20261126-105；BUG-016 同族——R721 横扫查了
+        // 「外部输入读取」但漏 winresource 消费点）。
+        println!("cargo:rerun-if-changed=recourse/nemesisbot_multi.ico");
         let mut res = winresource::WindowsResource::new();
         res.set_icon("recourse/nemesisbot_multi.ico");
         res.compile().expect("failed to embed icon");
@@ -326,9 +332,21 @@ fn probe_taiwei_rlib(manifest_dir: &str) {
     let lib_dir = impl_root.join("target").join("release");
     let lib_name = "libnemesis_taiwei.rlib"; // Windows/Linux 同名
     let lib_path = lib_dir.join(lib_name);
-    // profile 目录级 watch：rlib 落库/重链/stamp 更新都能触发重探；目录
-    // 缺席（纯开源常态）= cargo 对缺席路径静默空操作，零开销。
-    println!("cargo:rerun-if-changed={}", lib_dir.display());
+    // profile 目录级 watch：rlib 落库/重链/stamp 更新都能触发重探。⚠️ 只对
+    // **在场**目录声明：声明但缺席的路径 cargo 1.95 判 StaleItem(MissingFile)
+    // → RunCustomBuild 恒 dirty → 本脚本每次构建重跑，且 BUILD_TIME env 必变
+    // → nemesisbot 整 crate 每次全量重编（BUG-20261126-105 trace 实证；旧
+    // 注释「缺席路径静默空操作」不成立）。目录缺席时降级 watch impl 根：
+    // 子模块 checkout / 首次落 target（直接条目增删）都会翻动根 mtime 触发
+    // 重探，届时 lib_dir 在场、下一轮改走精确目录 watch（既有文件的内容
+    // 编辑不动根 mtime，无额外开销）；克隆且子模块未 checkout（impl 根也
+    // 缺席）= 不声明任何 taiwei watch（缓存正常），商业形态转换后需一次
+    // cargo clean -p nemesisbot 让脚本重探。
+    if lib_dir.is_dir() {
+        println!("cargo:rerun-if-changed={}", lib_dir.display());
+    } else if impl_root.is_dir() {
+        println!("cargo:rerun-if-changed={}", impl_root.display());
+    }
     if !lib_path.is_file() {
         // 其他 profile 目录有库 → 诚实提醒（商业形态契约 = taiwei 侧
         // `cargo build --release`；debug-only 构建不进直连）

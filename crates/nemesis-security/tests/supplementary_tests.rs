@@ -1339,6 +1339,7 @@ mod pipeline_extra {
             ssrf_allowed_hosts: Vec::new(),
             audit_chain_enabled: true,
             audit_chain_path: Some("/tmp/chain".to_string()),
+            audit_chain_anchor_path: None,
             audit_log_enabled: true,
             audit_log_dir: Some("/tmp/logs".to_string()),
             default_action: "allow".to_string(),

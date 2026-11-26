@@ -328,6 +328,12 @@ impl Channel for WeComChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // 幂等双启守卫（BUG-20261126-107，nostr 同批家族缺角）：双启会
+        // 重复装配回调服务端（固定端口 → AddrInUse；port 0 → 静默双监听）。
+        if self.base.is_running() {
+            info!("[WeComChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
         info!("[WeComChannel] starting WeCom channel");
 
         // 入站回调：token + aes_key 齐备才开端口；仅出站模式不占端口

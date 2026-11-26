@@ -154,6 +154,66 @@ describe('chat store work timeline (2026-10-30)', () => {
     expect(store.pendingWork).toBeNull()
   })
 
+  // --- 插话窗正文流预览（2026-11-25 插话中间过程补全）---
+
+  it('steerLiveText: 窗口旗标随注记开 / 随回应关，delta 仅窗口内摄取（调用方闸门约定）', () => {
+    const store = useChatStore()
+    // 窗口未开（无注记）——ChatPanel 侧按 steerWindowActive 闸门不调用
+    // ingestSteerBodyDelta；store 侧的摄取与旗标解耦，此断言只锁旗标。
+    expect(store.steerWindowActive).toBe(false)
+    store.ingestSteerNote('⚡ 插话已注入本轮思考：补充边界')
+    expect(store.steerWindowActive).toBe(true)
+    store.ingestSteerBodyDelta('正在生成')
+    store.ingestSteerBodyDelta('回应内容')
+    expect(store.steerLiveText).toBe('正在生成回应内容')
+    store.ingestSteerResponse('完整回应')
+    // 回应到场 = 窗口关闸 + 预览让位（落地的回应段接棒，不双份）。
+    expect(store.steerWindowActive).toBe(false)
+    expect(store.steerLiveText).toBe('')
+    const rounds = store.pendingWork?.rounds ?? []
+    const noteRound = rounds.find(r => r.steer_note)
+    expect(noteRound?.steer_response).toBe('完整回应')
+  })
+
+  it('steerLiveText: 换流重开（clearSteerLive）清旧流尾巴——预览恒对准当前流', () => {
+    const store = useChatStore()
+    store.ingestSteerNote('⚡ 插话已注入本轮思考：换思路')
+    store.ingestSteerBodyDelta('叙述流残尾')
+    store.clearSteerLive() // start 相位：新流 reset（与 think_start 同源语义）
+    expect(store.steerLiveText).toBe('')
+    store.ingestSteerBodyDelta('回应流')
+    expect(store.steerLiveText).toBe('回应流')
+    // 窗口未关——clearSteerLive 只清文本不动旗标。
+    expect(store.steerWindowActive).toBe(true)
+  })
+
+  it('steerLiveText: RoundText 发布即清预览（叙述随轮进时间线）+ flush 收口关窗', () => {
+    const store = useChatStore()
+    store.ingestSteerNote('⚡ 插话已注入本轮思考：先查再答')
+    store.ingestSteerBodyDelta('叙述流正文')
+    store.ingestWorkRoundText('叙述', '思考')
+    expect(store.steerLiveText).toBe('')
+    expect(store.steerWindowActive).toBe(true)
+    // turn 收尾 flush：整缓冲取走 + 窗口必关（漏关会吃下一 turn 主终答流）。
+    const w = store.flushPendingWork()
+    expect(w?.rounds.some(r => r.steer_note)).toBe(true)
+    expect(store.steerWindowActive).toBe(false)
+    expect(store.steerLiveText).toBe('')
+  })
+
+  it('steerLiveText: 上限 8000 字符保留尾部 + reset 跨会话不泄漏', () => {
+    const store = useChatStore()
+    store.ingestSteerNote('⚡ 插话已注入本轮思考：长文')
+    store.ingestSteerBodyDelta('a'.repeat(7990))
+    store.ingestSteerBodyDelta('b'.repeat(100))
+    expect(store.steerLiveText.length).toBeLessThanOrEqual(8000)
+    expect(store.steerLiveText.endsWith('b'.repeat(100))).toBe(true)
+    // 换会话 reset：窗口旗标与预览一并清（旧窗不得吃新会话正文流）。
+    store.reset()
+    expect(store.steerWindowActive).toBe(false)
+    expect(store.steerLiveText).toBe('')
+  })
+
   it('Finished without Started is honestly ignored', () => {
     const store = useChatStore()
     store.ingestWorkRoundText('t')
@@ -225,6 +285,40 @@ describe('chat store work timeline (2026-10-30)', () => {
     expect(store.pendingWork).toBeNull()
     store.adoptWorkSnapshot(snap([]))
     expect(store.pendingWork).toBeNull()
+  })
+
+  // 2026-11-25 观看端闪屏修复：占位轮询周期拍的 adopt 若无条件清空 live
+  // 流缓冲，思考卡/插话预览每拍被抹、下一个 delta 才重建 = 4s 周期闪。
+  it('adoptWorkSnapshot preserveLiveStreams keeps live thinking & open steer window', () => {
+    const store = useChatStore()
+    store.ingestLiveThinkingDelta('正在推敲边界情况')
+    store.ingestSteerNote('插话注记轮')
+    // 快照注记轮未收口（无回应段）= 窗口事实上开着 → 不关。
+    const steerWork = snap([{ text: '', tools: [] }])
+    steerWork.rounds[0].steer_note = '插话注记轮'
+    store.adoptWorkSnapshot(steerWork, { preserveLiveStreams: true })
+    expect(store.liveThinking).toBe('正在推敲边界情况')
+    expect(store.steerWindowActive).toBe(true)
+    // 注记轮已收口（带回应段）= 窗口事实上结束 → 照常关闸；思考缓冲仍保留。
+    store.ingestSteerNote('另一条插话')
+    store.ingestSteerResponse('已处理插话')
+    const closedWork = snap([{ text: '', tools: [] }])
+    closedWork.rounds[0].steer_note = '另一条插话'
+    closedWork.rounds[0].steer_response = '已处理插话'
+    store.ingestLiveThinkingDelta('继续思考')
+    store.adoptWorkSnapshot(closedWork, { preserveLiveStreams: true })
+    // delta 追加语义：保留的缓冲含全部累积。
+    expect(store.liveThinking).toBe('正在推敲边界情况继续思考')
+    expect(store.steerWindowActive).toBe(false)
+  })
+
+  it('adoptWorkSnapshot without option clears live thinking & steer window (旧行为不变)', () => {
+    const store = useChatStore()
+    store.ingestLiveThinkingDelta('残尾')
+    store.ingestSteerNote('注记')
+    store.adoptWorkSnapshot(snap([{ text: '恢复的叙述', tools: [] }]))
+    expect(store.liveThinking).toBe('')
+    expect(store.steerWindowActive).toBe(false)
   })
 
   it('replaceMessages (watchdog resync) clears pending', () => {

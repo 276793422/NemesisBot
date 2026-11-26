@@ -301,12 +301,8 @@ fn behavior_rules_missing_file_is_loud() {
 #[test]
 fn audit_closure_appends_and_persists() {
     let ws = fresh_ws();
-    let logs_dir = ws
-        .home()
-        .join("workspace")
-        .join("logs")
-        .join("security_logs");
-    std::fs::create_dir_all(&logs_dir).expect("create logs dir");
+    let chain_dir = ws.home().join("workspace").join("security_chain");
+    std::fs::create_dir_all(&chain_dir).expect("create chain dir");
     let failures = vec![
         ("rt-demo-1".to_string(), "演示违反一：文件落盘".to_string()),
         ("rt-demo-2".to_string(), "演示违反二：凭据出网".to_string()),
@@ -315,7 +311,7 @@ fn audit_closure_appends_and_persists() {
     assert_eq!(n, 2);
 
     // 重放装载：链上应有恰好 2 条事件且可验证（verify_on_load 口径）。
-    let chain_path = logs_dir.join("audit_chain.jsonl");
+    let chain_path = chain_dir.join("audit_chain.jsonl");
     assert!(chain_path.exists(), "链文件应已落盘");
     let chain = AuditChain::new(AuditChainConfig {
         enabled: true,
@@ -332,12 +328,11 @@ fn audit_closure_empty_failures_is_noop() {
     let ws = fresh_ws();
     let n = audit_closure(&ws.home(), "redteam", &[]).expect("noop ok");
     assert_eq!(n, 0);
-    // 未创建链文件（无违反 = 无写入）。
+    // 未创建链文件（无违反 = 无写入；BUG-6 后链位置 workspace/security_chain/）。
     let chain_path = ws
         .home()
         .join("workspace")
-        .join("logs")
-        .join("security_logs")
+        .join("security_chain")
         .join("audit_chain.jsonl");
     assert!(!chain_path.exists());
 }

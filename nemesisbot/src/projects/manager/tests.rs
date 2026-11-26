@@ -1405,17 +1405,20 @@ mod vm_conflict {
 }
 
 // ---------------------------------------------------------------------------
-// 项目 loop 监督任务体 project_loop_supervisor（BUG-20261123-003）
+// 项目 loop 监督任务体 project_loop_supervisor（BUG-20261126 重设计：
+// await 句柄拿真实死因，与主 adapter 同构；2026-11-25 连环误杀事故的
+// 项目 loop 侧回归锁群）
 // ---------------------------------------------------------------------------
 
-/// panic 任务死亡 + 非期望停机 → 退避后钩子收到 pid。start_paused 虚拟
-/// 时间自动推进（5s 轮询 + 10s 退避零真实等待；真实墙钟上限仅死锁兜底）。
+/// panic 任务死亡 → 监督 await 见 Err(is_panic) → 退避后钩子收到 pid。
+/// start_paused 虚拟时间自动推进（10s 退避零真实等待）；await 监督任务
+/// 本身即可确定性断言。
 #[tokio::test(start_paused = true)]
 async fn project_supervisor_panic_death_calls_hook_with_pid() {
     use std::sync::atomic::AtomicBool;
 
-    let handle = Arc::new(tokio::spawn(async { panic!("project loop boom") }));
-    let expected = Arc::new(AtomicBool::new(false));
+    let handle = tokio::spawn(async { panic!("project loop boom") });
+    let witness = Arc::new(AtomicBool::new(false));
     let hit = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let hit_for_hook = Arc::clone(&hit);
     let hook: Option<Arc<dyn Fn(&str) + Send + Sync>> = Some(Arc::new(move |pid: &str| {
@@ -1424,33 +1427,23 @@ async fn project_supervisor_panic_death_calls_hook_with_pid() {
 
     let sup = tokio::spawn(super::project_loop_supervisor(
         "nb-proj-1".to_string(),
-        Arc::clone(&handle),
-        Arc::clone(&expected),
+        handle,
+        witness,
         hook,
     ));
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "restart hook never fired for panicked project loop"
-        );
-        if !hit.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    sup.await.expect("supervisor must exit after acting");
     assert_eq!(*hit.lock().unwrap(), vec!["nb-proj-1".to_string()]);
-    sup.abort();
 }
 
-/// 期望停机（stop_project 置位形态）→ 监督自行收班，钩子不触发。
+/// 【连环误杀事故核心回归锁】stop_project 的 abort 形态（cancelled）→
+/// 监督安静退役，钩子绝不触发。
 #[tokio::test(start_paused = true)]
-async fn project_supervisor_expected_stop_exits_without_restart() {
+async fn project_supervisor_stop_abort_exits_without_restart() {
     use std::sync::atomic::AtomicBool;
 
-    let handle = Arc::new(tokio::spawn(async {}));
-    let expected = Arc::new(AtomicBool::new(true));
+    let handle = tokio::spawn(async { std::future::pending::<()>().await });
+    let abort = handle.abort_handle();
+    let witness = Arc::new(AtomicBool::new(false));
     let hit = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let hit_for_hook = Arc::clone(&hit);
     let hook: Option<Arc<dyn Fn(&str) + Send + Sync>> = Some(Arc::new(move |pid: &str| {
@@ -1460,14 +1453,72 @@ async fn project_supervisor_expected_stop_exits_without_restart() {
     let sup = tokio::spawn(super::project_loop_supervisor(
         "nb-proj-2".to_string(),
         handle,
-        expected,
+        witness,
         hook,
     ));
-    let _ = sup.await; // 首检见 expected=true 即退，不挂
+    // 模拟 stop_project 的 abort（经 AbortHandle——生产里句柄所有权在监督手里）。
+    abort.abort();
+    tokio::time::timeout(std::time::Duration::from_secs(5), sup)
+        .await
+        .expect("supervisor must retire on cancelled (abort) outcome")
+        .expect("supervisor task itself must not panic");
     assert!(
         hit.lock().unwrap().is_empty(),
-        "expected stop must not trigger restart hook"
+        "stop abort (cancelled) must NOT trigger restart hook"
     );
+}
+
+/// 【正常 stop 收班形态回归锁】自然退出（Ok）+ 本代证词在场 = al.stop()
+/// 正常形态 → 安静退役，钩子不触发。
+#[tokio::test(start_paused = true)]
+async fn project_supervisor_graceful_exit_with_witness_exits_without_restart() {
+    use std::sync::atomic::AtomicBool;
+
+    let handle = tokio::spawn(async {});
+    let witness = Arc::new(AtomicBool::new(true));
+    let hit = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let hit_for_hook = Arc::clone(&hit);
+    let hook: Option<Arc<dyn Fn(&str) + Send + Sync>> = Some(Arc::new(move |pid: &str| {
+        hit_for_hook.lock().unwrap().push(pid.to_string());
+    }));
+
+    let sup = tokio::spawn(super::project_loop_supervisor(
+        "nb-proj-3".to_string(),
+        handle,
+        witness,
+        hook,
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(5), sup)
+        .await
+        .expect("supervisor must retire on witnessed graceful exit")
+        .expect("supervisor task itself must not panic");
+    assert!(
+        hit.lock().unwrap().is_empty(),
+        "witnessed graceful exit must NOT trigger restart hook"
+    );
+}
+
+/// 无证词的自然退出（Ok）= 无人叫停的自发退出 → 视同异常死亡，钩子触发。
+#[tokio::test(start_paused = true)]
+async fn project_supervisor_graceful_exit_without_witness_triggers_restart() {
+    use std::sync::atomic::AtomicBool;
+
+    let handle = tokio::spawn(async {});
+    let witness = Arc::new(AtomicBool::new(false));
+    let hit = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let hit_for_hook = Arc::clone(&hit);
+    let hook: Option<Arc<dyn Fn(&str) + Send + Sync>> = Some(Arc::new(move |pid: &str| {
+        hit_for_hook.lock().unwrap().push(pid.to_string());
+    }));
+
+    let sup = tokio::spawn(super::project_loop_supervisor(
+        "nb-proj-4".to_string(),
+        handle,
+        witness,
+        hook,
+    ));
+    sup.await.expect("supervisor must exit after acting");
+    assert_eq!(*hit.lock().unwrap(), vec!["nb-proj-4".to_string()]);
 }
 
 /// 无钩子（未装配）+ panic 死亡 → 只留痕臂自行退出不挂。
@@ -1475,12 +1526,12 @@ async fn project_supervisor_expected_stop_exits_without_restart() {
 async fn project_supervisor_death_without_hook_exits_cleanly() {
     use std::sync::atomic::AtomicBool;
 
-    let handle = Arc::new(tokio::spawn(async { panic!("boom without hook") }));
-    let expected = Arc::new(AtomicBool::new(false));
+    let handle = tokio::spawn(async { panic!("boom without hook") });
+    let witness = Arc::new(AtomicBool::new(false));
     let sup = tokio::spawn(super::project_loop_supervisor(
-        "nb-proj-3".to_string(),
+        "nb-proj-5".to_string(),
         handle,
-        expected,
+        witness,
         None,
     ));
     let _ = sup.await;

@@ -41,13 +41,214 @@
 //! （首 token 命令族，**参数不采集**——敏感面零暴露）。输入 = 采集层
 //! （[`super::collection::collect_terminal_sessions`]）凭据防线清洗后的
 //! 命令行投影，挖掘器不再见原始审计。
+//!
+//! 2026-11-25 话术 AI 化批一：全部挖掘器降级为**信号生产者**——产出
+//! [`SignalCard`]（rule_id + 模板话术 + 置信度/hits + evidence/steps），
+//! 不再直产终稿条目。措辞落库由路由层决定：反思通道在场时信号只进
+//! prompt 由反思 LLM 自行措辞；否则兜底桥 [`signal_to_entry`] 按模板话术
+//! 落条目（auto=true + rule_id 钉住，现行为保持）。
 
 use super::collection::{DialogueRow, TodoSnapshot};
 use super::store::HabitEntry;
 
+// ---------- 信号卡基建（话术 AI 化批一 §4.1/§4.4） ----------
+
+/// 稳定规则身份证（17 个挖掘器 + 参数化家族共 31 条，随代码走）。反思
+/// LLM 只能从给定域内**选** id（信号卡 ∪ 既有兜底条目清单），不能编造；
+/// 落库校验域外 id 按纯 AI 结论处理（现行为）。价值 = 程序信号的不变身份
+/// 证号，AI 产出对号入座，消除按文本匹配归并的重复条目隐患。
+pub(crate) const RULE_STAT_LANGUAGE: &str = "stat.language";
+pub(crate) const RULE_STAT_BRIEF: &str = "stat.brief";
+pub(crate) const RULE_STAT_CORRECTION: &str = "stat.correction";
+pub(crate) const RULE_STAT_LONGFORM: &str = "stat.longform";
+pub(crate) const RULE_STAT_MIXED: &str = "stat.mixed";
+pub(crate) const RULE_RITUAL_PLAN: &str = "ritual.plan";
+pub(crate) const RULE_TODO_TEST_LAST: &str = "todo.test_last";
+pub(crate) const RULE_ANTECEDENT_DIAG_FIRST: &str = "antecedent.diag_first";
+pub(crate) const RULE_ROUTE_PAIR: &str = "route.pair";
+pub(crate) const RULE_TODO_SEQ_DEPLOY: &str = "todo_seq.deploy";
+pub(crate) const RULE_OPENER_TASK: &str = "opener.task";
+pub(crate) const RULE_OPENER_GREETING: &str = "opener.greeting";
+pub(crate) const RULE_OPENER_ERROR_PASTE: &str = "opener.error_paste";
+pub(crate) const RULE_OPENER_RESUME: &str = "opener.resume";
+pub(crate) const RULE_URGE_REPEAT: &str = "urge.repeat";
+pub(crate) const RULE_DELEGATION_MICRO: &str = "delegation.micro";
+pub(crate) const RULE_DELEGATION_DISPATCH: &str = "delegation.dispatch";
+pub(crate) const RULE_REWORK_ITERATIVE: &str = "rework.iterative";
+pub(crate) const RULE_REWORK_ONESHOT: &str = "rework.oneshot";
+pub(crate) const RULE_RETRY_SELF: &str = "retry.self";
+pub(crate) const RULE_APPROVAL_SIGNAL_FRICTION: &str = "approval_signal.friction";
+pub(crate) const RULE_APPROVAL_SIGNAL_SMOOTH: &str = "approval_signal.smooth";
+pub(crate) const RULE_WORK_DOMAIN_CODE: &str = "work_domain.code";
+pub(crate) const RULE_WORK_DOMAIN_DOC: &str = "work_domain.doc";
+pub(crate) const RULE_WORK_DOMAIN_CONFIG: &str = "work_domain.config";
+pub(crate) const RULE_WORK_DOMAIN_IMAGE: &str = "work_domain.image";
+pub(crate) const RULE_MODEL_SWITCH_MULTI: &str = "model_switch.multi";
+pub(crate) const RULE_APPROVAL_STRONG_FAST: &str = "approval_strong.fast";
+pub(crate) const RULE_APPROVAL_STRONG_SLOW: &str = "approval_strong.slow";
+pub(crate) const RULE_SHELL_DEFAULT: &str = "shell.default";
+pub(crate) const RULE_TERMINAL_FAMILY: &str = "terminal.family";
+
+/// 静态模板话术常量（28 条）：挖掘器兜底产出与 legacy 回填表共用同一
+/// 字符串（单一真相源——措辞微调只改一处，回填比对自动跟随）。参数化
+/// 话术（route.pair / shell.default / terminal.family 三族含运行期填充值）
+/// 不在此列。
+const T_STAT_LANGUAGE: &str = "用户主要使用中文交流，回复使用中文";
+const T_STAT_BRIEF: &str = "用户消息简短直接，回复宜简洁、结论先行";
+const T_STAT_CORRECTION: &str = "用户常用纠正性反馈——动手前优先复述理解、小步确认方向";
+const T_STAT_LONGFORM: &str = "用户习惯长文详述需求——等完整输入再动手，不要按开头片段抢跑猜测";
+const T_STAT_MIXED: &str = "用户中英混用交流，技术术语保留英文原词，不必强行翻译";
+const T_RITUAL_PLAN: &str =
+    "计划式工作流：先制定计划，多轮回顾确认后转成步骤清单逐项执行，完成后测试验收";
+const T_TODO_TEST_LAST: &str = "任务清单常以测试/检查项收尾——完成主体步骤后主动做测试验证再交付";
+const T_ANTECEDENT_DIAG_FIRST: &str =
+    "使用集群/看板前先到集群诊断页执行一轮诊断，确认周边节点在线后再操作";
+const T_TODO_SEQ_DEPLOY: &str = "清单中部署/发布类步骤常收尾——主体完成后预留部署验证环节再交付";
+const T_OPENER_TASK: &str = "用户开场即直接派活，无需寒暄——可直接确认任务要点开工";
+const T_OPENER_GREETING: &str = "用户开场常寒暄铺垫——先简短回应问候再进入任务";
+const T_OPENER_ERROR_PASTE: &str = "用户常直接贴报错开场——先读报错定位问题，无需追问背景";
+const T_OPENER_RESUME: &str = "用户常接着之前的进度开场——先回顾上次进展再继续";
+const T_URGE_REPEAT: &str =
+    "用户等待约 2 分钟无响应会复述/催促——长操作中主动汇报进度，不要长时间静默";
+const T_DELEGATION_MICRO: &str =
+    "用户是微观管理型：工作过程中高频插入细节指令——小步推进、频繁汇报中间状态";
+const T_DELEGATION_DISPATCH: &str =
+    "用户是派单型：派活后长时间静默——自主推进、攒齐完整结果再一次性汇报";
+const T_REWORK_ITERATIVE: &str =
+    "用户偏迭代式返工：先快出第一版看完再回退精修——大胆快速出稿，减少事前反复确认";
+const T_REWORK_ONESHOT: &str =
+    "用户偏一次成型：重要改动先对齐方案再动手——动手前先给方案/计划征得确认";
+const T_RETRY_SELF: &str =
+    "用户遇到操作失败习惯立即自己重试——给出错时直接附解法与下一步动作，不要只陈述失败";
+const T_APPROVAL_SIGNAL_FRICTION: &str =
+    "审批交互常有拉锯（失败/重试占比高）——提交审批请求时附完整上下文与影响面，减少来回";
+const T_APPROVAL_SIGNAL_SMOOTH: &str =
+    "用户对常规操作的审批决策快而稳——审批卡说明保持精炼、要点先行即可";
+const T_WORK_DOMAIN_CODE: &str =
+    "用户的任务以代码工作为主——改动后主动跑构建/测试验证，不要停在「应该能编译」";
+const T_WORK_DOMAIN_DOC: &str = "用户的任务以文档写作为主——交付注意结构、措辞与可读性，产出即成品";
+const T_WORK_DOMAIN_CONFIG: &str =
+    "用户的任务以配置调优为主——改动前先核对现值，改动后说明生效条件与回滚方式";
+const T_WORK_DOMAIN_IMAGE: &str = "用户的任务以图像素材处理为主——产出注意尺寸、格式与命名规范";
+const T_MODEL_SWITCH_MULTI: &str = "用户会按任务切换模型——对模型能力差异敏感，注意不同模型的工具调用形态差异，不要假定单一模型持续可用";
+const T_APPROVAL_STRONG_FAST: &str =
+    "用户审批决策快而稳（平均秒级通过）——常规操作的审批请求把要点写清楚即可，不必前置反复确认";
+const T_APPROVAL_STRONG_SLOW: &str = "用户审批响应慢（常超一分钟才决策）——审批请求附完整 why/impact 与影响面，给足一次决策所需的上下文";
+
+/// 静态模板回填表（话术 AI 化批一 §4.4 静态家族轨道）：模板话术 → 规则
+/// id，共 28 条。加载侧（store::backfill_legacy_static_rules）对 rule_id
+/// 为空的 legacy 条目按归一（trim + 小写）逐字比对命中即补 id + auto=true
+/// （幂等，读路径不落盘）。参数化三族不在表内（含运行期填充值逐字比对
+/// 永不命中）——靠归并时 rule_id 采纳有机回填。
+const STATIC_TEMPLATE_RULES: &[(&str, &str)] = &[
+    (T_STAT_LANGUAGE, RULE_STAT_LANGUAGE),
+    (T_STAT_BRIEF, RULE_STAT_BRIEF),
+    (T_STAT_CORRECTION, RULE_STAT_CORRECTION),
+    (T_STAT_LONGFORM, RULE_STAT_LONGFORM),
+    (T_STAT_MIXED, RULE_STAT_MIXED),
+    (T_RITUAL_PLAN, RULE_RITUAL_PLAN),
+    (T_TODO_TEST_LAST, RULE_TODO_TEST_LAST),
+    (T_ANTECEDENT_DIAG_FIRST, RULE_ANTECEDENT_DIAG_FIRST),
+    (T_TODO_SEQ_DEPLOY, RULE_TODO_SEQ_DEPLOY),
+    (T_OPENER_TASK, RULE_OPENER_TASK),
+    (T_OPENER_GREETING, RULE_OPENER_GREETING),
+    (T_OPENER_ERROR_PASTE, RULE_OPENER_ERROR_PASTE),
+    (T_OPENER_RESUME, RULE_OPENER_RESUME),
+    (T_URGE_REPEAT, RULE_URGE_REPEAT),
+    (T_DELEGATION_MICRO, RULE_DELEGATION_MICRO),
+    (T_DELEGATION_DISPATCH, RULE_DELEGATION_DISPATCH),
+    (T_REWORK_ITERATIVE, RULE_REWORK_ITERATIVE),
+    (T_REWORK_ONESHOT, RULE_REWORK_ONESHOT),
+    (T_RETRY_SELF, RULE_RETRY_SELF),
+    (T_APPROVAL_SIGNAL_FRICTION, RULE_APPROVAL_SIGNAL_FRICTION),
+    (T_APPROVAL_SIGNAL_SMOOTH, RULE_APPROVAL_SIGNAL_SMOOTH),
+    (T_WORK_DOMAIN_CODE, RULE_WORK_DOMAIN_CODE),
+    (T_WORK_DOMAIN_DOC, RULE_WORK_DOMAIN_DOC),
+    (T_WORK_DOMAIN_CONFIG, RULE_WORK_DOMAIN_CONFIG),
+    (T_WORK_DOMAIN_IMAGE, RULE_WORK_DOMAIN_IMAGE),
+    (T_MODEL_SWITCH_MULTI, RULE_MODEL_SWITCH_MULTI),
+    (T_APPROVAL_STRONG_FAST, RULE_APPROVAL_STRONG_FAST),
+    (T_APPROVAL_STRONG_SLOW, RULE_APPROVAL_STRONG_SLOW),
+];
+
+/// 信号卡（话术 AI 化批一 §4.1）：挖掘器的产物从「终稿条目」降级为
+/// 「信号」——确定性触发逻辑（阈值/占比/次数）算出的结构化证据，措辞
+/// 由路由层决定（反思在场→进 prompt 由 LLM 措辞；否则 [`signal_to_entry`]
+/// 模板兜底落库）。内存型（不落盘不 serde）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SignalCard {
+    /// 稳定规则身份证（如 `stat.language` / `opener.task` / `shell.default`）。
+    pub rule_id: String,
+    /// 沿用现有 7 类（style/workflow/quality_bar/tool_preference/environment/trust/correction）。
+    pub category: String,
+    /// 现模板话术：兜底落库用 + 给反思 LLM 作参考。
+    pub fallback_statement: String,
+    /// 现公式原样。
+    pub confidence: f64,
+    pub hits: u32,
+    /// 现证据链原样。
+    pub evidence: Vec<String>,
+    /// 现步骤清单原样（模板含 steps 的条目；落库时过 sanitize_steps 清洗）。
+    pub steps: Vec<String>,
+}
+
+/// 信号卡构造便捷函数（挖掘器共用）：steps/evidence 缺省空，触发逻辑
+/// 算出后按需补齐。
+fn card(
+    rule_id: &'static str,
+    category: &str,
+    statement: impl Into<String>,
+    confidence: f64,
+    hits: u32,
+) -> SignalCard {
+    SignalCard {
+        rule_id: rule_id.to_string(),
+        category: category.to_string(),
+        fallback_statement: statement.into(),
+        confidence,
+        hits,
+        evidence: Vec::new(),
+        steps: Vec::new(),
+    }
+}
+
+/// legacy 条目静态回填查表（话术 AI 化批一 §4.4）：content 与模板表归一
+/// 比对（trim + 小写）命中 → 返回规则 id。参数化三族不在表内——靠归并时
+/// rule_id 采纳有机回填（挖掘器重触发按 content 命中 legacy 条目）。
+pub(crate) fn static_template_rule_id(content: &str) -> Option<&'static str> {
+    let norm = content.trim().to_lowercase();
+    STATIC_TEMPLATE_RULES
+        .iter()
+        .find(|(t, _)| t.trim().to_lowercase() == norm)
+        .map(|(_, rule)| *rule)
+}
+
+/// 兜底桥（话术 AI 化批一 §4.1）：信号卡 → 画像条目。无模型 / 反思未跑
+/// 路径的落库形态——模板话术 + 现公式置信度 + hits 原样；steps/evidence
+/// 在此过既有清洗（sanitize_steps / MAX_EVIDENCE 截断，与平移前同一时点），
+/// 仅多带 rule_id 身份证；auto=true（独立配额桶语义不变，G8）。
+pub(crate) fn signal_to_entry(card: &SignalCard, now: &str) -> HabitEntry {
+    let mut entry = HabitEntry::auto_entry(
+        &card.category,
+        &card.fallback_statement,
+        card.confidence,
+        card.hits,
+        now,
+    );
+    entry.rule_id = card.rule_id.clone();
+    entry.steps = HabitEntry::sanitize_steps(&card.steps);
+    entry.evidence = card
+        .evidence
+        .iter()
+        .take(super::store::MAX_EVIDENCE)
+        .cloned()
+        .collect();
+    entry
+}
+
 /// 统计通道候选（v1 三条规则，行为与 nemesis-agent/user_profile.rs 完全
-/// 一致；条目改为 [`HabitEntry::auto_entry`] 构造——auto=true 固定产物，
-/// 进独立配额桶不再与反思条目挤名额，G8）。
+/// 一致；产物改为 [`SignalCard`]——确定性触发逻辑原样，模板话术落库由
+/// 兜底桥 [`signal_to_entry`] 承担，auto=true 独立配额桶语义不变，G8）。
 ///
 /// 输入 = 证据窗内的用户消息列表（仅 enabled_at 之后的数据由调用方过滤）。
 /// 规则：
@@ -55,7 +256,7 @@ use super::store::HabitEntry;
 /// - 简洁：平均用户长度 <40 字 → 简洁交互习惯；
 /// - 纠正：纠正前缀（不对/不，/我意思是/别/不要）频次 ≥3 →
 ///   「先确认理解再动手」习惯。
-pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
+pub(crate) fn stat_candidates(user_messages: &[String]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     let n = user_messages.len();
     if n == 0 {
@@ -75,12 +276,12 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
             .count();
         let ratio = cjk as f64 / total_chars as f64;
         if n >= 10 && ratio > 0.7 {
-            out.push(HabitEntry::auto_entry(
+            out.push(card(
+                RULE_STAT_LANGUAGE,
                 "style",
-                "用户主要使用中文交流，回复使用中文",
+                T_STAT_LANGUAGE,
                 (0.5 + ratio * 0.4).min(0.95),
                 n as u32,
-                now,
             ));
         }
     }
@@ -88,13 +289,7 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
     // 简洁。
     let avg_len = total_chars as f64 / n as f64;
     if n >= 10 && avg_len < 40.0 {
-        out.push(HabitEntry::auto_entry(
-            "style",
-            "用户消息简短直接，回复宜简洁、结论先行",
-            0.7,
-            n as u32,
-            now,
-        ));
+        out.push(card(RULE_STAT_BRIEF, "style", T_STAT_BRIEF, 0.7, n as u32));
     }
 
     // 纠正前缀。
@@ -107,12 +302,12 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
         })
         .count();
     if corrections >= 3 {
-        out.push(HabitEntry::auto_entry(
+        out.push(card(
+            RULE_STAT_CORRECTION,
             "correction",
-            "用户常用纠正性反馈——动手前优先复述理解、小步确认方向",
+            T_STAT_CORRECTION,
             (0.5 + corrections as f64 * 0.1).min(0.9),
             corrections as u32,
-            now,
         ));
     }
 
@@ -121,12 +316,12 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
     // 姿态，不是 agent 错误归纳（主语=用户）。
     const LONGFORM_AVG_CHARS: f64 = 200.0;
     if n >= 10 && avg_len >= LONGFORM_AVG_CHARS {
-        out.push(HabitEntry::auto_entry(
+        out.push(card(
+            RULE_STAT_LONGFORM,
             "style",
-            "用户习惯长文详述需求——等完整输入再动手，不要按开头片段抢跑猜测",
+            T_STAT_LONGFORM,
             0.72,
             n as u32,
-            now,
         ));
     }
 
@@ -145,12 +340,12 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
     if n >= MIXED_TERM_MIN_MSGS {
         let ratio = mixed as f64 / n as f64;
         if ratio >= MIXED_TERM_RATIO {
-            out.push(HabitEntry::auto_entry(
+            out.push(card(
+                RULE_STAT_MIXED,
                 "style",
-                "用户中英混用交流，技术术语保留英文原词，不必强行翻译",
+                T_STAT_MIXED,
                 (0.5 + ratio * 0.4).min(0.9),
                 mixed as u32,
-                now,
             ));
         }
     }
@@ -210,13 +405,14 @@ fn session_ritual_matched(messages_in_order: &[&str]) -> bool {
 
 /// 仪式序列候选：按会话分组用户消息（时间升序由采集层保证），每会话过
 /// [`session_ritual_matched`] 状态机；**≥2 个会话**命中完整链路 → 一条
-/// workflow 条目（多会话重现=稳定习惯；单会话可能是任务偶然形态，不上榜）。
+/// workflow 信号卡（[`RULE_RITUAL_PLAN`]；多会话重现=稳定习惯；单会话可能
+/// 是任务偶然形态，不上榜）。
 ///
 /// steps = 四阶段步骤清单（结构化注入面：模型读到的是「先计划、多轮
 /// 确认、清单执行、测试收尾」的可执行流程，不是一句压扁的陈述）；evidence
 /// = 命中的会话名（溯源）；confidence 随命中会话数爬升（2 会话=0.75，
 /// 过 0.7 注入闸）。
-pub fn ritual_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
+pub(crate) fn ritual_candidates(rows: &[DialogueRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     // 按会话分组，组内保序（rows 已时间升序；BTreeMap 键排序只为稳定遍历）。
     let mut sessions: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
@@ -237,25 +433,21 @@ pub fn ritual_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
         return out;
     }
     let n = matched.len();
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_RITUAL_PLAN,
         "workflow",
-        "计划式工作流：先制定计划，多轮回顾确认后转成步骤清单逐项执行，完成后测试验收",
+        T_RITUAL_PLAN,
         (0.65 + 0.05 * n.min(4) as f64).min(0.85),
         n as u32,
-        now,
     );
-    entry.steps = HabitEntry::sanitize_steps(&[
+    sig.steps = vec![
         "先制定计划".to_string(),
         "回顾并确认计划正确性（多轮）".to_string(),
         "将计划转化为步骤清单/复选框，完成一项标记一项".to_string(),
         "全部完成后做测试验收".to_string(),
-    ]);
-    entry.evidence = matched
-        .iter()
-        .take(super::store::MAX_EVIDENCE)
-        .map(|s| s.to_string())
-        .collect();
-    out.push(entry);
+    ];
+    sig.evidence = matched.iter().map(|s| s.to_string()).collect();
+    out.push(sig);
     out
 }
 
@@ -285,10 +477,11 @@ fn snapshot_test_last(s: &TodoSnapshot) -> bool {
     s.items.iter().rev().take(2).all(|(c, _)| is_test_step(c))
 }
 
-/// todo 收尾模式候选：占比 ≥0.7 × ≥2 个快照 → quality_bar 条目。
-/// steps = 各命中快照的收尾测试项内容（去重清洗——模型读到的是用户真实
-/// 的验收项措辞，不是抽象描述）；evidence = 命中的 todo 文件名。
-pub fn todo_candidates(snapshots: &[TodoSnapshot], now: &str) -> Vec<HabitEntry> {
+/// todo 收尾模式候选：占比 ≥0.7 × ≥2 个快照 → quality_bar 信号卡
+/// （[`RULE_TODO_TEST_LAST`]）。steps = 各命中快照的收尾测试项内容（去重
+/// ——模型读到的是用户真实的验收项措辞，不是抽象描述，落库时经
+/// [`signal_to_entry`] 清洗）；evidence = 命中的 todo 文件名。
+pub(crate) fn todo_candidates(snapshots: &[TodoSnapshot]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     if snapshots.len() < TODO_MIN_SESSIONS {
         return out;
@@ -302,12 +495,12 @@ pub fn todo_candidates(snapshots: &[TodoSnapshot], now: &str) -> Vec<HabitEntry>
         return out;
     }
     let n = hit.len();
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_TODO_TEST_LAST,
         "quality_bar",
-        "任务清单常以测试/检查项收尾——完成主体步骤后主动做测试验证再交付",
+        T_TODO_TEST_LAST,
         (0.65 + 0.05 * n.min(4) as f64).min(0.85),
         n as u32,
-        now,
     );
     let mut steps: Vec<String> = Vec::new();
     for s in &hit {
@@ -317,13 +510,9 @@ pub fn todo_candidates(snapshots: &[TodoSnapshot], now: &str) -> Vec<HabitEntry>
             }
         }
     }
-    entry.steps = HabitEntry::sanitize_steps(&steps);
-    entry.evidence = hit
-        .iter()
-        .take(super::store::MAX_EVIDENCE)
-        .map(|s| s.file.clone())
-        .collect();
-    out.push(entry);
+    sig.steps = steps;
+    sig.evidence = hit.iter().map(|s| s.file.clone()).collect();
+    out.push(sig);
     out
 }
 
@@ -380,8 +569,8 @@ pub fn read_usage_rows(workspace: &std::path::Path) -> Vec<UsageRow> {
 ///   集群诊断检查」（跨日重现 = 稳定行为习惯；单日可能是一时兴起）。
 ///
 /// steps 是可执行的动作对（先诊断、确认在线、再操作）；evidence =
-/// occurrence 日期（UTC YYYY-MM-DD，截 [`MAX_EVIDENCE`]）。
-pub fn antecedent_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntry> {
+/// occurrence 日期（UTC YYYY-MM-DD，落库时截 [`MAX_EVIDENCE`]）。
+pub(crate) fn antecedent_candidates(rows: &[UsageRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     let mut pending_diag: Option<i64> = None;
     let mut dates: Vec<String> = Vec::new();
@@ -413,20 +602,20 @@ pub fn antecedent_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntry> {
         return out;
     }
     let n = dates.len();
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_ANTECEDENT_DIAG_FIRST,
         "workflow",
-        "使用集群/看板前先到集群诊断页执行一轮诊断，确认周边节点在线后再操作",
+        T_ANTECEDENT_DIAG_FIRST,
         (0.65 + 0.05 * n.min(4) as f64).min(0.85),
         n as u32,
-        now,
     );
-    entry.steps = HabitEntry::sanitize_steps(&[
+    sig.steps = vec![
         "操作前先打开集群诊断页执行一轮诊断".to_string(),
         "确认周边节点在线/状态正常".to_string(),
         "再进行集群或看板操作".to_string(),
-    ]);
-    entry.evidence = dates.into_iter().take(super::store::MAX_EVIDENCE).collect();
-    out.push(entry);
+    ];
+    sig.evidence = dates;
+    out.push(sig);
     out
 }
 
@@ -440,9 +629,10 @@ const ROUTE_MAX_ENTRIES: usize = 2;
 /// 页面足迹链候选：`module=="route"` 遥测行（Dashboard 侧栏导航打点）按
 /// UTC 日分组，组内**相邻去重**成页面序列，序列的相邻对 `(from, to)` 按
 /// 出现日期去重计数；同一转移跨 ≥[`ROUTE_MIN_DAYS`] 个不同日期 → workflow
-/// 条目「先 X 再 Y」（steps=两步页面序列，evidence=日期）。保守阈值：只挖
-/// 相邻对不挖长链；产出条目封顶（日期多者优先）。
-pub fn route_chain_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntry> {
+/// 信号卡「先 X 再 Y」（参数化规则 [`RULE_ROUTE_PAIR`]；steps=两步页面
+/// 序列，evidence=日期）。保守阈值：只挖相邻对不挖长链；产出封顶
+/// （日期多者优先）。
+pub(crate) fn route_chain_candidates(rows: &[UsageRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     // 按日切页面序列（rows 时间升序；组内相邻去重）。
     let mut days: Vec<(String, Vec<String>)> = Vec::new();
@@ -484,17 +674,16 @@ pub fn route_chain_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntry> {
     hits.sort_by_key(|(_, dates)| std::cmp::Reverse(dates.len()));
     for ((from, to), dates) in hits.into_iter().take(ROUTE_MAX_ENTRIES) {
         let n = dates.len();
-        let mut entry = HabitEntry::auto_entry(
+        let mut sig = card(
+            RULE_ROUTE_PAIR,
             "workflow",
-            &format!("导航习惯：常先访问 {from} 页再进入 {to} 页"),
+            format!("导航习惯：常先访问 {from} 页再进入 {to} 页"),
             (0.65 + 0.05 * n.min(4) as f64).min(0.85),
             n as u32,
-            now,
         );
-        entry.steps =
-            HabitEntry::sanitize_steps(&[format!("先访问 {from} 页"), format!("再进入 {to} 页")]);
-        entry.evidence = dates.into_iter().take(super::store::MAX_EVIDENCE).collect();
-        out.push(entry);
+        sig.steps = vec![format!("先访问 {from} 页"), format!("再进入 {to} 页")];
+        sig.evidence = dates;
+        out.push(sig);
     }
     out
 }
@@ -565,9 +754,10 @@ fn has_any_kw(lower: &str, kws: &[&str]) -> bool {
 /// todo 步骤类别序列候选：「部署/发布」类步骤常收尾——在含部署类步骤且
 /// ≥[`SEQ_DEPLOY_MIN_STEPS`] 步的快照里，「部署步位于最后两步」的占比
 /// ≥[`SEQ_DEPLOY_RATIO`] 且快照数 ≥[`SEQ_DEPLOY_MIN_SNAPSHOTS`] →
-/// quality_bar 条目（交付序列里部署/发布环节固定殿后）。steps = 命中快照
-/// 的部署步原文（去重清洗）；evidence = 快照文件名。
-pub fn todo_sequence_candidates(snapshots: &[TodoSnapshot], now: &str) -> Vec<HabitEntry> {
+/// quality_bar 信号卡（[`RULE_TODO_SEQ_DEPLOY`]，交付序列里部署/发布环节
+/// 固定殿后）。steps = 命中快照的部署步原文（去重，落库时清洗）；
+/// evidence = 快照文件名。
+pub(crate) fn todo_sequence_candidates(snapshots: &[TodoSnapshot]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     let mut with_deploy = 0usize;
     let mut hit: Vec<&TodoSnapshot> = Vec::new();
@@ -614,20 +804,16 @@ pub fn todo_sequence_candidates(snapshots: &[TodoSnapshot], now: &str) -> Vec<Ha
         return out;
     }
     let n = hit.len();
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_TODO_SEQ_DEPLOY,
         "quality_bar",
-        "清单中部署/发布类步骤常收尾——主体完成后预留部署验证环节再交付",
+        T_TODO_SEQ_DEPLOY,
         (0.65 + 0.05 * n.min(4) as f64).min(0.85),
         n as u32,
-        now,
     );
-    entry.steps = HabitEntry::sanitize_steps(&deploy_steps);
-    entry.evidence = hit
-        .iter()
-        .take(super::store::MAX_EVIDENCE)
-        .map(|s| s.file.clone())
-        .collect();
-    out.push(entry);
+    sig.steps = deploy_steps;
+    sig.evidence = hit.iter().map(|s| s.file.clone()).collect();
+    out.push(sig);
     out
 }
 
@@ -692,18 +878,27 @@ fn classify_opener(content: &str) -> OpenerKind {
 
 fn opener_content(kind: OpenerKind) -> &'static str {
     match kind {
-        OpenerKind::Task => "用户开场即直接派活，无需寒暄——可直接确认任务要点开工",
-        OpenerKind::Greeting => "用户开场常寒暄铺垫——先简短回应问候再进入任务",
-        OpenerKind::ErrorPaste => "用户常直接贴报错开场——先读报错定位问题，无需追问背景",
-        OpenerKind::Resume => "用户常接着之前的进度开场——先回顾上次进展再继续",
+        OpenerKind::Task => T_OPENER_TASK,
+        OpenerKind::Greeting => T_OPENER_GREETING,
+        OpenerKind::ErrorPaste => T_OPENER_ERROR_PASTE,
+        OpenerKind::Resume => T_OPENER_RESUME,
+    }
+}
+
+fn opener_rule(kind: OpenerKind) -> &'static str {
+    match kind {
+        OpenerKind::Task => RULE_OPENER_TASK,
+        OpenerKind::Greeting => RULE_OPENER_GREETING,
+        OpenerKind::ErrorPaste => RULE_OPENER_ERROR_PASTE,
+        OpenerKind::Resume => RULE_OPENER_RESUME,
     }
 }
 
 /// 开场白模式候选：每会话取首条 user 消息分类（rows 时间升序由采集层保证，
 /// 组内同毫秒保持文件/行序）；会话数 ≥[`OPENER_MIN_SESSIONS`] 且主流形态
-/// 占比 ≥[`OPENER_DOMINANCE`] → style 条目（主流形态的配合姿态一句话）。
-/// evidence = 主流形态命中的会话名。
-pub fn opener_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
+/// 占比 ≥[`OPENER_DOMINANCE`] → style 信号卡（主流形态的配合姿态一句话，
+/// 规则 id 按形态经 [`opener_rule`] 分派）。evidence = 主流形态命中的会话名。
+pub(crate) fn opener_candidates(rows: &[DialogueRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     let mut firsts: std::collections::BTreeMap<&str, (&str, OpenerKind)> = Default::default();
     for r in rows {
@@ -733,19 +928,15 @@ pub fn opener_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
         return out;
     }
     let n = sessions.len();
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        opener_rule(dominant),
         "style",
         opener_content(dominant),
         (0.65 + 0.05 * n.min(4) as f64).min(0.85),
         n as u32,
-        now,
     );
-    entry.evidence = sessions
-        .into_iter()
-        .take(super::store::MAX_EVIDENCE)
-        .map(|s| s.to_string())
-        .collect();
-    out.push(entry);
+    sig.evidence = sessions.into_iter().map(|s| s.to_string()).collect();
+    out.push(sig);
     out
 }
 
@@ -765,9 +956,10 @@ fn norm_urge(s: &str) -> String {
 
 /// 催促/复述候选：user 消息时间升序扫描——同归一文本、间隔 ≤2min 的连发
 /// 构成一簇，簇内 ≥[`URGE_MIN_SENDS`] 条 = 一次催促；催促簇（按归一文本
-/// 去重）≥[`URGE_MIN_BURSTS`] → workflow 条目「等待约 2 分钟会复述催促」
-/// （agent 侧配合姿态：长操作主动汇报进度）。evidence = 簇首条内容截断。
-pub fn urge_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
+/// 去重）≥[`URGE_MIN_BURSTS`] → workflow 信号卡（[`RULE_URGE_REPEAT`]：
+/// 「等待约 2 分钟会复述催促」，agent 侧配合姿态 = 长操作主动汇报进度）。
+/// evidence = 簇首条内容截断。
+pub(crate) fn urge_candidates(rows: &[DialogueRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     // 单遍状态机：同归一文本、间隔 ≤2min 的连发构成一簇；簇闭合时达
     // URGE_MIN_SENDS 记一次催促（按归一文本聚合簇数/总发送数/簇首条）。
@@ -820,19 +1012,18 @@ pub fn urge_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
     }
     let total_sends: usize = qualified.iter().map(|(_, (_, _, s))| s).sum();
     let n = qualified.len();
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_URGE_REPEAT,
         "workflow",
-        "用户等待约 2 分钟无响应会复述/催促——长操作中主动汇报进度，不要长时间静默",
+        T_URGE_REPEAT,
         (0.65 + 0.05 * n.min(4) as f64).min(0.85),
         total_sends as u32,
-        now,
     );
-    entry.evidence = qualified
+    sig.evidence = qualified
         .iter()
-        .take(super::store::MAX_EVIDENCE)
         .map(|(_, (_, first, _))| first.clone())
         .collect();
-    out.push(entry);
+    out.push(sig);
     out
 }
 
@@ -860,7 +1051,7 @@ const DISPATCH_MIN_SESSIONS: usize = 2;
 /// - **派单型**：静默段（两次 user 之间 >10min 且中间有 assistant 活动）
 ///   总数 ≥4 且跨 ≥2 会话，且零微观会话 → agent 自主推进攒大结果再汇报；
 /// - 两态并存（既常插话又常长沉默）= 风格不明，不上榜（宁缺勿滥）。
-pub fn delegation_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
+pub(crate) fn delegation_candidates(rows: &[DialogueRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     let mut sessions: std::collections::BTreeMap<&str, Vec<&DialogueRow>> = Default::default();
     for r in rows {
@@ -909,37 +1100,32 @@ pub fn delegation_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry>
 
     if micro_sessions.len() >= MICRO_MIN_SESSIONS && total_stretches < 2 {
         let n = micro_sessions.len();
-        let mut entry = HabitEntry::auto_entry(
+        let mut sig = card(
+            RULE_DELEGATION_MICRO,
             "workflow",
-            "用户是微观管理型：工作过程中高频插入细节指令——小步推进、频繁汇报中间状态",
+            T_DELEGATION_MICRO,
             (0.65 + 0.05 * n.min(4) as f64).min(0.85),
             n as u32,
-            now,
         );
-        entry.evidence = micro_sessions
-            .into_iter()
-            .take(super::store::MAX_EVIDENCE)
-            .map(|s| s.to_string())
-            .collect();
-        out.push(entry);
+        sig.evidence = micro_sessions.into_iter().map(|s| s.to_string()).collect();
+        out.push(sig);
     } else if micro_sessions.is_empty()
         && total_stretches >= DISPATCH_MIN_STRETCHES
         && stretch_sessions.len() >= DISPATCH_MIN_SESSIONS
     {
         let n = total_stretches;
-        let mut entry = HabitEntry::auto_entry(
+        let mut sig = card(
+            RULE_DELEGATION_DISPATCH,
             "workflow",
-            "用户是派单型：派活后长时间静默——自主推进、攒齐完整结果再一次性汇报",
+            T_DELEGATION_DISPATCH,
             (0.65 + 0.05 * n.min(4) as f64).min(0.85),
             n as u32,
-            now,
         );
-        entry.evidence = stretch_sessions
+        sig.evidence = stretch_sessions
             .into_iter()
-            .take(super::store::MAX_EVIDENCE)
             .map(|s| s.to_string())
             .collect();
-        out.push(entry);
+        out.push(sig);
     }
     out
 }
@@ -960,28 +1146,28 @@ const ONESHOT_MIN_SESSIONS: usize = 6;
 ///
 /// 输入由编排层供给：rewind 计数 = events.jsonl 尾部 rewind 行；会话数 =
 /// 证据窗内出现过的会话数。
-pub fn rework_candidates(rewind_count: usize, session_count: usize, now: &str) -> Vec<HabitEntry> {
+pub(crate) fn rework_candidates(rewind_count: usize, session_count: usize) -> Vec<SignalCard> {
     let mut out = Vec::new();
     if rewind_count >= REWORK_MIN_REWINDS {
-        let mut entry = HabitEntry::auto_entry(
+        let mut sig = card(
+            RULE_REWORK_ITERATIVE,
             "workflow",
-            "用户偏迭代式返工：先快出第一版看完再回退精修——大胆快速出稿，减少事前反复确认",
+            T_REWORK_ITERATIVE,
             (0.65 + 0.05 * rewind_count.min(4) as f64).min(0.85),
             rewind_count as u32,
-            now,
         );
-        entry.evidence = vec![format!("rewind×{rewind_count}")];
-        out.push(entry);
+        sig.evidence = vec![format!("rewind×{rewind_count}")];
+        out.push(sig);
     } else if rewind_count == 0 && session_count >= ONESHOT_MIN_SESSIONS {
-        let mut entry = HabitEntry::auto_entry(
+        let mut sig = card(
+            RULE_REWORK_ONESHOT,
             "workflow",
-            "用户偏一次成型：重要改动先对齐方案再动手——动手前先给方案/计划征得确认",
+            T_REWORK_ONESHOT,
             0.72,
             session_count as u32,
-            now,
         );
-        entry.evidence = vec![format!("sessions×{session_count} 无回退")];
-        out.push(entry);
+        sig.evidence = vec![format!("sessions×{session_count} 无回退")];
+        out.push(sig);
     }
     out
 }
@@ -996,9 +1182,9 @@ const RETRY_MIN_DAYS: usize = 3;
 /// 障碍处置顺序候选（失败重试的**用户读法**）：遥测行时间升序扫描——
 /// `ok=false` 行后 [`RETRY_WINDOW_MS`] 内同 `(module, cmd)` 成功重发 → 记
 /// 一次「自己重试解决」；跨 ≥[`RETRY_MIN_DAYS`] 个不同日期重现 → workflow
-/// 条目（用户习惯自己折腾几次才求助——agent 看到报错直接给解法与下一步，
-/// 别只陈述失败）。evidence = 日期。
-pub fn retry_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntry> {
+/// 信号卡（[`RULE_RETRY_SELF`]：用户习惯自己折腾几次才求助——agent 看到
+/// 报错直接给解法与下一步，别只陈述失败）。evidence = 日期。
+pub(crate) fn retry_candidates(rows: &[UsageRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     let mut dates: Vec<String> = Vec::new();
     for (i, r) in rows.iter().enumerate() {
@@ -1024,15 +1210,15 @@ pub fn retry_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntry> {
         return out;
     }
     let n = dates.len();
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_RETRY_SELF,
         "workflow",
-        "用户遇到操作失败习惯立即自己重试——给出错时直接附解法与下一步动作，不要只陈述失败",
+        T_RETRY_SELF,
         (0.65 + 0.05 * n.min(4) as f64).min(0.85),
         n as u32,
-        now,
     );
-    entry.evidence = dates.into_iter().take(super::store::MAX_EVIDENCE).collect();
-    out.push(entry);
+    sig.evidence = dates;
+    out.push(sig);
     out
 }
 
@@ -1051,7 +1237,7 @@ const APPROVAL_SMOOTH_RATIO: f64 = 0.1;
 /// - 失败占比 ≤0.1 → 「审批决策快而稳——审批卡说明保持精炼、要点先行」。
 ///
 /// 中间带（0.1~0.3）不上榜。evidence = ok/fail 计数（溯源到数据面本身）。
-pub fn approval_signal_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntry> {
+pub(crate) fn approval_signal_candidates(rows: &[UsageRow]) -> Vec<SignalCard> {
     let mut out = Vec::new();
     let responds = rows
         .iter()
@@ -1062,31 +1248,33 @@ pub fn approval_signal_candidates(rows: &[UsageRow], now: &str) -> Vec<HabitEntr
     }
     let fails = responds.filter(|r| !r.ok).count();
     let ratio = fails as f64 / total as f64;
-    let (content, category) = if ratio >= APPROVAL_FRICTION_RATIO {
+    let (rule, content, category) = if ratio >= APPROVAL_FRICTION_RATIO {
         (
-            "审批交互常有拉锯（失败/重试占比高）——提交审批请求时附完整上下文与影响面，减少来回",
+            RULE_APPROVAL_SIGNAL_FRICTION,
+            T_APPROVAL_SIGNAL_FRICTION,
             "workflow",
         )
     } else if ratio <= APPROVAL_SMOOTH_RATIO {
         (
-            "用户对常规操作的审批决策快而稳——审批卡说明保持精炼、要点先行即可",
+            RULE_APPROVAL_SIGNAL_SMOOTH,
+            T_APPROVAL_SIGNAL_SMOOTH,
             "trust",
         )
     } else {
         return out;
     };
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        rule,
         category,
         content,
         (0.65 + 0.05 * total.min(4) as f64).min(0.85),
         total as u32,
-        now,
     );
-    entry.evidence = vec![
+    sig.evidence = vec![
         format!("respond ok={}", total - fails),
         format!("respond fail={fails}"),
     ];
-    out.push(entry);
+    out.push(sig);
     out
 }
 
@@ -1100,7 +1288,7 @@ const WORK_DOMAIN_DOMINANCE: f64 = 0.6;
 /// `deliverables` 路径扩展名分类，采集层投影）占比统计。种类分布一超
 /// 阈值 → 工作域条目（workflow 类——指导交付形态）。`other` 不出条目
 /// （未知扩展名的「主导」没有可执行含义，宁缺勿滥）。
-pub fn work_domain_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
+pub(crate) fn work_domain_candidates(rows: &[DialogueRow]) -> Vec<SignalCard> {
     let touched: Vec<&DialogueRow> = rows
         .iter()
         .filter(|r| r.role == "assistant" && !r.file_kinds.is_empty())
@@ -1125,22 +1313,22 @@ pub fn work_domain_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry
     if ratio < WORK_DOMAIN_DOMINANCE {
         return Vec::new();
     }
-    let content = match dominant {
-        "code" => "用户的任务以代码工作为主——改动后主动跑构建/测试验证，不要停在「应该能编译」",
-        "doc" => "用户的任务以文档写作为主——交付注意结构、措辞与可读性，产出即成品",
-        "config" => "用户的任务以配置调优为主——改动前先核对现值，改动后说明生效条件与回滚方式",
-        "image" => "用户的任务以图像素材处理为主——产出注意尺寸、格式与命名规范",
+    let (rule, content) = match dominant {
+        "code" => (RULE_WORK_DOMAIN_CODE, T_WORK_DOMAIN_CODE),
+        "doc" => (RULE_WORK_DOMAIN_DOC, T_WORK_DOMAIN_DOC),
+        "config" => (RULE_WORK_DOMAIN_CONFIG, T_WORK_DOMAIN_CONFIG),
+        "image" => (RULE_WORK_DOMAIN_IMAGE, T_WORK_DOMAIN_IMAGE),
         _ => return Vec::new(),
     };
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        rule,
         "workflow",
         content,
         (0.65 + 0.05 * touched.len().min(4) as f64).min(0.85),
         count as u32,
-        now,
     );
-    entry.evidence = vec![format!("files {dominant}={count}/{}", touched.len())];
-    vec![entry]
+    sig.evidence = vec![format!("files {dominant}={count}/{}", touched.len())];
+    vec![sig]
 }
 
 /// 模型切换阈值：证据窗内切换次数下限（偶发两次是试用，三次起是习惯）。
@@ -1151,7 +1339,7 @@ const MODEL_SWITCH_MIN: usize = 3;
 /// tool_preference 条目（「按任务换模型」是 deliberate 行为——多模型
 /// 部署点的真实信号；替代原计划的 request_logs 接入，chat_log 每行
 /// 自带 model 徽标，同一信号零新采集面）。
-pub fn model_switch_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntry> {
+pub(crate) fn model_switch_candidates(rows: &[DialogueRow]) -> Vec<SignalCard> {
     let mut switches = 0usize;
     let mut slash_switches = 0usize;
     let mut last_model = String::new();
@@ -1170,18 +1358,18 @@ pub fn model_switch_candidates(rows: &[DialogueRow], now: &str) -> Vec<HabitEntr
     if total < MODEL_SWITCH_MIN {
         return Vec::new();
     }
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_MODEL_SWITCH_MULTI,
         "tool_preference",
-        "用户会按任务切换模型——对模型能力差异敏感，注意不同模型的工具调用形态差异，不要假定单一模型持续可用",
+        T_MODEL_SWITCH_MULTI,
         (0.65 + 0.05 * total.min(4) as f64).min(0.85),
         total as u32,
-        now,
     );
-    entry.evidence = vec![
+    sig.evidence = vec![
         format!("model changes={switches}"),
         format!("/model={slash_switches}"),
     ];
-    vec![entry]
+    vec![sig]
 }
 
 /// 审批强信号阈值：signals.jsonl 审批卡样本下限 + 决策耗时两档
@@ -1195,7 +1383,7 @@ const APPROVAL_SLOW_MS: u64 = 60_000;
 /// 落盘）。**只加观测读法，审批语义一个字不改**——条目只影响注入面
 /// 的建议文本。耗时取**批准卡**平均（拒绝可能是谨慎速拒，不混入
 /// 「决策快」读法）。
-pub fn approval_strong_candidates(signals: &[serde_json::Value], now: &str) -> Vec<HabitEntry> {
+pub(crate) fn approval_strong_candidates(signals: &[serde_json::Value]) -> Vec<SignalCard> {
     let approved: Vec<u64> = signals
         .iter()
         .filter(|s| s.get("kind").and_then(|k| k.as_str()) == Some("approval"))
@@ -1209,28 +1397,26 @@ pub fn approval_strong_candidates(signals: &[serde_json::Value], now: &str) -> V
         return Vec::new();
     }
     let avg = approved.iter().sum::<u64>() / approved.len() as u64;
-    let (content, category) = if avg <= APPROVAL_FAST_MS {
-        (
-            "用户审批决策快而稳（平均秒级通过）——常规操作的审批请求把要点写清楚即可，不必前置反复确认",
-            "trust",
-        )
+    let (rule, content, category) = if avg <= APPROVAL_FAST_MS {
+        (RULE_APPROVAL_STRONG_FAST, T_APPROVAL_STRONG_FAST, "trust")
     } else if avg >= APPROVAL_SLOW_MS {
         (
-            "用户审批响应慢（常超一分钟才决策）——审批请求附完整 why/impact 与影响面，给足一次决策所需的上下文",
+            RULE_APPROVAL_STRONG_SLOW,
+            T_APPROVAL_STRONG_SLOW,
             "workflow",
         )
     } else {
         return Vec::new();
     };
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        rule,
         category,
         content,
         (0.65 + 0.05 * approved.len().min(4) as f64).min(0.85),
         approved.len() as u32,
-        now,
     );
-    entry.evidence = vec![format!("cards={}", approved.len()), format!("avg_ms={avg}")];
-    vec![entry]
+    sig.evidence = vec![format!("cards={}", approved.len()), format!("avg_ms={avg}")];
+    vec![sig]
 }
 
 // ---------- 终端会话挖掘（2026-11-24 T 批） ----------
@@ -1265,12 +1451,11 @@ fn first_token(line: &str) -> Option<&str> {
 }
 
 /// shell 偏好挖掘（T 批）：≥3 个用过终端的会话且主导 shell 占比 ≥70%
-/// → environment 条目（「终端默认用 pwsh」）。缺 `# shell:` 头声明的
-/// 会话不参与占比分母（未知 shell 无读法）。
-pub fn shell_preference_candidates(
+/// → environment 信号卡（参数化规则 [`RULE_SHELL_DEFAULT`]：「终端默认用
+/// pwsh」）。缺 `# shell:` 头声明的会话不参与占比分母（未知 shell 无读法）。
+pub(crate) fn shell_preference_candidates(
     sessions: &[super::collection::TerminalSession],
-    now: &str,
-) -> Vec<HabitEntry> {
+) -> Vec<SignalCard> {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut known = 0usize;
     for s in sessions {
@@ -1290,24 +1475,24 @@ pub fn shell_preference_candidates(
     if ratio < SHELL_PREF_DOMINANT_RATIO {
         return Vec::new();
     }
-    let mut entry = HabitEntry::auto_entry(
+    let mut sig = card(
+        RULE_SHELL_DEFAULT,
         "environment",
-        &format!("用户终端默认用 {shell}——环境/安装类命令与说明按 {shell} 语法给出"),
+        format!("用户终端默认用 {shell}——环境/安装类命令与说明按 {shell} 语法给出"),
         (0.6 + ratio * 0.2).min(0.85),
         *cnt as u32,
-        now,
     );
-    entry.evidence = vec![format!("sessions={known}"), format!("ratio={ratio:.2}")];
-    vec![entry]
+    sig.evidence = vec![format!("sessions={known}"), format!("ratio={ratio:.2}")];
+    vec![sig]
 }
 
 /// 常用命令族挖掘（T 批）：首 token 总次数 ≥8 且跨越 ≥3 个会话且不在
-/// 噪声表 → tool_preference 条目 top-3（按次数降序；并列按名字典序——
-/// 纯函数确定性）。**参数不采集**（敏感面零暴露）。
-pub fn terminal_command_candidates(
+/// 噪声表 → tool_preference 信号卡 top-3（参数化规则
+/// [`RULE_TERMINAL_FAMILY`]；按次数降序；并列按名字典序——纯函数确定性）。
+/// **参数不采集**（敏感面零暴露）。
+pub(crate) fn terminal_command_candidates(
     sessions: &[super::collection::TerminalSession],
-    now: &str,
-) -> Vec<HabitEntry> {
+) -> Vec<SignalCard> {
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut session_spread: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
@@ -1343,18 +1528,18 @@ pub fn terminal_command_candidates(
     }
     let mut out = Vec::new();
     for (cmd, total, spread) in qualified.into_iter().take(CMD_FAMILY_TOP_K) {
-        let mut entry = HabitEntry::auto_entry(
+        let mut sig = card(
+            RULE_TERMINAL_FAMILY,
             "tool_preference",
-            &format!("用户终端常用 {cmd}——涉及该工具的任务优先考虑 {cmd} 相关方案"),
+            format!("用户终端常用 {cmd}——涉及该工具的任务优先考虑 {cmd} 相关方案"),
             // 置信度 [0.7, 0.8]：基线钉在阈值 CONFIDENCE_THRESHOLD=0.7
             //（复查 2026-11-24——原 0.55 基线在 total<18 时会发出低于阈值
             // 的候选，靠 sweep_once 收口闸兜底；公式自身也应达标）。
             (0.7 + (total.min(30) as f64 / 30.0) * 0.1).min(0.8),
             total as u32,
-            now,
         );
-        entry.evidence = vec![format!("count={total}"), format!("sessions={spread}")];
-        out.push(entry);
+        sig.evidence = vec![format!("count={total}"), format!("sessions={spread}")];
+        out.push(sig);
     }
     out
 }

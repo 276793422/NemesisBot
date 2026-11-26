@@ -495,7 +495,7 @@ impl ModuleHandler for BoardHandler {
                     .get("id")
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: id")?;
-                let patch = build_patch(&data);
+                let patch = build_patch(&data)?;
                 let issue = store.update_issue(id, &patch, &actor)?;
                 Ok(Some(
                     serde_json::json!({ "updated": true, "issue": issue_to_view(&store, &issue)? }),
@@ -706,11 +706,10 @@ impl ModuleHandler for BoardHandler {
                     title: get_str(&data, "title")?.to_string(),
                     cron: cron_expr.to_string(),
                     description: get_opt_str(&data, "description").unwrap_or_default(),
-                    priority: data
-                        .get("priority")
-                        .and_then(|v| v.as_i64())
-                        .map(|p| p as i32)
-                        .unwrap_or(nemesis_board::models::priority::MEDIUM),
+                    priority: nemesis_board::models::priority::parse_priority(
+                        data.get("priority"),
+                    )?
+                    .unwrap_or(nemesis_board::models::priority::MEDIUM),
                     project_id: data.get("project_id").and_then(|v| v.as_i64()),
                     target: get_opt_str(&data, "target").unwrap_or_default(),
                     enabled,
@@ -762,10 +761,9 @@ impl ModuleHandler for BoardHandler {
                         cron: get_opt_str(&data, "cron"),
                         title: get_opt_str(&data, "title"),
                         description: get_opt_str(&data, "description"),
-                        priority: data
-                            .get("priority")
-                            .and_then(|v| v.as_i64())
-                            .map(|p| p as i32),
+                        priority: nemesis_board::models::priority::parse_priority(
+                            data.get("priority"),
+                        )?,
                         project_id: data.get("project_id").and_then(|v| v.as_i64()),
                         target: get_opt_str(&data, "target"),
                         enabled: data.get("enabled").and_then(|v| v.as_bool()),

@@ -19,7 +19,7 @@ pub enum IssueAction {
         #[arg(long, default_value = "")]
         description: String,
         /// Priority: 0=low 1=medium 2=high 3=urgent
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(i32).range(0..=3))]
         priority: i32,
         /// Assignee as `type:id` (e.g. `worker:node-b`) or bare `manager_self`
         #[arg(long)]

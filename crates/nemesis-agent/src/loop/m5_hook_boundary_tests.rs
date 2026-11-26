@@ -54,6 +54,7 @@ fn ws_boundary(root: std::path::PathBuf) -> WorkspaceBoundary {
         extra_roots: Vec::new(),
         editor_gate: None,
         goals_guard: None,
+        protect_log_tree: false,
     }
 }
 

@@ -296,6 +296,13 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| e.to_string())?;
         let ft = entry.file_type().map_err(|e| e.to_string())?;
         let target = to.join(entry.file_name());
+        if ft.is_symlink() {
+            // 链接一律不物化（BUG-20261126-093 同族）：file_type() 不跟随
+            // symlink——文件链接滑进 else 臂 fs::copy 跟随目标，界外内容被
+            // 吸进插件载荷目录；目录链接 fs::copy 报 Err 中断。安装源 =
+            // 用户/远程提供的目录，与 transfer / session_home 同款纪律。
+            continue;
+        }
         if ft.is_dir() {
             copy_dir_recursive(&entry.path(), &target)?;
         } else {

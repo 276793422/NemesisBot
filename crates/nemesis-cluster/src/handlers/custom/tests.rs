@@ -36,6 +36,19 @@ fn test_list_actions() {
     assert!(actions.contains(&"a1".to_string()));
 }
 
+/// BUG-20261125-078 回归锁：list_actions 输出必须按名字典序确定——
+/// handlers 是 HashMap，无序迭代 = ListActions RPC 响应数组随重启洗牌。
+#[test]
+fn test_list_actions_sorted_deterministically() {
+    let handler = CustomHandler::new();
+    // 乱序注册：zeta 先于 alpha；输出必须仍是 alpha 开头的升序。
+    for name in ["zeta", "mid", "alpha", "beta"] {
+        handler.register(name, Arc::new(|_, p| Ok(p)));
+    }
+    let actions = handler.list_actions();
+    assert_eq!(actions, vec!["alpha", "beta", "mid", "zeta"]);
+}
+
 // -- Additional tests --
 
 #[test]

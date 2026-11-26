@@ -113,9 +113,10 @@ pub fn stem_from_session_key(session_key: &str) -> String {
 
 struct ProjectLoopHandle {
     agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
-    /// Arc 包装：监督任务需跨 await 持有句柄轮询 `is_finished()`（&self，
-    /// Arc 解引用可用；abort 同为 &self——stop 路径不受影响）。
-    agent_task: Arc<tokio::task::JoinHandle<()>>,
+    /// 主循环任务的 abort 句柄（BUG-20261126 监督重设计，与主 adapter
+    /// 同构）：JoinHandle 所有权移交监督任务 await（死因裁决），state
+    /// 只留 abort 能力。
+    agent_abort: tokio::task::AbortHandle,
 }
 
 /// 项目常驻 loop 的生命周期 + 归属索引 + 路由管理。gateway 持一个实例
@@ -139,10 +140,10 @@ pub struct ProjectLoopManager {
     /// session_key → project_id（启动期从 meta sidecar 扫出 + 运行期回填/
     /// 增量维护；miss 时回读 sidecar 兜底——见 `owner_of`）。
     owner_index: parking_lot::RwLock<HashMap<String, String>>,
-    /// per-project 期望停机标志（BUG-20261123-003 监督器用，与主 loop
-    /// adapter 的 expected_stop 同构）：spawn_project 插入 Arc（监督任务持
-    /// clone 轮询），stop_project 置位 + 摘除（监督任务见置位即收班；摘除
-    /// 防 map 无界增长，重新 spawn 插新的）。
+    /// per-project 代际停机证词（BUG-20261126 监督重设计，与主 loop
+    /// adapter 的 per-generation witness 同构）：spawn_project 插入新
+    /// Arc（一代一面；监督任务持 clone await 后消歧 Ok 结局），
+    /// stop_project 置位 + 摘除（摘除防 map 无界增长，重新 spawn 插新的）。
     stop_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// per-project panic 重启计数（熔断：第 4 次死亡只 error! 留痕不再
     /// 重启）。进程生命周期累计，gateway 重启清零。
@@ -331,9 +332,10 @@ impl ProjectLoopManager {
         let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1024);
         agent_loop.set_reinject_tx(inbound_tx.clone());
         let loop_for_task = agent_loop.clone();
-        let agent_task = Arc::new(self.rt.spawn(async move {
+        let agent_task = self.rt.spawn(async move {
             loop_for_task.run_bus_arc(inbound_rx).await;
-        }));
+        });
+        let agent_abort = agent_task.abort_handle();
         let mut state = self.state.lock().unwrap();
         if state.contains_key(&entry.id) {
             // 极小窗口的双 spawn（单调用方不触发）；输者清理自己。
@@ -347,7 +349,7 @@ impl ProjectLoopManager {
             entry.id.clone(),
             ProjectLoopHandle {
                 agent_loop,
-                agent_task: Arc::clone(&agent_task),
+                agent_abort,
             },
         );
         drop(state);
@@ -374,27 +376,28 @@ impl ProjectLoopManager {
                 chans.remove(&entry.id);
             }
         }
-        // 监督任务（BUG-20261123-003，与主 loop adapter 同构）。撞上并发
-        // stop（orphaned）时不插期望停机标志、不 spawn 监督——loop 已被
-        // 摘表 + abort，监督无人可看。标志插入与 orphaned 复核同锁串行
-        // （stop_project 同锁摘标志）：封死「stop 落在复核与 spawn 之间」
-        // 的微窗口——stop 要么先于复核（contains_key=false 不 spawn），要么
-        // 排在锁后（监督首检见 expected 置位即收班，无误重启）。钩子在
+        // 监督任务（BUG-20261123-003 引入，BUG-20261126 重设计，与主 loop
+        // adapter 同构）。撞上并发 stop（orphaned）时不插停机证词、不 spawn
+        // 监督——loop 已被摘表 + abort，监督无人可看。证词插入与 orphaned
+        // 复核同锁串行（stop_project 同锁摘证词）保留——await 设计下即便
+        // 「stop 摘空在先、证词后插」的窗口真的发生，任务也会被那次 stop
+        // abort 掉，监督 await 见 Err(is_cancelled) 安静退役，旧设计的
+        // 误杀链结构性不可能。JoinHandle 所有权移交监督任务 await。钩子在
         // 装配期注入，此处快照。
         let supervisor_args = {
             let mut flags = self.stop_flags.lock().unwrap();
             if !orphaned && self.state.lock().unwrap().contains_key(&entry.id) {
-                let stop_flag = Arc::new(AtomicBool::new(false));
-                flags.insert(entry.id.clone(), Arc::clone(&stop_flag));
+                let stop_witness = Arc::new(AtomicBool::new(false));
+                flags.insert(entry.id.clone(), Arc::clone(&stop_witness));
                 let hook = self.restart_hook.lock().unwrap().clone();
-                Some((entry.id.clone(), Arc::clone(&agent_task), stop_flag, hook))
+                Some((entry.id.clone(), agent_task, stop_witness, hook))
             } else {
                 None
             }
         };
-        if let Some((pid, task, stop_flag, hook)) = supervisor_args {
+        if let Some((pid, task, witness, hook)) = supervisor_args {
             self.rt
-                .spawn(project_loop_supervisor(pid, task, stop_flag, hook));
+                .spawn(project_loop_supervisor(pid, task, witness, hook));
         }
         info!(
             id = %entry.id,
@@ -409,11 +412,10 @@ impl ProjectLoopManager {
     /// 停止单个项目 loop（先摘表再停——路由摘除语义，/ 复用）。
     /// 返回是否确有对应实例被停止。
     pub fn stop_project(&self, project_id: &str) -> bool {
-        // 先置位 + 摘除期望停机标志：监督任务（持有 clone）见置位即收班，
-        // 不把本次显式 stop 误判为 panic 触发重启。摘除防 map 无界增长
-        // （监督任务手里的 Arc clone 不受影响）；重新 spawn 会插新的。
-        if let Some(flag) = self.stop_flags.lock().unwrap().remove(project_id) {
-            flag.store(true, Ordering::SeqCst);
+        // 先置位 + 摘除本代停机证词（BUG-20261126：一代一面，监督任务持
+        // clone 读自家证词收班；摘除防 map 无界增长，重新 spawn 插新的）。
+        if let Some(witness) = self.stop_flags.lock().unwrap().remove(project_id) {
+            witness.store(true, Ordering::SeqCst);
         }
         let handle = self.state.lock().unwrap().remove(project_id);
         // 调度转发端同步摘除：此后 route_one 对该项目走「不可用」诚实报错。
@@ -425,7 +427,7 @@ impl ProjectLoopManager {
         handle.agent_loop.clear_session_busy();
         // 镜像 AgentLoopServiceAdapter::stop：用户显式停止，abort 掉在途
         // 轮次（未完成的回复可接受）；session busy 已清，不产生死锁会话。
-        handle.agent_task.abort();
+        handle.agent_abort.abort();
         info!(id = %project_id, "[ProjectLoops] 项目 loop 已停止");
         true
     }
@@ -1655,47 +1657,55 @@ fn conflict_cancel_outbound(
     ));
 }
 
-/// 项目 loop 监督任务体（BUG-20261123-003；独立 free fn 供单测直驱——
-/// 构造整个 manager 太重。与主 loop 的
+/// 项目 loop 监督任务体（BUG-20261123-003 引入，BUG-20261126 重设计；
+/// 独立 free fn 供单测直驱——构造整个 manager 太重。与主 loop 的
 /// `adapters::agent_loop_supervisor_task` 同构，两点刻意差异：① 退避固定
 /// 10s（熔断计数按 pid 在 `supervisor_restart_project` 内部累计，监督任务
-/// 不需要读计数表）；② 钩子签名带 project_id。每 5s 轮询 `is_finished()`：
-/// 期望停机标志（stop_project 置位）= 正常退出臂；任务死亡且非期望停机 =
-/// panic/异常终止 → 退避后触发 restart 回调（None = 只 error! 留痕）。
-/// 行动后本任务即退——重启产生的新 loop 由 spawn_project 新监督接管。
+/// 不需要读计数表）；② 钩子签名带 project_id。**await 任务句柄拿真实
+/// 死因**（tokio JoinHandle resolved 即报结局，事件驱动零轮询）：
+/// - `Err(is_cancelled)`：stop_project 的 abort → 安静退役；
+/// - `Ok(())` 且本代停机证词（stop_flags map 条目 clone）置位：al.stop()
+///   先置 running=false、任务先于 abort 自然收班的正常形态 → 安静退役；
+/// - `Err(is_panic)` 或无证词的 `Ok(())`：真异常死亡 → 退避 10s → 复核
+///   证词（窗口内显式 stop 尊重）→ 触发 restart 回调（None = 只 error!
+///   留痕）。行动后本任务即退——句柄所有权在本任务手里，await resolve
+///   即监督自然退休，无永生监督。
 async fn project_loop_supervisor(
     project_id: String,
-    handle: Arc<tokio::task::JoinHandle<()>>,
-    expected_stop: Arc<AtomicBool>,
+    handle: tokio::task::JoinHandle<()>,
+    stop_witness: Arc<AtomicBool>,
     hook: Option<Arc<dyn Fn(&str) + Send + Sync>>,
 ) {
-    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
-    tick.tick().await; // interval 首 tick 立即返回，跳过
-    loop {
-        tick.tick().await;
-        if expected_stop.load(Ordering::SeqCst) {
-            return; // 正常 stop_project 流程，监督收班
-        }
-        if !handle.is_finished() {
-            continue;
-        }
-        // 任务已结束且非期望停机 = 异常死亡（panic unwind / 非 stop 终止）。
-        // is_running()（查 state 表）此刻仍假绿——panic 后条目仍在表里，
-        // 这里是唯一可靠的死亡观测点。
-        let Some(restart) = hook else {
+    match handle.await {
+        // stop_project 的 abort = 正常换班，安静退役。
+        Err(e) if e.is_cancelled() => {}
+        // 自然收班 + 本代证词在场 = al.stop() 的正常形态，安静退役。
+        Ok(()) if stop_witness.load(Ordering::SeqCst) => {}
+        // 真 panic（unwind）或无证词的自发退出 = 异常死亡。
+        outcome => {
+            let reason = match &outcome {
+                Ok(()) => "无停机证词自然退出（异常收班）",
+                Err(e) if e.is_panic() => "panic 终止",
+                Err(_) => "join 失败（未知 join 错误）",
+            };
+            let Some(restart) = hook else {
+                error!(
+                    id = %project_id,
+                    "[ProjectLoops] 项目 loop 任务异常终止（{reason}）且未装配监督重启钩子，仅留痕（无自愈）"
+                );
+                return;
+            };
+            // 退避窗口：固定 10s 后再复核证词（窗口内显式 stop 尊重），
+            // 然后触发重启（熔断计数按 pid 在 restart 目标累计）。
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            if stop_witness.load(Ordering::SeqCst) {
+                return;
+            }
             error!(
                 id = %project_id,
-                "[ProjectLoops] 项目 loop 任务异常终止（疑似 panic）且未装配监督重启钩子，仅留痕（无自愈）"
+                "[ProjectLoops] 项目 loop 任务异常终止（{reason}），执行监督重启"
             );
-            return;
-        };
-        // 退避窗口：固定 10s 后再复核 expected（窗口内显式 stop 尊重），
-        // 然后触发重启（熔断计数按 pid 在 restart 目标累计）。
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-        if expected_stop.load(Ordering::SeqCst) {
-            return;
+            restart(&project_id);
         }
-        restart(&project_id);
-        return;
     }
 }

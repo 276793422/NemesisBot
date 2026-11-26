@@ -1624,6 +1624,62 @@ async fn test_condition_node_unprovable_leftover_is_false() {
     assert_eq!(result.output["condition_result"], serde_json::json!(false));
 }
 
+/// BUG-20261126-088 回归：padded 占位符（`{{ check.condition_result }}`，
+/// Go template / Jinja 书写习惯）在**字段拼写完全正确**时也必然解析不到
+/// ——替换语义是裁决过的 exact-match（不 trim）。旧实现错误消息把原因
+/// 单一归到「字段不存在」并引导作者核对本无问题的节点 id/字段名（排查
+/// 死路）；修复后消息追加空白归因提示。lint 草稿期同步预警见 lint/tests.rs
+/// 同号用例。
+#[tokio::test]
+async fn test_condition_node_padded_placeholder_error_names_whitespace() {
+    let exec = ConditionNodeExecutor;
+    let wf_ctx = wf_ctx_with_completed_condition("check", true);
+    let mut config = HashMap::new();
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{ check.condition_result }}"),
+    );
+    let node = make_node("n1", "condition", config);
+    let result = exec.execute(&node, &HashMap::new(), &wf_ctx).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap_or_default();
+    assert!(err.contains("首尾空白"), "{err}");
+    assert!(err.contains("{{ check.condition_result }}"), "{err}");
+    assert!(err.contains("exact-match"), "{err}");
+
+    // 对照：无空白的幻觉字段（真·字段不存在）错误**不含**空白归因——
+    // 提示只在确有 padding 时出现，不冒认。
+    let mut config2 = HashMap::new();
+    config2.insert(
+        "condition".to_string(),
+        serde_json::json!("{{check.passed}}"),
+    );
+    let node2 = make_node("n1", "condition", config2);
+    let result2 = exec
+        .execute(&node2, &HashMap::new(), &wf_ctx)
+        .await
+        .unwrap();
+    assert_eq!(result2.state, ExecutionState::Failed);
+    let err2 = result2.error.unwrap_or_default();
+    assert!(!err2.contains("首尾空白"), "{err2}");
+}
+
+/// padded_placeholders 纯函数契约：只收含首尾空白的占位符**原文**；
+/// 无空白 / 全空白键 / 无闭合不收。
+#[test]
+fn padded_placeholders_picks_only_whitespace_padded() {
+    assert_eq!(padded_placeholders("{{ flag }} == 1"), vec!["{{ flag }}"]);
+    assert_eq!(
+        padded_placeholders("{{a}} {{ b.c }} {{  d  }}"),
+        vec!["{{ b.c }}", "{{  d  }}"]
+    );
+    // 无空白不收；全空白内文（trim 后空键）不收——「去掉空白」建议对其
+    // 无修复意义；无闭合扫描终止不 panic。
+    assert!(padded_placeholders("{{a}} + {{b}}").is_empty());
+    assert!(padded_placeholders("{{ }}").is_empty());
+    assert!(padded_placeholders("{{unclosed").is_empty());
+}
+
 /// 真实 LoopNodeExecutor：条件幻觉字段（body 子节点输出中不存在的字段）
 /// → 第 1 轮条件检查即诚实失败（旧实现残留「非空即真」恒真，静默跑满
 /// safety_cap）。
@@ -5799,6 +5855,63 @@ fn bug_105_numeric_string_context_compare() {
     assert!(!evaluate_condition("n > 7", &ctx));
 }
 
+/// BUG-20261126-086 回归锁：裸名真值与模板形同表对齐。LLM 节点输出天然
+/// 是 JSON 字符串（BUG-105 注释自述），布尔字段以 "false"/"no" 字符串形态
+/// 进上下文是常态。修复前裸名 `flag`（flag="false"）走 `!is_empty` 恒真、
+/// 同数据模板形 `{{flag}}`（字符串化 → Step 2 布尔字面量表）恒假——两种
+/// 文档形态给相反路由（BUG-105/195 同族第三例）。修后裸名字符串值走
+/// is_truthy_str（falsy 表 = Step 2 表 ∪ "0.0"），两形同结论。
+#[test]
+fn bug_086_bare_name_string_truthy_matches_template_form() {
+    let mut ctx = HashMap::new();
+
+    // 字符串布尔拼写：两形同结论。
+    ctx.insert("flag_f".to_string(), serde_json::json!("false"));
+    ctx.insert("flag_no".to_string(), serde_json::json!("no"));
+    ctx.insert("flag_zero".to_string(), serde_json::json!("0"));
+    ctx.insert("flag_t".to_string(), serde_json::json!("true"));
+    ctx.insert("flag_yes".to_string(), serde_json::json!("yes"));
+
+    // 裸名形（修复前 "false"/"no" 恒真、模板形恒假）。
+    assert!(!evaluate_condition("flag_f", &ctx));
+    assert!(!evaluate_condition("flag_no", &ctx));
+    assert!(!evaluate_condition("flag_zero", &ctx));
+    assert!(evaluate_condition("flag_t", &ctx));
+    assert!(evaluate_condition("flag_yes", &ctx));
+
+    // 模板形同结论（既有行为，两形一致性钉死）。
+    assert!(!evaluate_condition("{{flag_f}}", &ctx));
+    assert!(!evaluate_condition("{{flag_no}}", &ctx));
+    assert!(!evaluate_condition("{{flag_zero}}", &ctx));
+    assert!(evaluate_condition("{{flag_t}}", &ctx));
+    assert!(evaluate_condition("{{flag_yes}}", &ctx));
+
+    // 大小写不敏感与空白容忍（is_truthy_str 表口径）。
+    ctx.insert("flag_caps".to_string(), serde_json::json!("FALSE"));
+    ctx.insert("flag_ws".to_string(), serde_json::json!("  false  "));
+    assert!(!evaluate_condition("flag_caps", &ctx));
+    assert!(!evaluate_condition("flag_ws", &ctx));
+
+    // 非布尔字符串照旧非空即真（普通文本字段不受影响）。
+    ctx.insert("name".to_string(), serde_json::json!("hello"));
+    assert!(evaluate_condition("name", &ctx));
+    assert!(evaluate_condition("{{name}}", &ctx));
+
+    // Bool / 数值 / Null / 容器形态回归面（既有语义不变）。
+    ctx.insert("b".to_string(), serde_json::json!(false));
+    ctx.insert("num".to_string(), serde_json::json!(0));
+    ctx.insert("num2".to_string(), serde_json::json!(3));
+    ctx.insert("z".to_string(), serde_json::json!(null));
+    ctx.insert("arr".to_string(), serde_json::json!([]));
+    ctx.insert("obj".to_string(), serde_json::json!({"k": 1}));
+    assert!(!evaluate_condition("b", &ctx));
+    assert!(!evaluate_condition("num", &ctx));
+    assert!(evaluate_condition("num2", &ctx));
+    assert!(!evaluate_condition("z", &ctx));
+    assert!(!evaluate_condition("arr", &ctx));
+    assert!(evaluate_condition("obj", &ctx));
+}
+
 /// BUG-20261119-195 回归锁：模板替换值内的运算符字符不得劫持条件切分。
 /// 修复前 `{{msg}} >= 5` 遇 msg="3>=1" → resolved="3>=1 >= 5"，`>=`
 /// 切在数据内位置 1 → left="3" right="1 >= 5" 字典序 → true；裸名形态
@@ -5885,6 +5998,10 @@ fn w4a_is_truthy_str_arms() {
     assert!(!is_truthy_str("FALSE"));
     assert!(!is_truthy_str("0"));
     assert!(!is_truthy_str("0.0"));
+    // BUG-20261126-086：falsy 表与 Step 2 布尔字面量表对齐补 "no"。
+    assert!(!is_truthy_str("no"));
+    assert!(!is_truthy_str("NO"));
+    assert!(is_truthy_str("yes"));
     assert!(is_truthy_str("x"));
     assert!(is_truthy_str("00"));
     assert!(is_truthy_str(" true "));

@@ -1350,19 +1350,44 @@ async fn test_line_full_lifecycle_no_body_separator() {
         webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
-    let (bus_tx, _bus_rx) = broadcast::channel::<InboundMessage>(64);
+    let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
     let ch = LineChannel::new(config, bus_tx).unwrap();
     ch.start().await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // Send raw bytes without the CRLF+CRLF separator. 该请求不带签名头——
-    // 签名闸（fail-closed）先于任何 body 解析，直接 401；带合法签名的
-    // 无分隔符请求在真实流量中不存在（LINE 恒带分隔符+签名），坏 body
-    // → 400 路径由 invalid_json_body / w4c_malformed_body_400 覆盖。
+    // Send raw bytes without the CRLF+CRLF separator. 重组读纪律
+    // （BUG-20261126-106）下 header 区不完整 = 请求未到齐：服务端继续等
+    // 更多字节，直到整体超时静默断开——不发 HTTP 响应。fail-closed 语义
+    // 不变（伪造请求绝不入总线，本测试断言之）；401 签名闸由带完整 header
+    // 的 missing_signature 测试覆盖。
     let raw = b"GET /webhook/line HTTP/1.0\nno crlfcrlf here";
-    let response = send_raw_http(port, raw).await;
-    assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect failed");
+    use tokio::io::AsyncWriteExt;
+    stream.write_all(raw).await.expect("write failed");
+
+    // 窗口内必须无 HTTP 响应（服务端在等更多字节，不会对未到齐请求下结论）。
+    let mut buf = [0u8; 256];
+    use tokio::io::AsyncReadExt;
+    match tokio::time::timeout(std::time::Duration::from_millis(800), stream.read(&mut buf)).await {
+        Err(_elapsed) => {} // 服务端未响应（等待更多字节），符合静默纪律
+        Ok(Ok(0)) => {}     // 服务端已断开，无响应
+        Ok(Ok(n)) => panic!(
+            "header 不完整的请求不应收到 HTTP 响应，got: {:?}",
+            String::from_utf8_lossy(&buf[..n])
+        ),
+        Ok(Err(e)) => panic!("读连接失败: {e}"),
+    }
+    drop(stream);
+
+    // fail-closed 双锁：给足时间让（不该发生的）publish 落地，再断言总线为空。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        bus_rx.try_recv().is_err(),
+        "header 不完整的请求必须绝不发布到总线"
+    );
 
     ch.stop().await.unwrap();
 }
@@ -1739,6 +1764,75 @@ async fn test_w4c_line_webhook_valid_signature_delivers_and_stores_token() {
     assert_eq!(
         reply_tokens.get("U-user-1").map(|v| v.clone()),
         Some("rt-123".to_string()),
+        "reply token must be stored for the chat"
+    );
+}
+
+/// BUG-20261126-106 通道级回归锁：请求跨 3 个 TCP 分段到达（分片间留间隙
+/// 迫使服务端多次 read）——旧单次 read 拿到部分请求 → 验签必败 401 →
+/// 消息永久丢失。重组读后必须完整收到、验签通过、消息进总线。
+#[tokio::test]
+async fn test_w4c_line_webhook_fragmented_request_reassembled() {
+    use tokio::io::AsyncWriteExt;
+
+    let (bus, mut rx) = broadcast::channel::<InboundMessage>(16);
+    let secret = "w4c-secret";
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+
+    // 大 body（>1.4KB，模拟真实 MTU 分段形态）。
+    let long_text = "这是一条跨 TCP 分段到达的长消息。".repeat(60);
+    let body = serde_json::json!({
+        "destination": "U-dest",
+        "events": [{
+            "type": "message",
+            "replyToken": "rt-frag",
+            "message": {"type": "text", "text": long_text},
+            "source": {"type": "user", "userId": "U-user-frag"}
+        }]
+    })
+    .to_string();
+    assert!(
+        body.len() > 1400,
+        "测试 body 应超过单段 MSS，实际 {}B",
+        body.len()
+    );
+    let sig = w4c_line_signature(secret, body.as_bytes());
+
+    let (mut client, _addr) = w4c_line_webhook_pair(&bus, secret, &reply_tokens, &running).await;
+    let req = format!(
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let req_bytes = req.as_bytes();
+    // 3 段写 + 段间间隙：迫使服务端多次 read（旧单读形态在此必红）。
+    let c1 = req_bytes.len() / 3;
+    let c2 = req_bytes.len() * 2 / 3;
+    client.write_all(&req_bytes[..c1]).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    client.write_all(&req_bytes[c1..c2]).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    client.write_all(&req_bytes[c2..]).await.unwrap();
+
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "分段请求重组后应验签通过（200），got: {resp}"
+    );
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out: fragmented webhook must publish inbound")
+        .unwrap();
+    assert_eq!(inbound.channel, "line");
+    assert_eq!(inbound.chat_id, "U-user-frag");
+    assert_eq!(inbound.content, long_text, "重组后 body 必须逐字节完整");
+    assert_eq!(
+        reply_tokens.get("U-user-frag").map(|v| v.clone()),
+        Some("rt-frag".to_string()),
         "reply token must be stored for the chat"
     );
 }

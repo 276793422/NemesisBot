@@ -316,3 +316,91 @@ fn done_write_applies_when_still_active() {
         "Active goal 的 done 判定必须照常落地"
     );
 }
+
+// ============================================================
+// BUG-20261126-089 回归锁：estop 窗口内 CONTINUE 不扣轮数预算
+// ============================================================
+
+/// 评估 LLM 链路（chore_completion_ex）无 estop 闸：评估窗口（秒~分钟
+/// 级，含 3 次重试）内用户触发急停，apply_verdict 仍会执行到 Continue
+/// 臂。旧行为 = 先 bump（rounds_used+1 落注册表）再查 estop 丢弃注入
+/// ——enable 只解 blocked 不重置 rounds_used，丢弃轮的预算永久虚耗；
+/// 且与模块头「estop 冻结期 goal 状态不动」声明冲突。修复 = estop
+/// 检查前移到 bump 之前（不 bump 不注入；评估留痕照常）。突变验证：
+/// 把 estop 检查移回 bump 之后本测必红（rounds_used 1≠0）。
+#[test]
+fn continue_round_not_bumped_when_estop_engaged() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let sk = "agent:main:session:s7";
+    let entry = nemesis_goals::GoalEntry::new(
+        "G1".to_string(),
+        sk.to_string(),
+        nemesis_goals::GoalCreatedBy::Human,
+        None,
+        None,
+        now_ms(),
+    );
+    nemesis_goals::update_registry(ws, |entries| {
+        entries.push(entry.clone());
+        Ok(())
+    })
+    .unwrap();
+    let engine = test_engine(ws);
+    engine.estop.trigger();
+    engine.apply_verdict(
+        &entry,
+        nemesis_goals::EvalVerdict::Continue,
+        Some("缺口".to_string()),
+        "main",
+        std::time::Instant::now(),
+        "{\"verdict\":\"CONTINUE\"}",
+    );
+    let entries = nemesis_goals::load_registry(ws).unwrap();
+    assert_eq!(
+        entries[0].status,
+        nemesis_goals::GoalStatus::Active,
+        "estop 窗口内 goal 状态必须保持不动（模块头声明的冻结语义）"
+    );
+    assert_eq!(
+        entries[0].rounds_used, 0,
+        "estop 窗口内的 CONTINUE 不得扣轮数预算——enable 不重置 rounds_used，先扣后弃 = 预算永久虚耗"
+    );
+}
+
+/// 正向对照：estop 未触发时 Active goal 的轮数 bump 照常落地（estop
+/// 闸不误伤正常路径）。
+#[test]
+fn continue_round_bump_applies_when_estop_released() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let sk = "agent:main:session:s8";
+    let entry = nemesis_goals::GoalEntry::new(
+        "G1".to_string(),
+        sk.to_string(),
+        nemesis_goals::GoalCreatedBy::Human,
+        None,
+        None,
+        now_ms(),
+    );
+    nemesis_goals::update_registry(ws, |entries| {
+        entries.push(entry.clone());
+        Ok(())
+    })
+    .unwrap();
+    let engine = test_engine(ws);
+    engine.apply_verdict(
+        &entry,
+        nemesis_goals::EvalVerdict::Continue,
+        Some("缺口".to_string()),
+        "main",
+        std::time::Instant::now(),
+        "{\"verdict\":\"CONTINUE\"}",
+    );
+    let entries = nemesis_goals::load_registry(ws).unwrap();
+    assert_eq!(entries[0].status, nemesis_goals::GoalStatus::Active);
+    assert_eq!(
+        entries[0].rounds_used, 1,
+        "estop 未触发时 CONTINUE 的轮数 bump 必须照常落地"
+    );
+}

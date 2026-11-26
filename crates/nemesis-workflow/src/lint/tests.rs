@@ -324,6 +324,85 @@ fn l6_node_expression_correct_refs_stay_silent() {
     assert!(lint(&w).is_empty(), "{:?}", lint(&w));
 }
 
+/// BUG-20261126-088 回归：条件边 / condition / loop 表达式里的 padded
+/// 占位符（`{{ flag }}`，Go template / Jinja 书写习惯）草稿期预警——
+/// exact-match 契约（不 trim）下运行期必然解析不到，此前 lint 静默放行、
+/// 运行期可证伪性 Err 把原因错怪到本无问题的节点 id/字段名。两处站点
+/// （条件边 + 节点表达式）各出一条，字段拼写正确时不与幻觉规则叠加。
+#[test]
+fn l7_padded_placeholder_warns_on_edge_and_node_expressions() {
+    let mut w = wf(
+        vec![
+            node("check", "condition", serde_json::json!({})),
+            node(
+                "ok",
+                "transform",
+                serde_json::json!({"expression": "identity", "input": "x"}),
+            ),
+            node(
+                "gate",
+                "condition",
+                serde_json::json!({"condition": "{{ flag }} == \"yes\""}),
+            ),
+        ],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    w.edges = vec![crate::types::Edge {
+        from_node: "check".into(),
+        to_node: "ok".into(),
+        condition: Some("{{ check.condition_result }}".into()),
+    }];
+    let warnings = lint(&w);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("条件边 check→ok")
+            && warnings[0].contains("{{ check.condition_result }}")
+            && warnings[0].contains("exact-match"),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[1].contains("节点 gate（condition）的 condition 表达式")
+            && warnings[1].contains("{{ flag }}"),
+        "{warnings:?}"
+    );
+}
+
+/// 不误伤（BUG-20261126-088 配套）：无空白占位符与全空白占位符
+/// （`{{ }}`，trim 后空键，非 padded 形态）都保持静默。
+#[test]
+fn l7_unpadded_and_empty_placeholders_stay_silent() {
+    let mut w = wf(
+        vec![
+            node("check", "condition", serde_json::json!({})),
+            node(
+                "ok",
+                "transform",
+                serde_json::json!({"expression": "identity", "input": "x"}),
+            ),
+        ],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    w.edges = vec![
+        crate::types::Edge {
+            from_node: "check".into(),
+            to_node: "ok".into(),
+            condition: Some("{{check.condition_result}}".into()),
+        },
+        crate::types::Edge {
+            from_node: "ok".into(),
+            to_node: "check".into(),
+            condition: Some("{{ }} == 1".into()),
+        },
+    ];
+    assert!(lint(&w).is_empty(), "{:?}", lint(&w));
+}
+
 #[test]
 fn no_warnings_for_clean_workflow() {
     let w = wf(

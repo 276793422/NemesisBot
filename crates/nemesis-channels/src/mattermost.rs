@@ -720,6 +720,16 @@ impl Channel for MattermostChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // 幂等双启守卫（BUG-20261126-108，BUG-20261121-050/BUG-20261125-019
+        // 同构家族漏网）：spawn 型 WS gateway loop 无守卫的重复 start 会双
+        // 连接双事件流，每条消息 N 倍喂 agent。三轮家族修复（050 只核对接
+        // 线 / 019 十通道 / 107 十九通道横扫）清单均未含本通道——set_running
+        // 早已接线（050「全接线 ✓」组）恰恰说明它被当接线通道对待，守卫
+        // 却从未轮到。与 019 十通道修复完全同构，本批补齐。
+        if self.base.is_running() {
+            info!("[MattermostChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
         info!("[MattermostChannel] starting (WebSocket gateway)");
 
         // 校验 bot token（users/me → bot 身份 + 提及检测用 username）

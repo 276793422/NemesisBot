@@ -432,3 +432,75 @@ fn test_input_bytes_cap_not_triggered_under_limit() {
         "{v:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261126-103 回归锁：EXIF orientation 必须烘焙进产物像素。image crate
+// 解码不自动应用 EXIF 方向、JpegEncoder 重编码不透传标记——旧实现直接
+// resize+re-encode 产出静默旋转的产物（竖拍手机照片横躺，模型收到的图与
+// 原图视觉方向不一致）。修复 = 解码器读 orientation + apply_orientation
+// 烘焙后再走缩放链。
+// ---------------------------------------------------------------------------
+
+/// 给 JPEG 字节插入 APP1 EXIF 段（orientation 标记 = `exif_orientation`），
+/// 插在 SOI 之后。image 编码器不写 EXIF，手工拼最小 TIFF：IFD0 单条目
+/// tag 0x0112（orientation，SHORT，little-endian）。
+fn jpeg_with_exif_orientation(jpeg: &[u8], exif_orientation: u8) -> Vec<u8> {
+    assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "fixture 必须以 SOI 开头");
+    let mut exif = b"Exif\0\0".to_vec();
+    // TIFF 头：II（小端）+ 42 + IFD0 偏移 8。
+    exif.extend_from_slice(&[0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00]);
+    // IFD0：条目数 1。
+    exif.extend_from_slice(&1u16.to_le_bytes());
+    // 条目：tag 0x0112 + type SHORT(3) + count 1 + 值 u16 LE（值内联，补 2 字节）。
+    exif.extend_from_slice(&0x0112u16.to_le_bytes());
+    exif.extend_from_slice(&3u16.to_le_bytes());
+    exif.extend_from_slice(&1u32.to_le_bytes());
+    exif.extend_from_slice(&(exif_orientation as u16).to_le_bytes());
+    exif.extend_from_slice(&[0, 0]);
+    // 下一 IFD 偏移 = 0（无链）。
+    exif.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut seg = vec![0xFF, 0xE1]; // APP1 marker
+    seg.extend_from_slice(&((exif.len() as u16 + 2).to_be_bytes())); // 段长含自身 2 字节
+    seg.extend_from_slice(&exif);
+
+    let mut out = jpeg[..2].to_vec();
+    out.extend_from_slice(&seg);
+    out.extend_from_slice(&jpeg[2..]);
+    out
+}
+
+/// 200x150 横图 → tiny 阈值触发降采样 → 产物 (w,h)。
+fn product_dimensions(bytes: &[u8], tag: &str) -> (u32, u32) {
+    let dir_tag = format!("exif_{tag}");
+    let dir = TempDir::new(&dir_tag);
+    let src = write_file(&dir, &format!("{tag}.jpg"), bytes);
+    let v = downscale_gate_with(&src, &dir.0, &tiny_limits()).unwrap();
+    let GateVerdict::Replaced { path, .. } = v else {
+        panic!("expected Replaced, got {v:?}");
+    };
+    let product = image::load_from_memory(&std::fs::read(&path).unwrap()).unwrap();
+    (product.width(), product.height())
+}
+
+#[test]
+fn exif_orientation_baked_into_product() {
+    let base = encode_jpeg(&noise_rgb(200, 150), 95);
+
+    // 对照 1：无 EXIF → 原像素方向，200x150 → 100x75（横）。
+    let (w, h) = product_dimensions(&base, "plain");
+    assert_eq!((w, h), (100, 75), "无 EXIF 基线: {w}x{h}");
+
+    // 对照 2：orientation=1（NoTransforms）→ 同基线（不旋转）。
+    let (w, h) = product_dimensions(&jpeg_with_exif_orientation(&base, 1), "ot1");
+    assert_eq!((w, h), (100, 75), "orientation=1 不应旋转: {w}x{h}");
+
+    // orientation=6（Rotate90，竖拍手机照片标准标记）→ 像素烘焙旋转成
+    // 150x200 → 缩放为 75x100（竖）——产物视觉方向与原图一致。
+    let (w, h) = product_dimensions(&jpeg_with_exif_orientation(&base, 6), "ot6");
+    assert_eq!((w, h), (75, 100), "orientation=6 必须烘焙旋转: {w}x{h}");
+
+    // orientation=8（Rotate270，竖拍另一形态）→ 同样烘焙（75x100）。
+    let (w, h) = product_dimensions(&jpeg_with_exif_orientation(&base, 8), "ot8");
+    assert_eq!((w, h), (75, 100), "orientation=8 必须烘焙旋转: {w}x{h}");
+}

@@ -86,6 +86,17 @@ pub fn default_audit_chain_config() -> AuditChainConfig {
     AuditChainConfig::default()
 }
 
+/// 外置锚文件结构（单行 JSON，BUG-6）。`head_hash` 是唯一对账键——
+/// total/segments 仅供取证叙述（链与锚按事件数对不齐而头一致时不算
+/// 异常：历史链可能有不可解析行，头一致 = 链就在锚记录的位置）。
+#[derive(Debug, Serialize, Deserialize)]
+struct ChainAnchor {
+    head_hash: String,
+    total_events: u64,
+    segment_count: u64,
+    updated_at: String,
+}
+
 /// Merkle audit chain with segment rotation and export.
 ///
 /// Thread-safe: all mutable state is protected by locks or atomic counters.
@@ -111,6 +122,13 @@ pub struct AuditChain {
     /// security_level 进覆盖）；None = v2 及以下字节不变（默认）。装配点
     /// 注入（[`AuditChain::set_security_level`]，build_security_plugin）。
     security_level: parking_lot::Mutex<Option<String>>,
+    /// 链头外置锚路径（BUG-6 2026-11-25 远程 home 取证）：Some = 每次
+    /// 链尾推进后把 head_hash/事件数写到该文件（与链目录**不同故障域**，
+    /// 装配点给 config/ 下的路径），load_segments 回载时对账——链被整链
+    /// 清除/截断后锚仍在 → 可检测「审计链被清」痕迹。None = 锚面关闭
+    /// （默认，既有构造点零扰动——builder 注入形态同 set_instance_id，
+    /// 避免 AuditChainConfig 字面量 59 处 Construction 站点churn）。
+    anchor_path: parking_lot::Mutex<Option<PathBuf>>,
 }
 
 impl AuditChain {
@@ -128,6 +146,7 @@ impl AuditChain {
             append_lock: parking_lot::Mutex::new(()),
             instance_id: parking_lot::Mutex::new(None),
             security_level: parking_lot::Mutex::new(None),
+            anchor_path: parking_lot::Mutex::new(None),
         }
     }
 
@@ -142,6 +161,27 @@ impl AuditChain {
     /// 档位（hash v3）。值应是规范小写（`SecurityLevel::as_str`）。
     pub fn set_security_level(&self, security_level: Option<String>) {
         *self.security_level.lock() = security_level;
+    }
+
+    /// 链头外置锚路径注入（builder 形态，装配点调用——必须在
+    /// [`Self::load_segments`] **之前**，回载对账才生效；None = 锚面关闭）。
+    /// 锚的父目录在注入时一次性创建（复核 2026-11-26：此前每次 append 在
+    /// append_lock 内重跑 create_dir_all——热路径双倍 fs syscall；装配期
+    /// 一次建好，写失败路径 warn 诚实兜底）。语义见字段注释与
+    /// [`Self::reconcile_anchor`]。
+    pub fn set_anchor_path(&self, path: Option<PathBuf>) {
+        if let Some(p) = &path
+            && let Some(parent) = p.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!(
+                target: "nemesis_security::integrity",
+                path = %parent.display(),
+                error = %e,
+                "[AuditChain] 外置锚目录预创建失败（后续锚写入将诚实告警）: {e}"
+            );
+        }
+        *self.anchor_path.lock() = path;
     }
 
     /// Append an event to the audit chain.
@@ -213,6 +253,8 @@ impl AuditChain {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.total_events
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // 链尾推进点（恢复事件采纳）→ 外置锚同步（BUG-6）。
+                self.write_anchor_locked();
             }
             TailHeal::Truncated { dropped } => {
                 tracing::warn!(
@@ -308,6 +350,10 @@ impl AuditChain {
         if count >= self.config.max_events_per_segment {
             self.rotate_segment();
         }
+
+        // 链尾推进点（新事件落盘）→ 外置锚同步（BUG-6）。锁内（与链尾
+        // 一对一）；rotation 后调用 = 锚记录的 segment_count 是最新段号。
+        self.write_anchor_locked();
 
         Ok(event)
     }
@@ -424,6 +470,175 @@ impl AuditChain {
                 .parent()
                 .map(|p| p.join(format!("{}_seg{:04}{}", stem, seg, ext)))
                 .unwrap_or_else(|| PathBuf::from(format!("{}_seg{:04}{}", stem, seg, ext)))
+        }
+    }
+
+    /// 把当前链尾写进外置锚（BUG-6）。调用点都在链尾推进之后（append
+    /// 两个推进点 + 回载对账重建基线），append_lock 内（串行——锚与链尾
+    /// 一对一，乱序写会让锚记录到未来/过去的尾）。写失败只 warn 不回传
+    /// Err：事件本体已落盘（盘先行在先），锚只是检测面，滞后由下个事件
+    /// 重写自然修复；回载对账对「锚滞后」的诚实表述见 reconcile。
+    fn write_anchor_locked(&self) {
+        let Some(anchor_path) = self.anchor_path.lock().clone() else {
+            return;
+        };
+        let anchor = ChainAnchor {
+            head_hash: self.current_hash(),
+            total_events: self.total_event_count(),
+            segment_count: self.segment_count(),
+            updated_at: chrono::Local::now().to_rfc3339(),
+        };
+        let json = match serde_json::to_string(&anchor) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(
+                    target: "nemesis_security::integrity",
+                    error = %e,
+                    "[AuditChain] 外置锚序列化失败（链本体已落盘，检测面滞后）: {e}"
+                );
+                return;
+            }
+        };
+        if let Err(e) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&anchor_path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{json}")
+            })
+        {
+            tracing::warn!(
+                target: "nemesis_security::integrity",
+                path = %anchor_path.display(),
+                error = %e,
+                "[AuditChain] 外置锚写入失败（链本体已落盘，检测面滞后；下个事件重写）: {e}"
+            );
+        }
+    }
+
+    /// 回载对账（BUG-6 检测面）：load_segments 尾部调用——盘上链尾 vs
+    /// 外置锚记录，区分四种形态：
+    /// - 无锚 + 空链：首启，落 genesis 锚（静默）；
+    /// - 无锚 + 有链：首次启用（升级部署）或锚被删——按当前链尾重建
+    ///   基线 + WARN 一次（升级路径经装配点迁移后首启落到此臂，非异常）；
+    /// - 锚文件在场但解析失败：**撕裂锚**（半截写入）——原文换名另存
+    ///   `.corrupt.<millis>`（证据不覆盖），WARN + 按当前链尾重建基线；
+    /// - 有锚 + 盘上链尾 ≠ 锚头：**链被整链清除/截断/篡改**（或上会话
+    ///   锚写入失败滞后）。锚文件**原样保留**（证据不覆盖），CRITICAL
+    ///   告警 + error 日志；后续 append 会把锚重新对齐（自愈），但本
+    ///   次启动的异常已留痕（告警 + 日志 + 锚保留的旧值）。
+    ///
+    /// 一致：静默。本方法只在 anchor_path 注入后生效（None = no-op）。
+    fn reconcile_anchor(&self, restored_total: u64) {
+        let Some(anchor_path) = self.anchor_path.lock().clone() else {
+            return;
+        };
+        let raw = std::fs::read_to_string(&anchor_path).ok();
+        let stored = raw
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<ChainAnchor>(s).ok());
+        let disk_head = self.current_hash();
+        match stored {
+            None => {
+                match raw {
+                    // 文件在场但解析失败 = 半截写入（撕裂锚）——本身是
+                    // 存储故障证据（复核 2026-11-26）：原文换名保留一份
+                    // （证据不覆盖；保留失败则如实说明），再按当前链尾
+                    // 重建基线。此前与「锚缺失」混为一谈，WARN 文案失真
+                    // （撕裂不是首次启用也不是被删）。
+                    Some(_) => {
+                        let ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        let mut name = anchor_path
+                            .file_name()
+                            .map(|n| n.to_os_string())
+                            .unwrap_or_default();
+                        name.push(format!(".corrupt.{ms}"));
+                        let backup = anchor_path.with_file_name(name);
+                        let preserved = std::fs::rename(&anchor_path, &backup).is_ok();
+                        tracing::warn!(
+                            target: "nemesis_security::integrity",
+                            path = %anchor_path.display(),
+                            total = restored_total,
+                            head = %disk_head,
+                            "[AuditChain] 外置锚文件损坏（疑似半截写入）：原文{}，按当前链尾重建基线",
+                            if preserved {
+                                format!("已另存 {}", backup.display())
+                            } else {
+                                "保留失败（已随重建覆盖）".to_string()
+                            }
+                        );
+                        self.write_anchor_locked();
+                    }
+                    // 无锚 + 空链：首启，落 genesis 锚（静默）。
+                    None if restored_total == 0 => {
+                        self.write_anchor_locked();
+                    }
+                    // 无锚 + 有链：首次启用（升级部署）或锚被删。
+                    None => {
+                        tracing::warn!(
+                            target: "nemesis_security::integrity",
+                            path = %anchor_path.display(),
+                            total = restored_total,
+                            head = %disk_head,
+                            "[AuditChain] 外置锚缺失（首次启用或锚文件被删）：已按当前链尾重建基线"
+                        );
+                        self.write_anchor_locked();
+                    }
+                }
+            }
+            Some(anchor) => {
+                if restored_total == 0 && anchor.total_events > 0 {
+                    let head_short = &anchor.head_hash[..16.min(anchor.head_hash.len())];
+                    let msg = format!(
+                        "审计链目录为空，但外置锚记录链尾 {head_short}…（共 {} 事件）——审计链可能被整链清除/破坏（锚文件原样保留于 {}）",
+                        anchor.total_events,
+                        anchor_path.display()
+                    );
+                    tracing::error!(
+                        target: "nemesis_security::integrity",
+                        path = %anchor_path.display(),
+                        anchor_head = %anchor.head_hash,
+                        anchor_total = anchor.total_events,
+                        "[AuditChain] {msg}"
+                    );
+                    crate::alert::emit(
+                        crate::alert::AlertKind::ChainVerifyFailed,
+                        crate::alert::AlertLevel::Critical,
+                        "",
+                        "audit_chain",
+                        msg,
+                    );
+                } else if anchor.head_hash != disk_head {
+                    let msg = format!(
+                        "外置锚记录链尾 {}…（{} 事件）与盘上链尾 {}…（{} 事件）不一致——链可能被截断/篡改，或上会话锚写入失败滞后",
+                        &anchor.head_hash[..16.min(anchor.head_hash.len())],
+                        anchor.total_events,
+                        &disk_head[..16.min(disk_head.len())],
+                        restored_total
+                    );
+                    tracing::warn!(
+                        target: "nemesis_security::integrity",
+                        path = %anchor_path.display(),
+                        anchor_head = %anchor.head_hash,
+                        anchor_total = anchor.total_events,
+                        disk_head = %disk_head,
+                        disk_total = restored_total,
+                        "[AuditChain] {msg}"
+                    );
+                    crate::alert::emit(
+                        crate::alert::AlertKind::ChainVerifyFailed,
+                        crate::alert::AlertLevel::Critical,
+                        "",
+                        "audit_chain",
+                        msg,
+                    );
+                }
+            }
         }
     }
 
@@ -682,6 +897,10 @@ impl AuditChain {
                 .store(last_seg_lines, std::sync::atomic::Ordering::SeqCst);
         }
 
+        // 外置锚对账（BUG-6 检测面）：空链 + 有账锚 = 整链被清可检测；
+        // 链尾 ≠ 锚头 = 截断/篡改或锚滞后可检测。见 reconcile_anchor。
+        self.reconcile_anchor(total);
+
         Ok(total)
     }
 
@@ -922,6 +1141,8 @@ fn heal_segment_tail(path: &Path) -> Result<TailHeal, String> {
     })
 }
 
+#[cfg(test)]
+mod anchor_tests;
 #[cfg(test)]
 mod cov_tests;
 #[cfg(test)]

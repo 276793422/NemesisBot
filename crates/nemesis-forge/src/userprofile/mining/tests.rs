@@ -1,12 +1,15 @@
 //! userprofile::mining 单测：统计规则随迁断言 + 仪式序列状态机（例 1）+
 //! todo 收尾挖掘 + 遥测前因挖掘（例 2）。全部纯函数确定性断言。
+//!
+//! 话术 AI 化批一（2026-11-25）：挖掘器降级为信号生产者——本文件断言的
+//! 是 SignalCard（rule_id/category/fallback_statement/confidence/hits/
+//! evidence/steps）；「auto 桶」属性移到兜底桥（[`signal_to_entry`]）断言。
 
 use super::*;
 use crate::userprofile::collection::DialogueRow;
 
-fn now() -> &'static str {
-    "2026-11-24T00:00:00+08:00"
-}
+/// 兜底桥时间戳（信号卡不带时间；桥接条目需要 now 时用此字面量）。
+const NOW_S: &str = "2026-11-24T00:00:00+08:00";
 
 fn row(ts_ms: i64, role: &str, session: &str, content: &str) -> DialogueRow {
     DialogueRow::new(ts_ms, role, content, session, Vec::new())
@@ -50,7 +53,7 @@ fn ritual_missing_phase_does_not_match() {
 #[test]
 fn ritual_requires_two_sessions_in_candidates() {
     // 单会话命中 = 任务偶然形态，不上榜；两个会话都命中 → 一条 workflow
-    // 条目（confidence ≥0.75 过 0.7 注入闸、带 4 步清单与溯源）。
+    // 信号卡（confidence ≥0.75 过 0.7 注入闸、带 4 步清单与溯源）。
     let good = [
         "做个计划",
         "回顾计划确认是否正确",
@@ -64,23 +67,23 @@ fn ritual_requires_two_sessions_in_candidates() {
         .map(|(i, c)| row(i as i64, "user", "s1", c))
         .collect();
     rows.push(row(100, "user", "s2", "今天聊聊天气"));
-    assert!(ritual_candidates(&rows, now()).is_empty(), "单会话不上榜");
+    assert!(ritual_candidates(&rows).is_empty(), "单会话不上榜");
 
     for (i, c) in good.iter().enumerate() {
         rows.push(row(200 + i as i64, "user", "s2", c));
     }
-    let out = ritual_candidates(&rows, now());
+    let out = ritual_candidates(&rows);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "workflow");
     assert!(out[0].confidence >= 0.7, "两会话 confidence ≥0.75");
     assert_eq!(out[0].steps.len(), 4, "四阶段步骤清单");
-    assert!(out[0].auto, "挖掘器产物 = auto 桶");
+    assert_eq!(out[0].rule_id, RULE_RITUAL_PLAN, "信号卡带规则身份证");
     assert_eq!(out[0].evidence, vec!["s1", "s2"]);
     assert_eq!(out[0].hits, 2);
     // assistant 行不参与仪式判定。
     let mut with_bot = rows.clone();
     with_bot.insert(2, row(1, "assistant", "s1", "计划做好了包含测试复选框"));
-    assert_eq!(ritual_candidates(&with_bot, now()).len(), 1);
+    assert_eq!(ritual_candidates(&with_bot).len(), 1);
 }
 
 // ---- todo 收尾挖掘 ----
@@ -116,11 +119,11 @@ fn todo_test_last_candidates() {
             ],
         ),
     ];
-    let out = todo_candidates(&snaps, now());
+    let out = todo_candidates(&snaps);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "quality_bar");
     assert!(out[0].confidence >= 0.7);
-    assert!(out[0].auto);
+    assert_eq!(out[0].rule_id, RULE_TODO_TEST_LAST);
     assert_eq!(out[0].evidence, vec!["todo_a.json", "todo_b.json"]);
     // steps = 收尾测试项内容（最后两步）。
     assert!(out[0].steps.contains(&"跑测试".to_string()));
@@ -139,7 +142,7 @@ fn todo_below_thresholds_no_entry() {
             ("验证", "pending"),
         ],
     )];
-    assert!(todo_candidates(&snaps, now()).is_empty());
+    assert!(todo_candidates(&snaps).is_empty());
     // 占比 <0.7 不上榜（3 中 1）。
     let snaps = vec![
         todo(
@@ -170,13 +173,13 @@ fn todo_below_thresholds_no_entry() {
             ],
         ),
     ];
-    assert!(todo_candidates(&snaps, now()).is_empty());
+    assert!(todo_candidates(&snaps).is_empty());
     // 少于 3 步的清单不算。
     let snaps = vec![
         todo("a", &[("测试", "pending"), ("验证", "pending")]),
         todo("b", &[("检查", "pending"), ("test", "pending")]),
     ];
-    assert!(todo_candidates(&snaps, now()).is_empty());
+    assert!(todo_candidates(&snaps).is_empty());
 }
 
 // ---- 遥测前因挖掘（例 2）----
@@ -209,12 +212,12 @@ fn antecedent_diag_then_cluster_matches() {
             "cluster.status",
         ), // 窗内后果
     ];
-    let out = antecedent_candidates(&rows, now());
+    let out = antecedent_candidates(&rows);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "workflow");
-    assert!(out[0].auto);
+    assert_eq!(out[0].rule_id, RULE_ANTECEDENT_DIAG_FIRST);
     assert_eq!(out[0].evidence.len(), 3, "三个不同日期");
-    assert!(out[0].content.contains("诊断"));
+    assert!(out[0].fallback_statement.contains("诊断"));
     assert_eq!(out[0].steps.len(), 3);
 }
 
@@ -228,7 +231,7 @@ fn antecedent_below_days_or_window_no_entry() {
         usage(day0 + 86_400_000, "cluster", "diagnostics.run"),
         usage(day0 + 86_400_000 + 60 * 1000, "cluster", "nodes.list"),
     ];
-    assert!(antecedent_candidates(&rows, now()).is_empty());
+    assert!(antecedent_candidates(&rows).is_empty());
     // 窗外（>60min）后果不计。
     let rows = vec![
         usage(day0, "cluster", "diagnostics.run"),
@@ -242,56 +245,101 @@ fn antecedent_below_days_or_window_no_entry() {
             "nodes.list",
         ),
     ];
-    assert!(antecedent_candidates(&rows, now()).is_empty());
+    assert!(antecedent_candidates(&rows).is_empty());
     // 无诊断标记（直接 cluster 操作）不构成前因。
     let rows = vec![usage(day0, "cluster", "nodes.list")];
-    assert!(antecedent_candidates(&rows, now()).is_empty());
+    assert!(antecedent_candidates(&rows).is_empty());
 }
 
-// ---- 统计规则（随迁断言在 store/tests.rs；这里补 auto 标记面）----
+// ---- 统计规则（随迁断言在 store/tests.rs；这里补信号卡身份证 +
+//      兜底桥 auto 面）----
 
 #[test]
-fn stat_candidates_marked_auto() {
+fn stat_signals_carry_rule_id_and_fallback_auto() {
     let msgs: Vec<String> = (0..12).map(|_| "继续".into()).collect();
-    let out = stat_candidates(&msgs, now());
+    let out = stat_candidates(&msgs);
     assert!(!out.is_empty());
-    assert!(out.iter().all(|h| h.auto), "统计规则产物恒 auto 桶（G8）");
+    assert!(
+        out.iter().all(|c| !c.rule_id.is_empty()),
+        "统计信号卡带规则身份证（可对号入座归并的前提）"
+    );
+    // 兜底桥产物恒 auto 桶（G8——无模型路径落库语义不变）。
+    for c in &out {
+        let entry = signal_to_entry(c, NOW_S);
+        assert!(entry.auto, "兜底桥产物 = auto 桶（G8）");
+        assert_eq!(entry.rule_id, c.rule_id);
+    }
+}
+
+// ---- 批一底座漂移锁：静态模板表完整性（回填逐字比对的真相源）----
+
+#[test]
+fn static_template_table_roundtrips() {
+    // 31 规则 - 3 参数化（route.pair / shell.default / terminal.family）。
+    assert_eq!(STATIC_TEMPLATE_RULES.len(), 28);
+    for (template, rule) in STATIC_TEMPLATE_RULES {
+        assert_eq!(
+            static_template_rule_id(template),
+            Some(*rule),
+            "模板回查必须命中自身规则：{rule}"
+        );
+        assert!(!template.trim().is_empty(), "空模板无回填意义：{rule}");
+    }
+    // 参数化规则不在静态表（§八 #13：骨架匹配刻意不做，靠归并 rule_id
+    // 采纳有机回填）。
+    for rule in [RULE_ROUTE_PAIR, RULE_SHELL_DEFAULT, RULE_TERMINAL_FAMILY] {
+        assert!(
+            !STATIC_TEMPLATE_RULES.iter().any(|(_, r)| *r == rule),
+            "参数化规则不得进静态表：{rule}"
+        );
+    }
 }
 
 // ---- 批 B：stat 增量（提问粒度长文 / 中英混用）----
 
 #[test]
 fn stat_longform_and_mixed_language() {
-    // 长文：10 条 250 字消息 → 长需求书条目；简洁规则（avg<40）不该同时出。
+    // 长文：10 条 250 字消息 → 长需求书信号卡；简洁规则（avg<40）不该同时出。
     let long: Vec<String> = (0..10).map(|_| "帮我看一下这个需求，".repeat(25)).collect();
-    let out = stat_candidates(&long, now());
+    let out = stat_candidates(&long);
     let longform = out
         .iter()
-        .find(|h| h.content.contains("长文详述"))
+        .find(|h| h.fallback_statement.contains("长文详述"))
         .expect("长文粒度应上榜");
     assert!(longform.confidence >= 0.7);
     assert!(
-        !out.iter().any(|h| h.content.contains("简短直接")),
+        !out.iter()
+            .any(|h| h.fallback_statement.contains("简短直接")),
         "长文与简洁互斥"
     );
     // 短消息（avg<40）→ 只有简洁，没有长文。
     let short: Vec<String> = (0..10).map(|i| format!("改第{i}处")).collect();
-    let out = stat_candidates(&short, now());
-    assert!(out.iter().any(|h| h.content.contains("简短直接")));
-    assert!(!out.iter().any(|h| h.content.contains("长文详述")));
-    // 中英混用：10 条 CJK+ASCII 消息 → 术语保留英文条目。
+    let out = stat_candidates(&short);
+    assert!(
+        out.iter()
+            .any(|h| h.fallback_statement.contains("简短直接"))
+    );
+    assert!(
+        !out.iter()
+            .any(|h| h.fallback_statement.contains("长文详述"))
+    );
+    // 中英混用：10 条 CJK+ASCII 消息 → 术语保留英文信号卡。
     let mixed: Vec<String> = (0..10)
         .map(|i| format!("把模块{i}的 API 参数改一下"))
         .collect();
-    let out = stat_candidates(&mixed, now());
+    let out = stat_candidates(&mixed);
     assert!(
-        out.iter().any(|h| h.content.contains("术语保留英文原词")),
-        "混用条目应上榜：{out:?}"
+        out.iter()
+            .any(|h| h.fallback_statement.contains("术语保留英文原词")),
+        "混用信号卡应上榜：{out:?}"
     );
     // 纯中文（无 ASCII 词）→ 不上榜。
     let pure: Vec<String> = (0..10).map(|i| format!("把模块{i}的参数改一下")).collect();
-    let out = stat_candidates(&pure, now());
-    assert!(!out.iter().any(|h| h.content.contains("术语保留英文原词")));
+    let out = stat_candidates(&pure);
+    assert!(
+        !out.iter()
+            .any(|h| h.fallback_statement.contains("术语保留英文原词"))
+    );
 }
 
 // ---- 批 B：页面足迹链 ----
@@ -307,11 +355,11 @@ fn route_chain_three_days_matches() {
     }
     // 非 route 行不参与（cluster 行混入不破坏链）。
     rows.push(usage(day(0) + 30_000, "cluster", "nodes.list"));
-    let out = route_chain_candidates(&rows, now());
+    let out = route_chain_candidates(&rows);
     assert_eq!(out.len(), 1, "同转移跨 3 日 → 一条");
     assert_eq!(out[0].category, "workflow");
-    assert!(out[0].content.contains("/board"));
-    assert!(out[0].content.contains("/cluster"));
+    assert!(out[0].fallback_statement.contains("/board"));
+    assert!(out[0].fallback_statement.contains("/cluster"));
     assert_eq!(out[0].steps.len(), 2, "steps=页面序列");
     assert_eq!(out[0].evidence.len(), 3, "evidence=日期");
     // 2 日重现不上榜。
@@ -320,7 +368,7 @@ fn route_chain_three_days_matches() {
         rows.push(usage(day(d), "route", "/board"));
         rows.push(usage(day(d) + 60_000, "route", "/cluster"));
     }
-    assert!(route_chain_candidates(&rows, now()).is_empty());
+    assert!(route_chain_candidates(&rows).is_empty());
     // 单日内同页反复切换只算一个序列（相邻去重），单日 1 次出现不上榜。
     let rows = vec![
         usage(day(0), "route", "/a"),
@@ -328,7 +376,7 @@ fn route_chain_three_days_matches() {
         usage(day(0) + 2_000, "route", "/a"),
         usage(day(0) + 3_000, "route", "/b"),
     ];
-    assert!(route_chain_candidates(&rows, now()).is_empty());
+    assert!(route_chain_candidates(&rows).is_empty());
 }
 
 // ---- 批 B：todo 完成/中弃统计 ----
@@ -359,7 +407,7 @@ fn todo_completion_stats_counts() {
 
 #[test]
 fn todo_sequence_deploy_tail_matches() {
-    // 3 个快照都含部署步且收尾 → quality_bar 条目。
+    // 3 个快照都含部署步且收尾 → quality_bar 信号卡。
     let snaps = vec![
         todo(
             "a",
@@ -386,10 +434,10 @@ fn todo_sequence_deploy_tail_matches() {
             ],
         ),
     ];
-    let out = todo_sequence_candidates(&snaps, now());
+    let out = todo_sequence_candidates(&snaps);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "quality_bar");
-    assert!(out[0].auto);
+    assert_eq!(out[0].rule_id, RULE_TODO_SEQ_DEPLOY);
     assert_eq!(out[0].evidence, vec!["a", "b", "c"]);
     assert!(out[0].steps.iter().any(|s| s.contains("部署上线")));
     // 部署步在中间（非收尾）→ 不上榜。
@@ -419,7 +467,7 @@ fn todo_sequence_deploy_tail_matches() {
             ],
         ),
     ];
-    assert!(todo_sequence_candidates(&snaps, now()).is_empty());
+    assert!(todo_sequence_candidates(&snaps).is_empty());
     // 只有 2 个含部署快照 → 不上榜。
     let snaps = vec![
         todo(
@@ -439,7 +487,7 @@ fn todo_sequence_deploy_tail_matches() {
             ],
         ),
     ];
-    assert!(todo_sequence_candidates(&snaps, now()).is_empty());
+    assert!(todo_sequence_candidates(&snaps).is_empty());
 }
 
 // ---- 批 B：开场白模式 ----
@@ -452,24 +500,24 @@ fn opener_task_dominance_matches() {
         row(3, "user", "s2", "看一下这个模块的依赖问题"),
         row(4, "user", "s3", "给看板加一个导出按钮"),
     ];
-    let out = opener_candidates(&rows, now());
+    let out = opener_candidates(&rows);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "style");
-    assert!(out[0].content.contains("直接派活"));
+    assert!(out[0].fallback_statement.contains("直接派活"));
     assert_eq!(out[0].evidence, vec!["s1", "s2", "s3"]);
     // 2 会话 → 不上榜。
     let rows = vec![
         row(1, "user", "s1", "帮我把登录页改成暗色主题"),
         row(2, "user", "s2", "看一下这个模块的依赖问题"),
     ];
-    assert!(opener_candidates(&rows, now()).is_empty());
+    assert!(opener_candidates(&rows).is_empty());
     // 主流形态 <70%（2 派活 + 1 寒暄）→ 不上榜。
     let rows = vec![
         row(1, "user", "s1", "帮我把登录页改成暗色主题"),
         row(2, "user", "s2", "看一下这个模块的依赖问题"),
         row(3, "user", "s3", "你好，在吗"),
     ];
-    assert!(opener_candidates(&rows, now()).is_empty());
+    assert!(opener_candidates(&rows).is_empty());
 }
 
 #[test]
@@ -480,18 +528,18 @@ fn opener_classification_order() {
         row(2, "user", "s2", "接着上次的重构往下做"),
         row(3, "user", "s3", "之前那个性能问题再看看"),
     ];
-    let out = opener_candidates(&rows, now());
+    let out = opener_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("接着之前的进度"));
+    assert!(out[0].fallback_statement.contains("接着之前的进度"));
     // 贴报错开场。
     let rows = vec![
         row(1, "user", "s1", "报错了：NullPointerException\nat Foo.bar"),
         row(2, "user", "s2", "集群又失败了，看下"),
         row(3, "user", "s3", "这个 error 怎么回事"),
     ];
-    let out = opener_candidates(&rows, now());
+    let out = opener_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("贴报错"));
+    assert!(out[0].fallback_statement.contains("贴报错"));
 }
 
 // ---- 批 B：催促/复述 ----
@@ -509,23 +557,23 @@ fn urge_bursts_match() {
         rows.push(row(t0 + 600_000 + i * 30_000, "user", "s1", "好了没"));
     }
     rows.push(row(t0 + 700_000, "assistant", "s1", "还在跑"));
-    let out = urge_candidates(&rows, now());
+    let out = urge_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("复述/催促"));
+    assert!(out[0].fallback_statement.contains("复述/催促"));
     assert_eq!(out[0].hits, 6, "两簇共 6 条发送");
     assert_eq!(out[0].evidence.len(), 2);
     // 单簇 → 不上榜。
     let rows: Vec<DialogueRow> = (0..3i64)
         .map(|i| row(t0 + i * 30_000, "user", "s1", "跑完了吗"))
         .collect();
-    assert!(urge_candidates(&rows, now()).is_empty());
+    assert!(urge_candidates(&rows).is_empty());
     // 同文三连但最后一发超过 2min（拆成 2+1）→ 不上榜。
     let rows = vec![
         row(t0, "user", "s1", "跑完了吗"),
         row(t0 + 30_000, "user", "s1", "跑完了吗"),
         row(t0 + 200_000, "user", "s1", "跑完了吗"),
     ];
-    assert!(urge_candidates(&rows, now()).is_empty());
+    assert!(urge_candidates(&rows).is_empty());
 }
 
 // ---- 批 B：分工风格 ----
@@ -542,9 +590,9 @@ fn delegation_micro_management() {
             rows.push(row(t + 10_000, "assistant", sid, "好的"));
         }
     }
-    let out = delegation_candidates(&rows, now());
+    let out = delegation_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("微观管理"));
+    assert!(out[0].fallback_statement.contains("微观管理"));
     assert_eq!(out[0].evidence, vec!["s1", "s2"]);
 }
 
@@ -563,9 +611,9 @@ fn delegation_dispatch_style() {
             rows.push(row(t + silent, "user", sid, "进度如何"));
         }
     }
-    let out = delegation_candidates(&rows, now());
+    let out = delegation_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("派单型"));
+    assert!(out[0].fallback_statement.contains("派单型"));
     assert_eq!(out[0].hits, 4, "总静默段数");
     // 混合形态（微观会话 + 静默段并存）→ 不上榜。
     let mut mixed = rows.clone();
@@ -574,27 +622,26 @@ fn delegation_dispatch_style() {
         mixed.push(row(t, "user", "s3", &format!("改第{i}处")));
         mixed.push(row(t + 10_000, "assistant", "s3", "好的"));
     }
-    assert!(delegation_candidates(&mixed, now()).is_empty());
+    assert!(delegation_candidates(&mixed).is_empty());
 }
 
 // ---- 批 B：返工节奏 ----
 
 #[test]
 fn rework_iterative_and_oneshot() {
-    let now_s = now();
     // ≥4 次 rewind → 迭代型。
-    let out = rework_candidates(4, 2, now_s);
+    let out = rework_candidates(4, 2);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("迭代式"));
+    assert!(out[0].fallback_statement.contains("迭代式"));
     assert_eq!(out[0].hits, 4);
     // 多会话零 rewind → 一次成型型。
-    let out = rework_candidates(0, 6, now_s);
+    let out = rework_candidates(0, 6);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("一次成型"));
+    assert!(out[0].fallback_statement.contains("一次成型"));
     // 少会话零 rewind → 不上榜（证据不足）。
-    assert!(rework_candidates(0, 3, now_s).is_empty());
+    assert!(rework_candidates(0, 3).is_empty());
     // 中间带（1-3 次 rewind）→ 不上榜。
-    assert!(rework_candidates(2, 6, now_s).is_empty());
+    assert!(rework_candidates(2, 6).is_empty());
 }
 
 // ---- 批 B：障碍处置顺序 ----
@@ -617,9 +664,9 @@ fn retry_self_retry_three_days() {
         rows.push(usage_ok(t, "cluster", "nodes.ping", false));
         rows.push(usage_ok(t + 20_000, "cluster", "nodes.ping", true)); // 同 cmd 窗内重发成功
     }
-    let out = retry_candidates(&rows, now());
+    let out = retry_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("自己重试"));
+    assert!(out[0].fallback_statement.contains("自己重试"));
     assert_eq!(out[0].evidence.len(), 3);
     // 2 日 → 不上榜。
     let mut rows = Vec::new();
@@ -628,7 +675,7 @@ fn retry_self_retry_three_days() {
         rows.push(usage_ok(t, "cluster", "nodes.ping", false));
         rows.push(usage_ok(t + 20_000, "cluster", "nodes.ping", true));
     }
-    assert!(retry_candidates(&rows, now()).is_empty());
+    assert!(retry_candidates(&rows).is_empty());
     // 重发超窗（>5min）不算。
     let rows = (0..3i64)
         .map(|d| {
@@ -642,7 +689,7 @@ fn retry_self_retry_three_days() {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    assert!(retry_candidates(&rows, now()).is_empty());
+    assert!(retry_candidates(&rows).is_empty());
     // 不同 cmd 的成功不算重试解决。
     let rows = (0..3i64)
         .map(|d| {
@@ -656,7 +703,7 @@ fn retry_self_retry_three_days() {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    assert!(retry_candidates(&rows, now()).is_empty());
+    assert!(retry_candidates(&rows).is_empty());
 }
 
 // ---- 批 B：审批交互弱信号 ----
@@ -668,27 +715,27 @@ fn approval_signal_friction_and_smooth() {
     let mut rows: Vec<UsageRow> = (0..8)
         .map(|i| usage_ok(t0 + i * 1000, "approval", "respond", i >= 3))
         .collect();
-    let out = approval_signal_candidates(&rows, now());
+    let out = approval_signal_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("拉锯"));
+    assert!(out[0].fallback_statement.contains("拉锯"));
     // 10 respond，1 失败（10% ≤10%）→ 顺畅姿态（trust）。
     rows = (0..10)
         .map(|i| usage_ok(t0 + i * 1000, "approval", "respond", i > 0))
         .collect();
-    let out = approval_signal_candidates(&rows, now());
+    let out = approval_signal_candidates(&rows);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "trust");
-    assert!(out[0].content.contains("快而稳"));
+    assert!(out[0].fallback_statement.contains("快而稳"));
     // 中间带（4/10=40% 不算；改 2/10=20% 在 0.1~0.3 之间）→ 不上榜。
     rows = (0..10)
         .map(|i| usage_ok(t0 + i * 1000, "approval", "respond", i >= 2))
         .collect();
-    assert!(approval_signal_candidates(&rows, now()).is_empty());
+    assert!(approval_signal_candidates(&rows).is_empty());
     // 样本不足（4 条）→ 不上榜。
     rows = (0..4)
         .map(|i| usage_ok(t0 + i * 1000, "approval", "respond", i > 0))
         .collect();
-    assert!(approval_signal_candidates(&rows, now()).is_empty());
+    assert!(approval_signal_candidates(&rows).is_empty());
 }
 
 // ---- 遥测行读取 ----
@@ -726,7 +773,7 @@ fn file_row(ts_ms: i64, kinds: &[&str]) -> DialogueRow {
 
 #[test]
 fn work_domain_code_dominance() {
-    // 10 行带文件接触，7 行 code（70% ≥ 60%）→ workflow 条目。
+    // 10 行带文件接触，7 行 code（70% ≥ 60%）→ workflow 信号卡。
     let mut rows = Vec::new();
     for i in 0..7i64 {
         rows.push(file_row(i, &["code"]));
@@ -734,21 +781,21 @@ fn work_domain_code_dominance() {
     rows.push(file_row(100, &["doc"]));
     rows.push(file_row(101, &["doc"]));
     rows.push(file_row(102, &["code", "config"]));
-    let out = work_domain_candidates(&rows, now());
+    let out = work_domain_candidates(&rows);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "workflow");
-    assert!(out[0].content.contains("代码工作为主"));
+    assert!(out[0].fallback_statement.contains("代码工作为主"));
     assert_eq!(out[0].hits, 8, "code 计数=主导种类行数");
     assert!(out[0].evidence[0].contains("files code=8/10"));
-    // auto 条目（batch B 纪律沿用）。
-    assert!(out[0].auto);
+    // 规则身份证按主导种类分派。
+    assert_eq!(out[0].rule_id, RULE_WORK_DOMAIN_CODE);
 }
 
 #[test]
 fn work_domain_below_thresholds_no_entry() {
     // 样本不足（<10 行）→ 不上榜。
     let rows: Vec<_> = (0..9i64).map(|i| file_row(i, &["code"])).collect();
-    assert!(work_domain_candidates(&rows, now()).is_empty());
+    assert!(work_domain_candidates(&rows).is_empty());
     // 样本够但占比不足 60% → 不上榜。
     let mut rows = Vec::new();
     for i in 0..5i64 {
@@ -757,10 +804,10 @@ fn work_domain_below_thresholds_no_entry() {
     for i in 10..15i64 {
         rows.push(file_row(i, &["doc"]));
     }
-    assert!(work_domain_candidates(&rows, now()).is_empty());
+    assert!(work_domain_candidates(&rows).is_empty());
     // 主导种类是 other → 不上榜（未知扩展名无可执行含义）。
     let rows: Vec<_> = (0..10i64).map(|i| file_row(i, &["other"])).collect();
-    assert!(work_domain_candidates(&rows, now()).is_empty());
+    assert!(work_domain_candidates(&rows).is_empty());
     // user 行带 file_kinds 不参与（恒 assistant 行）。
     let mut u = row(0, "user", "s1", "继续");
     u.file_kinds = vec!["code".into()];
@@ -768,15 +815,14 @@ fn work_domain_below_thresholds_no_entry() {
         .map(|i| file_row(i, &["doc"]))
         .chain(std::iter::once(u))
         .collect::<Vec<_>>();
-    let out = work_domain_candidates(&rows, now());
+    let out = work_domain_candidates(&rows);
     assert_eq!(out.len(), 1);
-    assert!(out[0].content.contains("文档写作"));
+    assert!(out[0].fallback_statement.contains("文档写作"));
 }
 
 #[test]
 fn model_switch_counts_transitions_and_slash() {
-    let now_s = now();
-    // 3 次模型变化（glm→kimi→glm→deepseek）→ tool_preference 条目。
+    // 3 次模型变化（glm→kimi→glm→deepseek）→ tool_preference 信号卡。
     let mut m1 = row(0, "assistant", "s1", "a");
     m1.model = "glm-5.3-flash".into();
     let mut m2 = row(1, "assistant", "s1", "b");
@@ -785,7 +831,7 @@ fn model_switch_counts_transitions_and_slash() {
     m3.model = "glm-5.3-flash".into();
     let mut m4 = row(3, "assistant", "s1", "d");
     m4.model = "deepseek-v4".into();
-    let out = model_switch_candidates(&[m1, m2, m3, m4], now_s);
+    let out = model_switch_candidates(&[m1, m2, m3, m4]);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "tool_preference");
     assert_eq!(out[0].hits, 3);
@@ -798,15 +844,15 @@ fn model_switch_counts_transitions_and_slash() {
     let mut m3 = row(2, "assistant", "s1", "c");
     m3.model = "glm-5.3-flash".into();
     let slash = row(3, "user", "s1", "  /model glm-5.3-flash");
-    let out = model_switch_candidates(&[m1.clone(), m2.clone(), m3, slash], now_s);
+    let out = model_switch_candidates(&[m1.clone(), m2.clone(), m3, slash]);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].hits, 3);
     assert!(out[0].evidence[1].contains("/model=1"));
     // 不足 3 → 不上榜。
-    assert!(model_switch_candidates(&[m1.clone(), m2.clone()], now_s).is_empty());
+    assert!(model_switch_candidates(&[m1.clone(), m2.clone()]).is_empty());
     // 空模型行不算变化（旧条目缺 model 徽标）。
     let rows = vec![m1, m2, row(2, "assistant", "s1", "c")];
-    assert!(model_switch_candidates(&rows, now_s).is_empty());
+    assert!(model_switch_candidates(&rows).is_empty());
     // 单模型恒定（无变化）→ 不上榜。
     let rows = vec![
         {
@@ -820,7 +866,7 @@ fn model_switch_counts_transitions_and_slash() {
             r
         },
     ];
-    assert!(model_switch_candidates(&rows, now_s).is_empty());
+    assert!(model_switch_candidates(&rows).is_empty());
 }
 
 /// 批 C ④：审批卡信号构造器（只带挖掘器读的键）。
@@ -834,43 +880,42 @@ fn approval_signal(approved: bool, duration_ms: u64) -> serde_json::Value {
 
 #[test]
 fn approval_strong_fast_and_slow() {
-    let now_s = now();
-    // 5 张批准卡平均 3s（≤5s）→ trust 条目。
+    // 5 张批准卡平均 3s（≤5s）→ trust 信号卡。
     let signals: Vec<_> = [2000, 3000, 4000, 3000, 3000]
         .iter()
         .map(|&d| approval_signal(true, d))
         .collect();
-    let out = approval_strong_candidates(&signals, now_s);
+    let out = approval_strong_candidates(&signals);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "trust");
-    assert!(out[0].content.contains("快而稳"));
+    assert!(out[0].fallback_statement.contains("快而稳"));
     assert_eq!(out[0].hits, 5);
     assert!(out[0].evidence.iter().any(|e| e.contains("avg_ms=3000")));
-    // 平均 70s（≥60s）→ workflow 条目。
+    // 平均 70s（≥60s）→ workflow 信号卡。
     let signals: Vec<_> = [60_000, 70_000, 80_000, 70_000, 70_000]
         .iter()
         .map(|&d| approval_signal(true, d))
         .collect();
-    let out = approval_strong_candidates(&signals, now_s);
+    let out = approval_strong_candidates(&signals);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "workflow");
-    assert!(out[0].content.contains("审批响应慢"));
+    assert!(out[0].fallback_statement.contains("审批响应慢"));
     // 中间带（平均 30s）→ 不上榜。
     let signals: Vec<_> = (0..5).map(|_| approval_signal(true, 30_000)).collect();
-    assert!(approval_strong_candidates(&signals, now_s).is_empty());
+    assert!(approval_strong_candidates(&signals).is_empty());
     // 样本不足 5 张 → 不上榜。
     let signals: Vec<_> = (0..4).map(|_| approval_signal(true, 2000)).collect();
-    assert!(approval_strong_candidates(&signals, now_s).is_empty());
+    assert!(approval_strong_candidates(&signals).is_empty());
     // 拒绝卡不混入「决策快」平均（5 拒 0 批 → 无批准样本）。
     let signals: Vec<_> = (0..5).map(|_| approval_signal(false, 1000)).collect();
-    assert!(approval_strong_candidates(&signals, now_s).is_empty());
+    assert!(approval_strong_candidates(&signals).is_empty());
     // estop 信号不参与审批挖掘。
     let mut signals: Vec<_> = [2000, 3000, 4000, 3000, 3000]
         .iter()
         .map(|&d| approval_signal(true, d))
         .collect();
     signals.push(serde_json::json!({"ts_ms": 9, "kind": "estop", "action": "engage"}));
-    assert_eq!(approval_strong_candidates(&signals, now_s).len(), 1);
+    assert_eq!(approval_strong_candidates(&signals).len(), 1);
 }
 
 // ---------- 终端会话挖掘（2026-11-24 T 批） ----------
@@ -884,7 +929,7 @@ fn term(shell: &str, cmds: &[&str]) -> crate::userprofile::collection::TerminalS
     }
 }
 
-/// shell 偏好：≥3 会话且主导占比 ≥70% → environment 条目；缺头会话不进
+/// shell 偏好：≥3 会话且主导占比 ≥70% → environment 信号卡；缺头会话不进
 /// 分母；不足 3 会话 / 占比不足 → 空。
 #[test]
 fn shell_preference_candidates_gates() {
@@ -894,18 +939,22 @@ fn shell_preference_candidates_gates() {
         term("pwsh", &["c"]),
         term("", &["d"]), // 缺 shell 头：不进分母
     ];
-    let out = shell_preference_candidates(&sessions, now());
+    let out = shell_preference_candidates(&sessions);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].category, "environment");
-    assert!(out[0].content.contains("pwsh"), "{}", out[0].content);
+    assert!(
+        out[0].fallback_statement.contains("pwsh"),
+        "{}",
+        out[0].fallback_statement
+    );
 
     // 不足 3 个已知 shell 会话 → 不挖。
     let few = vec![term("pwsh", &["a"]), term("", &["b"]), term("", &["c"])];
-    assert!(shell_preference_candidates(&few, now()).is_empty());
+    assert!(shell_preference_candidates(&few).is_empty());
 
     // 占比不足 70%（2/3 pwsh + 1/3 bash = 0.67 < 0.7）→ 不挖。
     let mixed = vec![term("pwsh", &[]), term("pwsh", &[]), term("bash", &[])];
-    assert!(shell_preference_candidates(&mixed, now()).is_empty());
+    assert!(shell_preference_candidates(&mixed).is_empty());
 }
 
 /// 命令族：首 token 总数 ≥8 且跨 ≥3 会话且非噪声 → tool_preference top-3；
@@ -922,18 +971,22 @@ fn terminal_command_candidates_gates() {
         &["cargo build", "cargo clippy --tests", "cargo check"],
     );
     let s3 = term("pwsh", &["cargo fmt --all --check", "cargo doc", "cd .."]);
-    let out = terminal_command_candidates(&[s1, s2, s3], now());
+    let out = terminal_command_candidates(&[s1, s2, s3]);
     assert_eq!(out.len(), 1, "cargo 8 次/3 会话达标，其余命令未达标或噪声");
     assert_eq!(out[0].category, "tool_preference");
-    assert!(out[0].content.contains("cargo"), "{}", out[0].content);
+    assert!(
+        out[0].fallback_statement.contains("cargo"),
+        "{}",
+        out[0].fallback_statement
+    );
     assert!(
         out[0].confidence >= 0.7,
         "置信度基线钉在阈值 0.7（复查 2026-11-24），实际 {}",
         out[0].confidence
     );
     assert!(
-        !out.iter().any(|e| e.content.contains("release")),
-        "参数不采集：条目内容只提命令名"
+        !out.iter().any(|e| e.fallback_statement.contains("release")),
+        "参数不采集：信号卡内容只提命令名"
     );
 
     // 总数够但只跨 1 个会话（8 连敲同命令）→ 不构成习惯。
@@ -942,7 +995,7 @@ fn terminal_command_candidates_gates() {
         term("pwsh", &[]),
         term("pwsh", &[]),
     ];
-    assert!(terminal_command_candidates(&spammy, now()).is_empty());
+    assert!(terminal_command_candidates(&spammy).is_empty());
 }
 
 /// BUG-20261125-005：路径形态 argv[0]（绝对路径/UNC/相对路径）降为文件名
@@ -974,7 +1027,7 @@ fn first_token_reduces_path_form_to_basename() {
     assert_eq!(first_token("   "), None);
 }
 
-/// BUG-20261125-005 端到端：路径形态命令反复出现 → 命令族条目只含
+/// BUG-20261125-005 端到端：路径形态命令反复出现 → 命令族信号卡只含
 /// 文件名，绝不含用户名/盘符/主机名/目录段。
 #[test]
 fn terminal_command_candidates_path_form_leaks_no_directories() {
@@ -998,19 +1051,25 @@ fn terminal_command_candidates_path_form_leaks_no_directories() {
             r"C:\tools\build.exe",
         ],
     );
-    let out = terminal_command_candidates(&[s1, s2, s3], now());
+    let out = terminal_command_candidates(&[s1, s2, s3]);
     assert_eq!(out.len(), 1, "路径形态归一后 build.exe 9 次/3 会话达标");
-    assert!(out[0].content.contains("build.exe"), "{}", out[0].content);
+    assert!(
+        out[0].fallback_statement.contains("build.exe"),
+        "{}",
+        out[0].fallback_statement
+    );
     assert!(
         !out.iter().any(|e| {
-            e.content.contains("alice")
-                || e.content.contains("c:")
-                || e.content.contains("nas")
-                || e.content.contains("users")
-                || e.content.contains("tools")
+            e.fallback_statement.contains("alice")
+                || e.fallback_statement.contains("c:")
+                || e.fallback_statement.contains("nas")
+                || e.fallback_statement.contains("users")
+                || e.fallback_statement.contains("tools")
         }),
         "路径敏感面必须被剥除: {:?}",
-        out.iter().map(|e| &e.content).collect::<Vec<_>>()
+        out.iter()
+            .map(|e| &e.fallback_statement)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1060,8 +1119,16 @@ fn terminal_command_candidates_orders_by_count() {
             "ls",
         ],
     );
-    let out = terminal_command_candidates(&[s1, s2, s3], now());
+    let out = terminal_command_candidates(&[s1, s2, s3]);
     assert_eq!(out.len(), 2, "epsilon 7 次不达标、ls 噪声");
-    assert!(out[0].content.contains("gamma"), "{}", out[0].content);
-    assert!(out[1].content.contains("delta"), "{}", out[1].content);
+    assert!(
+        out[0].fallback_statement.contains("gamma"),
+        "{}",
+        out[0].fallback_statement
+    );
+    assert!(
+        out[1].fallback_statement.contains("delta"),
+        "{}",
+        out[1].fallback_statement
+    );
 }

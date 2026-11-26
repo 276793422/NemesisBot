@@ -1158,7 +1158,9 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                 };
                 println!("Security Audit Log (last {} entries)", limit);
                 println!("======================================");
-                let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
+                let audit_path = nemesis_path::resolve_audit_chain_path_in_workspace(
+                    &common::workspace_path(&home),
+                );
                 if audit_path.exists() {
                     if let Ok(data) = std::fs::read_to_string(&audit_path) {
                         let lines: Vec<&str> = data.lines().collect();
@@ -1181,7 +1183,9 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             }
             Some(AuditAction::Export { output }) => {
                 println!("Exporting audit log to: {}", output);
-                let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
+                let audit_path = nemesis_path::resolve_audit_chain_path_in_workspace(
+                    &common::workspace_path(&home),
+                );
                 if audit_path.exists() {
                     let data = std::fs::read_to_string(&audit_path)?;
                     let entries: Vec<serde_json::Value> = data
@@ -1206,7 +1210,9 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             Some(AuditAction::Denied) => {
                 println!("Denied Operations");
                 println!("=================");
-                let audit_path = common::workspace_path(&home).join("audit_chain.jsonl");
+                let audit_path = nemesis_path::resolve_audit_chain_path_in_workspace(
+                    &common::workspace_path(&home),
+                );
                 if audit_path.exists() {
                     if let Ok(data) = std::fs::read_to_string(&audit_path) {
                         let denied: Vec<_> = data

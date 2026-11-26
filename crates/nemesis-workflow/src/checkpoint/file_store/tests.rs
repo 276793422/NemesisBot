@@ -409,3 +409,69 @@ async fn list_tie_is_deterministic_by_id() {
     );
     assert_eq!(metas[0].saved_at, metas[1].saved_at);
 }
+
+// BUG-20261126-101 回归锁：atomic_write 必须委托唯一临时名权威 helper
+// （write_file_atomic）。旧自制 tmp+rename 用固定临时名
+// `final_path.with_extension(<id>.tmp)`——同 checkpoint id 并发写（多实例
+// 同 workspace / 同 id 重试）交错在同一 tmp 上，先完成者的 rename 可把
+// 另一方写到一半的半截 JSON 提交成正式 checkpoint。
+
+#[tokio::test]
+async fn save_leaves_no_tmp_litter() {
+    let (_tmp, store) = make_store();
+    store.save(make_checkpoint("e", "cp1", 0)).await.unwrap();
+    // 同 id 重存（旧实现固定 tmp 名会复用同名 tmp；新实现唯一临时名）。
+    let mut again = make_checkpoint("e", "cp1", 5);
+    again
+        .context_snapshot
+        .variables
+        .insert("marker".to_string(), serde_json::json!("second"));
+    store.save(again).await.unwrap();
+    store.save(make_checkpoint("e", "cp2", 0)).await.unwrap();
+
+    let dir = store.exec_dir("e");
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "save 后 exec 目录不得残留 .tmp 垃圾: {leftovers:?}"
+    );
+    // 同 id 重存 = 最后写入者胜，final 文件内容完整可解析。
+    let loaded = store.load("e", "cp1").await.unwrap();
+    assert_eq!(
+        loaded.context_snapshot.variables.get("marker"),
+        Some(&serde_json::json!("second")),
+    );
+}
+
+#[tokio::test]
+async fn concurrent_same_id_saves_commit_valid_json() {
+    use std::sync::Arc as StdArc;
+    let (_tmp, store) = make_store();
+    let store = StdArc::new(store);
+    // 8 个并发任务写同一 checkpoint id（各带独立 marker）——唯一临时名
+    // 结构性保证每个 rename 提交的都是一份完整 JSON（旧固定 tmp 名形态
+    // 下交错写可把半截内容提交成 final）。
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let store = store.clone();
+        handles.push(tokio::spawn(async move {
+            let mut cp = make_checkpoint("e", "hot", 0);
+            cp.context_snapshot
+                .variables
+                .insert("writer".to_string(), serde_json::json!(i));
+            store.save(cp).await
+        }));
+    }
+    for h in handles {
+        h.await.unwrap().unwrap();
+    }
+    let path = store.checkpoint_path("e", "hot");
+    let bytes = std::fs::read(&path).expect("final checkpoint file must exist");
+    let parsed: Checkpoint =
+        serde_json::from_slice(&bytes).expect("committed file must be valid JSON");
+    assert_eq!(parsed.id, "hot");
+}
