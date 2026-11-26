@@ -624,3 +624,46 @@ fn webhook_failure_log_line_redacts_query_token() {
     assert!(!line.contains("SECRET-TOKEN-9"), "凭据泄漏进日志行: {line}");
     assert!(line.contains("foo=bar"), "非凭据参数保留诊断价值: {line}");
 }
+
+/// BUG-20261126-130 回归锁（横向同族位点）：append_jsonl 打开句柄时撕裂
+/// 尾巴必须修复——崩溃半行不粘连本条事件记录（本 jsonl 是 #60 态势页的
+/// 程序化消费面）。摘掉 append_jsonl 的 repair_torn_tail 调用 → 本测试红。
+#[test]
+fn jsonl_append_repairs_torn_tail_next_event_stays_parseable() {
+    let _serial = TEST_LOCK.lock();
+    reset_for_tests();
+    let dir = std::env::temp_dir().join(format!(
+        "alert-test-torn-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let cfg = minimal_cfg(Vec::new());
+    configure(&cfg, dir.clone());
+    // 预置撕裂尾巴（模拟上一会话 write 中途断头）到当日 jsonl。
+    let date = chrono::Utc::now().format("%Y-%m-%d");
+    let path = dir.join(format!("{date}.jsonl"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, "{\"kind\":\"torn\"").unwrap();
+
+    emit(
+        AlertKind::ChainVerifyFailed,
+        AlertLevel::Critical,
+        "s-torn",
+        "tool-t",
+        "tamper suspect",
+    );
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 2, "撕裂尾巴 + 事件记录各占一行: {content:?}");
+    let ev: SecurityAlertEvent =
+        serde_json::from_str(lines[1]).expect("恢复后事件记录必须完整可解析");
+    assert_eq!(ev.kind, "chain_verify_failed");
+    assert_eq!(ev.tool, "tool-t");
+
+    reset_for_tests();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -367,10 +367,17 @@ impl SessionErrorRecorder {
             }
             match OpenOptions::new()
                 .create(true)
+                // read 与 append 并申请：append 句柄在 Windows 上无读权限，
+                // 下面的撕裂尾修复末字节探测会静默失败。
+                .read(true)
                 .append(true)
                 .open(self.dir.join(format!("{}.jsonl", day)))
             {
-                Ok(f) => {
+                Ok(mut f) => {
+                    // 撕裂尾修复（BUG-20261126-130）：上一会话写失败/崩溃
+                    // 留下的无换行尾巴不粘连本条——本文件是程序化消费的
+                    // 失败取证账，两条记录拼成一行 = 解析全丢。
+                    let _ = nemesis_utils::file::repair_torn_tail(&mut f);
                     st.file = Some(f);
                     st.day = day;
                 }
