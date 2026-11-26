@@ -227,9 +227,19 @@ async fn overview_aggregates_audit_by_policy_excluding_chain_file() {
         ),
     )
     .unwrap();
-    // 链文件必须被聚合排除（链段不是审计事件）：4 段在场但不进计数。
+    // 链文件必须被聚合排除（链段不是审计事件）：security_logs 里的旧
+    // 形态链残留（BUG-6 迁移失败的诚实保留面）不进计数。
     std::fs::write(
         log_dir.join("audit_chain.jsonl"),
+        "{\"seg\":1}\n{\"seg\":2}\n{\"seg\":3}\n{\"seg\":4}\n",
+    )
+    .unwrap();
+    // BUG-6：链在场态（chain_snapshot）读新位置 workspace/security_chain/
+    // ——链文件本体在那里，聚合目录（logs/security_logs）里没有它。
+    let chain_dir = dir.path().join("security_chain");
+    std::fs::create_dir_all(&chain_dir).unwrap();
+    std::fs::write(
+        chain_dir.join("audit_chain.jsonl"),
         "{\"seg\":1}\n{\"seg\":2}\n{\"seg\":3}\n{\"seg\":4}\n",
     )
     .unwrap();

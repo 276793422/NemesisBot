@@ -209,10 +209,11 @@ async fn security_command_missing_dir_returns_empty() {
 
 // chain_list / chain_verify（真实 AuditChain 夹具）
 
-/// 在 <ws>/logs/security_logs/ 下用真实 AuditChain 生成 4 条事件，
+/// 在 <ws>/security_chain/ 下用真实 AuditChain 生成 4 条事件（BUG-6：
+/// 链已迁 workspace/security_chain/，读方 handler 同源新路径），
 /// max_events_per_segment=2 → 主文件 2 条 + audit_chain_seg0002.jsonl 2 条。
 fn make_real_chain(ws: &std::path::Path) -> PathBuf {
-    let sec_dir = ws.join("logs/security_logs");
+    let sec_dir = ws.join("security_chain");
     std::fs::create_dir_all(&sec_dir).unwrap();
     let config = AuditChainConfig {
         storage_path: sec_dir.join("audit_chain.jsonl"),

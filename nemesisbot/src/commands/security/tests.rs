@@ -1419,7 +1419,9 @@ async fn test_s11b_run_audit_show_export_denied() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
-    let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+    let audit_path = nemesis_path::resolve_audit_chain_path_in_workspace(
+        &crate::common::workspace_path(&th.home),
+    );
     std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
     let line = |ts: &str, op: &str, tool: &str, dec: &str, reason: &str| {
         serde_json::json!({
@@ -1901,7 +1903,9 @@ mod wave_b {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
-        let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+        let audit_path = nemesis_path::resolve_audit_chain_path_in_workspace(
+            &crate::common::workspace_path(&th.home),
+        );
         std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
         // 审计文件存在但全是 allowed（区别于无文件早退、也区别于有 denied 条目
         // 的列表臂）→ 过滤后空集 → "No denied operations found." 臂。
@@ -2140,7 +2144,9 @@ mod wave_c {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
-        let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+        let audit_path = nemesis_path::resolve_audit_chain_path_in_workspace(
+            &crate::common::workspace_path(&th.home),
+        );
         std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
         std::fs::write(
             &audit_path,
@@ -2916,7 +2922,9 @@ mod cov_sec {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let th = cov_temp_home();
-        let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+        let audit_path = nemesis_path::resolve_audit_chain_path_in_workspace(
+            &crate::common::workspace_path(&th.home),
+        );
         std::fs::create_dir_all(&audit_path).unwrap();
         run(SecurityAction::Audit { action: None }, false)
             .await

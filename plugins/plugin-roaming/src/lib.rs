@@ -30,6 +30,8 @@ mod drift_tests;
 #[cfg(test)]
 mod identity_tests;
 #[cfg(test)]
+mod registry_backoff_tests;
+#[cfg(test)]
 mod trust_book_tests;
 
 use std::ffi::{CStr, CString};

@@ -1747,6 +1747,10 @@ mod k4_user_dispatch_tests;
 mod chat_log_timing_tests;
 #[cfg(test)]
 mod rate_limit_retry_tests;
+// BUG-3（2026-11-25 远程 home 取证）transient 环「显式进度」回归：
+// 真等待形态进度帧/快照/退避梯子可见、立即拒绝形态零噪声、全出口清快照。
+#[cfg(test)]
+mod transient_retry_tests;
 // （扩展计划）：错误分类器分派测试（Auth/Billing 零重试终局 +
 // "invalid api key" 不误入压缩环回归 + 词表盲区配额/deadline 文案进对应环）。
 #[cfg(test)]

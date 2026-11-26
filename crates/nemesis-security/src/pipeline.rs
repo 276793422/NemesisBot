@@ -129,6 +129,10 @@ pub struct SecurityPluginConfig {
     pub ssrf_allowed_hosts: Vec<String>,
     pub audit_chain_enabled: bool,
     pub audit_chain_path: Option<String>,
+    /// 链头外置锚路径（BUG-6 2026-11-25 远程 home 取证）：Some = 每次
+    /// 链尾推进写锚 + load_segments 回载对账（链被整链清除/截断可检测）。
+    /// 装配点给与链目录不同故障域的路径（config/ 下）。None = 锚面关闭。
+    pub audit_chain_anchor_path: Option<String>,
     pub audit_log_enabled: bool,
     pub audit_log_dir: Option<String>,
     pub default_action: String,
@@ -178,6 +182,7 @@ impl Default for SecurityPluginConfig {
             ssrf_allowed_hosts: Vec::new(),
             audit_chain_enabled: false,
             audit_chain_path: None,
+            audit_chain_anchor_path: None,
             audit_log_enabled: false,
             audit_log_dir: None,
             default_action: "deny".to_string(),
@@ -310,6 +315,11 @@ impl SecurityPlugin {
                 max_events_per_segment: 100_000,
                 signing_key: None,
             });
+            // 链头外置锚（BUG-6）：必须在 load_segments 之前注入——回载
+            // 对账（链被整链清除/截断可检测）在回载尾部执行。
+            if let Some(ref anchor) = config.audit_chain_anchor_path {
+                chain.set_anchor_path(Some(anchor.clone().into()));
+            }
             // 链尾回载：链状态（last_hash）是进程内存
             // 态，而 storage_path 是固定路径续写——不回载则重启后首个事件
             // prev_hash=全零，与盘上既有链断裂，logs.chain_verify 全量校验

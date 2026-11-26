@@ -43,10 +43,28 @@ pub struct HistoryHit {
     pub snippet: String,
 }
 
+/// BUSY/LOCKED 失败后的重试退避窗：conn 缺席期间带 busy_timeout(5s) 的
+/// open 尝试全程持 INDEX 锁（`chat_log` 的 append guard 也持它）——每条
+/// 消息一撞锁会把秒级等待放大成所有写路径的尾延迟。窗口内诚实让位
+/// （零 I/O），过窗再试（复查 2026-11-26）。非 BUSY 失败不退避：那些
+/// 重试是零成本快失败，且恢复语义的回归测试依赖「每次调用都真重试」。
+const OPEN_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
+
 struct IndexState {
     conn: Option<Connection>,
     /// (session file stem, mtime) of indexed files — skip unchanged on reindex.
     indexed: std::collections::HashMap<String, std::time::SystemTime>,
+    /// 连续 open 失败计数（0 = 打开成功或从未失败）。BUG-1（2026-11-25 取证）：
+    /// 原实现 open 失败后 `conn: None` 落进静态缓存永久生效——一次 hot journal
+    /// 残留/磁盘故障 = FTS 索引永久静默死亡，重试/告警/自愈全无。现在每次
+    /// `conn` 缺席都经 [`ensure_conn`] 重试打开（含删库重建恢复）。
+    open_failures: u32,
+    /// 上次 open 失败 WARN 时刻（限频：首次立即，此后每 10 次或间隔 5 分钟再报）。
+    last_warn: Option<std::time::Instant>,
+    /// BUSY/LOCKED 失败后的让位截止时刻（None = 不退避）。竞争瞬态专属：
+    /// 只有 BUSY 形态的 open 尝试带 5s 锁内等待成本；损坏/CANTOPEN 形态
+    /// 是零成本快失败，照旧每次调用真重试。
+    skip_open_until: Option<std::time::Instant>,
 }
 
 static INDEX: Mutex<Option<IndexState>> = Mutex::new(None);
@@ -60,12 +78,17 @@ pub fn index_db_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("history_index.db"))
 }
 
-fn open_conn() -> Option<Connection> {
+/// 打开索引库（open + busy_timeout + pragma + 建表）。Err 保留 rusqlite
+/// 原始错误供调用方分类：BUSY/LOCKED = 并发竞争瞬态（不进恢复阶梯——
+/// 复查 2026-11-26 #1：此前所有失败形态一律进删除阶梯，把「对端持续
+/// 持锁」误当「库损坏」；POSIX 上 unlink 活库不会失败，删了会孤儿化
+/// 对端句柄并毁掉其热回放），其余 = 库体/存储故障（进恢复阶梯）。
+fn open_conn_raw() -> Result<Connection, rusqlite::Error> {
     let path = index_db_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = Connection::open(&path).ok()?;
+    let conn = Connection::open(&path)?;
     // BUG-20261115-029：CLI（`nemesisbot history search` / `history reindex`）
     // 与常驻 gateway **并开同一索引库**是常规拓扑，而 rollback-journal
     // （TRUNCATE）模式下读写互斥——无退避的撞锁 = 立即 SQLITE_BUSY：
@@ -79,19 +102,215 @@ fn open_conn() -> Option<Connection> {
     // Default journal (delete-mode, fsync per txn) made each append-hook
     // insert cost a disk sync — visible as multi-second test runs / agent
     // append latency on busy disks.
-    let _ = conn.pragma_update(None, "journal_mode", "TRUNCATE");
+    // journal_mode 是首个 touch 页面的语句（库体损坏以 NotADatabase 在此
+    // 浮出）也是首个取写锁的语句（竞争以 BUSY 在此浮出）。BUSY 立即上报
+    // 分类（不再叠一层 5s 等待）；其余失败容忍退化（只读 fs 等牺牲
+    // durability，可重建缓存不坚持——与原 `let _ =` 吞错口径一致）。
+    if let Err(e) = conn.pragma_update(None, "journal_mode", "TRUNCATE")
+        && open_err_is_busy(&e)
+    {
+        return Err(e);
+    }
     let _ = conn.pragma_update(None, "synchronous", "NORMAL");
     // External-content-less plain FTS5 table. `content_bigram` doubles CJK
     // runs as bigrams (see module doc). tokenize='unicode61' is the default.
+    // 建表失败 = 库不可用实锤（表缺席则一切查询/写入全废）→ Err 进分类。
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5(\
              session_key UNINDEXED, seq UNINDEXED, role UNINDEXED, \
              timestamp UNINDEXED, content, content_bigram, \
              tokenize='unicode61');\
          ",
+    )?;
+    Ok(conn)
+}
+
+/// open 失败是否为并发竞争瞬态（BUSY/LOCKED）：busy_timeout 窗口耗尽
+/// 仍拿不到锁。这类失败 = 文件是活的、有使用者在读写——恢复删除的
+/// 「删得掉 ≠ 没人用」论证只在 Windows 成立，POSIX 上属误删活库。
+fn open_err_is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.code == rusqlite::ffi::ErrorCode::DatabaseBusy
+                || f.code == rusqlite::ffi::ErrorCode::DatabaseLocked
     )
-    .ok()?;
-    Some(conn)
+}
+
+/// SQLite 数据库头嗅探：头 16 字节 == `SQLite format 3\0`。读不到 16 字节
+/// 或读失败 = 非法头（空文件按 sqlite 规范是合法空库，但既然 open 已以
+/// 非 BUSY 真错误失败，重建无害）。
+fn looks_like_sqlite_db(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 16];
+    f.read_exact(&mut buf).is_ok() && &buf == b"SQLite format 3\x00"
+}
+
+/// 非 BUSY open 失败后的恢复阶梯。返回 (conn, recovered)，
+/// `recovered=true` 表示经历了删除重建/侧车清理。
+///
+/// 恢复语义（BUG-1，2026-11-25 取证；复查 2026-11-26 #1 重构）：本库是
+/// REBUILDABLE cache——数据源头是 `session_logs/*.jsonl`，库本身可随时全量
+/// 重建。BUSY/LOCKED（并发竞争）已在调用方先行分流、不进本阶梯。进来
+/// 的都是「open 以真错误失败」：
+///
+/// 1. 主库头嗅探合法（`SQLite format 3\0`）= 库体不是垃圾——先**只清侧车**
+///    （journal/wal/shm）重试。正常 hot journal 回放是 sqlite 内建自愈
+///    （open 即回放，不能粗暴删 journal，会丢事务）；走到这里已是回放
+///    失败（残留/损坏/存储瞬态），删残留 journal 是唯一自愈手段，且不丢
+///    已提交事务（已提交事务的 journal 早已被 sqlite 自删）。11-25 实案
+///    形态（journal 残留 + 磁盘故障）走这条臂。
+/// 2. 头嗅探非法（垃圾字节/空壳）= 库体损坏实锤 → 全量重建。
+/// 3. 头合法但侧车清理后仍打不开 = 页级损坏（头在体坏）→ 也走全量重建。
+///    Windows 上若被占用，删除会失败 → 诚实 Err（不硬删）；POSIX 上走到
+///    这里已排除 BUSY（无活锁信号），对端即便持句柄其连接也在同报错误
+///    ——孤儿化不毁它任何未完成事务。
+///
+/// 删除顺序（复查 2026-11-26）：侧车先行、主库最后——若主库先删而某个
+/// 侧车删除失败（被句柄持有），本轮放弃后下次 open 会建出**新主库**，旧
+/// journal 残留在旁可能被 sqlite 当 hot journal 回放进新库（污染）；侧车
+/// 先行则任何中途失败都不动主库，旧状态完整保留。
+fn recover_and_open(open_err: &rusqlite::Error) -> Result<(Connection, bool), String> {
+    let path = index_db_path();
+    if looks_like_sqlite_db(&path) {
+        let mut sidecars = 0usize;
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let p = PathBuf::from(format!("{}{}", path.display(), suffix));
+            match std::fs::remove_file(&p) {
+                Ok(()) => sidecars += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!(
+                        "索引库侧车 {} 删除失败（可能有并发使用者，本轮放弃）: {e}",
+                        p.display()
+                    ));
+                }
+            }
+        }
+        if let Ok(c) = open_conn_raw() {
+            if sidecars > 0 {
+                tracing::warn!(
+                    "[history_search] FTS 索引库经侧车清理恢复（移除 {sidecars} 个残留 journal/wal/shm）"
+                );
+            }
+            return Ok((c, true));
+        }
+        // 侧车清理后仍打不开 = 主库页级损坏（头在体坏）→ 落全量重建。
+    }
+    let mut removed = 0usize;
+    for suffix in ["-journal", "-wal", "-shm", ""] {
+        let p = if suffix.is_empty() {
+            path.clone()
+        } else {
+            PathBuf::from(format!("{}{}", path.display(), suffix))
+        };
+        match std::fs::remove_file(&p) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "索引库打开失败（{open_err}）且恢复删除 {} 失败: {e}",
+                    p.display()
+                ));
+            }
+        }
+    }
+    match open_conn_raw() {
+        Ok(c) => Ok((c, true)),
+        Err(_) => Err(format!(
+            "索引库打开失败（{open_err}），删库重建（移除 {removed} 个文件）后仍打不开"
+        )),
+    }
+}
+
+/// 确保 `st.conn` 在场（BUG-1 修复核心）：缺席时重试打开（含损坏恢复），
+/// 失败不固化——下次调用再试。失败 WARN 限频（首次立即，此后每 10 次或
+/// 间隔 5 分钟），恢复时也 WARN（可观测「曾经降级」）。返回 false = 本轮
+/// 仍不可用（调用方诚实让位；下轮重试）。
+///
+/// 失败分流（复查 2026-11-26）：BUSY/LOCKED = 并发竞争瞬态——不进恢复
+/// 阶梯（不碰文件；POSIX 上删除活库不会失败，删了会孤儿化对端句柄），
+/// 并置 [`OPEN_RETRY_BACKOFF`] 让位窗（conn 缺席期间每次调用都付 5s
+/// busy_timeout 锁内等待，会把秒级成本放大成每消息一次；窗口内零 I/O）。
+/// 其余失败照旧每次真重试（零成本快失败，恢复测试依赖该语义）。
+fn ensure_conn(st: &mut IndexState) -> bool {
+    if st.conn.is_some() {
+        return true;
+    }
+    if st
+        .skip_open_until
+        .is_some_and(|t| std::time::Instant::now() < t)
+    {
+        return false;
+    }
+    st.skip_open_until = None;
+    match open_conn_raw() {
+        Ok(conn) => {
+            adopt_conn(st, conn, false);
+            true
+        }
+        Err(e) if open_err_is_busy(&e) => {
+            record_open_failure(
+                st,
+                "索引库被另一使用者持续占用（busy_timeout 5s 耗尽）：可能并存 \
+                 gateway/CLI 正在读写；本轮让位不碰文件，稍后自动重试",
+            );
+            st.skip_open_until = Some(std::time::Instant::now() + OPEN_RETRY_BACKOFF);
+            false
+        }
+        Err(open_err) => match recover_and_open(&open_err) {
+            Ok((conn, recovered)) => {
+                adopt_conn(st, conn, recovered);
+                true
+            }
+            Err(e) => {
+                record_open_failure(st, &e);
+                false
+            }
+        },
+    }
+}
+
+/// 恢复/重开成功的统一收口：WARN（可观测「曾经降级」）+ 清空 mtime 登记
+/// （失败期间错过的增量插入/文件变化靠全量重扫补齐，幂等 DELETE-first
+/// 重建）+ 失败记账复位。
+fn adopt_conn(st: &mut IndexState, conn: Connection, recovered: bool) {
+    if st.open_failures > 0 {
+        let how = if recovered {
+            "删库重建"
+        } else {
+            "重新打开"
+        };
+        tracing::warn!(
+            "[history_search] FTS 索引库恢复（{how}），此前连续失败 {} 次；已清空 mtime 登记，下次 reindex 全量重扫补齐缺口",
+            st.open_failures
+        );
+    }
+    st.indexed.clear();
+    st.open_failures = 0;
+    st.last_warn = None;
+    st.skip_open_until = None;
+    st.conn = Some(conn);
+}
+
+/// open 失败记账 + WARN 限频（首次立即，此后每 10 次或间隔 5 分钟）。
+fn record_open_failure(st: &mut IndexState, e: &str) {
+    st.open_failures += 1;
+    let should_warn = st.open_failures == 1
+        || st.open_failures.is_multiple_of(10)
+        || st
+            .last_warn
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(300));
+    if should_warn {
+        tracing::warn!(
+            "[history_search] FTS 索引库不可用（连续失败 {} 次）：{e}；搜索降级为线性扫描，索引将在库恢复后自动重建",
+            st.open_failures
+        );
+        st.last_warn = Some(std::time::Instant::now());
+    }
 }
 
 /// Expand CJK runs into overlapping bigrams for the `content_bigram` column.
@@ -157,9 +376,15 @@ fn with_conn<R>(
 ) -> Option<R> {
     let mut guard = INDEX.lock().ok()?;
     let st = guard.get_or_insert_with(|| IndexState {
-        conn: open_conn(),
+        conn: None,
         indexed: std::collections::HashMap::new(),
+        open_failures: 0,
+        last_warn: None,
+        skip_open_until: None,
     });
+    if !ensure_conn(st) {
+        return None;
+    }
     let conn = st.conn.as_mut()?;
     Some(f(conn, &mut st.indexed))
 }
@@ -183,11 +408,15 @@ pub fn append_guard() -> Option<AppendGuard> {
 impl AppendGuard {
     /// 持锁形态的单行增量插入（语义与 [`index_append`] 相同；宿主持有的
     /// 互斥已覆盖本调用，锁内不可再走 [`with_conn`]——std Mutex 不可重入）。
+    /// conn 缺席（上次打开失败）时经 [`ensure_conn`] 重试恢复，不再静默吞。
     pub fn index_append(&mut self, session_key: &str, role: &str, content: &str, timestamp: &str) {
         let stem = nemesis_utils::sanitize::sanitize_path_segment(session_key);
         let Some(st) = self.0.as_mut() else {
             return;
         };
+        if !ensure_conn(st) {
+            return;
+        }
         let Some(conn) = st.conn.as_mut() else {
             return;
         };

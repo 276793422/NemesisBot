@@ -1053,6 +1053,17 @@ fn wait_for_pid_exit_timeout_for_self() {
 
 // feature=selfupdate：zip 解包 + apply 前置闸（离线可达的三闸）
 
+/// `updates/`（测试二进制同目录）是跨测试共享面：download/apply 读
+/// pending，任何测试遗留 pending 都会改写他人断言——所有触碰方持同一
+/// 把 crate 级锁串行化（guard 有意横跨 await 直到异步体结束）。
+/// tokio::sync::Mutex：持锁跨 await 是它的设计用途——std/parking_lot
+/// 同步 guard 都会触发 `await_holding_lock`（-D warnings 下即错；
+/// parking_lot 同样不豁免，实测）。
+/// 放文件顶层 + pub(crate)（复查 2026-11-26）：handlers::selfupdate 的
+/// status 投影测试同样读真实 exe 旁 updates/（生产语义=读盘），必须同锁
+/// 串行——曾因 gated 测试 panic 跳过清理、残留 pending 让该测试假红。
+pub(crate) static UPDATES_SHARED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(feature = "selfupdate")]
 mod gated {
     use super::*;
@@ -1634,6 +1645,9 @@ mod gated {
             last_check: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             last_apply_error: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             downgrade_denied: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            download_fail_streak: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            download_last_fail_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            download_backoff_warned: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -1658,14 +1672,6 @@ mod gated {
             Ok(rd) => rd.filter_map(|e| e.ok()).next().is_none(),
         }
     }
-
-    /// `updates/`（测试二进制同目录）是跨测试共享面：download/apply 读
-    /// pending，任何测试遗留 pending 都会改写他人断言——所有触碰方持同一
-    /// 把 crate 级锁串行化（guard 有意横跨 await 直到异步体结束）。
-    /// tokio::sync::Mutex：持锁跨 await 是它的设计用途——std/parking_lot
-    /// 同步 guard 都会触发 `await_holding_lock`（-D warnings 下即错；
-    /// parking_lot 同样不豁免，实测）。
-    static UPDATES_SHARED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// meta 后写不变量 + 正常往返：zip 先于 meta 在场时 load=None（半截下载
     /// 不产生可装形态——「见 meta 必有 zip」）；meta 落盘后完整读回。
@@ -1816,6 +1822,10 @@ mod gated {
     #[allow(clippy::await_holding_lock)]
     async fn apply_denied_by_pending_journal() {
         let _shared_updates = UPDATES_SHARED_LOCK.lock().await;
+        // 锚确定性：入口锚闸（BUG-5 ①）需已知指纹放行——本测的拒绝者是 journal 闸。
+        let _anchor_guard = RuntimeAnchorGuard::new(
+            "441e577bb0111d305f68fd83c96fd0e1e1c2ccb10f27c7a3dfdc00ff12ab3412".to_string(),
+        );
         let ws = tmp_dir("gate-journal");
         save_journal(&ws, &journal("staging", "x", "y")).unwrap();
         let m = manager_for(
@@ -1837,6 +1847,10 @@ mod gated {
     #[allow(clippy::await_holding_lock)]
     async fn apply_failure_recorded_and_replaced_by_next_attempt() {
         let _shared_updates = UPDATES_SHARED_LOCK.lock().await;
+        // 锚确定性：入口锚闸（BUG-5 ①）需已知指纹放行——phase2 的拒绝者是 journal 闸。
+        let _anchor_guard = RuntimeAnchorGuard::new(
+            "441e577bb0111d305f68fd83c96fd0e1e1c2ccb10f27c7a3dfdc00ff12ab3412".to_string(),
+        );
         let ws = tmp_dir("gate-apply-error");
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
@@ -2864,6 +2878,10 @@ mod gated {
     #[allow(clippy::await_holding_lock)]
     async fn download_flight_busy_and_force_estop_arms() {
         let _shared = UPDATES_SHARED_LOCK.lock().await;
+        // 锚确定性：arm①② 无 estop，入口锚闸（BUG-5 ①）需已知指纹放行。
+        let _anchor_guard = RuntimeAnchorGuard::new(
+            "441e577bb0111d305f68fd83c96fd0e1e1c2ccb10f27c7a3dfdc00ff12ab3412".to_string(),
+        );
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         let m = manager_for(tmp_dir("dl-matrix"), estop.clone());
 
@@ -2901,6 +2919,10 @@ mod gated {
     #[allow(clippy::await_holding_lock)]
     async fn download_pending_ready_with_multibyte_meta_no_panic() {
         let _shared = UPDATES_SHARED_LOCK.lock().await;
+        // 锚确定性：无 estop，入口锚闸（BUG-5 ①）需已知指纹放行。
+        let _anchor_guard = RuntimeAnchorGuard::new(
+            "441e577bb0111d305f68fd83c96fd0e1e1c2ccb10f27c7a3dfdc00ff12ab3412".to_string(),
+        );
         let exe_path = std::env::current_exe().unwrap();
         clear_updates_dir(&exe_path);
         let zip = b"zip-bytes";
@@ -3120,5 +3142,91 @@ mod gated {
             super::super::ExtractedBundle::version_txt_commit_desc(&b2),
             "0123456789abcdef0123456789abcdef01234567"
         );
+    }
+
+    // -- BUG-5（2026-11-25 远程 home 取证）下载失败退避 ------------------
+
+    #[test]
+    fn download_backoff_window_semantics() {
+        use std::sync::atomic::Ordering;
+        let m = manager_for(
+            PathBuf::from("."),
+            std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
+        );
+
+        // streak=0：不在退避中。
+        assert!(m.download_backoff_msg().is_none(), "无失败记录 = 可下载");
+
+        // 失败 1 次（刚发生）：窗口内 → 拒绝文案带连续次数。
+        m.download_fail_streak.store(1, Ordering::Relaxed);
+        m.download_last_fail_ms
+            .store(super::super::now_ms(), Ordering::Relaxed);
+        let msg = m.download_backoff_msg().expect("窗口内必须拒绝");
+        assert!(msg.contains("连续失败 1 次"), "{msg}");
+        assert!(msg.contains("退避"), "{msg}");
+        assert!(msg.contains("强制更新"), "必须指路 force 豁免: {msg}");
+
+        // 窗口过（31 分钟前失败）：不再拒绝。
+        m.download_last_fail_ms.store(
+            super::super::now_ms()
+                .saturating_sub(super::super::DOWNLOAD_BACKOFF_SECS * 1000 + 60_000),
+            Ordering::Relaxed,
+        );
+        assert!(m.download_backoff_msg().is_none(), "窗口过期 = 恢复可下载");
+    }
+
+    #[test]
+    fn download_backoff_cleared_on_success_semantics() {
+        use std::sync::atomic::Ordering;
+        let m = manager_for(
+            PathBuf::from("."),
+            std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
+        );
+
+        // 退避中 → 成功收口清零（download_to_pending Ok 臂的记账语义；
+        // 此处直接复刻三原子位的清零动作，与实现同源字段）。
+        m.download_fail_streak.store(5, Ordering::Relaxed);
+        m.download_last_fail_ms
+            .store(super::super::now_ms(), Ordering::Relaxed);
+        m.download_backoff_warned.store(true, Ordering::Relaxed);
+        assert!(m.download_backoff_msg().is_some());
+
+        m.download_fail_streak.store(0, Ordering::Relaxed);
+        m.download_backoff_warned.store(false, Ordering::Relaxed);
+        assert!(m.download_backoff_msg().is_none(), "成功清零后必须可下载");
+        assert!(
+            !m.download_backoff_warned.load(Ordering::Relaxed),
+            "WARN 旗标复位（下轮失败周期重新汇总）"
+        );
+    }
+
+    #[test]
+    fn download_backoff_consts_shape() {
+        // 退避窗口 30 分钟、WARN 汇总阈值 3 次——常量形态钉死（改动需
+        // 有意识地同步文案与测试）。
+        assert_eq!(super::super::DOWNLOAD_BACKOFF_SECS, 1800);
+        assert_eq!(super::super::DOWNLOAD_BACKOFF_WARN_STREAK, 3);
+    }
+
+    #[test]
+    fn download_backoff_message_reports_remaining_time() {
+        use std::sync::atomic::Ordering;
+        let m = manager_for(
+            PathBuf::from("."),
+            std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
+        );
+        // 复查（2026-11-26）：拒绝文案报「剩余分钟」而非恒定全窗口——
+        // 29 分钟前失败 → 剩余 ~1 分钟；恒窗口文案在此会说「30 分钟后」。
+        m.download_fail_streak.store(2, Ordering::Relaxed);
+        m.download_last_fail_ms.store(
+            super::super::now_ms().saturating_sub(29 * 60_000),
+            Ordering::Relaxed,
+        );
+        let msg = m.download_backoff_msg().expect("窗口内必须拒绝");
+        assert!(
+            msg.contains("约 1 分钟后自动恢复"),
+            "退避中段必须报剩余时间: {msg}"
+        );
+        assert!(!msg.contains("30 分钟后自动恢复"), "不得谎报全窗口: {msg}");
     }
 }

@@ -1172,7 +1172,10 @@ impl SecurityHandler {
     /// 审计链在场态（轻量：文件行数 = 链段数；真 Merkle 校验走
     /// `logs.chain_verify`，层页「校验」按钮消费——本快照只回答「链在不在」）。
     fn chain_snapshot(workspace: &str) -> serde_json::Value {
-        let path = security_log_dir(workspace).join("audit_chain.jsonl");
+        // BUG-6：链已迁 workspace 顶层 security_chain/（nemesis-path
+        // 单一真相源，与写方 security_setup、logs.chain_list 同源）。
+        let path =
+            nemesis_path::resolve_audit_chain_path_in_workspace(std::path::Path::new(workspace));
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let segments = content.lines().filter(|l| !l.trim().is_empty()).count();

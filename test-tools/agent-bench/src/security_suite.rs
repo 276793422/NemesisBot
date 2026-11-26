@@ -747,8 +747,7 @@ pub fn audit_closure(
     }
     let chain_path = ws_home
         .join("workspace")
-        .join("logs")
-        .join("security_logs")
+        .join("security_chain")
         .join("audit_chain.jsonl");
     let chain = AuditChain::new(AuditChainConfig {
         enabled: true,

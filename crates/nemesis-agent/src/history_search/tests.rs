@@ -231,3 +231,58 @@ fn test_jsonl_files_latest_first_filters_non_jsonl() {
         .collect();
     assert_eq!(names, vec!["a.jsonl"], "目录与 .txt/.db 不进清单");
 }
+
+// ===========================================================================
+// 复查（2026-11-26）恢复阶梯分类面：BUSY/LOCKED 竞争瞬态 ≠ 库损坏——
+// 前者分流到「让位退避、不碰文件」（POSIX 上删除活库会孤儿化对端句柄），
+// 后者才进删除重建。头嗅探 = 侧车清理臂 vs 全量重建臂的决策闸。
+// ===========================================================================
+
+/// open 错误分类纯函数：BUSY/LOCKED 互认，其余错误形态（NotADB 库损坏 /
+/// 非 SqliteFailure 变体）都不是竞争。
+#[test]
+fn test_open_err_busy_classification() {
+    use rusqlite::ffi;
+    // SQLITE_BUSY=5 / SQLITE_LOCKED=6 / SQLITE_NOTADB=26（基础码，扩展码同值）。
+    let busy = rusqlite::Error::SqliteFailure(
+        ffi::Error {
+            code: ffi::ErrorCode::DatabaseBusy,
+            extended_code: 5,
+        },
+        Some("database is locked".into()),
+    );
+    assert!(open_err_is_busy(&busy));
+    let locked = rusqlite::Error::SqliteFailure(
+        ffi::Error {
+            code: ffi::ErrorCode::DatabaseLocked,
+            extended_code: 6,
+        },
+        Some("table is locked".into()),
+    );
+    assert!(open_err_is_busy(&locked));
+    let notadb = rusqlite::Error::SqliteFailure(
+        ffi::Error {
+            code: ffi::ErrorCode::NotADatabase,
+            extended_code: 26,
+        },
+        Some("file is not a database".into()),
+    );
+    assert!(!open_err_is_busy(&notadb), "库损坏不是竞争，必须进恢复阶梯");
+    assert!(!open_err_is_busy(&rusqlite::Error::InvalidQuery));
+}
+
+/// 头嗅探决策闸：合法 SQLite 头 / 垃圾字节 / 空文件 / 缺文件 / 差一字节。
+#[test]
+fn test_looks_like_sqlite_db() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let p = tmp.path().join("x.db");
+    assert!(!looks_like_sqlite_db(&p), "缺文件 = 非法头");
+    std::fs::write(&p, b"NOT_A_SQLITE_HEADER_AT_ALL____").unwrap();
+    assert!(!looks_like_sqlite_db(&p), "垃圾字节 = 非法头");
+    std::fs::write(&p, b"").unwrap();
+    assert!(!looks_like_sqlite_db(&p), "空文件 = 非法头");
+    std::fs::write(&p, b"SQLite format 3\x00rest-of-header").unwrap();
+    assert!(looks_like_sqlite_db(&p), "合法头");
+    std::fs::write(&p, b"SQLite format 3\x01").unwrap();
+    assert!(!looks_like_sqlite_db(&p), "差一字节不算合法头");
+}

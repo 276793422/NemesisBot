@@ -663,6 +663,34 @@ pub fn resolve_audit_log_dir_in_workspace(workspace: &Path) -> PathBuf {
     logs_dir_in_workspace(workspace).join("security_logs")
 }
 
+/// `<workspace>/security_chain` —— Merkle 审计链独立目录（BUG-6
+/// 2026-11-25 远程 home 取证：链原落 `logs/security_logs/`，与普通日志同
+/// 目录同权限——logs 级删除/清扫/故障波及会让审计链陪葬，破坏无痕迹
+/// 可查。迁 workspace 顶层独立目录后 logs 域的任何波及不再触链）。
+/// 写方 security_setup + integrity，读方 nemesis-web `logs.chain_list` /
+/// `chain_verify` / security 层页 `chain_snapshot` 三方共用本真相源。
+/// 注意：此目录名必须同时进 [`WORKSPACE_IGNORED_DIRS`]（checkpoint 快照
+/// /fs_watcher/@补全忽略——checkpoint 恢复旧链文件会把链尾回卷造成
+/// 断链，watch 把链追加当外部修改注入上下文）。
+pub fn resolve_security_chain_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("security_chain")
+}
+
+/// `<workspace>/security_chain/audit_chain.jsonl` —— Merkle 审计链主段
+/// 文件（轮转段 `{stem}_segNNNN.jsonl` 同目录）。旧版本链在
+/// `logs/security_logs/`，装配点做一次性整族搬迁（链连续性保持）。
+pub fn resolve_audit_chain_path_in_workspace(workspace: &Path) -> PathBuf {
+    resolve_security_chain_dir_in_workspace(workspace).join("audit_chain.jsonl")
+}
+
+/// `<workspace>/config/audit_chain_anchor.json` —— 审计链头外置锚
+/// （BUG-6 修复面）：链尾 hash + 事件数落在与链目录**不同的故障域**
+/// （config/），链被整链清除/截断后锚仍在 → 启动回载对账时可检测
+/// 「审计链被清」痕迹（锚文件原样保留作证据，不覆盖不重写）。
+pub fn resolve_audit_chain_anchor_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("audit_chain_anchor.json")
+}
+
 /// `<workspace>/logs/session_logs` —— 对话历史 JSONL（镜像
 /// [`PathManager::sessions_log_dir`]）。
 pub fn resolve_session_logs_dir_in_workspace(workspace: &Path) -> PathBuf {
@@ -1045,6 +1073,10 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 /// 补 `images`（generate_image 落点， 上线
 /// 时漏更——watch 把 agent 刚生成的图当外部修改注入上下文 + @补全把
 /// 二进制 PNG 当项目文件列出）。
+/// 补 `security_chain`（BUG-6：Merkle 审计链独立目录——checkpoint
+/// 快照/恢复旧链文件会把链尾回卷造成断链，且链文件不该出现在用户可
+/// rewind 的快照面；fs_watcher 把链追加当外部修改注入上下文；@补全把
+/// 链段当项目文件列出）。
 pub const WORKSPACE_IGNORED_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -1066,6 +1098,7 @@ pub const WORKSPACE_IGNORED_DIRS: &[&str] = &[
     "data",
     "config",
     "tools",
+    "security_chain",
 ];
 
 /// 文件扩展名忽略（如 `*.jsonl` 会话流水、sqlite 主/侧车文件）。

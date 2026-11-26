@@ -107,6 +107,11 @@ test-tools/mcp/server/mcp-test-server.exe
 /nightly-wasm-devkit.zip
 /nightly-wasm-devkit.tar.gz
 
+# WASM 示例插件 dist/（本地构建打包产物：plugin.toml + plugin.wasm 拷贝集，
+# 现场编译字节随构建漂移；入库的插件载荷走根目录 plugin.wasm 形态，dist/
+# 目录是装配缓存不入库——复查 2026-11-26，panel-echo/dist untracked 洗白）。
+/plugins/wasm/*/dist/
+
 # 集群 campaign 本地测试产物与一次性二进制备份（工作产物不入库，
 # 2026-10-13 提交清理时归档）
 /test-campaign-data/

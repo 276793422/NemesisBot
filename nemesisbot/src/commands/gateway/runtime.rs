@@ -902,9 +902,21 @@ pub(crate) async fn run_runtime(
                     // SSE error 帧，Dashboard 粘滞态据此解挂。
                     last_apply_error: Arc::new(parking_lot::Mutex::new(None)),
                     downgrade_denied: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    download_fail_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                    download_last_fail_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    download_backoff_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 });
                 nemesis_web::handlers::selfupdate::set_manager(mgr.clone());
                 info!("[Gateway] selfupdate manager wired (L9)");
+                // BUG-5（2026-11-25 远程 home 取证）：无信任锚构建一次 WARN——
+                // 该形态的 apply 验签永远拒绝（11-25 现场 ×4），自更新整体
+                // 不可用；下载/安装入口会诚实拒绝，不做无谓下载。
+                if nemesis_verify::builtin_root_anchors().is_empty() {
+                    warn!(
+                        "[Gateway] 此构建无签名信任锚（编译期未注入 NEMESIS_BUILD_ROOT_ANCHOR \
+                         且运行时未设 NEMESIS_ROOT_ANCHOR）：自更新已禁用（下载/安装将被诚实拒绝）"
+                    );
+                }
                 // 启动自动 check（~30s 错开启动高峰）：有更新 → info 提示
                 // （Dashboard 连上后 status/cached_check 即见，按钮由此点亮）；
                 // 无更新 → debug；失败静默（不重试风暴——用户拍板）。pending
