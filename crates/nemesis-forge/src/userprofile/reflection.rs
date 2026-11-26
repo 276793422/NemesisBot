@@ -177,6 +177,12 @@ fn render_session(session: &str, rows: &[&DialogueRow]) -> String {
 /// 既有规则化条目（rule_id + 当前话术，取自 sweep 开头快照）——AI 可
 /// 点名改写历史兜底条目（不止本拍新卡）。返回值 habit 槽升级为
 /// [`ReflectedHabit`]（条目 + 可选 rule_ids 回填）。
+///
+/// 批三（语义分型，2026-11-26）：`scope` = 本反思所属画像（位置兜底锚
+/// ）——prompt 增加归属画像判定指令，每条 habit/observation 结论可带
+/// `scope` 提案（lesson 无此维度；observation 提名时同字段钉死归属——
+/// 横扫 2026-11-26：确认落库按条目自带 scope 路由，不再依赖 handler
+/// 参数；缺省/未知 = 本 scope，旧响应零迁移）。
 #[allow(clippy::type_complexity)]
 pub(crate) fn reflect_semantic_habits(
     caller: &std::sync::Arc<dyn crate::reflector_llm::LLMCaller>,
@@ -187,6 +193,7 @@ pub(crate) fn reflect_semantic_habits(
     threshold: f64,
     signals: &[SignalCard],
     existing_rules: &[(String, String)],
+    scope: super::store::ProfileScope,
 ) -> Result<(Vec<ReflectedHabit>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
     let digest = build_digest(rows);
     if digest.trim().is_empty() {
@@ -214,6 +221,20 @@ pub(crate) fn reflect_semantic_habits(
          只在有充分证据时输出，单次偶然行为不算；\n\
          - content 必须一句话（不含换行）。",
     );
+    // 批三：归属画像分型指令（habit 结论直接生效；observation 走观察
+    // 提名队列，同字段钉死归属、确认时按其路由；lesson 落 bridge 队列
+    // 无归属画像维度）。缺省 = 本反思所属画像（位置兜底，旧响应零迁移）。
+    let scope_name = match scope {
+        super::store::ProfileScope::Dialogue => "对话画像",
+        super::store::ProfileScope::Project => "项目画像",
+    };
+    prompt.push_str(&format!(
+        "\n\n**归属画像分型**（每条 kind=\"habit\" 的结论都要判断 scope）：\
+         内容属于「项目协作/项目工作方式」（项目流程仪式、仓库内协作规范、\
+         跨轮续跑机制等）→ \"scope\": \"project\"；个人偏好/风格/环境 → \
+         \"scope\": \"dialogue\"；不确定 → 省略该字段（缺省 = 本反思所属\
+         画像，当前为{scope_name}）。"
+    ));
     // 确定性信号节（批二 §4.3）：本拍触发的信号卡 + 既有规则化条目清单
     // ——AI 是第一写作者（参考话术不是标准答案），可合并同族信号并在
     // rule_ids 中点名（对号入座归并的前提）。
@@ -266,25 +287,30 @@ pub(crate) fn reflect_semantic_habits(
         }
     }
     prompt.push_str(&format!(
-        "\n\n只输出 JSON 数组，每项 {{\"kind\": \"habit\"|\"lesson\", \"category\": \"{}\", \
+        "\n\n只输出 JSON 数组，每项 {{\"kind\": \"habit\"|\"lesson\", \
+         \"scope\": \"dialogue\"|\"project\", \"category\": \"{}\", \
          \"content\": \"<一句话陈述>\", \"confidence\": <0.0-1.0>, \
          \"steps\": [\"步骤1\", \"步骤2\"], \
-         \"rule_ids\": [\"规则id\"]}}（kind 缺省按 habit；steps/rule_ids 可省略\
-         ——rule_ids 只能取自上文信号与既有条目给出的规则 id）。\
-         无稳定结论则输出 []。\n\n对话记录：\n{digest}",
+         \"rule_ids\": [\"规则id\"]}}（kind/scope 缺省按 habit/本画像；\
+         steps/rule_ids 可省略——rule_ids 只能取自上文信号与既有条目给出的\
+         规则 id）。无稳定结论则输出 []。\n\n对话记录：\n{digest}",
         REFLECT_CATEGORIES.join("|")
     ));
     let resp =
         rt.block_on(caller.chat("你是用户行为分析师。只输出 JSON。", &prompt, Some(2048)))?;
-    parse_reflection_response(&resp, &now, threshold)
+    parse_reflection_response(&resp, &now, threshold, scope)
 }
 
 /// 反思 habit 产物（批二 §4.3）：条目 + 可选 rule_ids 回填。`rule_ids`
 /// 空 = 纯 AI 自发结论（现行为，upsert by content）；非空 = AI 点名了
 /// 规则身份证（sweep 末尾临界区按 id 原地改写/合并既有条目）。
+/// 批三：`target_scope` = AI 提案归属画像（scope 字段缺省/未知 = 本反思
+/// 所属 scope 位置兜底）；路由规则（改写恒留本 scope / 插入跨文件）在
+/// mod.rs 短临界区。
 pub(crate) struct ReflectedHabit {
     pub entry: HabitEntry,
     pub rule_ids: Vec<String>,
+    pub target_scope: super::store::ProfileScope,
 }
 
 /// 反思响应提取（数组感知）：[`crate::reflector_llm::extract_json`] 只认
@@ -321,10 +347,14 @@ fn extract_entry_values(resp: &str) -> Option<Vec<serde_json::Value>> {
 /// 批二（话术 AI 化 §4.3）：habit 类结论可选 `rule_ids` 数组回填
 /// （LLM 从给定域内选的规则身份证；空 = 纯 AI 自发结论，现行为）——
 /// 条目本体 `rule_id` 字段保持空，改写/插入落库时由编排层定夺。
+/// 批三（语义分型，2026-11-26）：可选 `scope` 字段解析——显式
+/// `"dialogue"`/`"project"` 采纳，缺省/未知 = `fallback_scope`（本反思
+/// 所属画像，位置兜底，旧响应零迁移）；产出 `ReflectedHabit.target_scope`。
 pub(crate) fn parse_reflection_response(
     resp: &str,
     now: &str,
     threshold: f64,
+    fallback_scope: super::store::ProfileScope,
 ) -> Result<(Vec<ReflectedHabit>, Vec<LessonEntry>, Vec<ObservationEntry>), String> {
     let arr = extract_entry_values(resp).ok_or("reflect response is not valid JSON")?;
     let mut habits = Vec::new();
@@ -378,6 +408,14 @@ pub(crate) fn parse_reflection_response(
         // 人工确认面，弱教训进 Forge 队列只会稀释消费面）。
         if confidence < threshold {
             if kind != KIND_LESSON && confidence >= OBSERVATION_MIN_CONFIDENCE {
+                // 提名即钉归属画像（与 habit 同一 `scope` 字段语义：显式
+                // 采纳，缺省/未知 = 位置兜底）——确认落库按此路由，不依赖
+                // handler 参数（旧队列文件缺键 = 空串，confirm 侧回落参数）。
+                let obs_scope = match item.get("scope").and_then(|v| v.as_str()) {
+                    Some("project") => super::store::ProfileScope::Project,
+                    Some("dialogue") => super::store::ProfileScope::Dialogue,
+                    _ => fallback_scope,
+                };
                 observations.push(ObservationEntry {
                     id: String::new(), // bridge::append_observations 入队时分配
                     ts_ms: chrono::Utc::now().timestamp_millis(),
@@ -386,6 +424,7 @@ pub(crate) fn parse_reflection_response(
                     content: content.chars().take(200).collect(),
                     confidence,
                     steps: HabitEntry::sanitize_steps(&steps),
+                    scope: obs_scope.slug().to_string(),
                     status: super::bridge::OBS_STATUS_PENDING.into(),
                     resolved_ts_ms: None,
                 });
@@ -427,6 +466,7 @@ pub(crate) fn parse_reflection_response(
             kind: KIND_HABIT.into(),
             source: String::new(),
             rule_id: String::new(),
+            legacy_backfilled: false,
         };
         entry.evidence.truncate(MAX_EVIDENCE);
         // rule_ids 回填提取（批二 §4.3）：LLM 从给定域内选的规则身份证。
@@ -445,7 +485,17 @@ pub(crate) fn parse_reflection_response(
                     .collect()
             })
             .unwrap_or_default();
-        habits.push(ReflectedHabit { entry, rule_ids });
+        // scope 提案解析（批三）：显式值采纳，缺省/未知 = 位置兜底。
+        let target_scope = match item.get("scope").and_then(|v| v.as_str()) {
+            Some("project") => super::store::ProfileScope::Project,
+            Some("dialogue") => super::store::ProfileScope::Dialogue,
+            _ => fallback_scope,
+        };
+        habits.push(ReflectedHabit {
+            entry,
+            rule_ids,
+            target_scope,
+        });
     }
     Ok((habits, lessons, observations))
 }

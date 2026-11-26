@@ -23,6 +23,13 @@
 // 的内容）；TAB2「习惯条目」= 现有治理表格原样保留。手动条目行语法
 // `[类别] 内容`（类别可选缺省 manual），manual_get/manual_save 服务端
 // 按行 diff 整体替换（新增 upsert / 消失删除，只动 source=manual）。
+// 手动触发 + 语义分型治理（2026-11-26 批四）：①页头「立即总结」按钮 =
+// profile.reflect_now（force sweep 绕过触发闸，空窗判定不放宽——空窗诚实
+// 返回 note 注记）；②条目表双 scope 合并展示（list 按 scope 拉两份，
+// 条目带 _scope 标签 + 「归属」列 badge），veto/forget/pin 载荷带 scope
+// （条目从哪个画像来就操作哪个画像——此前缺省对话会把项目条目错路由）；
+// ③搬移按钮 = profile.move_scope {content, to_scope}（位置分型判错的
+// 人工修正通道，moved=false 幂等诚实提示）。
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
@@ -206,15 +213,22 @@ async function loadScopeInject(scope: 'dialogue' | 'project') {
 async function load() {
   loading.value = true
   try {
-    const [listData, statsData, obsData] = await Promise.all([
+    const [listData, projData, statsData, obsData] = await Promise.all([
       request('profile', 'list'),
+      request('profile', 'list', { scope: 'project' }).catch(() => null),
       request('profile', 'stats').catch(() => null),
       request('profile', 'observations').catch(() => null),
     ])
+    // 开关态/遥测取对话侧（config 单一真相源，两 scope 同值）。
     enabled.value = !!listData?.enabled
     enabledAt.value = listData?.enabled_at || null
-    habits.value = listData?.habits || []
     uiTelemetry.value = listData?.ui_telemetry !== false
+    // 双 scope 合并（批三语义分型）：条目带 _scope 标签，治理动作
+    // （veto/forget/pin/move）按归属画像路由载荷；项目侧拉取失败 =
+    // 诚实只显对话条目（.catch(() => null) 兜底）。
+    const dlg = (listData?.habits || []).map((h: any) => ({ ...h, _scope: 'dialogue' }))
+    const proj = (projData?.habits || []).map((h: any) => ({ ...h, _scope: 'project' }))
+    habits.value = [...dlg, ...proj]
     stats.value = statsData?.stats || null
     observations.value = obsData?.observations || []
     obsCounts.value = obsData?.counts || null
@@ -302,9 +316,11 @@ async function disableProfile() {
   }
 }
 
-async function act(cmd: string, content: string, tip: string) {
+async function act(cmd: string, h: any, tip: string) {
   try {
-    const data = await request('profile', cmd, { content })
+    // 载荷带 scope（双 scope 合并表：缺省对话会把项目条目错路由到对话
+    // 画像——条目从哪个画像来就操作哪个画像）。
+    const data = await request('profile', cmd, { content: h.content, scope: h._scope || 'dialogue' })
     if (!data?.vetoed && !data?.forgotten && !data?.updated) {
       toast.info('未命中任何条目')
     } else {
@@ -316,9 +332,41 @@ async function act(cmd: string, content: string, tip: string) {
   }
 }
 
-function veto(h: any) { act('veto', h.content, '已否决（负样本，不再生成）') }
-function forget(h: any) { act('forget', h.content, '已遗忘（同语义可重新生成）') }
-function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已钉住（不衰减、置顶注入）') }
+function veto(h: any) { act('veto', h, '已否决（负样本，不再生成）') }
+function forget(h: any) { act('forget', h, '已遗忘（同语义可重新生成）') }
+function pin(h: any) { act('pin', h, h.pinned ? '已取消钉住' : '已钉住（不衰减、置顶注入）') }
+
+/// 条目搬移（批二 move_scope）：位置分型判错的修正通道——对话/项目画像
+/// 互搬；moved=false（目标已持有同 rule_id 归并）= 幂等 no-op 诚实提示。
+async function moveHabit(h: any) {
+  const to = h._scope === 'project' ? 'dialogue' : 'project'
+  const toLabel = to === 'project' ? '项目' : '对话'
+  try {
+    const data = await request('profile', 'move_scope', { content: h.content, to_scope: to })
+    if (data?.moved) toast.success(`已搬到${toLabel}画像${data.content ? '：' + data.content : ''}`)
+    else toast.info('目标画像已持有该条目（已归并，未重复搬移）')
+    await load()
+  } catch (e: any) {
+    toast.error('搬移失败: ' + e)
+  }
+}
+
+/// 立即总结（批一 reflect_now）：force sweep 绕过自动触发闸（空窗判定不
+/// 放宽）；estop / 无可用 caller 由后端诚实报错，这里 toast 透传。
+const reflectBusy = ref(false)
+async function reflectNow() {
+  reflectBusy.value = true
+  try {
+    const d = await request('profile', 'reflect_now')
+    if (d?.note) toast.info(d.note)
+    else toast.success(`总结完成：习惯 ${d?.habits || 0} 条、教训 ${d?.lessons || 0} 条、观察 ${d?.observations || 0} 条`)
+    await load()
+  } catch (e: any) {
+    toast.error('总结失败: ' + e)
+  } finally {
+    reflectBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -329,6 +377,17 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
         <span v-if="enabled && enabledAt" style="font-size: var(--text-xs); color: var(--text-muted);" data-testid="enabled-at">
           采集起点：{{ new Date(enabledAt).toLocaleString('zh-CN') }}
         </span>
+        <button
+          v-if="enabled"
+          class="btn"
+          data-testid="reflect-now-btn"
+          :disabled="reflectBusy"
+          title="立即跑一轮反思总结：不等自动触发闸（消息门槛/周期到点）；24h 证据窗内的内容直接归并，空窗诚实返回「无新内容」"
+          @click="reflectNow"
+        >
+          <span v-if="reflectBusy" class="spinner" style="width: 12px; height: 12px; border-width: 2px; margin-right: var(--space-1);"></span>
+          {{ reflectBusy ? '总结中…' : '立即总结' }}
+        </button>
         <button v-if="!enabled" class="btn btn-primary" data-testid="enable-btn" @click="enableProfile">开启画像</button>
         <button v-else class="btn" data-testid="disable-btn" @click="disableProfile">关闭画像</button>
       </div>
@@ -451,7 +510,16 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
                 </thead>
                 <tbody>
                   <tr v-for="(o, i) in observations" :key="o.id" :data-testid="'obs-row-' + i">
-                    <td><span class="badge badge-info">{{ categoryLabel(o.category) }}</span></td>
+                    <td>
+                      <span class="badge badge-info">{{ categoryLabel(o.category) }}</span>
+                      <span
+                        class="badge"
+                        :class="o.scope === 'project' ? 'badge-warning' : 'badge-info'"
+                        style="margin-left: var(--space-1);"
+                        :data-testid="'obs-scope-' + i"
+                        :title="o.scope === 'project' ? '确认后入项目画像' : '确认后入对话画像'"
+                      >{{ o.scope === 'project' ? '项目' : '对话' }}</span>
+                    </td>
                     <td style="max-width: 420px;">
                       {{ o.content }}
                       <ol v-if="o.steps && o.steps.length" style="margin: var(--space-1) 0 0; padding-left: var(--space-5); font-size: var(--text-xs); color: var(--text-secondary);">
@@ -482,16 +550,22 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
             <div v-else class="table-wrap">
               <table>
                 <thead>
-                  <tr><th style="width: 110px;">维度 / 类别</th><th style="width: 44px; white-space: nowrap;" data-testid="src-dot-col-head" title="蓝=内置触发；绿=AI 总结；灰=模板兜底；橙=反思观察；紫=外部；青=手动">来源</th><th>习惯</th><th>置信度</th><th>命中</th><th>状态</th><th>操作</th></tr>
+                  <tr><th style="width: 110px;">维度 / 类别</th><th style="width: 56px;">归属</th><th style="width: 44px; white-space: nowrap;" data-testid="src-dot-col-head" title="蓝=内置触发；绿=AI 总结；灰=模板兜底；橙=反思观察；紫=外部；青=手动">来源</th><th>习惯</th><th>置信度</th><th>命中</th><th>状态</th><th>操作</th></tr>
                 </thead>
                 <tbody v-for="g in grouped" :key="g.label">
                   <tr class="group-row">
-                    <td colspan="7" style="font-size: var(--text-xs); font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary, transparent); padding-top: var(--space-3);">
+                    <td colspan="8" style="font-size: var(--text-xs); font-weight: 600; color: var(--text-secondary); background: var(--bg-secondary, transparent); padding-top: var(--space-3);">
                       {{ g.label }} <span style="font-weight: 400; color: var(--text-muted);">（{{ g.items.length }}）</span>
                     </td>
                   </tr>
                   <tr v-for="it in g.items" :key="it.idx" :data-testid="'habit-row-' + it.idx">
                     <td><span class="badge badge-info">{{ categoryLabel(it.h.category) }}</span></td>
+                    <td><span
+                      class="badge"
+                      :class="it.h._scope === 'project' ? 'badge-warning' : 'badge-info'"
+                      :data-testid="'scope-badge-' + it.idx"
+                      :title="it.h._scope === 'project' ? '项目画像（项目组会话注入）' : '对话画像（对话组会话注入）'"
+                    >{{ it.h._scope === 'project' ? '项目' : '对话' }}</span></td>
                     <td style="text-align: center;"><span class="src-dot" :class="dotClass(it.h)" :data-testid="'src-dot-' + it.idx" :title="dotTitle(it.h)"></span></td>
                     <td style="max-width: 420px;">
                       {{ it.h.content }}
@@ -504,6 +578,7 @@ function pin(h: any) { act('pin', h.content, h.pinned ? '已取消钉住' : '已
                     <td :title="it.h.evidence && it.h.evidence.length ? '溯源（内置规则命中凭据）：' + it.h.evidence.join('、') : undefined" :data-testid="'habit-hits-' + it.idx" :class="{ 'hits-with-evidence': it.h.evidence && it.h.evidence.length }">{{ it.h.hits }}</td>
                     <td><span class="badge" :class="statusClass(it.h.status)" :data-testid="'habit-status-' + it.idx">{{ statusLabel(it.h.status) }}</span></td>
                     <td style="white-space: nowrap;">
+                      <button class="btn" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'move-' + it.idx" :title="'搬到' + (it.h._scope === 'project' ? '对话' : '项目') + '画像：位置分型判错的修正通道（AI 结论落错 scope / 想手动归组时用）'" @click="moveHabit(it.h)">搬到{{ it.h._scope === 'project' ? '对话' : '项目' }}</button>
                       <button class="btn" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'pin-' + it.idx" :title="pinTitle(it.h)" @click="pin(it.h)">{{ it.h.pinned ? '取消钉住' : '钉住' }}</button>
                       <button class="btn" style="font-size: var(--text-xs); margin-right: var(--space-1);" :data-testid="'veto-' + it.idx" :title="VETO_TITLE" @click="veto(it.h)">否决</button>
                       <button class="btn" style="font-size: var(--text-xs);" :data-testid="'forget-' + it.idx" :title="FORGET_TITLE" @click="forget(it.h)">遗忘</button>

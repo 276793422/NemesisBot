@@ -908,6 +908,7 @@ fn route_user_finding(
             kind: crate::userprofile::store::KIND_HABIT.into(),
             source: String::new(), // ingest 强制 source 参数（权威）
             rule_id: String::new(),
+            legacy_backfilled: false,
         };
         // 对话教训（学习自对话会话）→ 对话画像（双 scope 拆分 2026-11-25）。
         match crate::userprofile::store::ingest_external_entry(
@@ -961,6 +962,10 @@ fn push_user_observation(
         content: statement.to_string(),
         confidence: fi.confidence,
         steps: Vec::new(),
+        // learn 通道产自对话会话 → 对话画像（确认落库按此路由）。
+        scope: super::userprofile::store::ProfileScope::Dialogue
+            .slug()
+            .to_string(),
         status: String::new(),
         resolved_ts_ms: None,
     };

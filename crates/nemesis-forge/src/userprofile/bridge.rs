@@ -251,6 +251,12 @@ pub struct ObservationEntry {
     /// 仪式步骤（反思通道带出；确认时随条目入画像）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<String>,
+    /// 归属画像 wire slug（`"dialogue"`/`"project"`）：提名时按来源反思的
+    /// scope 钉死（AI 显式提案或位置兜底），确认落库按**此字段**路由——
+    /// handler 的 scope 参数只做旧队列文件（无此键）的位置兜底。缺省空 =
+    /// 旧条目零迁移。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
     /// 生命周期：pending → confirmed | dismissed。
     pub status: String,
     /// 裁决时刻（epoch 毫秒；pending = None）。

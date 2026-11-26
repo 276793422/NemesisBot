@@ -88,3 +88,39 @@ fn scope_unknown_value_is_loud_error() {
     assert!(scope_from(Some(&json!({"scope": "proj"}))).is_err());
     assert!(scope_from(Some(&json!({"scope": 7}))).is_err());
 }
+
+// ---------- move_scope 的 to_scope 解析（批二，2026-11-26） ----------
+
+use super::required_scope;
+
+/// to_scope **必填**：缺失 / 空 data / 空串 / 非字符串 = 拒（搬移方向没有
+/// 兼容缺省——与卡片类命令的 scope 缺省对话语义刻意不同）。
+#[test]
+fn move_to_scope_is_required() {
+    assert!(required_scope(None).is_err());
+    assert!(required_scope(Some(&json!({}))).is_err());
+    assert!(required_scope(Some(&json!({"to_scope": ""}))).is_err());
+    assert!(required_scope(Some(&json!({"to_scope": "   "}))).is_err());
+    assert!(required_scope(Some(&json!({"to_scope": 7}))).is_err());
+}
+
+/// 两态合法值 + 大小写/空白容错。
+#[test]
+fn move_to_scope_parses_both_values() {
+    assert_eq!(
+        required_scope(Some(&json!({"to_scope": "project"}))).unwrap(),
+        ProfileScope::Project
+    );
+    assert_eq!(
+        required_scope(Some(&json!({"to_scope": " Dialogue "}))).unwrap(),
+        ProfileScope::Dialogue
+    );
+}
+
+/// 非法值 loud 拒绝。
+#[test]
+fn move_to_scope_unknown_value_is_loud_error() {
+    let err = required_scope(Some(&json!({"to_scope": "work"}))).unwrap_err();
+    assert!(err.contains("work"), "{err}");
+    assert!(err.contains("dialogue"), "报错带合法值提示: {err}");
+}

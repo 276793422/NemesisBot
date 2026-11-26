@@ -6,14 +6,30 @@
 //! / `profile.telemetry_get` / `profile.telemetry_set` / `profile.stats`
 //! / `profile.observations` / `profile.observation_respond`
 //! / `profile.prune_queue` / `profile.manual_get` / `profile.manual_save`
-//! / `profile.preview`。
+//! / `profile.preview` / `profile.reflect_now` / `profile.move_scope`。
+//!
+//! `profile.reflect_now`（手动触发批一，2026-11-26）：立即总结——绕过反思
+//! 触发闸 force 一次 sweep 反思（**空窗判定不放宽**：reflect_rows 空 =
+//! 诚实空跑）。estop engaged = 拒绝（反思是自主 agent 活动，急停不变量
+//! 覆盖手动入口）；caller 现场解析（judge 回落链同源）缺席 = 诚实 Err，
+//! 不静默模板兜底（手动触发是用户意志，模型缺席必须明说）。响应 =
+//! `{habits, lessons, observations, scopes:{dialogue,project}}` 双 scope
+//! 汇总；全零带 `note: "无新内容，本次总结为空"`。
+//!
+//! `profile.move_scope`（手动触发批二，2026-11-26）：`{content, to_scope}`
+//! 条目跨 scope 搬移（位置分型判错的用户修正通道）——单一真相源在
+//! `store::move_habit_scope`（单锁两份 try_load、精确优先定位、双份命中
+//! Err 治理重复、全字段搬运、先目标后来源落盘）。to_scope **必填**（搬移
+//! 方向无兼容缺省），非法值 loud 拒。
 //!
 //! scope 参数化（双 scope 拆分批三，2026-11-25）：卡片类命令
 //! （list/veto/forget/pin/observation_respond 确认臂/manual_get/
 //! manual_save/preview）接受 `data.scope`（`"dialogue"`|`"project"`，
-//! 缺省 dialogue 兼容旧前端；显式未知值 loud 拒绝）。enable/disable/
-//! stats/route/telemetry_*/prune_queue/observations 无 scope——开关与
-//! 统计是全局面（stats 双画像合并聚合）。
+//! 缺省 dialogue 兼容旧前端；显式未知值 loud 拒绝）。**observation_respond
+//! 确认臂例外**（横扫 2026-11-26 根修）：落库路由真相源 = 提名条目自带
+//! `scope` 字段（提名时按来源反思钉死），参数只做旧队列文件的位置兜底。
+//! enable/disable/stats/route/telemetry_*/prune_queue/observations 无
+//! scope——开关与统计是全局面（stats 双画像合并聚合）。
 //!
 //! 语义裁决：习惯生成**免确认**自动生效；本 handler 只承担**后门动作**
 //! （veto/forget/pin）与开关管理（enable/disable）。展示面走 `list`
@@ -250,6 +266,9 @@ impl ProfileHandler {
     }
 
     /// 裁决观察提名：`{id, approved: bool}`——确认入画像 / 忽略负样本回流。
+    /// 确认落库路由 = **条目自带 scope**（提名时按来源反思钉死；横扫
+    /// 2026-11-26 根修），`data.scope` 只做旧队列文件（无 scope 键）的
+    /// 位置兜底——故前端无需回传 scope。
     fn observation_respond(
         &self,
         ctx: &RequestContext,
@@ -266,10 +285,10 @@ impl ProfileHandler {
             .and_then(|v| v.as_bool())
             .ok_or_else(|| "missing boolean 'approved'".to_string())?;
         let ws = self.workspace(ctx)?;
-        let scope = scope_from(data)?;
+        let scope = scope_from(data)?; // 仅旧条目（无 scope 键）的位置兜底
         let resolved = if approved {
-            // 确认臂带 scope（入哪份画像）；忽略臂无 scope（观察队列/
-            // 负样本事件是全局面，D7）。
+            // 确认臂：落库路由真相源 = 条目自带 scope（surface 侧裁决）；
+            // 忽略臂无 scope（观察队列/负样本事件是全局面，D7）。
             surface::confirm_observation(&ws, scope, id)?
         } else {
             surface::dismiss_observation(&ws, Some(&self.home(ctx)?), id)?.map(|_| ())
@@ -402,6 +421,98 @@ impl ProfileHandler {
             "manual_count": manual_count,
         })))
     }
+
+    /// 立即总结（批一）：force 反思一次。见模块头。
+    async fn reflect_now(&self, ctx: &RequestContext) -> Result<Option<Value>, String> {
+        if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+            return Err("急停已触发：反思暂停（释放急停后再试）".to_string());
+        }
+        let ws = self.workspace(ctx)?;
+        let home = self.home(ctx)?;
+        // caller 现场解析（judge 回落链同源）；Err 冒泡，None = 诚实 Err。
+        let caller = crate::handlers::forge::resolve_judge_caller(
+            &home,
+            &ws.to_string_lossy(),
+            ctx.state.data_store.as_ref(),
+        )?;
+        let Some(caller) = caller else {
+            return Err("反思 caller 不可用（无可用模型）：请检查模型配置后再试".to_string());
+        };
+        let cfg_path = crate::handlers::config::config_path(&home);
+        // sweep_once 内含 Handle::block_on——必须放 blocking 线程（async
+        // 上下文直接调 = block_on 嵌套）。
+        let rt = tokio::runtime::Handle::current();
+        let stats = tokio::task::spawn_blocking(move || {
+            nemesis_forge::userprofile::sweep_once_opts(
+                &cfg_path,
+                &ws,
+                &rt,
+                Some(&caller),
+                nemesis_forge::userprofile::SweepOpts {
+                    force_reflect: true,
+                },
+            )
+        })
+        .await
+        .map_err(|e| format!("reflect task panicked: {e}"))??;
+        // 反思 LLM 失败诚实上抛（横扫 2026-11-26）：手动触发要的是反思，
+        // 模型失败不能伪装成「无新内容，本次总结为空」。双 scope 各自留
+        // 痕（SweepScopeStats.reflect_error），任一失败 = Err；本拍信号
+        // 丢弃但反思触发计数未清零，下拍自动 sweep 重试（at-least-once）。
+        let mut reflect_errs: Vec<String> = Vec::new();
+        if let Some(e) = &stats.dialogue.reflect_error {
+            reflect_errs.push(format!("对话画像反思失败：{e}"));
+        }
+        if let Some(e) = &stats.project.reflect_error {
+            reflect_errs.push(format!("项目画像反思失败：{e}"));
+        }
+        if !reflect_errs.is_empty() {
+            return Err(reflect_errs.join("；"));
+        }
+        let scope_json = |s: &nemesis_forge::userprofile::SweepScopeStats| {
+            json!({
+                "habits": s.habits,
+                "lessons": s.lessons,
+                "observations": s.observations,
+                "user_messages": s.user_messages,
+                "ai_scope_routed": s.ai_scope_routed,
+            })
+        };
+        let empty = stats.total_habits() == 0
+            && stats.total_lessons() == 0
+            && stats.total_observations() == 0;
+        let mut out = json!({
+            "habits": stats.total_habits(),
+            "lessons": stats.total_lessons(),
+            "observations": stats.total_observations(),
+            "scopes": {
+                "dialogue": scope_json(&stats.dialogue),
+                "project": scope_json(&stats.project),
+            },
+        });
+        if empty {
+            out["note"] = json!("无新内容，本次总结为空");
+        }
+        Ok(Some(out))
+    }
+
+    /// 条目跨 scope 搬移（批二）：`{content, to_scope}`。见模块头。
+    fn move_scope(
+        &self,
+        ctx: &RequestContext,
+        data: Option<&Value>,
+    ) -> Result<Option<Value>, String> {
+        let sub = content_sub(data)?;
+        let to_scope = required_scope(data)?;
+        let ws = self.workspace(ctx)?;
+        let out = store::move_habit_scope(&ws, &sub, to_scope)?;
+        Ok(Some(json!({
+            "moved": out.moved,
+            "from": out.from,
+            "to": out.to,
+            "content": out.content,
+        })))
+    }
 }
 
 fn content_sub(data: Option<&Value>) -> Result<String, String> {
@@ -441,6 +552,25 @@ fn scope_name(scope: ProfileScope) -> &'static str {
     }
 }
 
+/// `move_scope` 的 to_scope 解析：**必填**（缺省/空串拒绝——搬移方向没有
+/// 兼容缺省）；值集同 [`scope_from`]（dialogue|project，大小写不敏感），
+/// 非法值 loud 拒。
+fn required_scope(data: Option<&Value>) -> Result<ProfileScope, String> {
+    let s = data
+        .and_then(|d| d.get("to_scope"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "missing 'to_scope'（dialogue|project）".to_string())?;
+    match s.to_lowercase().as_str() {
+        "dialogue" => Ok(ProfileScope::Dialogue),
+        "project" => Ok(ProfileScope::Project),
+        other => Err(format!(
+            "unknown to_scope '{other}'（合法值：dialogue|project）"
+        )),
+    }
+}
+
 /// `profile.prune_queue` 的 cutoff 计算（复查 2026-11-24 抽出纯函数便于单
 /// 测）：`now − days×86400×1000`，两级饱和（BUG-20261125-006；同族纪律
 /// BUG-20261107-025 decay_sweep——入参来源 i64 裸乘溢出在 debug panic /
@@ -477,6 +607,8 @@ impl ModuleHandler for ProfileHandler {
             "manual_get",
             "manual_save",
             "preview",
+            "reflect_now",
+            "move_scope",
         ]
     }
 
@@ -503,6 +635,8 @@ impl ModuleHandler for ProfileHandler {
             "manual_get" => self.manual_get(ctx, data.as_ref()),
             "manual_save" => self.manual_save(ctx, data.as_ref()),
             "preview" => self.preview(ctx, data.as_ref()),
+            "reflect_now" => self.reflect_now(ctx).await,
+            "move_scope" => self.move_scope(ctx, data.as_ref()),
             _ => Err(format!("unknown command: profile.{cmd}")),
         }
     }

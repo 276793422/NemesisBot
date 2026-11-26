@@ -104,6 +104,20 @@ pub struct HabitEntry {
     /// （[`super::mining::static_template_rule_id`]）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rule_id: String,
+    /// **持久标记**（serde default 落盘——豁免理由必须与翻桶结果同寿，
+    /// 见下）：legacy 静态回填在加载侧翻桶的条目（[backfill_legacy_static_rules]）。
+    /// G8 auto 配额截断豁免（[`prune_and_cap_with_max`]）——被翻条目是
+    /// 存量长寿数据不是可再生挖掘产物，进 auto 桶参与 [`AUTO_MAX_ENTRIES`]
+    /// 截断会在 sweep 被静默删除（2026-11-26 BUG，回归锁 store/tests.rs）。
+    ///
+    /// **为什么必须落盘**：翻桶 `auto=true` 随保存持久化，豁免若只存内存，
+    /// 下个 sweep 重新加载时标记丢失 → 条目被当真产物 → 照删
+    /// （首版修复实测副本 sweep #2 复发，同删 2 条）。衰减/安全边界/过期
+    /// 照常管辖（非免死金牌）。有机归并翻桶（[`upsert_habit`]
+    /// `allow_auto_flip`）不置此标记——信号确认过的条目按 G8 语义照常
+    /// 竞争名额。旧二进制读新文件忽略未知键，零迁移。
+    #[serde(default)]
+    pub legacy_backfilled: bool,
 }
 
 fn default_status() -> String {
@@ -139,6 +153,7 @@ impl HabitEntry {
             kind: KIND_HABIT.into(),
             source: String::new(),
             rule_id: String::new(),
+            legacy_backfilled: false,
         }
     }
 
@@ -239,6 +254,32 @@ impl ProfileScope {
             Self::Project => "user_profile_project.json",
         }
     }
+
+    /// 对侧 scope（批次二搬移的双文件定位 / 批次三跨文件路由共用）。
+    pub fn other(self) -> Self {
+        match self {
+            Self::Dialogue => Self::Project,
+            Self::Project => Self::Dialogue,
+        }
+    }
+
+    /// wire 名（WSAPI/CLI 参数与响应投影用；web 侧 `scope_from` 解析的逆）。
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Dialogue => "dialogue",
+            Self::Project => "project",
+        }
+    }
+
+    /// wire 名解析（[`slug`](Self::slug) 的逆；严格词表，未知 = None 由
+    /// 调用方决定兜底或 loud 报错）。观察提名条目自带 scope 的消费点。
+    pub fn from_slug(s: &str) -> Option<Self> {
+        match s {
+            "dialogue" => Some(Self::Dialogue),
+            "project" => Some(Self::Project),
+            _ => None,
+        }
+    }
 }
 
 /// 手动条目来源标记（批「注入内容页」D8）：TAB1 手动习惯编辑器落库形态。
@@ -300,6 +341,10 @@ fn backfill_legacy_static_rules(profile: &mut UserProfile) {
         {
             h.rule_id = rule.to_string();
             h.auto = true;
+            // 持久标记（落盘）：徽标翻桶但**豁免 G8 auto 配额截断**（2026-11-26
+            // BUG 根修）——被翻条目是存量长寿数据，参与 AUTO_MAX_ENTRIES
+            // 竞争会在首个 sweep 被静默删除。衰减/安全边界照常管辖。
+            h.legacy_backfilled = true;
         }
     }
 }
@@ -378,13 +423,43 @@ pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfil
     prune_and_cap_with_max(&mut profile, max_entries.max(1));
     save_profile_locked(workspace, &profile)?;
     // 项目画像锚点同步（D3）：同锁内第二份文件。失败不回滚对话画像
-    // （锚点写入幂等，下轮 enable/项目 sweep 修复）——但诚实上抛。
+    // （锚点写入幂等；显式 enable 与项目 sweep 的锚点自动回填
+    // [`backfill_project_anchor_locked`]（批次〇）都会补齐）——但诚实上抛。
     let mut project = try_load_profile_scope(workspace, ProfileScope::Project)?;
     if project.enabled_at.is_none() {
         project.enabled_at = profile.enabled_at.clone();
         save_profile_locked_scope(workspace, ProfileScope::Project, &project)?;
     }
     Ok(profile)
+}
+
+/// 项目画像锚点自动回填（批次〇，2026-11-26 存量迁移缺口）：双 scope 代码
+/// 晚于现场 enable 落仓库——存量部署只锚了对话文件（单 scope 时代
+/// [`enable_profile`] 只写 `user_profile.json`），项目文件不存在 → 项目
+/// sweep 在 `sweep_window_start_ms` 恒 None = 永久 no-op，项目习惯一直为
+/// 空。本函数在项目 sweep 窗口 None 时被编排层调用：
+///
+/// - 对话画像已锚（用户开启过画像）→ 补锚：项目文件缺失 = 创建空画像 +
+///   `enabled_at` 取对话锚点值（锚点仅向前，语义对齐 [`enable_profile`]
+///   双锚；幂等——项目已锚不动）；
+/// - 对话也未锚 = 用户从未开启，不补（尊重，`Ok(false)`）；
+/// - 任一画像文件损坏（JSON parse 失败）= Err 上抛（不静默不回写——写
+///   路径纪律，编排层按 scope 隔离失败处理）。
+///
+/// 调用方**必须已持** [`nemesis_config::config_write_lock`]（RMW 全程锁内
+/// 纪律；`_locked` 后缀 = 锁内版约定）。返回是否补了锚。
+pub fn backfill_project_anchor_locked(workspace: &Path) -> Result<bool, String> {
+    let dialogue = try_load_profile_scope(workspace, ProfileScope::Dialogue)?;
+    let Some(anchor) = dialogue.enabled_at.clone() else {
+        return Ok(false); // 对话也未锚 = 用户从未开启，不补
+    };
+    let mut project = try_load_profile_scope(workspace, ProfileScope::Project)?;
+    if project.enabled_at.is_some() {
+        return Ok(false); // 已锚 = 幂等不动
+    }
+    project.enabled_at = Some(anchor);
+    save_profile_locked_scope(workspace, ProfileScope::Project, &project)?;
+    Ok(true)
 }
 
 // 渲染层过滤 `violates_security_boundary`：2026-11-24 单一真相源上收
@@ -398,6 +473,10 @@ pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfil
 /// 非 auto 条目按置信度截 [`MAX_ENTRIES`]（config 可调），auto 条目
 /// （固定规则/挖掘器产物）单独截 [`AUTO_MAX_ENTRIES`]，vetoed 不占任何
 /// 名额。pinned 条目优先保留（用户意志不被截断）。
+///
+/// **legacy 回填豁免**（2026-11-26 BUG 根修）：加载侧静态回填翻桶的条目
+/// （持久标记 [`HabitEntry::legacy_backfilled`]）随 auto 桶但**不占**
+/// [`AUTO_MAX_ENTRIES`] 名额——它们是存量长寿数据不是可再生产物。
 ///
 /// 手动条目三分桶（双 scope 拆分 D9）：`source=manual`（TAB1 编辑器
 /// 用户手写）独立成桶**不截断**（用户意志不限量——写多少注入多少，上限
@@ -434,10 +513,17 @@ pub fn prune_and_cap_with_max(profile: &mut UserProfile, max_entries: usize) {
     non_auto.sort_by(|a, b| sort_key(a, b));
     auto.sort_by(|a, b| sort_key(a, b));
     non_auto.truncate(max_entries);
-    auto.truncate(AUTO_MAX_ENTRIES);
+    // G8 配额只作用于**可再生真产物**：legacy 静态回填翻桶的条目（持久
+    // 标记，2026-11-26 BUG 根修）是存量长寿数据，随行不占名额——否则
+    // 翻桶即落败（置信度通常低于新鲜产物），首个 sweep 静默删除存量。
+    // 有机归并翻桶（信号确认）不带标记，照常竞争。两子桶各自保序。
+    let (auto_legacy, mut auto_genuine): (Vec<_>, Vec<_>) =
+        auto.into_iter().partition(|h| h.legacy_backfilled);
+    auto_genuine.truncate(AUTO_MAX_ENTRIES);
     profile.habits = handwritten;
     profile.habits.extend(non_auto);
-    profile.habits.extend(auto);
+    profile.habits.extend(auto_genuine);
+    profile.habits.extend(auto_legacy);
     profile.habits.extend(vetoed);
 }
 
@@ -849,6 +935,113 @@ pub fn set_pinned(
         save_profile_locked_scope(workspace, scope, &p)?;
     }
     Ok(hit)
+}
+
+/// [`move_habit_scope`] 结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoveScopeOutcome {
+    /// true = 真搬了；false = 幂等（条目已在目标画像）。
+    pub moved: bool,
+    /// 来源画像 wire 名（"dialogue" / "project"）。
+    pub from: &'static str,
+    /// 目标画像 wire 名。
+    pub to: &'static str,
+    /// 被搬条目全文（定位用子串可能短于全文，回显全文防误认）。
+    pub content: String,
+}
+
+/// 条目跨 scope 搬移（批次二，2026-11-26）：把单条习惯在对话/项目画像
+/// 文件间搬移（用户意志兜底——位置分型判错时的修正通道）。
+///
+/// 语义：
+/// - 单 [`nemesis_config::config_write_lock`] 内两份 `try_load_profile_scope`
+///   （任一损坏 = Err 不回写——写路径纪律）；
+/// - 定位：精确归一匹配（`trim().to_lowercase()` 相等）优先，无精确命中
+///   再退子串匹配；**两份都命中 = Err**（治理重复，不猜搬哪条）；
+///   目标已命中 = 幂等 `Ok(moved=false)`；来源命中多条 = Err（搬移是
+///   单条操作）；双份全无 = Err「未找到」；
+/// - 摘除 + 全字段原样搬运（content/kind/steps/evidence/pinned/status/
+///   rule_id/source/confidence/hits/first_seen/last_seen——source=manual
+///   的五面保护随字段自然保留）；`entry.scope` 注记字段置空（归属由
+///   文件承载，单一真相源 = 文件；全仓 grep 确认零读者，置空安全）；
+/// - 目标锚点（`enabled_at`）缺失照写不拒（注入按文件读；采集锚点是
+///   另一维度，批次〇回填链会补齐）——决策记录在案；
+/// - 落盘顺序：**先目标后来源**——中途失败的最坏窗口 = 两份各有一条
+///   （重复），绝不会丢条目；veto/forget/pin 同款「大小写不敏感子串」
+///   定位口径。
+pub fn move_habit_scope(
+    workspace: &Path,
+    content_sub: &str,
+    to_scope: ProfileScope,
+) -> Result<MoveScopeOutcome, String> {
+    if content_sub.trim().is_empty() {
+        return Err("搬移匹配子串为空（会命中全部条目），拒绝执行".into());
+    }
+    let _serial = nemesis_config::config_write_lock();
+    let mut source = try_load_profile_scope(workspace, to_scope.other())?;
+    let mut target = try_load_profile_scope(workspace, to_scope)?;
+    let needle = content_sub.trim().to_lowercase();
+    // 定位闭包：精确归一命中优先，退子串；返回 (命中数, 精确命中下标)。
+    let locate = |habits: &[HabitEntry]| -> (usize, Option<usize>) {
+        let mut exact: Vec<usize> = Vec::new();
+        let mut partial: Vec<usize> = Vec::new();
+        for (i, h) in habits.iter().enumerate() {
+            let c = h.content.trim().to_lowercase();
+            if c == needle {
+                exact.push(i);
+            } else if c.contains(&needle) {
+                partial.push(i);
+            }
+        }
+        if !exact.is_empty() {
+            (exact.len(), Some(exact[0]))
+        } else {
+            (partial.len(), None)
+        }
+    };
+    let (src_hits, src_exact) = locate(&source.habits);
+    let (tgt_hits, _tgt_exact) = locate(&target.habits);
+    if src_hits > 0 && tgt_hits > 0 {
+        return Err("两份画像都命中该子串（治理重复）：先经 veto/forget 清理一侧再搬移".into());
+    }
+    if tgt_hits > 0 {
+        let content = target.habits[_tgt_exact.unwrap_or(0)].content.clone();
+        return Ok(MoveScopeOutcome {
+            moved: false,
+            from: to_scope.slug(),
+            to: to_scope.slug(),
+            content,
+        });
+    }
+    if src_hits > 1 {
+        return Err(format!(
+            "子串命中来源画像 {src_hits} 条条目，搬移是单条操作：请用更长的子串唯一定位"
+        ));
+    }
+    if src_hits == 0 {
+        return Err(format!("两份画像均未找到匹配「{content_sub}」的条目"));
+    }
+    let idx = src_exact.unwrap_or_else(|| {
+        // 无精确命中：子串唯一命中——找出那一条的下标。
+        source
+            .habits
+            .iter()
+            .position(|h| h.content.trim().to_lowercase().contains(&needle))
+            .expect("src_hits==1 已保证存在")
+    });
+    let mut entry = source.habits.remove(idx);
+    entry.scope = String::new();
+    let content = entry.content.clone();
+    target.habits.push(entry);
+    // 先目标后来源：中途失败最坏 = 重复，不丢数据。
+    save_profile_locked_scope(workspace, to_scope, &target)?;
+    save_profile_locked_scope(workspace, to_scope.other(), &source)?;
+    Ok(MoveScopeOutcome {
+        moved: true,
+        from: to_scope.other().slug(),
+        to: to_scope.slug(),
+        content,
+    })
 }
 
 /// 手动习惯保存（TAB1 手动编辑器整体替换语义；双 scope 拆分 D8/D9）。

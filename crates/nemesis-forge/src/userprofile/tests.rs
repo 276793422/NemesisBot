@@ -10,7 +10,7 @@ use std::path::Path;
 use super::bridge;
 use super::reflection;
 use super::store;
-use super::sweep_once;
+use super::{SweepOpts, sweep_once, sweep_once_opts};
 use crate::reflector_llm::LLMCaller;
 
 /// 固定响应 mock caller（编排测试不测 LLM 本身，测路由）。
@@ -84,7 +84,7 @@ fn sweep_once_routes_habits_and_lessons() {
     let handle = rt.handle().clone();
 
     let processed = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
-    assert_eq!(processed, 2, "窗内 2 条用户消息");
+    assert_eq!(processed.total_user_messages(), 2, "窗内 2 条用户消息");
 
     // 画像面：habit 入画像（反思桶 auto=false），lesson 绝不入（路由 +
     // upsert 双保险端到端）。
@@ -132,7 +132,7 @@ fn sweep_once_disabled_is_noop() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let handle = rt.handle().clone();
     let processed = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
-    assert_eq!(processed, 0);
+    assert_eq!(processed.total_user_messages(), 0);
     assert!(store::load_profile(ws).habits.is_empty());
     assert!(bridge::read_pending_lessons(ws, 10).is_empty());
 }
@@ -669,7 +669,7 @@ fn gate_open_reflection_failure_drops_signals_then_retries_next_sweep() {
     let handle = rt.handle().clone();
 
     // 第一拍：反思 Err（断模型）。
-    sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    let first = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
     let profile = store::load_profile(ws);
     assert!(
         profile.habits.is_empty(),
@@ -680,6 +680,18 @@ fn gate_open_reflection_failure_drops_signals_then_retries_next_sweep() {
         "计数器不清零（快照 3 + 本拍 1）——失败不清计数，下拍仍可触发"
     );
     assert!(profile.last_reflect_ms.is_none(), "反思水线不推进");
+    // 反思失败留痕（横扫 2026-11-26）：手动触发（reflect_now）据此诚实
+    // 上抛，不伪装「无新内容」。对话 scope 命中断模型，项目 scope 无新
+    // 消息不进反思 = None。
+    assert_eq!(
+        first.dialogue.reflect_error.as_deref(),
+        Some("模拟断模型"),
+        "对话反思失败必须留痕上抛"
+    );
+    assert!(
+        first.project.reflect_error.is_none(),
+        "项目 scope 无反思调用 = 无错误留痕"
+    );
 
     // 第二拍：同批消息仍在滚动 24h 证据窗内被重扫，反思成功。
     sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
@@ -765,7 +777,11 @@ fn sweep_once_scope_split_routes_rows_and_watermarks() {
     let handle = rt.handle().clone();
 
     let processed = sweep_once(&ws.join("config.json"), ws, &handle, None).unwrap();
-    assert_eq!(processed, 6, "双 scope 各 3 条用户消息");
+    assert_eq!(
+        processed.total_user_messages(),
+        6,
+        "双 scope 各 3 条用户消息"
+    );
 
     let dialogue = store::load_profile_scope(ws, ProfileScope::Dialogue);
     let project = store::load_profile_scope(ws, ProfileScope::Project);
@@ -786,10 +802,11 @@ fn sweep_once_scope_split_routes_rows_and_watermarks() {
     assert_eq!(project.sweeps_since_reflect, 1);
 }
 
-/// 项目画像无锚点 = 项目 scope 自然 no-op（不建文件、行不进对话 scope
-/// ——processed 只含对话行）。
+/// 批次〇（2026-11-26 存量迁移）：项目文件缺席 + 对话画像已锚 = 项目
+/// sweep 首拍自动补锚（enabled_at 取对话锚点值，幂等仅向前），且**本拍
+/// 直接继续采集**（不白等下一拍）——项目行当拍进项目画像。
 #[test]
-fn sweep_once_project_without_anchor_is_noop() {
+fn sweep_once_backfills_project_anchor_and_collects_same_tick() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     std::fs::write(
@@ -797,7 +814,7 @@ fn sweep_once_project_without_anchor_is_noop() {
         r#"{"user_profile": {"enabled": true}}"#,
     )
     .unwrap();
-    // 只种对话锚点。
+    // 只种对话锚点（单 scope 时代部署形态：项目文件不存在）。
     let enabled_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
     let profile = serde_json::json!({ "enabled_at": enabled_at, "sweeps_since_reflect": 0 });
     let p = store::profile_path(ws);
@@ -809,11 +826,88 @@ fn sweep_once_project_without_anchor_is_noop() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let handle = rt.handle().clone();
     let processed = sweep_once(&ws.join("config.json"), ws, &handle, None).unwrap();
-    assert_eq!(processed, 3, "项目 scope 无锚 no-op，processed 只含对话行");
+    assert_eq!(
+        processed.total_user_messages(),
+        5,
+        "补锚后本拍项目行直接采集（对话 3 + 项目 2）"
+    );
+    // 项目文件被创建 + 锚点取对话锚点值 + 项目水线本拍推进。
+    let project = store::load_profile_scope(ws, ProfileScope::Project);
+    assert!(
+        project.enabled_at.is_some(),
+        "补锚写入 enabled_at（存量迁移）"
+    );
+    assert!(project.last_sweep_ms.is_some(), "项目水线本拍推进");
+    assert_eq!(processed.project.user_messages, 2, "项目 scope 吃到项目行");
+    assert_eq!(processed.dialogue.user_messages, 3);
+}
+
+/// 批次〇反向臂：对话画像也未锚（用户从未开启）= 不补锚——项目文件不
+/// 凭空创建、行不采集（老语义保留：no-op 的判定锚在对话画像）。
+#[test]
+fn sweep_once_no_dialogue_anchor_keeps_project_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    std::fs::write(
+        ws.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    seed_session(ws, "sess-p", true, &["你好", "帮我改配置"]);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let processed = sweep_once(&ws.join("config.json"), ws, &handle, None).unwrap();
+    assert_eq!(processed.total_user_messages(), 0, "对话未锚 = 全 no-op");
     assert!(
         !store::profile_path_scope(ws, ProfileScope::Project).exists(),
-        "项目画像文件不被凭空创建"
+        "不凭空创建项目画像文件"
     );
+    assert!(
+        !store::profile_path(ws).exists(),
+        "对话画像文件也不凭空创建"
+    );
+}
+
+/// 批次〇损坏臂：项目画像文件损坏（非法 JSON）= 项目 scope sweep 诚实
+/// Err（编排层 scope 隔离 warn），对话 scope 照常跑不陪葬；损坏文件不回写。
+#[test]
+fn sweep_once_corrupted_project_profile_is_scope_isolated_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    std::fs::write(
+        ws.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    let enabled_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let p = store::profile_path(ws);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(
+        p,
+        serde_json::to_string_pretty(&serde_json::json!({ "enabled_at": enabled_at })).unwrap(),
+    )
+    .unwrap();
+    let ppath = store::profile_path_scope(ws, ProfileScope::Project);
+    std::fs::write(&ppath, "{corrupt").unwrap();
+    seed_session(ws, "sess-d", false, &["你好", "帮我看看日志", "谢谢"]);
+    seed_session(ws, "sess-p", true, &["你好", "帮我改配置"]);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+    let processed = sweep_once(&ws.join("config.json"), ws, &handle, None).unwrap();
+    assert_eq!(
+        processed.total_user_messages(),
+        3,
+        "项目 scope 失败被隔离（计 0），对话 scope 照常"
+    );
+    assert!(
+        store::load_profile_scope(ws, ProfileScope::Dialogue)
+            .last_sweep_ms
+            .is_some()
+    );
+    // 损坏文件保持原样（Err 路径零回写）。
+    assert_eq!(std::fs::read_to_string(&ppath).unwrap(), "{corrupt");
 }
 
 /// 全局信号源只进对话 scope（D6 回归锁）：todo 快照（全局数据，无会话
@@ -904,4 +998,387 @@ fn mining_day_label_uses_local_wall_clock() {
         super::mining::local_day_label(ts2),
         "同一本地日的两个时刻（UTC 日不同）必须产出同一日标签"
     );
+}
+// ---------- 批次一：force_reflect 手动触发（2026-11-26） ----------
+
+/// 捕获 prompt + 固定响应（批次一/三测试用）。
+struct CaptureAndRespond {
+    prompts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    resp: String,
+}
+
+#[async_trait::async_trait]
+impl LLMCaller for CaptureAndRespond {
+    async fn chat(
+        &self,
+        _system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        self.prompts.lock().unwrap().push(_user_prompt.to_string());
+        Ok(self.resp.clone())
+    }
+}
+
+/// force 放宽触发闸（不放宽空窗闸）：闸关死（计数 4 < 20 / 消息 12 < 25）
+/// 时普通拍零反思调用；force 拍门开，反思恰好一次 + 计数归零 + 水线推进。
+#[test]
+fn sweep_once_opts_force_reflect_bypasses_trigger_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    std::fs::write(
+        ws.join("config.json"),
+        r#"{"user_profile": {"enabled": true, "reflect_min_new_messages": 25}}"#,
+    )
+    .unwrap();
+    seed_reflect_anchor(ws); // 计数器 3
+    seed_short_messages(ws); // 12 条 < 25
+    let prompts: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(CaptureAndRespond {
+        prompts: prompts.clone(),
+        resp: "[]".to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    // 普通拍：闸关死 → 零反思调用。
+    sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    assert!(prompts.lock().unwrap().is_empty(), "未到触发闸不反思");
+    assert_eq!(store::load_profile(ws).sweeps_since_reflect, 4, "计数器 +1");
+
+    // force 拍：同批消息仍在滚动证据窗内，门开（force || should_reflect）。
+    let opts = SweepOpts {
+        force_reflect: true,
+    };
+    let stats = sweep_once_opts(&ws.join("config.json"), ws, &handle, Some(&caller), opts).unwrap();
+    assert_eq!(prompts.lock().unwrap().len(), 1, "force 绕过触发闸");
+    let profile = store::load_profile(ws);
+    assert_eq!(profile.sweeps_since_reflect, 0, "反思成功计数归零");
+    assert!(profile.last_reflect_ms.is_some(), "反思水线推进");
+    assert_eq!(stats.dialogue.user_messages, 12, "证据窗整窗采集");
+}
+
+/// force 不放宽空窗判定：反思水线刚推进（reflect_rows 空）→ force 也不
+/// 调 LLM（诚实空跑，不造空反思）。
+#[test]
+fn sweep_once_opts_force_reflect_respects_empty_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    std::fs::write(
+        ws.join("config.json"),
+        r#"{"user_profile": {"enabled": true}}"#,
+    )
+    .unwrap();
+    // 锚点 + last_reflect_ms = now（水线刚推进，窗内消息全在反思线之前）。
+    let enabled_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let p = store::profile_path(ws);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(
+        p,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "enabled_at": enabled_at,
+            "sweeps_since_reflect": 3,
+            "last_reflect_ms": chrono::Utc::now().timestamp_millis(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    seed_session(ws, "sess-d", false, &["你好", "帮我看看日志"]);
+    let prompts: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(CaptureAndRespond {
+        prompts: prompts.clone(),
+        resp: "[]".to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let opts = SweepOpts {
+        force_reflect: true,
+    };
+    let stats = sweep_once_opts(&ws.join("config.json"), ws, &handle, Some(&caller), opts).unwrap();
+    assert!(prompts.lock().unwrap().is_empty(), "空窗 force 也不反思");
+    assert_eq!(stats.dialogue.user_messages, 2, "采集照常，反思不跑");
+}
+
+// ---------- 批次三：反思结论 scope 分型路由（2026-11-26） ----------
+
+/// 纯 AI 结论（无点名）提案 scope=project → 对话反思里落**项目画像文件**
+/// （含跨文件），ai_scope_routed 计 1；对话画像零条目。
+#[test]
+fn sweep_once_pure_ai_project_conclusion_crosses_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_gate_config(ws);
+    seed_reflect_anchor(ws);
+    seed_session(ws, "sess-a", false, &["你好", "帮我看看日志"]);
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(FixedCaller {
+        resp: r#"[{"kind": "habit", "category": "workflow",
+                   "content": "项目协作规范：先对齐再动手", "confidence": 0.9,
+                   "scope": "project"}]"#
+            .to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let stats = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    let dialogue = store::load_profile_scope(ws, ProfileScope::Dialogue);
+    assert!(dialogue.habits.is_empty(), "跨文件结论不落对话画像");
+    let project = store::load_profile_scope(ws, ProfileScope::Project);
+    assert_eq!(
+        project.habits.len(),
+        1,
+        "纯 AI 新插按 target_scope 落项目画像"
+    );
+    assert_eq!(project.habits[0].content, "项目协作规范：先对齐再动手");
+    assert!(!project.habits[0].auto, "反思产物 auto=false");
+    assert_eq!(
+        stats.dialogue.ai_scope_routed, 1,
+        "跨文件计 ai_scope_routed"
+    );
+    assert_eq!(stats.dialogue.habits, 1, "落谁家都算本次反思产出");
+}
+
+/// 对侧画像读取失败 = 跨文件路由降级为本 scope-only（批次三③兜底语义，
+/// 代码注释明文承诺「不炸本拍已拿到的 AI 结论」）：项目画像文件损坏 +
+/// 对话反思产出 scope=project 纯 AI 结论 → 反思照常完成，结论降级落
+/// 对话画像（位置兜底），ai_scope_routed 不计（没真跨成文件）；项目
+/// scope 自身损坏 = Err 被 scope 隔离（stats.project 全零且无反思错误
+/// ——项目 sweep 在快照读取就失败，没进到反思）。
+#[test]
+fn sweep_once_cross_scope_degrades_to_local_when_other_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_gate_config(ws);
+    seed_reflect_anchor(ws);
+    seed_session(ws, "sess-a", false, &["你好", "帮我看看日志"]);
+    // 对侧（项目画像）损坏：读取失败 → other=None 全链降级。
+    let ppath = store::profile_path_scope(ws, ProfileScope::Project);
+    std::fs::create_dir_all(ppath.parent().unwrap()).unwrap();
+    std::fs::write(&ppath, "{corrupt").unwrap();
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(FixedCaller {
+        resp: r#"[{"kind": "habit", "category": "workflow",
+                   "content": "项目协作规范：先对齐再动手", "confidence": 0.9,
+                   "scope": "project"}]"#
+            .to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let stats = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    // 对话反思照常产出（不炸），结论降级落对话画像。
+    let dialogue = store::load_profile_scope(ws, ProfileScope::Dialogue);
+    assert_eq!(
+        dialogue.habits.len(),
+        1,
+        "对侧缺席 = 降级落本 scope（位置兜底），结论不丢"
+    );
+    assert_eq!(dialogue.habits[0].content, "项目协作规范：先对齐再动手");
+    assert_eq!(
+        stats.dialogue.ai_scope_routed, 0,
+        "没真跨成文件，不计跨文件路由"
+    );
+    assert_eq!(stats.dialogue.habits, 1);
+    assert!(
+        stats.dialogue.reflect_error.is_none(),
+        "反思本身成功，无错误留痕"
+    );
+    // 项目 scope 自身损坏 = Err 被隔离（全零 stats），损坏文件零回写。
+    assert_eq!(stats.project.user_messages, 0);
+    assert!(stats.project.reflect_error.is_none());
+    assert_eq!(std::fs::read_to_string(&ppath).unwrap(), "{corrupt");
+}
+
+/// 点名认领插入跨文件（工作流主通道）：对话信号卡 id + AI 提案
+/// scope=project → 对话画像无可改写目标（NoHit）→ 认领插入落项目画像，
+/// rule_id 归并位认领在项目侧。
+#[test]
+fn sweep_once_claim_insert_routes_to_target_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_gate_config(ws);
+    seed_reflect_anchor(ws);
+    seed_short_messages(ws); // stat.brief 信号卡
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(FixedCaller {
+        resp: r#"[{"kind": "habit", "category": "style",
+                   "content": "用户爱用两三个字下指令", "confidence": 0.9,
+                   "rule_ids": ["stat.brief"], "scope": "project"}]"#
+            .to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let stats = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    let dialogue = store::load_profile_scope(ws, ProfileScope::Dialogue);
+    assert!(dialogue.habits.is_empty(), "认领插入不落对话画像");
+    let project = store::load_profile_scope(ws, ProfileScope::Project);
+    assert_eq!(project.habits.len(), 1);
+    assert_eq!(
+        project.habits[0].rule_id,
+        crate::userprofile::mining::RULE_STAT_BRIEF,
+        "rule_id 认领归并位随条目落项目侧"
+    );
+    assert_eq!(project.habits[0].content, "用户爱用两三个字下指令");
+    assert_eq!(stats.dialogue.ai_scope_routed, 1);
+}
+
+/// 对侧已持有同 rule_id = 落对侧归并（不异地重建、不产生第二份）；
+/// existing_rules 回灌含对侧条目措辞（AI 可见的合并上下文）。
+#[test]
+fn sweep_once_cross_scope_claim_merges_not_duplicates() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_gate_config(ws);
+    seed_reflect_anchor(ws);
+    seed_short_messages(ws);
+    // 项目画像已有 stat.brief 持有者（此前拍认领产物）。
+    let enabled_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let ppath = store::profile_path_scope(ws, ProfileScope::Project);
+    std::fs::create_dir_all(ppath.parent().unwrap()).unwrap();
+    std::fs::write(
+        &ppath,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "enabled_at": enabled_at,
+            "sweeps_since_reflect": 0,
+            "habits": [
+                {"category": "style", "content": "旧措辞：指令极短",
+                 "confidence": 0.8, "hits": 5, "status": "active", "auto": false,
+                 "rule_id": "stat.brief"}
+            ],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let prompts: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(CaptureAndRespond {
+        prompts: prompts.clone(),
+        resp: r#"[{"kind": "habit", "category": "style",
+                   "content": "用户新措辞", "confidence": 0.9,
+                   "rule_ids": ["stat.brief"], "scope": "project"}]"#
+            .to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let stats = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    let dialogue = store::load_profile_scope(ws, ProfileScope::Dialogue);
+    assert!(dialogue.habits.is_empty(), "对话画像零条目");
+    let project = store::load_profile_scope(ws, ProfileScope::Project);
+    let brief: Vec<_> = project
+        .habits
+        .iter()
+        .filter(|h| h.rule_id == crate::userprofile::mining::RULE_STAT_BRIEF)
+        .collect();
+    assert_eq!(brief.len(), 1, "落对侧归并，不异地重建第二份");
+    assert_eq!(
+        brief[0].content, "旧措辞：指令极短",
+        "rule_id 持有者措辞保留"
+    );
+    assert_eq!(brief[0].hits, 6, "归并刷计数");
+    assert_eq!(stats.dialogue.ai_scope_routed, 1);
+    // existing_rules 回灌含对侧条目措辞（AI 可见合并上下文）。
+    assert!(
+        prompts.lock().unwrap()[0].contains("旧措辞：指令极短"),
+        "对侧 rule_id 条目进反思 prompt"
+    );
+}
+
+/// 批次三补口（复查 2026-11-26）：AI 点名**只存在于对侧**的 rule_id
+/// （本拍信号卡不产、本 scope 也没有——仅 prompt 回灌可见）→ 必须通过
+/// 有效 id 域走对侧归并（不异地重建第二份）。修复前该 id 被当编造过滤
+/// 走纯 AI 插入 = 跨文件重复生成（防重复闭环漏半环）。
+#[test]
+fn sweep_once_other_scope_only_id_claim_merges_into_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_gate_config(ws);
+    seed_reflect_anchor(ws);
+    // 两条消息 n<10 → stat.brief 信号不触发（id 只存在于对侧画像）。
+    seed_session(ws, "sess-a", false, &["你好", "帮我看看日志"]);
+    // 项目画像已有 stat.brief 持有者（此前拍认领产物）。
+    let enabled_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let ppath = store::profile_path_scope(ws, ProfileScope::Project);
+    std::fs::create_dir_all(ppath.parent().unwrap()).unwrap();
+    std::fs::write(
+        &ppath,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "enabled_at": enabled_at,
+            "sweeps_since_reflect": 0,
+            "habits": [
+                {"category": "style", "content": "旧措辞：指令极短",
+                 "confidence": 0.8, "hits": 5, "status": "active", "auto": false,
+                 "rule_id": "stat.brief"}
+            ],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(FixedCaller {
+        resp: r#"[{"kind": "habit", "category": "style",
+                   "content": "用户新措辞", "confidence": 0.9,
+                   "rule_ids": ["stat.brief"], "scope": "project"}]"#
+            .to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let stats = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    let dialogue = store::load_profile_scope(ws, ProfileScope::Dialogue);
+    assert!(dialogue.habits.is_empty(), "对侧归并不落本 scope");
+    let project = store::load_profile_scope(ws, ProfileScope::Project);
+    assert_eq!(
+        project.habits.len(),
+        1,
+        "点名对侧 id 归并到持有者，不插第二份"
+    );
+    assert_eq!(
+        project.habits[0].content, "旧措辞：指令极短",
+        "rule_id 持有者措辞保留"
+    );
+    assert_eq!(project.habits[0].hits, 6, "归并刷计数");
+    assert_eq!(stats.dialogue.ai_scope_routed, 1);
+}
+
+/// 改写恒留本 scope（路由规则①）：对话画像既有 stat.brief 持有者被点名
+/// 且提案 scope=project → 原地改写留对话画像，条目不迁移。
+#[test]
+fn sweep_once_rewrite_never_migrates_across_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_gate_config(ws);
+    // 对话画像：锚点 + 计数器 3 + stat.brief 既有条目。
+    let enabled_at = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+    let p = store::profile_path(ws);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(
+        p,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "enabled_at": enabled_at,
+            "sweeps_since_reflect": 3,
+            "habits": [
+                {"category": "style", "content": "旧措辞：指令极短",
+                 "confidence": 0.9, "hits": 5, "status": "active", "auto": false,
+                 "rule_id": "stat.brief"}
+            ],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    seed_short_messages(ws);
+    let caller: std::sync::Arc<dyn LLMCaller> = std::sync::Arc::new(FixedCaller {
+        resp: r#"[{"kind": "habit", "category": "style",
+                   "content": "改写后的措辞", "confidence": 0.9,
+                   "rule_ids": ["stat.brief"], "scope": "project"}]"#
+            .to_string(),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let handle = rt.handle().clone();
+
+    let stats = sweep_once(&ws.join("config.json"), ws, &handle, Some(&caller)).unwrap();
+    let dialogue = store::load_profile_scope(ws, ProfileScope::Dialogue);
+    assert_eq!(dialogue.habits.len(), 1, "Rewrote 原地改写恒留本 scope");
+    assert_eq!(dialogue.habits[0].content, "改写后的措辞");
+    assert!(!dialogue.habits[0].auto);
+    let project = store::load_profile_scope(ws, ProfileScope::Project);
+    assert!(project.habits.is_empty(), "条目不迁移进项目画像");
+    assert_eq!(stats.dialogue.ai_scope_routed, 0, "原地改写不算跨文件");
 }

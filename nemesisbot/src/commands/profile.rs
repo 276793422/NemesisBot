@@ -39,6 +39,14 @@ pub enum ProfileAction {
         #[arg(long)]
         unpin: bool,
     },
+    /// Move a habit between dialogue/project profiles (batch 2, 2026-11-26)
+    Move {
+        /// Content substring to match (exact normalized match preferred)
+        content: String,
+        /// Target profile scope (dialogue|project)
+        #[arg(value_parser = ["dialogue", "project"])]
+        to_scope: String,
+    },
 }
 
 pub fn run(action: ProfileAction, local: bool) -> Result<()> {
@@ -133,8 +141,30 @@ pub fn run(action: ProfileAction, local: bool) -> Result<()> {
                 }
             );
         }
+        ProfileAction::Move { content, to_scope } => {
+            let to = parse_scope_wire(&to_scope).map_err(anyhow::Error::msg)?;
+            let out =
+                store::move_habit_scope(&workspace, &content, to).map_err(anyhow::Error::msg)?;
+            if out.moved {
+                println!("✓ moved {} → {}", out.content, out.to);
+            } else {
+                println!("○ already in {} (no-op): {}", out.to, out.content);
+            }
+        }
     }
     Ok(())
+}
+
+/// scope wire 名解析（CLI 边缘本地形态；web 侧 `required_scope` 同构）：
+/// dialogue|project 大小写不敏感，非法值 loud 报错带合法值提示。
+fn parse_scope_wire(s: &str) -> std::result::Result<ProfileScope, String> {
+    match s.trim().to_lowercase().as_str() {
+        "dialogue" => Ok(ProfileScope::Dialogue),
+        "project" => Ok(ProfileScope::Project),
+        other => Err(format!(
+            "unknown scope '{other}'（合法值：dialogue|project）"
+        )),
+    }
 }
 
 /// config.json `user_profile.enabled` 开关（typed load/save——flatten 透传

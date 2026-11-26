@@ -107,12 +107,15 @@ fn sweep_tick(
             None
         }
     };
-    userprofile::sweep_once(
+    // sweep_once 返回双 scope 结构化 stats；tick 契约保持 usize = 全部
+    // scope 采集的用户消息数（调用方只用作日志观测）。
+    let stats = userprofile::sweep_once(
         &crate::common::config_path(home),
         &workspace,
         rt,
         caller.as_ref(),
-    )
+    )?;
+    Ok(stats.total_user_messages())
 }
 
 #[cfg(test)]
