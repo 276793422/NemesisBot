@@ -1368,3 +1368,21 @@ async fn s2_rpc_trait_is_running_before_and_after_start() {
     ch.stop().await.unwrap();
     assert!(!ch.is_running());
 }
+
+/// BUG-20261126-108：start/stop 必须对称接线 base running 旗标。此前只接
+/// enabled 不接 running——trait is_running()（读 base.running）恒 false，
+/// manager 三消费点（start_all skip / any_channel_running / status 上报
+/// running 字段）对本通道失真（面板永显示离线、重复 start_all 永不跳过）。
+/// 与 BUG-20261125-019 修复十通道的理由同源（status 失真与 spawn 与否无关）。
+#[tokio::test]
+async fn bug108_start_stop_maintain_base_running_flag() {
+    let ch = RPCChannel::new(RPCChannelConfig::default());
+    assert!(!ch.is_running(), "未 start 前必须为 false");
+    ch.start().await.unwrap();
+    assert!(
+        ch.is_running(),
+        "start 后 is_running 必须 true（接线前恒 false = status 面板失真）"
+    );
+    ch.stop().await.unwrap();
+    assert!(!ch.is_running(), "stop 后必须对称回落 false");
+}

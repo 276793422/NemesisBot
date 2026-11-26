@@ -723,3 +723,29 @@ async fn b036_ws_session_auth_silence_times_out_requests_reconnect() {
     assert!(need_reconnect, "鉴权静默超时必须走重连臂（而非无限挂起）");
     server.abort();
 }
+
+/// BUG-20261126-108：幂等双启守卫——spawn 型 WS gateway loop 无守卫的重复
+/// start 会双连接双事件流（每条消息 N 倍喂 agent）。050 只核对本通道旗标
+/// 接线、019 十通道 / 107 十九通道横扫清单均未含——家族三轮漏网补齐的
+/// 回归锁。锁形态=019 九通道先例（config 全指死端口零外网；两次 start 均
+/// Ok + 旗标状态正确；spawn 计数无直接可观察面，红证靠家族模板一致性
+/// 背书 + websocket/rpc 两把行为级红绿证同行）。
+#[tokio::test]
+async fn test_start_idempotent_double_start_skips_duplicate_ws_loop() {
+    let (tx, _rx) = broadcast::channel(16);
+    let config = MattermostConfig {
+        base_url: "http://127.0.0.1:1".to_string(), // 死端口：validate 失败 warn 后继续启动
+        bot_token: "tok".to_string(),
+        allow_from: vec![],
+        channels: vec![],
+    };
+    let ch = MattermostChannel::new(config, tx).unwrap();
+    ch.start().await.expect("first start must succeed");
+    assert!(ch.is_running());
+    ch.start()
+        .await
+        .expect("duplicate start must be skipped idempotently (BUG-20261126-108)");
+    assert!(ch.is_running());
+    ch.stop().await.unwrap();
+    assert!(!ch.is_running());
+}

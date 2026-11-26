@@ -304,6 +304,13 @@ impl Channel for RPCChannel {
     async fn start(&self) -> Result<()> {
         debug!("[RPCChannel] starting");
         self.base.set_enabled(true);
+        // base running 旗标接线（BUG-20261126-108）：此前只接 enabled 不接
+        // running——trait is_running() 恒 false，manager 三消费点（start_all
+        // skip / any_channel_running / status 上报 running 字段）对本通道
+        // 失真（面板永显示离线、重复 start_all 永不跳过）。与
+        // BUG-20261125-019 修复十通道的理由同源（status 失真与 spawn 与否
+        // 无关）；start 本体无资源（no-op 型），守卫不适用，旗标接线即可。
+        self.base.set_running(true);
         info!("[RPCChannel] started");
         Ok(())
     }
@@ -311,6 +318,8 @@ impl Channel for RPCChannel {
     async fn stop(&self) -> Result<()> {
         debug!("[RPCChannel] stopping");
         self.base.set_enabled(false);
+        // BUG-20261126-108：对称清除（start 接线见上）。
+        self.base.set_running(false);
 
         // Abort background tasks
         self.abort_tasks();
