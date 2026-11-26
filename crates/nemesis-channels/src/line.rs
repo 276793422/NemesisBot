@@ -279,7 +279,7 @@ impl LineChannel {
         reply_tokens: &Arc<dashmap::DashMap<String, String>>,
         running: &Arc<parking_lot::RwLock<bool>>,
     ) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let _ = reply_tokens; // used via DashMap clone
 
@@ -287,13 +287,24 @@ impl LineChannel {
             return;
         }
 
-        let mut buf = vec![0u8; 65536];
+        // BUG-20261126-106：旧形态单次 `read()` 只拿内核缓冲区当时的字节——
+        // >1.4KB 的请求跨 TCP segment 到达时拿到部分请求，对截断 body 验签
+        // 必败 401（fail-closed）→ 消息永久丢失且平台重试同样分段无法自愈。
+        // 改 http_min 有界重组读（wechat 同源单一真相源）：Oversize → 400，
+        // 其余失败（EOF/超时/IO）静默断开，与旧 Ok(0)|Err 形态一致。
         let mut stream = stream;
-        let n = match stream.read(&mut buf).await {
-            Ok(0) | Err(_) => return,
-            Ok(n) => n,
+        let bytes = match crate::http_min::read_request_bounded(&mut stream).await {
+            Ok(b) => b,
+            Err(crate::http_min::MinReadError::Oversize) => {
+                warn!("[LineChannel] webhook request exceeds size cap; rejecting");
+                let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+                let _ = stream.write_all(resp.as_bytes()).await;
+                return;
+            }
+            Err(_) => return,
         };
-        let request_data = &buf[..n];
+        let request_data: &[u8] = &bytes;
+        let n = request_data.len();
         let request_str = String::from_utf8_lossy(request_data);
 
         // 路径闸（wechat.rs:577 callback_path 同款家族形态）：请求路径与

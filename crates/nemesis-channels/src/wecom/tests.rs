@@ -379,6 +379,35 @@ async fn test_wecom_channel_lifecycle() {
     assert!(ch.send(msg).await.is_err());
 }
 
+/// BUG-20261126-107 同族回归锁：start() 必须幂等——固定端口形态下，
+/// 无守卫的第二次 start 会在同一端口二次 bind → AddrInUse Err；
+/// 守卫在场 → 直接跳过返回 Ok。
+#[tokio::test]
+async fn test_start_idempotent_double_start_skips_duplicate_server() {
+    let (tx, _rx) = broadcast::channel(16);
+    let (enc_key, _key) = make_aes_key();
+    let mut cfg = callback_config("tok", &enc_key, vec![]);
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    cfg.listen_addr = format!("127.0.0.1:{port}");
+    let ch = WeComChannel::new(cfg, tx).unwrap();
+
+    ch.start().await.unwrap();
+    assert!(ch.is_running());
+    assert!(ch.callback_addr().is_some(), "回调服务端应已在监听");
+    // 等首次 bind 稳定。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    ch.start()
+        .await
+        .expect("双启应被幂等守卫跳过（第二次 start 返回 Ok）");
+    assert!(ch.callback_addr().is_some(), "跳过双启后回调服务端仍在位");
+
+    ch.stop().await.unwrap();
+    assert!(!ch.is_running());
+}
+
 #[test]
 fn test_wecom_config_template_shape_deserializes() {
     // config.default.json 的 wecom 段形态（含 enabled/sync_to 等模板层字段）

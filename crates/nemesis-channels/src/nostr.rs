@@ -661,6 +661,14 @@ impl Channel for NostrChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // 幂等双启守卫（BUG-20261126-107）：running 旗标本体接线正确
+        // （BUG-20261121-050 → R2789 十通道横扫），但 start() 缺家族守卫
+        // （BUG-20261125-019 同族漏网）——双启时每 relay 双连接 + 出站帧
+        // 向每 sink 双发。manager 层守卫挡常规双启，这里是纵深防御位。
+        if self.base.is_running() {
+            info!("[NostrChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
         info!(
             "[NostrChannel] 启动 nostr 通道（本机公钥 {}）",
             self.keys.x_only_pub

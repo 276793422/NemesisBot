@@ -13,6 +13,11 @@ mod debug_redact;
 #[cfg(test)]
 mod debug_redact_tests;
 
+/// 手写 webhook 服务器的最小 HTTP 请求有界重组读（BUG-20261126-106）：
+/// wechat/line 手写 `handle_connection` 共用的单一真相源，单次 read 不耐
+/// TCP 分段的根修。恒编译（消费方按各自 feature 门控，本模块零依赖开销）。
+pub mod http_min;
+
 pub mod base;
 pub mod manager;
 pub mod rpc_channel;

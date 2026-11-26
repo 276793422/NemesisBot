@@ -517,6 +517,29 @@ fn query_get_pub<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a st
 }
 
 // ---------------------------------------------------------------------------
+// 双启幂等（BUG-20261126-107 同族回归锁）
+// ---------------------------------------------------------------------------
+
+/// start() 必须幂等：固定端口形态下，无守卫的第二次 start 会在同一端口
+/// 二次 bind → AddrInUse Err；守卫在场 → 直接跳过返回 Ok。
+#[tokio::test]
+async fn test_start_idempotent_double_start_skips_duplicate_server() {
+    let port = find_free_port();
+    let config = WeChatConfig {
+        callback_listen_addr: format!("127.0.0.1:{port}"),
+        ..test_config(port)
+    };
+    let (ch, _rx) = test_channel(config);
+    ch.start().await.unwrap();
+    // 等首次 bind 完成（真实 TCP 测试同款间隔）。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    ch.start()
+        .await
+        .expect("双启应被幂等守卫跳过（第二次 start 返回 Ok）");
+    ch.stop().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // 真实 TCP 回调全链路（IT 契约：握手 / 验签拒绝 / 消息发布）
 // ---------------------------------------------------------------------------
 
