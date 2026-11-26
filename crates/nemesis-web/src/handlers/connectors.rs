@@ -368,9 +368,24 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         .map(String::from);
 
     // 凭条回读（近 500 条内按 id 定位，与 receipts.list 上限同源）。
-    let r = receipt::list_receipts(&ws, 500, None)?
+    // BUG-20261126-116 防御纵深：id 必须**唯一**命中——存量旧形态行
+    // （无 pid 段）与新形态极小概率撞串时，first-match 会静默撤错凭条
+    // （反向 op 作用于错误外部资源）。多条同 id = 歧义诚实拒绝转人工，
+    // 绝不猜。（正常态由 receipt_id 的 pid 实例熵段保证唯一，见
+    // nemesis-connectors receipt::new_receipt_id。）
+    let mut hits: Vec<_> = receipt::list_receipts(&ws, 500, None)?
         .into_iter()
-        .find(|x| x.receipt_id == receipt_id)
+        .filter(|x| x.receipt_id == receipt_id)
+        .collect();
+    if hits.len() > 1 {
+        return Err(format!(
+            "凭条编号 {receipt_id} 命中 {} 条记录（编号碰撞，历史旧形态行？）——\
+             撤销会作用到不确定的凭条上，请人工核对行动账本后按时间/摘要另行处理",
+            hits.len()
+        ));
+    }
+    let r = hits
+        .pop()
         .ok_or_else(|| format!("凭条 {receipt_id} 不存在（近 500 条内）"))?;
 
     // 只有 executed 才有可撤销的效果；unknown（结果未知——超时/回执缺失）

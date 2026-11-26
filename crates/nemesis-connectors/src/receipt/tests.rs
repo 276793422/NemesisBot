@@ -30,8 +30,24 @@ fn receipt_id_unique_and_formatted() {
     let b = new_receipt_id(1_700_000_000_000);
     assert_ne!(a, b, "同毫秒也要单调");
     assert!(a.starts_with("RCPT-1700000000000-"));
-    let seq: u64 = a.rsplit('-').next().expect("seq").parse().expect("u64");
+    // 形态 RCPT-<millis>-<seq:04>-p<pid>：倒数第二段是 seq（pid 段在
+    // 末尾提供进程实例熵——BUG-20261126-116：时钟回拨+重启 seq 归零 /
+    // 同 workspace 双进程 seq 双归零两个碰撞窗口的根修）。
+    let parts: Vec<&str> = a.split('-').collect();
+    assert_eq!(parts.first().copied(), Some("RCPT"));
+    let seq: u64 = parts
+        .get(parts.len() - 2)
+        .expect("seq 段")
+        .parse()
+        .expect("seq u64");
     assert!(seq < 10_000, "seq 四位内（新进程重置）");
+    let pid_part = parts.last().expect("pid 段");
+    let pid: u32 = pid_part
+        .strip_prefix('p')
+        .expect("pid 段 p 前缀")
+        .parse()
+        .expect("pid u32");
+    assert_eq!(pid, std::process::id(), "pid 段 = 本进程 pid");
 }
 
 #[test]

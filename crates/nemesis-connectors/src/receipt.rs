@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
-    /// `RCPT-<millis>-<seq>`，进程内单调。
+    /// `RCPT-<millis>-<seq:04>-p<pid>`，进程内单调，pid 段提供实例熵。
     pub receipt_id: String,
     /// RFC3339 UTC。
     pub ts: String,
@@ -73,8 +73,17 @@ fn receipt_seq() -> u64 {
 }
 
 /// 生成回执编号（`now_ms` 由调用方传，保证可测）。
+///
+/// 形态 `RCPT-<millis>-<seq:04>-p<pid>`：末段进程 pid 提供实例熵——
+/// seq 是进程内计数器（重启归零、多实例各自从 1 起），仅靠
+/// `<millis>-<seq>` 在「时钟回拨 + 重启后同毫秒铸单」或「同 workspace
+/// 双进程同毫秒铸单」两个窗口下可碰撞；而 cmd_undo 按 receipt_id
+/// first-match 定位凭条，碰撞 = 对错误凭条执行反向 op（外部副作用，
+/// 双退款形态）。pid 段把两个窗口的碰撞面打到可忽略（重启 pid 复用
+/// 且恰回原毫秒 = 熵仍剩 pid 循环周期量级）；存量旧形态行
+/// （无 pid 段）照常可读可撤销——id 是整串精确匹配，无形态解析。
 pub fn new_receipt_id(now_ms: i64) -> String {
-    format!("RCPT-{}-{:04}", now_ms, receipt_seq())
+    format!("RCPT-{now_ms}-{:04}-p{}", receipt_seq(), std::process::id())
 }
 
 /// args digest（canonical JSON 字节序，同 args 同 digest）。

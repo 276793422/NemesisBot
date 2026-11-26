@@ -617,6 +617,34 @@ async fn undo_rejects_already_undone() {
     assert_eq!(out["via"], "none", "read 类照常诚实 noop");
 }
 
+/// BUG-20261126-116 防御纵深回归锁：凭条 id 撞串（历史旧形态行 × 新
+/// 形态极小概率，或手工构造）时撤销必须诚实拒绝（歧义），绝不
+/// first-match 撤错凭条（反向 op 作用于错误外部资源）。
+#[tokio::test]
+async fn undo_rejects_ambiguous_duplicate_receipt_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    write_undo_connector(ws);
+    let ctx = make_ctx(ws);
+
+    // 两条同 id 凭条：connector/op/主键值各不同——first-match 语义下
+    // （新→旧遍历）撤销会静默作用到较新的那条。
+    let mut a = undo_receipt("u-broker", "place_order", "executed");
+    a.receipt_id = "RCPT-COLLIDE-0001-p111".into();
+    a.receipt_value = Some("NB-ORD-A".to_string());
+    let mut b = undo_receipt("u-broker", "post_note", "executed");
+    b.receipt_id = "RCPT-COLLIDE-0001-p111".into();
+    b.receipt_value = Some("NB-ORD-B".to_string());
+    receipt::append_receipt(ws, &a).unwrap();
+    receipt::append_receipt(ws, &b).unwrap();
+
+    let err = cmd_undo(&ctx, Some(&json!({ "receipt_id": a.receipt_id })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("命中 2 条"), "{err}");
+    assert!(err.contains("人工核对"), "{err}");
+}
+
 /// connector 从注册表消失 / op 从清单移除：按当下裁决诚实拒。
 #[tokio::test]
 async fn undo_rejects_stale_registry() {
@@ -681,7 +709,10 @@ async fn undo_domain_c_receipt_value_and_loop_gates() {
     assert!(err.contains("主键值"), "{err}");
 
     // receipt_value 有值 → resolve_session_loop 诚实失败（harness 无 loop）。
+    // 独立 id（BUG-20261126-116 起撤销按 id 唯一命中，同 id 双凭条 =
+    // 歧义诚实拒——两条测试凭条各给各的编号）。
     let mut r = undo_receipt("u-broker", "place_order", "executed");
+    r.receipt_id = "RCPT-UNDO-place_order2".to_string();
     r.receipt_value = Some("NB-ORD-42".to_string());
     r.session_key = Some("web:test-chat".to_string());
     receipt::append_receipt(ws, &r).unwrap();
