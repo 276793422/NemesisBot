@@ -94,10 +94,24 @@ export function statusLabel(s: string): string {
 
 /** P1 外循环（2026-10-25）：内置来源族（不显示外部来源徽标）；集外类型
  *  = flow 模板声明 origin_type 的外部 connector 来源，看板卡片亮 🔗 徽标。
- *  与后端回写订阅面同口径——flow 模板 on_transition 按 origin_type 订阅，
- *  内置类型永不匹配模板 = 天然不回写（模板绑定即过滤，无宿主端清单；
- *  前端只是展示侧镜像）。 */
-const INTERNAL_ORIGINS = new Set(['autopilot', 'cron', 'channel', 'cli', 'board', 'manual'])
+ *  值域锚点 = 后端 origin_type **生产写入面**（BUG-20261126-134 复核）：
+ *  plan.rs Swarm 拆解写 "planner"、autopilot 建单写 "autopilot"、项目建单
+ *  写 "project"、flow_engine 写模板声明值（外部，亮徽标即设计意图）、其余
+ *  建单路径 origin=None（徽标条件本就含 origin 存在性）。旧注释「与后端
+ *  回写订阅面同口径」是误导性声明——后端订阅过滤无宿主端清单（模板精确
+ *  匹配 origin_type 字符串），与本集合要对齐的「写入面值域」是两回事；
+ *  planner/project 因此缺席导致内置单误亮外部徽标。cron/channel/cli/board/
+ *  manual 为预留值（当前后端无写入点，保留防未来写入被误标）。 */
+const INTERNAL_ORIGINS = new Set([
+  'autopilot',
+  'planner',
+  'project',
+  'cron',
+  'channel',
+  'cli',
+  'board',
+  'manual',
+])
 
 export function isInternalOrigin(t: string): boolean {
   return INTERNAL_ORIGINS.has(t)
