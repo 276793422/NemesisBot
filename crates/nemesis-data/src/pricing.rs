@@ -237,11 +237,22 @@ fn effective_prices(p: &ModelPricing, prompt_tokens: i64) -> EffectivePrices {
 /// 对一条负价过度）、手改 pricing_custom.json、CLI 负值（CLI 入口已
 /// loud 拒——此处是纵深防御，防绕过 CLI 的写路径）。负价无合法计费
 /// 语义（成本是可观测性数据，不存在返佣结算），钳 0 = 免费模型语义。
+///
+/// 非有限值（BUG-20261126-137）：`f64::max(0.0)` 对 NaN 归 0（Rust
+/// max 是 NaN-aware 的），但对 **±inf 原样保留**——下载表/import 的
+/// 溢出字面量（serde_json 解析 `1e400` → inf 不报错）越过 parse 层的
+/// input/output `is_finite` skip（cache 两列无同款检查）落进价目层后，
+/// 正 token × inf = inf 成本落账，`SUM(total_cost_usd)` 变 inf，
+/// usage.budget 费用闸 `inf >= limit` 恒真 → reject 模式**首个请求即
+/// 误熔断停车**（保险丝被短路成常闭）。计费域无 inf 语义——非有限
+/// 一律钳 0（免费模型语义，与负价同族）。本函数是全部计价路径
+/// （内嵌/下载/import/自定义）的唯一出口闸，单点收口。
 fn clamp_negative_prices(mut p: EffectivePrices) -> EffectivePrices {
-    p.input = p.input.max(0.0);
-    p.output = p.output.max(0.0);
-    p.cache_read = p.cache_read.max(0.0);
-    p.cache_creation = p.cache_creation.max(0.0);
+    let sane = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    p.input = sane(p.input);
+    p.output = sane(p.output);
+    p.cache_read = sane(p.cache_read);
+    p.cache_creation = sane(p.cache_creation);
     p
 }
 
