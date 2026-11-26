@@ -109,6 +109,40 @@ async function waitHttp(url: string, timeoutMs: number, what: string): Promise<v
   fail(`${what} 未在 ${timeoutMs}ms 内就绪（${url}）：${lastErr}`)
 }
 
+/**
+ * 等 supervisor 把 gateway 真正拉起（/health body 的 gatewayPid 变为正数）。
+ *
+ * 不能用 waitHttp 探 supervisor /health：supervisor 的 HTTP listener 在模块
+ * 加载时同步先起（gateway-supervisor.mjs 刻意设计——等端口 bind 期间探活
+ * 不被拖爆），而 spawnGateway（内含 e2e-state.json 落盘）在 async IIFE 里
+ * 要先过 portsBindable 的 TIME_WAIT 等待窗口（零间隙链式 invocation 时最长
+ * 60s）——/health 恒 200（gatewayPid=null 也 200），waitHttp 通过 ≠ state
+ * 文件已写。此处以 gatewayPid 非 null 为放行条件（gatewayProc 赋值与
+ * writeState 相邻同步，严格等价于 state 文件已含 gatewayPid）。
+ */
+async function waitSupervisorGatewayReady(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let last = ''
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${SUPERVISOR_BASE}/health`)
+      if (res.ok) {
+        const body = (await res.json()) as { gatewayPid?: number | null }
+        if (typeof body.gatewayPid === 'number' && body.gatewayPid > 0) return
+        last = `health OK 但 gatewayPid=${body.gatewayPid}（gateway 尚未 spawn：等 web/health 端口可 bind）`
+      } else {
+        last = `HTTP ${res.status}`
+      }
+    } catch (e) {
+      last = String(e)
+    }
+    await sleep(500)
+  }
+  fail(
+    `gateway supervisor ${timeoutMs}ms 内未拉起 gateway：${last}\n--- supervisor log tail ---\n${logFileTail(path.join(NEMESISBOT_DIR, 'supervisor-e2e.log'))}`,
+  )
+}
+
 function runOnboard(): void {
   const res = spawnSync(E2E.bin, ['onboard', 'default', '--local'], {
     cwd: E2E.home,
@@ -281,7 +315,10 @@ async function main(): Promise<void> {
   )
 
   await waitHttp(`http://127.0.0.1:${E2E.mockPort}/v1/models`, 20_000, 'mock LLM')
-  await waitHttp(`${SUPERVISOR_BASE}/health`, 20_000, 'gateway supervisor')
+  // BUG-20261127-007：不能只探 supervisor /health 的 HTTP 200（listener 先起、
+  // gatewayPid 可能还是 null）——提前返回会在下一步读 e2e-state.json 时
+  // ENOENT 崩 setup 且不经过 fail()（mock/supervisor 成孤儿占住全部端口）。
+  await waitSupervisorGatewayReady(90_000)
   await waitHttp(HEALTH_URL, 90_000, 'gateway')
 
   // supervisor/mock PID 落盘供 teardown 使用（gatewayPid 由 supervisor 维护）
