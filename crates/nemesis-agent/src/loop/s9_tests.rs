@@ -589,7 +589,7 @@ fn check_mcp_reload_without_manager_returns_early() {
 }
 
 #[tokio::test]
-async fn maybe_update_summary_advances_on_long_history() {
+async fn maybe_update_summary_long_history_entry_chain_no_panic() {
     let _logs = capture_logs();
     let instance = AgentInstance::new(test_config());
     let mut hist = vec![turn("system", "sys prompt")];
@@ -607,7 +607,8 @@ async fn maybe_update_summary_advances_on_long_history() {
         ])),
         test_config(),
     );
-    // 只要不 panic 即覆盖入口判定链；cache 是否推进由阈值决定。
+    // 名字不再承诺 "advances"（BUG-20261127-002）：cache 是否推进由阈值
+    // 决定，非确定性——只锁定「长历史走入口判定链不 panic」。
     agent_loop
         .maybe_update_summary(&instance, "agent:test/s9d", "web", "c1")
         .await;

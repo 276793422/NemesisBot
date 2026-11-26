@@ -589,6 +589,11 @@ impl WebSocketServer {
         self.dispatcher.register_notification(method, handler);
     }
 
+    /// Get a reference to the server-level dispatcher (for advanced use).
+    pub fn dispatcher(&self) -> &Dispatcher {
+        &self.dispatcher
+    }
+
     /// Get a connection by child ID.
     pub fn get_connection(
         &self,

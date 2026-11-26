@@ -1139,9 +1139,11 @@ fn punctuate_without_engine_returns_text_verbatim() {
 // push 广播 spawn 路径（session 不存在 → warn 臂）
 
 #[tokio::test]
-async fn push_helpers_broadcast_to_missing_session_take_warn_arm() {
+async fn push_helpers_broadcast_to_missing_session_no_panic() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     // session "ghost" 未注册 → broadcast Err → 闭包内 warn 分支被执行
+    // （warn 本体走 tracing 未断言，名字不承诺 "take_warn_arm"——
+    // BUG-20261127-002；锁定的是 sync 入口与 spawn 路径不 panic）。
     push_speaker_rejected("ghost", mgr.clone());
     push_stt_result("ghost", mgr.clone(), "text");
     push_stt_to_input("ghost", mgr.clone(), "text");
