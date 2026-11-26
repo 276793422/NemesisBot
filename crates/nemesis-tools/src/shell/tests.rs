@@ -1298,9 +1298,9 @@ async fn test_timeout_kills_child_tree() {
     let dir = tempfile::tempdir().expect("tempdir");
     let marker = dir.path().join("orphan_marker");
     let command = if cfg!(target_os = "windows") {
-        format!("ping -n 4 127.0.0.1 >nul & type nul > {}", marker.display())
+        format!("ping -n 21 127.0.0.1 >nul & type nul > {}", marker.display())
     } else {
-        format!("sleep 3 && touch {}", marker.display())
+        format!("sleep 21 && touch {}", marker.display())
     };
     let started = std::time::Instant::now();
     let result = tool
@@ -1312,8 +1312,11 @@ async fn test_timeout_kills_child_tree() {
         "got: {}",
         result.for_llm
     );
-    // 等 sleep/ping 自然结束点过去（3s+ 余量），孤儿若活着必已落 marker。
-    while started.elapsed() < std::time::Duration::from_secs(5) {
+    // 观察窗覆盖子命令自然完成点（~20s + 余量）：孤儿若活着必已落 marker。
+    // 子命令长度必须 ≥ 观察窗 − 余量：窗内自然完成，未杀即红；同时给
+    // 过载 VM 上的迟到 kill 留足竞速余量（曾见 1s 超时的 kill 在坏 VM
+    // 上迟于 ping -n 4 的 ~3s 自然完成 → 假红，2026-11-26/27 连死两轮）。
+    while started.elapsed() < std::time::Duration::from_secs(23) {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert!(
