@@ -22,6 +22,20 @@ use tracing;
 /// forge handler 全部同源复用，本 store 不再私有一份）。
 use crate::fsutil::safe_task_file_name;
 
+/// 结果存储 TTL 秒数单一真相源（7 天）。
+///
+/// 消费点（此前各持裸字面量 `days(7)` / `7 * 24 * 3600`，纯注释「对齐」
+/// 无编译期绑定，真相源漂移不会红——BUG-20261126-132 收敛）：
+/// - [`TaskResultStore::sweep_older_than`] 调用方 `cluster_service` 启动清扫；
+/// - `outbox` 死信 age 闸（`DEAD_LETTER_AGE_SECS`「对齐 task_result TTL」
+///   从注释对齐升为编译期绑定）；
+/// - 超时阶梯回归测试 `cluster/tests.rs::test_timeout_ladder_ordering`
+///   （阶梯最外层：provider 单请求 < B 端 LLM < A 端安全网 < 本 TTL）。
+pub const RESULT_TTL_SECS: i64 = 7 * 24 * 3600;
+
+/// 结果存储 TTL（[`RESULT_TTL_SECS`] 的 Duration 形态，供直接传参）。
+pub const RESULT_TTL: chrono::Duration = chrono::Duration::seconds(RESULT_TTL_SECS);
+
 /// A stored task result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {

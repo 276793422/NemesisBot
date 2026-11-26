@@ -85,6 +85,10 @@ nemesis-verify = { workspace = true }
 # taskstore 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
 # dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
 nemesis-taskstore = { workspace = true, features = ["sqlite"] }
+# 超时阶梯回归测试绑定 provider 单请求默认超时单一真相源
+#（factory::DEFAULT_TIMEOUT_SECS；仅 dev 树，运行时依赖面保持轻——
+# BUG-20261126-132：测试三层裸字面量假锁收敛）。
+nemesis-providers = { workspace = true }
 
 [lints]
 workspace = true

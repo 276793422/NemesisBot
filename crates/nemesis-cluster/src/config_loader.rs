@@ -263,7 +263,9 @@ fn default_broadcast_interval() -> u64 {
 }
 
 fn default_llm_timeout_secs() -> u64 {
-    7200 // 2 hours
+    // 绑定 B 端 LLM 超时单一真相源（此前裸字面量 7200 与
+    // DEFAULT_LLM_TIMEOUT 的 2*3600 双写、注释级对齐——BUG-20261126-132）。
+    crate::rpc::peer_chat_handler::DEFAULT_LLM_TIMEOUT.as_secs()
 }
 
 fn default_health_check_interval_secs() -> u64 {

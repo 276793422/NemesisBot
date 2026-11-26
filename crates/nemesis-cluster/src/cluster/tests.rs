@@ -8747,13 +8747,18 @@ fn test_safety_net_huge_llm_timeout_scales() {
     assert_eq!(net, chrono::Duration::hours(96));
 }
 
-/// 全阶梯不变量（数值文字量对应上面各真相源常量；一边改了这里会红）。
+/// 全阶梯不变量。各层绑定真相源常量/函数（provider= nemesis-providers
+/// factory 单一真相源；B 端 = DEFAULT_LLM_TIMEOUT；TTL = RESULT_TTL；
+/// 安全网 = stale_task_safety_net 本体）——真相源任何一层漂移本测试即红
+///（此前三层是裸字面量，注释声称「一边改了这里会红」但并无绑定——
+/// BUG-20261126-132 收敛）。
 #[test]
 fn test_timeout_ladder_ordering() {
-    let provider_single_request_secs: i64 = 600; // openai_compat default_timeout
-    let b_side_llm_timeout_secs: i64 = 2 * 3600; // DEFAULT_LLM_TIMEOUT
+    let provider_single_request_secs: i64 = nemesis_providers::factory::DEFAULT_TIMEOUT_SECS as i64;
+    let b_side_llm_timeout_secs: i64 =
+        crate::rpc::peer_chat_handler::DEFAULT_LLM_TIMEOUT.as_secs() as i64;
     let a_side_safety_net = super::stale_task_safety_net(b_side_llm_timeout_secs as u64);
-    let result_ttl_secs: i64 = 7 * 24 * 3600; // task_result_store TTL
+    let result_ttl = crate::task_result_store::RESULT_TTL;
 
     assert!(
         provider_single_request_secs < b_side_llm_timeout_secs,
@@ -8764,7 +8769,7 @@ fn test_timeout_ladder_ordering() {
         "B-side timeout must expire before A-side safety net"
     );
     assert!(
-        a_side_safety_net < chrono::Duration::seconds(result_ttl_secs),
+        a_side_safety_net < result_ttl,
         "safety net must fire before result store TTL cleanup"
     );
 }
