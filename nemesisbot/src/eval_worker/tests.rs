@@ -442,6 +442,9 @@ mod run_error_paths {
         let tmp = tempfile::tempdir().unwrap();
         // 入口标记总会写（证明 worker main 到达过）。
         std::fs::write(tmp.path().join("config.json"), "{ not valid json").unwrap();
+        // prompt 载体（BUG-20261126-118：prompt 解析现在是 loud 前置闸，
+        // 测试目标在下游 config 失败，须按父进程契约提供 subject.txt）。
+        std::fs::write(tmp.path().join("subject.txt"), "评估目标提示词").unwrap();
 
         // 锁必须横跨整个 run()：env 是进程级全局，并行测试互踩会让
         // worker_error.txt 写进别人的 workspace（本次失败根因）。
@@ -476,6 +479,9 @@ mod run_error_paths {
         // （须多线程 flavor：observer 注册走 block_in_place，current-thread
         // 测试 runtime 会 panic——同 wave_b 注释。）
         std::fs::write(tmp.path().join("config.json"), "{}").unwrap();
+        // prompt 载体（BUG-20261126-118）：目标断言在 LLM 层错误，前置
+        // prompt 闸须放行——按父进程契约提供 subject.txt。
+        std::fs::write(tmp.path().join("subject.txt"), "评估目标提示词").unwrap();
 
         // 锁必须横跨整个 run()：env 是进程级全局，并行测试互踩会让
         // worker_error.txt 写进别人的 workspace（本次失败根因）。
@@ -649,6 +655,9 @@ mod wave_b {
         let ws = tempfile::tempdir().unwrap();
         let (base, stop) = wave_b_spawn_mock_llm();
         wave_b_write_llm_config(ws.path(), &base);
+        // prompt 载体（BUG-20261126-118）：此前本测试在空 prompt 下跑出
+        // 「成功报告」——正是被根修的白洗形态活例；现在按父进程契约提供。
+        std::fs::write(ws.path().join("subject.txt"), "评估目标提示词").unwrap();
 
         // env 为进程全局：锁横跨整个 run()（与 run_error_paths 同纪律，
         // 并行测试互踩会让报告写进别人的 workspace）。
@@ -706,6 +715,8 @@ mod wave_b {
         // 127.0.0.1:1 连接拒绝 → LLM 层瞬态重试烧尽 → Error 事件、无 Done →
         // process_direct Err →:119 map_err 成 "agent loop error:..."。
         wave_b_write_llm_config(ws.path(), "http://127.0.0.1:1/v1");
+        // prompt 载体（BUG-20261126-118）：目标断言在 LLM 层错误。
+        std::fs::write(ws.path().join("subject.txt"), "评估目标提示词").unwrap();
 
         let _lock = crate::GLOBAL_STATE_LOCK
             .lock()
@@ -833,4 +844,61 @@ mod wave_b {
         let dout = f.dlp_out.expect("出站 DLP 命中");
         assert!(!dout.is_empty());
     }
+}
+
+// ---------------------------------------------------------------------------
+// resolve_prompt —— 评估 prompt 解析（BUG-20261126-118 同链路站点回归钉：
+// 原形态 env 缺失回落 subject.txt、读取失败 unwrap_or_default() 塌缩成
+// 空 prompt 跑评估——空跑报告看似合法，浪费评估且误导判读；现失败 loud
+// 上抛，经 run() 顶部 catch 落 worker_error.txt → assessor 判 Unknown）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_prompt_env_value_wins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = resolve_prompt(Ok("任务提示词".to_string()), tmp.path()).unwrap();
+    assert_eq!(r, "任务提示词", "env 非空 → env 优先，不碰 subject.txt");
+}
+
+#[test]
+fn resolve_prompt_empty_env_falls_back_to_subject_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("subject.txt"), "文件载体提示词").unwrap();
+    // Ok("") 是盒内注入链剥 env 的 sanitization 形态——必须回落而不是
+    // 用空串跑（原形态 Ok("") 直接当 prompt）。
+    let r = resolve_prompt(Ok(String::new()), tmp.path()).unwrap();
+    assert_eq!(r, "文件载体提示词");
+    let r2 = resolve_prompt(Ok("   ".to_string()), tmp.path()).unwrap();
+    assert_eq!(r2, "文件载体提示词", "纯空白 env 同样视作未设置");
+}
+
+#[test]
+fn resolve_prompt_missing_env_missing_file_is_loud_err() {
+    let tmp = tempfile::tempdir().unwrap();
+    let err = resolve_prompt(Err(std::env::VarError::NotPresent), tmp.path()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("subject.txt") || msg.contains("subject prompt"),
+        "错误必须指向 prompt 载体现场: {msg}"
+    );
+    assert!(
+        !msg.contains("provided string was empty") || msg.contains("read subject prompt"),
+        "必须带读取失败根因而非静默成功: {msg}"
+    );
+}
+
+#[test]
+fn resolve_prompt_not_unicode_env_falls_back_to_subject_file() {
+    // env 非 UTF-8（VarError::NotUnicode）同归「env 不可用」臂，回落文件。
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("subject.txt"), "回退内容").unwrap();
+    let r = resolve_prompt(
+        // NotUnicode 载荷对裁决是黑盒（env 状态非 Ok 即归回退臂）；便携性
+        // 考虑用普通 OsString，不构造真非 UTF-8 载荷（跨平台 from_vec/from_wide
+        // 分叉不值得）。
+        Err(std::env::VarError::NotUnicode("broken-env".into())),
+        tmp.path(),
+    )
+    .unwrap();
+    assert_eq!(r, "回退内容");
 }

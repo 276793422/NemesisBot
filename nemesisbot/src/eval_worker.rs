@@ -16,10 +16,35 @@
 //!    findings — plan record points ①+②).
 //! 5. Run the subject via process_direct, write the report, exit.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+
+/// Prompt 解析（BUG-20261126-118 同链路站点）：env 值非空 → 用 env；env
+/// 缺失**或为空串**（盒内注入链剥 env 的 sanitization 形态）→ 回落读
+/// subject.txt 载体（父进程 spawn 前已写入，eval.rs 写盘失败会在 spawn
+/// 前 loud 失败）；回落读取失败 → loud Err——原 `unwrap_or_default()`
+/// 形态塌缩成空 prompt 跑评估：空跑产出的报告看似合法（report 的
+/// subject.txt 是真提示词），浪费一次评估且误导判读。Err 经 run() 顶部
+/// catch 落 worker_error.txt → assessor 判 Unknown，诚实呈现。
+fn resolve_prompt(
+    env: std::result::Result<String, std::env::VarError>,
+    workspace: &Path,
+) -> Result<String> {
+    if let Ok(p) = &env
+        && !p.trim().is_empty()
+    {
+        return Ok(p.clone());
+    }
+    let p = workspace.join("subject.txt");
+    std::fs::read_to_string(&p).with_context(|| {
+        format!(
+            "read subject prompt {}（env NEMESISBOT_EVAL_PROMPT 缺失/为空，subject.txt 是唯一载体）",
+            p.display()
+        )
+    })
+}
 
 /// Entry point — called from main.rs before CLI parsing.
 pub async fn run() -> Result<()> {
@@ -54,11 +79,10 @@ async fn run_inner() -> Result<()> {
         ),
     );
 
-    let prompt = std::env::var("NEMESISBOT_EVAL_PROMPT").unwrap_or_else(|_| {
-        // Fallback: read the subject file written by the command process.
-        let p = workspace.join("subject.txt");
-        std::fs::read_to_string(&p).unwrap_or_default()
-    });
+    // BUG-20261126-118：解析失败/读取失败 loud 上抛（见 resolve_prompt），
+    // 不再塌缩成空 prompt。
+    let prompt = resolve_prompt(std::env::var("NEMESISBOT_EVAL_PROMPT"), &workspace)
+        .context("resolve eval subject prompt")?;
 
     tracing::info!(
         "[eval-agent] workspace={} prompt_len={}",
