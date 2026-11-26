@@ -31,7 +31,11 @@ pub fn backup_database(
     let target = backups_dir.join(format!("{BACKUP_PREFIX}{today}.db"));
     // VACUUM INTO 要求目标不存在；同日重跑先删旧快照（当日内容必然更新）。
     if target.exists() {
-        std::fs::remove_file(&target).map_err(|e| format!("remove stale backup: {e}"))?;
+        // BUG-20261126-121：陈旧快照摘除是 VACUUM INTO 的前置必要条件，
+        // 裸单发撞瞬时句柄（用户/同步工具正持有旧备份读句柄）= 备份假失败
+        // → 退避重试，耗尽才诚实上抛。
+        nemesis_utils::fsutil::remove_file_retry(&target)
+            .map_err(|e| format!("remove stale backup: {e}"))?;
     }
 
     let conn =
@@ -66,7 +70,15 @@ fn prune_old_backups(backups_dir: &Path, keep: usize) -> Result<(), String> {
     backups.sort();
     backups.reverse();
     for stale in backups.into_iter().skip(keep) {
-        std::fs::remove_file(&stale).map_err(|e| format!("prune {}: {e}", stale.display()))?;
+        // BUG-20261126-121：保留裁剪是清理类——单个旧备份删不掉（瞬时句柄
+        // /用户正开着检查）不该让已写成功的备份谎报 Err（VACUUM INTO 已
+        // 完成，主产物在场）。WARN 留痕继续，残留件下轮备份再裁。
+        if !nemesis_utils::fsutil::remove_file_resilient(&stale) {
+            tracing::warn!(
+                "[Board] 备份保留裁剪失败（残留下轮再裁）: {}",
+                stale.display()
+            );
+        }
     }
     Ok(())
 }

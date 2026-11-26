@@ -821,7 +821,12 @@ impl SkillManageTool {
         if !target.exists() {
             return Err(format!("file not found: {}", target.display()));
         }
-        std::fs::remove_file(&target).map_err(|e| format!("failed to remove file: {}", e))?;
+        // BUG-20261126-121：瞬时句柄退避重试——同文件 do_delete 的目录删除
+        // 已走 remove_dir_all_retry，单文件版同族漏接；LLM 刚经 write_file
+        // 写完的支持文件被 AV/索引器瞬时持有句柄（Windows 常态），裸单发
+        // = 工具假失败。
+        nemesis_utils::fsutil::remove_file_retry(&target)
+            .map_err(|e| format!("failed to remove file: {}", e))?;
         Ok(format!(
             "Removed {} from skill '{}'.",
             target.display(),

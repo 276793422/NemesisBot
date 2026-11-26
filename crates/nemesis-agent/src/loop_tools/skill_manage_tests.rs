@@ -727,3 +727,47 @@ async fn test_skill_manage_remove_file_symlink_escape_blocked() {
     assert!(err.contains("escapes skill directory"), "{}", err);
     assert!(outside.join("victim.md").exists(), "界外文件不得被删");
 }
+
+/// BUG-20261126-121 回归锁（Windows 形态）：remove_file 臂对瞬时句柄的
+/// 退避恢复。LLM 刚 write_file 写完的支持文件被 AV/索引器瞬时持有句柄
+/// （share_mode(0) 独占模拟）→ 修复前裸单发假失败；200ms 后释放句柄，
+/// remove_file_retry 在退避窗内完成删除。
+#[cfg(windows)]
+#[tokio::test]
+async fn test_skill_manage_remove_file_recovers_after_transient_handle() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    tool.execute(
+        &json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL})),
+        &ctx(),
+    )
+    .await
+    .unwrap();
+    tool.execute(
+        &json_args(serde_json::json!({"action":"write_file","name":"my-skill","path":"refs.md","content":"x"})),
+        &ctx(),
+    )
+    .await
+    .unwrap();
+
+    let target = tmp.path().join("skills").join("my-skill").join("refs.md");
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&target)
+        .unwrap();
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(holder);
+    });
+
+    tool.execute(
+        &json_args(serde_json::json!({"action":"remove_file","name":"my-skill","path":"refs.md"})),
+        &ctx(),
+    )
+    .await
+    .expect("瞬时句柄释放后删除必须成功（裸单发修复前在此假失败）");
+    assert!(!target.exists(), "句柄释放后文件应已被重试删除");
+    assert!(releaser.join().is_ok());
+}
