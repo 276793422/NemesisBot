@@ -864,3 +864,44 @@ fn sweep_once_global_signals_stay_in_dialogue_scope() {
     assert!(project.habits.is_empty(), "全局信号源不得泄漏进项目画像");
     assert!(project.last_sweep_ms.is_some(), "项目 scope 照常推进水线");
 }
+
+/// BUG-20261126-131 回归锁：mining 日键必须走**本地**墙钟——三个跨天阈值
+/// 闸（antecedent/route/retry 的 *_MIN_DAYS）旧实现从 epoch 直取 UTC 日期，
+/// 非 UTC 用户被平移时区差（BUG-20261110-045 同族）：单个本地上午跨 UTC
+/// 日界被拆成两个「天」（假触发跨天阈值），固定早间用户永远凑不满
+/// MIN_DAYS（漏报）。摘掉 local_day_label 的 with_timezone(&Local) →
+/// 非 UTC 机器上本测试红。边界构造对任意非零偏移成立：UTC 午夜 −1h 与
+/// +30min 两时刻 UTC 日必不同、本地日必同。UTC 机器（offset==0）两形态
+/// 输出相同——强断言无区分力，诚实早退（CI=UTC 只弱锁意图）。
+#[test]
+fn mining_day_label_uses_local_wall_clock() {
+    use chrono::TimeZone as _;
+    let now = chrono::Utc::now();
+    let offset_secs = chrono::Local
+        .offset_from_utc_datetime(&now.naive_utc())
+        .local_minus_utc();
+    // 契约直断言：标签 == 该 epoch 的本地日历日（同一 instant 派生，无
+    // 午夜竞态；chrono Local 是「本地日历日」的权威定义）。
+    assert_eq!(
+        super::mining::local_day_label(now.timestamp_millis()),
+        now.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string()
+    );
+    if offset_secs == 0 {
+        return; // UTC 机器：Local==Utc，边界构造无区分力（诚实退化）
+    }
+    let utc_midnight = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_local_timezone(chrono::Utc)
+        .unwrap();
+    let ts1 = (utc_midnight - chrono::Duration::hours(1)).timestamp_millis();
+    let ts2 = (utc_midnight + chrono::Duration::minutes(30)).timestamp_millis();
+    assert_eq!(
+        super::mining::local_day_label(ts1),
+        super::mining::local_day_label(ts2),
+        "同一本地日的两个时刻（UTC 日不同）必须产出同一日标签"
+    );
+}
