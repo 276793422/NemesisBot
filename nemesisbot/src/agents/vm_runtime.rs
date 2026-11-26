@@ -1680,8 +1680,13 @@ impl VmSupervisor {
     ///
     /// **陈旧 base**：images 根下 `base.new.qcow2` 仅当 `base.qcow2` 同时
     /// 在场才删（promote_staging ③ 转正后的中断残留；canonical 缺席时
-    /// base.new 是唯一落点，删了 = 毁镜像）。`.staging` 目录刻意不碰——
-    /// 构建失败保留供排查是 vm_bridge 的既定决策，GC 不翻案。
+    /// base.new 是唯一落点，删了 = 毁镜像）——例外（BUG-20261126-114）：
+    /// 仍有合法 overlay 的 backing 指针指向它时**不删**（promote ④ safe
+    /// rebase 循环中途失败/崩溃的中间态：前序 overlay 已 rebase 到
+    /// base.new，canonical 旧 base 也在场，两 base 并存且全部指针有效——
+    /// 此时删 base.new = 活 backing 悬空 = 那些实例永不可启动，「任何一步
+    /// 失败指针都有落点」的不变量被 GC 自己打破）。`.staging` 目录刻意
+    /// 不碰——构建失败保留供排查是 vm_bridge 的既定决策，GC 不翻案。
     ///
     /// **换装闸互斥**：promote_staging ①落临时名到
     /// ③rename 转正之间，canonical 与 base.new **同时在场**正是本函数的
@@ -1724,22 +1729,36 @@ impl VmSupervisor {
                 }
             }
         }
-        // 陈旧换装残留：canonical base 在场时 base.new 才是垃圾。
+        // 陈旧换装残留：canonical base 在场时 base.new 才是垃圾——例外：
+        // 仍有合法 overlay 的 backing 指针指向它（promote ④ safe rebase
+        // 循环中途失败/崩溃的中间态：前序 overlay 已 rebase 到 base.new，
+        // canonical 旧 base 也在场，此时 base.new 不是残留而是活 backing，
+        // 删了 = 指针悬空 = 那些实例永不可启动，promote 的「任何一步失败
+        // 指针都有落点」不变量被 GC 自己打破，BUG-20261126-114）。引用
+        // 判定读 qcow2 header backing_file 字段（纯文件读取，不依赖
+        // qemu-img 在场）；解析失败（非 qcow2/损坏）= 无引用——打不开的
+        // overlay 承载不了运行实例，不存在「活 backing 被删死」面。
         let images = vm_images_root(&self.workspace);
         let new_base = images.join("base.new.qcow2");
         if new_base.exists() && images.join("base.qcow2").exists() {
-            match std::fs::remove_file(&new_base) {
-                Ok(()) => {
-                    tracing::warn!(
-                        "[vm-runtime] 陈旧换装残留已回收（canonical base 已在场）: {}",
+            if any_overlay_backing_targets(&self.workspace, new_base.file_name()) {
+                tracing::warn!(
+                    "[vm-runtime] base.new.qcow2 仍被 overlay backing 指针引用（换装 rebase 中途失败/崩溃的中间态）——GC 本轮跳过（删除将制造悬空指针）。出路：重跑镜像换装走完整 promote 链收敛，或停机后手动 qemu-img rebase -u 修指针后重试"
+                );
+            } else {
+                match std::fs::remove_file(&new_base) {
+                    Ok(()) => {
+                        tracing::warn!(
+                            "[vm-runtime] 陈旧换装残留已回收（canonical base 已在场）: {}",
+                            new_base.display()
+                        );
+                        removed += 1;
+                    }
+                    Err(e) => tracing::warn!(
+                        "[vm-runtime] 换装残留回收失败（下轮重试）: {}: {e}",
                         new_base.display()
-                    );
-                    removed += 1;
+                    ),
                 }
-                Err(e) => tracing::warn!(
-                    "[vm-runtime] 换装残留回收失败（下轮重试）: {}: {e}",
-                    new_base.display()
-                ),
             }
         }
         removed
@@ -2081,6 +2100,57 @@ impl super::VmBackend for VmSupervisor {
         // 失败恢复段：临时态解除（见 inherent 同名方法）。
         self.evict_agent_abort(agent_id)
     }
+}
+
+/// 读 qcow2 header 的 backing file 指针（BUG-20261126-114 支撑件；v2/v3
+/// header 前缀布局一致：magic "QFI\xFB"@0x00 / backing_file_offset(u64
+/// BE)@0x08 / backing_file_size(u32 BE)@0x10，字符串无 NUL 终止、紧跟
+/// header 或在对齐偏移处——按 offset 定点读）。任何一步读不出 / 形态
+/// 不对（magic 不符 / 无 backing / size 异常 / 超界 / 非 UTF-8 lossy 外
+/// 的 IO 失败）= None——调用方按「无引用」处理（打不开的 overlay 承载
+/// 不了运行实例，不存在活 backing 被删死的面）。
+fn qcow2_backing_file(p: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut hdr = [0u8; 20];
+    f.read_exact(&mut hdr).ok()?;
+    if hdr[0..4] != [0x51, 0x46, 0x49, 0xFB] {
+        return None; // 非 qcow2（magic "QFI\xFB" 不符）
+    }
+    let off = u64::from_be_bytes(hdr[8..16].try_into().ok()?);
+    let size = u32::from_be_bytes(hdr[16..20].try_into().ok()?);
+    if off == 0 || size == 0 || size > 4096 {
+        return None; // 无 backing / 形态不对
+    }
+    f.seek(SeekFrom::Start(off)).ok()?;
+    let mut buf = vec![0u8; size as usize];
+    f.read_exact(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// overlays 根下是否存在合法 qcow2 的 backing 指针命中目标文件名
+/// （BUG-20261126-114：promote ④ 中途失败/崩溃中间态的活 backing 判定）。
+/// 按文件名段比较——qemu-img 存的是 rebase -b 传入的路径，workspace
+/// 迁移后绝对路径漂移不影响文件名匹配；无 overlay 目录 = 无引用面。
+fn any_overlay_backing_targets(workspace: &Path, target_name: Option<&std::ffi::OsStr>) -> bool {
+    let Some(target_name) = target_name else {
+        return false;
+    };
+    let Ok(rd) = std::fs::read_dir(vm_overlays_root(workspace)) else {
+        return false;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().is_none_or(|x| x != "qcow2") {
+            continue;
+        }
+        if let Some(b) = qcow2_backing_file(&p)
+            && Path::new(&b).file_name() == Some(target_name)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

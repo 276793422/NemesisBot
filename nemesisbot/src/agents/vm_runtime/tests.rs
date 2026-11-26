@@ -436,6 +436,110 @@ async fn bug196_sweep_disk_garbage_still_collects_when_gate_free() {
     );
 }
 
+/// BUG-20261126-114 回归锁：promote ④ safe rebase 循环中途失败/崩溃的
+/// 中间态——部分 overlay backing 已改指 base.new 且 canonical 旧 base 仍
+/// 在场（两 base 并存、全部指针有效）。旧判定「canonical 在场 ⇒ base.new
+/// 是残留」会删掉活 backing → 已 rebase overlay 指针悬空 → 实例永不可
+/// 启动。修复 = base.new 回收前查 overlay backing 指针，命中即跳过
+/// （warn 指路重跑换装）；指针修走后下轮照常回收。
+#[tokio::test]
+async fn bug2997_sweep_disk_garbage_spares_base_new_while_overlay_backing_references_it() {
+    let _serial = GC_GATE_TEST_LOCK.lock().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path();
+    std::fs::create_dir_all(vm_overlays_root(ws)).unwrap();
+    std::fs::create_dir_all(vm_images_root(ws)).unwrap();
+
+    // 被引用的 overlay（registry 在案 → 孤儿段不删）+ 合法 qcow2 header
+    // backing → base.new（换装 ④ 已 rebase 形态）。
+    let rec = VmInstanceRecord {
+        overlay: overlay_path(ws, "agent-x"),
+        ..sample_record("agent-x")
+    };
+    save_record(ws, "agent-x", &rec).expect("save record");
+    let overlay = overlay_path(ws, "agent-x");
+    write_minimal_qcow2(
+        &overlay,
+        Some(
+            vm_images_root(ws)
+                .join("base.new.qcow2")
+                .to_string_lossy()
+                .as_ref(),
+        ),
+    );
+
+    std::fs::write(vm_images_root(ws).join("base.qcow2"), vec![0u8; 64]).unwrap();
+    std::fs::write(vm_images_root(ws).join("base.new.qcow2"), vec![0u8; 64]).unwrap();
+
+    let sup = VmSupervisor::new(ws.to_path_buf(), ws.join("config.json"));
+    assert_eq!(
+        sup.sweep_disk_garbage(),
+        0,
+        "backing 指向 base.new 的活引用在 → 一律不删（overlay 在案保留 + base.new 跳过）"
+    );
+    assert!(overlay.exists(), "在案 overlay 保留");
+    assert!(
+        vm_images_root(ws).join("base.new.qcow2").exists(),
+        "base.new 是活 backing → GC 跳过（删除将制造悬空指针）"
+    );
+
+    // 指针修走（模拟重跑换装完成 ④ -u 重定向）：backing → canonical base。
+    write_minimal_qcow2(
+        &overlay,
+        Some(
+            vm_images_root(ws)
+                .join("base.qcow2")
+                .to_string_lossy()
+                .as_ref(),
+        ),
+    );
+    assert_eq!(sup.sweep_disk_garbage(), 1, "指针修走 → base.new 照常回收");
+    assert!(!vm_images_root(ws).join("base.new.qcow2").exists());
+}
+
+/// qcow2 backing 指针读取纯函数四态：合法 header + backing / 无 backing /
+/// 非 qcow2（magic 不符）/ 截断文件。
+#[test]
+fn qcow2_backing_file_four_states() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let p = tmp.path().join("t.qcow2");
+
+    // ① 合法 header + backing 字符串。
+    write_minimal_qcow2(&p, Some("/images/base.new.qcow2"));
+    assert_eq!(
+        qcow2_backing_file(&p).as_deref(),
+        Some("/images/base.new.qcow2")
+    );
+
+    // ② 合法 header 无 backing（offset=0）。
+    write_minimal_qcow2(&p, None);
+    assert_eq!(qcow2_backing_file(&p), None);
+
+    // ③ 非 qcow2（magic 不符——64 字节假文件）。
+    std::fs::write(&p, vec![0u8; 64]).unwrap();
+    assert_eq!(qcow2_backing_file(&p), None);
+
+    // ④ 截断（不足 20 字节 header）。
+    std::fs::write(&p, vec![0u8; 8]).unwrap();
+    assert_eq!(qcow2_backing_file(&p), None);
+}
+
+/// 测试辅助：最小 qcow2（v3 header 前缀 + 可选 backing 字符串紧随 header
+/// @offset 104）。只覆盖解析器消费的字段（magic/version/
+/// backing_file_offset/size），其余字段全零。
+fn write_minimal_qcow2(path: &std::path::Path, backing: Option<&str>) {
+    let mut bytes = vec![0u8; 104];
+    bytes[0..4].copy_from_slice(b"QFI\xFB");
+    bytes[4..8].copy_from_slice(&3u32.to_be_bytes());
+    if let Some(b) = backing {
+        let b = b.as_bytes();
+        bytes[8..16].copy_from_slice(&104u64.to_be_bytes());
+        bytes[16..20].copy_from_slice(&(b.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(b);
+    }
+    std::fs::write(path, bytes).unwrap();
+}
+
 /// 引用集纯函数：run 目录名 + 记录 sanitize id + 记录 overlay stem 三族并集；
 /// run 根缺席 = 空集（此时所有 overlay 都成孤儿——全新 workspace 本来就
 /// 不该有 overlay，真出现即垃圾）。
