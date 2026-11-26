@@ -224,7 +224,8 @@ fn build_completed_reply_with_workflow(
 
 /// Mirror of `Workflow::compute_output`'s terminal-node selection: prefer
 /// nodes explicitly marked `is_terminal`, otherwise pick leaves (nodes that
-/// aren't any edge's source). Used to inspect each terminal's raw output
+/// aren't any edge's source **nor** depended on by any `depends_on` —
+/// BUG-20261127-017). Used to inspect each terminal's raw output
 /// before merging — needed because `compute_output` wraps bare-string
 /// outputs into `{node_id: "..."}` objects, hiding the shape signal.
 fn terminal_node_ids(workflow: &nemesis_workflow::types::Workflow) -> Vec<String> {
@@ -237,11 +238,16 @@ fn terminal_node_ids(workflow: &nemesis_workflow::types::Workflow) -> Vec<String
     if !explicit.is_empty() {
         return explicit;
     }
-    let downstream: Vec<&str> = workflow
+    let mut downstream: Vec<&str> = workflow
         .edges
         .iter()
         .map(|e| e.from_node.as_str())
         .collect();
+    for n in &workflow.nodes {
+        for dep in &n.depends_on {
+            downstream.push(dep.as_str());
+        }
+    }
     workflow
         .nodes
         .iter()

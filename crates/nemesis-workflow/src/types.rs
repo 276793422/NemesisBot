@@ -355,7 +355,9 @@ impl Workflow {
     ///   keyed by node id). Later nodes overwrite earlier ones on key
     ///   collision.
     /// - If no node is marked terminal, falls back to leaf nodes (nodes with
-    ///   no downstream edges in `self.edges`).
+    ///   no downstream in `self.edges` **nor** in any node's `depends_on` —
+    ///   depends_on is control flow apart from edges, so a depended-on node
+    ///   is not a leaf).
     /// - Returns `Value::Null` when no terminal/leaf node produced output.
     ///
     /// Decision 5 in the integration plan: surfaces workflow results back to
@@ -371,7 +373,18 @@ impl Workflow {
         let output_ids: Vec<&str> = if !terminal_ids.is_empty() {
             terminal_ids
         } else {
-            let downstream: Vec<&str> = self.edges.iter().map(|e| e.from_node.as_str()).collect();
+            // BUG-20261127-017：「有下游」必须同时认 edges 的 from_node 与
+            // depends_on 的被依赖方——depends_on 是除边之外的控制流
+            // （capabilities.rs 结构规则明示两机制可并存），scheduler 的
+            // topological_sort 也按它折叠依赖；叶子判定只认边会把纯
+            // depends_on 工作流的全部节点当叶子，中间产物混进最终输出。
+            let mut downstream: Vec<&str> =
+                self.edges.iter().map(|e| e.from_node.as_str()).collect();
+            for n in &self.nodes {
+                for dep in &n.depends_on {
+                    downstream.push(dep.as_str());
+                }
+            }
             self.nodes
                 .iter()
                 .filter(|n| !downstream.contains(&n.id.as_str()))

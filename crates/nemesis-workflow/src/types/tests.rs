@@ -871,6 +871,76 @@ fn workflow_compute_output_leaf_fallback_when_no_terminal() {
 }
 
 #[test]
+fn workflow_compute_output_leaf_fallback_respects_depends_on_without_edges() {
+    // BUG-20261127-017: a pure-depends_on workflow (no edges, no is_terminal
+    // — the non-redundant shape capabilities.rs explicitly allows) must still
+    // hide intermediate outputs. "Leaf" means no downstream via edges OR
+    // depends_on, matching topological_sort's dependency folding; judging
+    // leaves by edges alone made every node a leaf and merged intermediate
+    // products into the final output.
+    let wf = Workflow {
+        name: "wf".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![
+            NodeDef {
+                id: "start".to_string(),
+                node_type: "manual".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            },
+            NodeDef {
+                id: "mid".to_string(),
+                node_type: "llm".to_string(),
+                config: HashMap::new(),
+                depends_on: vec!["start".to_string()],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            },
+            NodeDef {
+                id: "final".to_string(),
+                node_type: "set".to_string(),
+                config: HashMap::new(),
+                depends_on: vec!["mid".to_string()],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            },
+        ],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+
+    let mut node_results = HashMap::new();
+    node_results.insert(
+        "start".to_string(),
+        make_node_result("start", serde_json::json!({"intermediate": true})),
+    );
+    node_results.insert(
+        "mid".to_string(),
+        make_node_result("mid", serde_json::json!({"intermediate2": true})),
+    );
+    node_results.insert(
+        "final".to_string(),
+        make_node_result("final", serde_json::json!({"result": "ok"})),
+    );
+
+    let output = wf.compute_output(&node_results);
+    let obj = output.as_object().expect("expected object output");
+    assert_eq!(obj.get("result").unwrap(), "ok");
+    assert!(
+        !obj.contains_key("intermediate") && !obj.contains_key("intermediate2"),
+        "depended-on nodes are not leaves — their outputs must not leak"
+    );
+}
+
+#[test]
 fn workflow_compute_output_multiple_terminals_merge() {
     // When multiple nodes are marked terminal, their object outputs are merged.
     // Later-defined keys overwrite earlier ones (intentional merge semantic).

@@ -204,3 +204,75 @@ fn test_no_node_results_returns_no_output_message() {
     let reply = build_completed_reply_with_workflow(&workflow, &exec);
     assert_eq!(reply, "[工作流完成，无输出]");
 }
+
+/// BUG-20261127-017: a pure-depends_on chain (no edges, no is_terminal) has
+/// exactly one terminal node — the true leaf. Judging by edges alone made
+/// every node "terminal".
+#[test]
+fn test_terminal_node_ids_respects_depends_on_without_edges() {
+    let dep_node = |id: &str, deps: &[&str]| NodeDef {
+        id: id.to_string(),
+        node_type: "transform".to_string(),
+        config: HashMap::new(),
+        depends_on: deps.iter().map(|s| s.to_string()).collect(),
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    let workflow = Workflow {
+        name: "test_workflow".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: Vec::new(),
+        nodes: vec![
+            dep_node("start", &[]),
+            dep_node("mid", &["start"]),
+            dep_node("final", &["mid"]),
+        ],
+        edges: Vec::new(),
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+    assert_eq!(terminal_node_ids(&workflow), vec!["final".to_string()]);
+}
+
+/// BUG-20261127-017: the intermediate node's bare string must NOT be picked
+/// as the user-facing reply — only the true leaf's text qualifies.
+#[test]
+fn test_pure_depends_on_reply_picks_leaf_not_intermediate() {
+    let dep_node = |id: &str, deps: &[&str]| NodeDef {
+        id: id.to_string(),
+        node_type: "transform".to_string(),
+        config: HashMap::new(),
+        depends_on: deps.iter().map(|s| s.to_string()).collect(),
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    };
+    let workflow = Workflow {
+        name: "test_workflow".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: Vec::new(),
+        nodes: vec![
+            dep_node("start", &[]),
+            dep_node("mid", &["start"]),
+            dep_node("final", &["mid"]),
+        ],
+        edges: Vec::new(),
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+    let exec = make_execution(vec![
+        (
+            "mid",
+            serde_json::Value::String("intermediate chatter".to_string()),
+        ),
+        (
+            "final",
+            serde_json::Value::String("final answer".to_string()),
+        ),
+    ]);
+    let reply = build_completed_reply_with_workflow(&workflow, &exec);
+    assert_eq!(reply, "final answer");
+}
