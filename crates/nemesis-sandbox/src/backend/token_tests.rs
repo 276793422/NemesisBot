@@ -1212,3 +1212,47 @@ fn multibyte_boundary_lossy_not_split() {
     assert!(line.starts_with("你你"), "line: {line:?}");
     assert!(line.contains('\u{FFFD}'), "line: {line:?}");
 }
+
+// ============================================================
+// BUG-20261126-115 回归锁：stdio 三对管道整体事务建立
+// ============================================================
+//
+// 对手模型 = 事务前置段的错误路径资源回收：CreatePipe 失败（句柄/管道
+// 实例趋于耗尽）时，原三连 `?` 把已建成句柄泄漏在长寿命 gateway 里，
+// 泄漏加剧资源枯竭 → 下次更容易失败（恶性循环）。修复 = 整体事务建立
+// （create_inherit_pipe_triple），任一对失败即关闭已建成句柄再报 Err。
+// 失败路径无法注入（健康系统 CreatePipe 不失败）——由实现审查保证
+// （清理臂与事务内其余失败臂同形态）；本锁钉成功路径契约。
+
+use super::token::create_inherit_pipe_triple;
+
+#[test]
+fn bug2998_stdio_pipe_triple_builds_six_distinct_handles() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 1,
+    };
+    let [
+        (stdin_r, stdin_w),
+        (stdout_r, stdout_w),
+        (stderr_r, stderr_w),
+    ] = create_inherit_pipe_triple(&sa).expect("健康系统上三对管道建立必成功");
+    // 六句柄全非空且两两互异（管道对不相交——共享句柄值会让清继承/EOF
+    // 语义错乱）。
+    let all = [stdin_r, stdin_w, stdout_r, stdout_w, stderr_r, stderr_w];
+    for (i, h) in all.iter().enumerate() {
+        assert!(!h.is_null(), "句柄 {i} 非空");
+        for (j, other) in all.iter().enumerate() {
+            if i < j {
+                assert_ne!(h, other, "句柄 {i} 与 {j} 不应相同");
+            }
+        }
+    }
+    // 释放：句柄值是裸指针 Copy，逐个关闭（成功路径的所有权消费收尾）。
+    for h in all {
+        unsafe { CloseHandle(h) };
+    }
+}

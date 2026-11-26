@@ -425,9 +425,14 @@ pub fn stdio_txn_raw(
         lpSecurityDescriptor: std::ptr::null_mut(),
         bInheritHandle: 1,
     };
-    let (stdin_r, stdin_w) = create_inherit_pipe(&sa)?;
-    let (stdout_r, stdout_w) = create_inherit_pipe(&sa)?;
-    let (stderr_r, stderr_w) = create_inherit_pipe(&sa)?;
+    // 三对管道整体事务建立（BUG-20261126-115：任一对失败即关闭已建成句柄
+    // 再报 Err——原三连 `?` 在第二/三对失败时泄漏已建管道句柄，长寿命
+    // gateway 进程错误路径慢性资源枯竭）。
+    let [
+        (stdin_r, stdin_w),
+        (stdout_r, stdout_w),
+        (stderr_r, stderr_w),
+    ] = create_inherit_pipe_triple(&sa)?;
     // 父侧端清继承（防子进程的子孙拿到父端句柄——经典坑，漏了会让孙进程
     // 拖住 EOF、读线程收不到收尾）。
     for h in [stdin_w, stdout_r, stderr_r] {
@@ -656,6 +661,36 @@ fn create_inherit_pipe(sa: &SECURITY_ATTRIBUTES) -> Result<(HANDLE, HANDLE), Str
         return Err(last_err("CreatePipe"));
     }
     Ok((r, w))
+}
+
+/// stdio 三对管道整体事务建立：任一对失败即关闭**已建成**的全部句柄再报
+/// Err（BUG-20261126-115）。原三连 `create_inherit_pipe(&sa)?` 在第二/第三
+/// 对失败时把前面已建成的 1~2 对管道句柄泄漏在长寿命 gateway 进程里（
+/// CreatePipe 失败通常 = 句柄/管道实例趋于耗尽——泄漏会加剧并促成下次
+/// 再失败，恶性循环面）；事务内后续各失败臂（SetHandleInformation /
+/// CreateProcessAsUserW / 写请求失败）本就有显式清理，唯独管道建立段漏了。
+/// `built` 只是句柄值记录（裸指针 Copy，Vec drop 不关句柄），成功路径整体
+/// 移交调用方。`pub(super)` 供 token_tests 回归锁。
+pub(super) fn create_inherit_pipe_triple(
+    sa: &SECURITY_ATTRIBUTES,
+) -> Result<[(HANDLE, HANDLE); 3], String> {
+    let mut built: Vec<HANDLE> = Vec::new();
+    let mut next = || -> Result<(HANDLE, HANDLE), String> {
+        match create_inherit_pipe(sa) {
+            Ok(pair) => {
+                built.push(pair.0);
+                built.push(pair.1);
+                Ok(pair)
+            }
+            Err(e) => {
+                for h in built.drain(..) {
+                    unsafe { CloseHandle(h) };
+                }
+                Err(e)
+            }
+        }
+    };
+    Ok([next()?, next()?, next()?])
 }
 
 /// raw 句柄包成 owned `std::fs:File`（Drop 自动 CloseHandle；读写同用）。
