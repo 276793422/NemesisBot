@@ -749,6 +749,31 @@ pub const BARE_CHILD_ENV: &str = "NEMESISBOT_BARE_CHILD";
 /// `nemesisbot gateway` 不带此标记（server 语义，不弹窗口）。
 pub const BARE_LAUNCH_ENV: &str = "NEMESISBOT_BARE_LAUNCH";
 
+/// 读取并**焚毁**双击直启标记（消费即焚，BUG-20261126-135）。
+///
+/// 此前消费点只读不焚：标记常驻 gateway 进程 env 且被一切子进程继承
+/// （shell 工具的 env sanitize 黑名单只剥凭据后缀族，BARE_LAUNCH 不在
+/// 其列；executor 白名单通道虽剥 `NEMESISBOT_*` 但普通 exec 不走）——
+/// 双击直启的 gateway 常驻期间，agent 用 exec 工具 spawn 的无参
+/// `nemesisbot`（无参 = Gateway 语义）继承标记，其 gateway 装配完成后
+/// 误判 bare launch 弹出 Dashboard 窗口，违反「显式 gateway = server
+/// 语义不弹窗」的声明契约。焚毁后标记生命期收敛为「单进程消费一次」，
+/// gateway 装配完成后 env 中不再存在，后代继承链断掉。
+///
+/// 返回 true = 本次启动是双击直启语义（调用方弹窗）。
+pub fn take_bare_launch_flag() -> bool {
+    if std::env::var(BARE_LAUNCH_ENV).is_ok() {
+        // SAFETY: 本函数是该标记的唯一读者（消费点单点：gateway run_runtime
+        // 装配尾段串行调用一次）；移除发生在读取成功之后，无并发读者可竞态。
+        // 进程内其余 env 变更点同惯例（exec_worker console 标记、gateway
+        // ctx.rs env 覆盖层均持 SAFETY 注释）。
+        unsafe { std::env::remove_var(BARE_LAUNCH_ENV) };
+        true
+    } else {
+        false
+    }
+}
+
 /// Windows：本进程是否「独占一个新控制台」——双击 exe 的典型形态。
 ///
 /// GetConsoleProcessList == 1：控制台上只挂着本进程（无父 shell）。

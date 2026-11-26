@@ -20,7 +20,9 @@ crate-type = ["cdylib"]
 iroh-relay = { version = "1", default-features = false, features = ["server"] }
 # 客户端连接面端点（M3：iroh QUIC 拨号/受理/loopback 交接全在插件——宿主零 iroh）。
 # default-features=false + tls-ring（与 iroh-relay 的 ring TLS 同源，不装 aws-lc-rs 双栈）。
-iroh = { version = "1", default-features = false, features = ["tls-ring"] }
+# unstable-net-report：空 feature 闸，只放行 Endpoint::net_report() 访问器
+# （QAD 观测面投影——2026-11-26 打洞通路激活计划 §4.4 补盲）。
+iroh = { version = "1", default-features = false, features = ["tls-ring", "unstable-net-report"] }
 # trust.toml 信任簿读写（TrustBookData 序列化）。
 # 自签证书（RelayTls::SelfSigned 档）。
 rcgen = "0.14"
@@ -38,6 +40,10 @@ toml = "0.8"
 # iroh 身份校验（valid_iroh_id 镜像宿主 node_id_from_hex 的 ed25519 公钥点校验）。
 ed25519-dalek = "2"
 hex = "0.4"
+# 中继证书指纹 pin（方案 A：握手期对证书 DER 现场算 SHA-256 比对——cert_pin.rs；
+# 混合验证器的 fallback 臂 = webpki-roots 公网根库，与 iroh 默认 embedded 同源）。
+sha2 = "0.10"
+webpki-roots = "1"
 # 身份 generate（32B seed OS 随机源——iroh SecretKey::generate 同级熵源）。
 getrandom = "0.2"
 # 名册循环客户端（M2：register/members HTTP 往返搬插件——拍板 7）。

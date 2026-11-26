@@ -4093,22 +4093,22 @@ fn roaming_hex_of_extracts_iroh_hex_and_normalizes() {
     assert_eq!(cluster.roaming_hex_of("missing-peer"), None);
 }
 
-/// `roaming_dial_paths`：插件缺席（宿主测试进程不装载 plugin_roaming）→
-/// 空 map（消费面按无观测渲染，诚实降级）。双 feature 形态同语义：
-/// feature-on 走桥 Absent 分支，feature-off 恒空。
+/// `roaming_local_snapshot`（复查⑨合并投影；复查二轮③删除孤儿单投影
+/// helper 及其测试）：插件缺席 → 空 map + None——拨号路径与 QAD 观测同一
+/// 次过桥（Absent 分支），消费面（nodes.list isLocal 行）按无观测渲染，
+/// 不重复过桥。
 #[tokio::test]
-async fn roaming_dial_paths_without_plugin_is_empty() {
+async fn roaming_local_snapshot_without_plugin_is_empty() {
     let cluster = Cluster::new(make_config());
-    assert!(
-        cluster.roaming_dial_paths().await.is_empty(),
-        "插件缺席时空 map"
-    );
+    let (dial_paths, net) = cluster.roaming_local_snapshot().await;
+    assert!(dial_paths.is_empty(), "插件缺席时空 map");
+    assert_eq!(net, None, "插件缺席时 net 无观测");
 }
 
 // QUIC 插件化：端点观测槽真通路测试（bind_direct 双端点 loopback 互连
 // → 观察任务写槽 → 查询面读 direct）已随端点本体迁入 plugin_roaming
 // （插件侧 endpoint/dial path 测试覆盖）；宿主侧查询面语义由上方
-// roaming_hex_of / roaming_dial_paths 两测钉死。
+// roaming_hex_of / roaming_local_snapshot 两测钉死。
 
 #[test]
 fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_semantics() {

@@ -908,7 +908,7 @@ impl Cluster {
 
     /// 从注册表节点条目地址抠 `iroh:<hex>` node_id hex（小写）。None = 非
     /// 漫游节点。纯字符串逻辑，无 feature 门（feature-off 时拨号路径表
-    /// 恒空，消费面 `roaming_dial_paths` 查不到即自然降级为「无观测」）。
+    /// 恒空，消费面 `roaming_local_snapshot` 查不到即自然降级为「无观测」）。
     pub fn roaming_hex_of(&self, node_id: &str) -> Option<String> {
         let info = self.registry.get(node_id)?;
         info.addresses.iter().find_map(|a| {
@@ -917,20 +917,25 @@ impl Cluster {
         })
     }
 
-    /// 最近拨号路径观测批量快照（打洞直连 / 经中继转发——Dashboard 节点面
-    /// 可观测）：node_id hex → "direct"/"relay"。QUIC 插件化：观测槽在
-    /// plugin_roaming（插件侧逐连接观察任务维护），宿主经桥读快照——批量
-    /// 一次 FFI 往返，消费面配 [`Self::roaming_hex_of`] 做节点→hex 映射。
-    /// 空 map = 插件缺席 / 端点未运行 / 尚无观测。
-    pub async fn roaming_dial_paths(&self) -> std::collections::HashMap<String, String> {
+    /// 拨号路径 + 本端 QAD 观测一次快照（复查⑨合并投影；复查二轮③删除
+    /// 孤儿单投影 helper `roaming_dial_paths`/`roaming_net`——合并后零生产
+    /// 调用方）：`nodes.list` 的 isLocal 行此前各走一次桥 FFI（同源
+    /// `status_snapshot` 往返两遍）；本方法单次往返取两投影——消费面按
+    /// needs 组合调用，不重复过桥。插件缺席 / 失败 = 空 map + None。
+    pub async fn roaming_local_snapshot(
+        &self,
+    ) -> (
+        std::collections::HashMap<String, String>,
+        Option<crate::roaming::plugin_bridge::NetObservation>,
+    ) {
         match crate::roaming::plugin_bridge::status_snapshot().await {
-            crate::roaming::plugin_bridge::BridgeOutcome::Ok(s) => s.dial_paths,
+            crate::roaming::plugin_bridge::BridgeOutcome::Ok(s) => (s.dial_paths, s.net),
             crate::roaming::plugin_bridge::BridgeOutcome::Absent => {
-                std::collections::HashMap::new()
+                (std::collections::HashMap::new(), None)
             }
             crate::roaming::plugin_bridge::BridgeOutcome::Failed(e) => {
-                tracing::debug!(error = %e, "[Cluster] roaming 拨号路径快照读取失败（按无观测渲染）");
-                std::collections::HashMap::new()
+                tracing::debug!(error = %e, "[Cluster] roaming 本端快照读取失败（按无观测渲染）");
+                (std::collections::HashMap::new(), None)
             }
         }
     }
@@ -1046,6 +1051,11 @@ impl Cluster {
             "relay_token": quic_client.relay_token.trim(),
             // BUG-20261118 批次 E：客户端直连端口固定透传（0 = 动态缺省）。
             "direct_port": quic_client.direct_port,
+            // QAD 钥匙 B（2026-11-26 打洞通路激活计划）：0 = 关（缺省，
+            // 字节级旧行为）；>0 = relay QUIC 臂 + QAD 探测（打洞候选来源）。
+            "relay_quic_port": quic_client.relay_quic_port,
+            // QUIC 臂证书指纹 pin（方案 A；QUIC 臂开时必填，下方预检拦半配）。
+            "relay_cert_fp": quic_client.relay_cert_fp.trim(),
         })
         .to_string();
         if quic_client.direct_port > 0 {
@@ -1054,8 +1064,44 @@ impl Cluster {
                 "[Cluster] Roaming endpoint binds fixed UDP port (firewall/security-group may allow it)"
             );
         }
+        if quic_client.relay_quic_port > 0 {
+            if quic_client.relay_url.trim().is_empty() {
+                // 复查⑤：n0 公共中继形态钥匙 B 被忽略（QAD 依附自建中继）——
+                // 诚实 WARN 替代下方「QAD enabled」谎言日志。
+                tracing::warn!(
+                    "[Cluster] Roaming relay_quic_port/relay_cert_fp 已配置但 relay_url 为空（n0 公共中继形态）——QAD 依附自建中继，两键被忽略"
+                );
+            } else {
+                if quic_client.relay_cert_fp.trim().is_empty() {
+                    // 复查③文案修正：指纹 = SHA-256(证书 DER 原始字节)——
+                    // 对 relay_cert.pem 文件（PEM 文本）直接哈希的值**永不相等**，
+                    // 正确取值 = 中继网关启动日志的「证书指纹」行。
+                    return Err(
+                        "relay_quic_port > 0 但 relay_cert_fp 未配置——QUIC 臂强制 TLS，自签证书必须配指纹 pin（取中继网关启动日志「证书指纹」行 = SHA-256(证书 DER)；勿对 relay_cert.pem 文件直接哈希——PEM 文本字节的哈希与 DER 摘要永不相等）"
+                            .to_string(),
+                    );
+                }
+                tracing::info!(
+                    relay_quic_port = quic_client.relay_quic_port,
+                    "[Cluster] Roaming QAD enabled: relay QUIC arm + address-discovery probes on (hole-punch candidates will be learned)"
+                );
+            }
+        }
         match crate::roaming::plugin_bridge::endpoint_start(endpoint_cfg).await {
-            crate::roaming::plugin_bridge::BridgeOutcome::Ok(_) => {}
+            crate::roaming::plugin_bridge::BridgeOutcome::Ok(info) => {
+                // 复查④：exe 新/dll 旧斜 skew 诚实化——走到这里时宿主已按
+                // 钥匙 B 配置推进（预检过、「QAD enabled」日志已打），旧版
+                // 插件却不认识 relay_quic_port/relay_cert_fp（serde 容忍未知
+                // 键静默丢弃）→ QAD 结构性关闭。qad_armed=false 戳穿谎言日志。
+                if quic_client.relay_quic_port > 0
+                    && !quic_client.relay_url.trim().is_empty()
+                    && !info.qad_armed
+                {
+                    tracing::warn!(
+                        "[Cluster] Roaming QAD 配置已启用但插件端未装配 QUIC 臂（plugin_roaming.dll 疑似旧版——换装新版 dll 后重启网关）"
+                    );
+                }
+            }
             crate::roaming::plugin_bridge::BridgeOutcome::Absent => {
                 // identity_ensure 已确保插件在场——此处 Absent 属装配竞态
                 // （理论不可达），诚实 Err 不留半装配态。

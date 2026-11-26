@@ -1430,8 +1430,11 @@ pub(crate) async fn run_runtime(
     // 时设置）→ 启动完成自动打开 Dashboard（plugin-ui webview 窗口带 token，
     // 缺 dll 回落浏览器；托盘图标由 Step 22 装配，与本块正交）。显式
     // `nemesisbot gateway` 不带标记——server 语义，不弹窗口。web 已 bind
-    // （real_port 已知）；sleep 片刻给前端资源一点启动余量。
-    if std::env::var(crate::common::BARE_LAUNCH_ENV).is_ok() {
+    // （real_port 已知）；sleep 片段给前端资源一点启动余量。
+    // 消费即焚（BUG-20261126-135）：take 在读取成功时同步移除 env 标记，
+    // 断掉「标记常驻 gateway env → 被 exec 工具 spawn 的无参 nemesisbot
+    // 子进程继承 → 子 gateway 误弹 Dashboard」的继承链。
+    if crate::common::take_bare_launch_flag() {
         #[cfg(all(feature = "desktop", not(target_os = "android")))]
         {
             let pm = Arc::clone(&process_manager);
