@@ -619,6 +619,60 @@ fn test_select_best_address_with_resolver_subnet_match() {
     assert_eq!(best, "192.168.1.10:9000");
 }
 
+// F9(b) 回归锁（60s 地址池翻摆节拍器选址端根修，2026-11-26 生产实锤）：
+// 无子网交集（跨网）回落优先 iroh 漫游形态，不再盲取首个——盲取首个曾把
+// 不可达 LAN 地址顶上首选，SYN 黑洞烧满整个拨号预算（探针 5s 全耗）。
+#[test]
+fn test_select_best_address_no_subnet_match_prefers_roaming() {
+    let client = RpcClient::new();
+    let addrs = vec![
+        "192.168.199.199:21949".into(),
+        "iroh:aabbccdd@http://42.193.96.45:3340".into(),
+    ];
+    let best = client.select_best_address(&addrs);
+    assert_eq!(
+        best, "iroh:aabbccdd@http://42.193.96.45:3340",
+        "跨网无子网交集必须优先 iroh 兜底通路，不得盲取首个"
+    );
+}
+
+// 生产形态（云端 10.x 视角）：resolver 在场但与对端 LAN 无交集 → 仍选 iroh。
+#[test]
+fn test_select_best_address_resolver_no_match_prefers_roaming() {
+    let resolver = Arc::new(MockResolver {
+        interfaces: vec![LocalNetworkInterface {
+            ip: "10.0.0.13".into(),
+            mask: "255.255.255.0".into(),
+        }],
+    });
+    let client = RpcClient::with_resolver(resolver);
+    let addrs = vec![
+        "192.168.199.199:21949".into(),
+        "iroh:aabbccdd@http://42.193.96.45:3340".into(),
+    ];
+    let best = client.select_best_address(&addrs);
+    assert_eq!(best, "iroh:aabbccdd@http://42.193.96.45:3340");
+}
+
+// 子网匹配仍优先于漫游回落（LAN 直连拓扑行为零变化）；iroh 中继 URL 形态
+// 不参与子网仲裁（extract_ip_from_addr 对 `http://` 前缀解析落 None）。
+#[test]
+fn test_select_best_address_subnet_match_beats_roaming() {
+    let resolver = Arc::new(MockResolver {
+        interfaces: vec![LocalNetworkInterface {
+            ip: "192.168.199.1".into(),
+            mask: "255.255.255.0".into(),
+        }],
+    });
+    let client = RpcClient::with_resolver(resolver);
+    let addrs = vec![
+        "iroh:aabbccdd@http://42.193.96.45:3340".into(),
+        "192.168.199.199:21949".into(),
+    ];
+    let best = client.select_best_address(&addrs);
+    assert_eq!(best, "192.168.199.199:21949");
+}
+
 // ---------------------------------------------------------------------------
 // 二期桥仲裁（goal：桥集群）
 // ---------------------------------------------------------------------------

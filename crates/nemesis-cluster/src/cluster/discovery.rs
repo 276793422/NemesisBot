@@ -621,6 +621,25 @@ impl Cluster {
                 static_base_address = Some(existing.base.address.clone());
             }
         }
+        // F9(a) 池序保全（60s 地址池翻摆节拍器根修，2026-11-26 生产实锤）：
+        // 已知节点的既有 **iroh 漫游形态** 地址保序在前——rendezvous 入册
+        // 的跨网兜底通路不得被探针身份合入自报的 LAN 地址顶到池尾/逐出：
+        // 云端跨网对 LAN 地址无子网交集 → 盲取首个 → SYN 黑洞烧满探针预算
+        // → offline，~60s 名册同步 iroh 回池头 → OK → 无限翻摆（真相源：
+        // docs/REPORT/2026-11-26_云跳板双向诊断失败本地复现与根因报告.md）。
+        // **纯 IP 地址维持载荷刷新语义**（发现①，test_announce_refresh_
+        // replaces_addresses_for_dynamic_peer 钉住）：LAN 换址（DHCP 挪窝）
+        // 场景陈旧纯 IP 必须让位新自报，否则同网段 dialer 子网匹配选中池头
+        // 陈旧地址照旧烧预算——保序只豁免 iroh（跨网兜底通路），不豁免
+        // 纯 IP；跨网选址兜底由 select_best_address 的 iroh 回落承担。
+        // 静态 pin 块上方已按 pinned 语义入池（dedup 使此处对静态 no-op）。
+        if was_known && let Some(existing) = self.registry.get(node_id) {
+            for a in &existing.addresses {
+                if Self::addr_is_roaming(a) && !pool.contains(a) {
+                    pool.push(a.clone());
+                }
+            }
+        }
         for a in &addresses {
             if !pool.contains(a) {
                 pool.push(a.clone());
@@ -974,7 +993,24 @@ impl Cluster {
                         }
                     }
                 } else {
-                    existing.addresses = info.addresses.clone();
+                    // F9(a) 池序保全（同 handle_discovered_node_impl 纪律，
+                    // 2026-11-26 生产实锤）：既有 iroh 漫游形态保序在前 +
+                    // 自报数组追加；纯 IP 维持整组刷新语义。整组替换曾把
+                    // rendezvous 入册的 iroh 兜底通路整个逐出池——web
+                    // nodes.ping 身份合入是另一条同族路径（比池尾降级更狠：
+                    // iroh 直接消失）；LAN 换址场景陈旧纯 IP 仍须让位新自报。
+                    let mut merged: Vec<String> = existing
+                        .addresses
+                        .iter()
+                        .filter(|a| Self::addr_is_roaming(a))
+                        .cloned()
+                        .collect();
+                    for a in &info.addresses {
+                        if !merged.contains(a) {
+                            merged.push(a.clone());
+                        }
+                    }
+                    existing.addresses = merged;
                 }
             }
             existing.base.last_seen = chrono::Local::now().to_rfc3339();

@@ -5430,6 +5430,102 @@ fn test_with_workspace_respects_user_set_id() {
     assert!(!content.contains("node-")); // no auto-generated id
 }
 
+// F9(a) 回归锁（60s 地址池翻摆节拍器根修，2026-11-26 生产实锤）：
+// 探针身份合入不得重排既有可用地址。生产时序：rendezvous 先以 iroh 形态
+// 入册 → G2 探针成功 → apply_probe_announce 携自报 LAN 地址合入。修复前
+// 池从载荷重建 = LAN 顶池头（iroh 池尾）→ 云端跨网盲取首个 → SYN 黑洞
+// offline；~60s 名册同步 iroh 回池头 → OK → 无限翻摆。修复后既有地址
+// （iroh）保序在前、LAN 新地址只许追加。
+#[test]
+fn test_discovered_node_known_peer_merge_preserves_existing_address_order() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    let hex = "b".repeat(64);
+    let iroh = format!("iroh:{hex}@http://42.193.96.45:3340");
+
+    // 第一步：rendezvous 名册形态首见入册（iroh 独占地址池）。
+    let changed = cluster.handle_discovered_node_ex(
+        "rendezvous-peer",
+        "rendezvous-peer",
+        vec![iroh.clone()],
+        50591,
+        "worker",
+        "development",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None, // iroh_id：地址池已带完整 iroh 形态
+        None,
+        None,
+        None,
+        None,
+        "",
+    );
+    assert!(changed, "rendezvous 首见必须入册");
+    let node = cluster.registry.get("rendezvous-peer").expect("registered");
+    assert_eq!(node.addresses, vec![iroh.clone()]);
+
+    // 第二步：探针身份合入携带自报 LAN 地址（生产中毒形态）。
+    let _ = cluster.handle_discovered_node_ex(
+        "rendezvous-peer",
+        "rendezvous-peer",
+        vec!["192.168.199.199:21949".into()],
+        21949,
+        "worker",
+        "development",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        "",
+    );
+    let node = cluster.registry.get("rendezvous-peer").expect("kept");
+    assert_eq!(
+        node.addresses,
+        vec![iroh.clone(), "192.168.199.199:21949".to_string()],
+        "F9(a)：既有 iroh 兜底通路保持池头，LAN 新地址只许追加"
+    );
+
+    // 第三步：LAN 换址（DHCP 挪窝）——纯 IP 维持载荷刷新语义（发现①），
+    // 陈旧 LAN 让位新自报；保序豁免只给 iroh（跨网兜底通路）。
+    let _ = cluster.handle_discovered_node_ex(
+        "rendezvous-peer",
+        "rendezvous-peer",
+        vec!["192.168.3.63:21949".into()],
+        21949,
+        "worker",
+        "development",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        "",
+    );
+    let node = cluster.registry.get("rendezvous-peer").expect("kept");
+    assert_eq!(
+        node.addresses,
+        vec![iroh, "192.168.3.63:21949".to_string()],
+        "F9(a) 窄口径：陈旧纯 IP 必须让位新自报（LAN 换址），iroh 保序豁免"
+    );
+}
+
 // -- tests: merge_real_node_info --
 
 fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
@@ -5806,6 +5902,70 @@ fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
 
     let p = cluster.get_peer("node-dyn-1").unwrap();
     assert_eq!(p.base.address, "10.0.0.77:9000");
+}
+
+// F9(a) 第二漏斗回归锁：merge_real_node_info（web nodes.ping 身份合入）
+// 动态节点既有地址保序在前、自报数组只许追加——整组替换曾把 rendezvous
+// 入册的 iroh 兜底通路整个逐出池（比池尾降级更狠：iroh 直接消失）。
+#[test]
+fn test_merge_real_node_info_dynamic_peer_preserves_existing_addresses_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    let hex = "c".repeat(64);
+    let iroh = format!("iroh:{hex}@http://42.193.96.45:3340");
+    // rendezvous 形态首见入册（iroh 独占池）。
+    let _ = cluster.handle_discovered_node_ex(
+        "node-dyn-roam",
+        "dyn-roam",
+        vec![iroh.clone()],
+        50591,
+        "worker",
+        "general",
+        Vec::new(),
+        Vec::new(),
+        "agent",
+        Vec::new(),
+        None,
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        "",
+    );
+    assert!(!cluster.registry.is_peer_static("node-dyn-roam"));
+
+    // web nodes.ping 身份合入带自报 LAN 全量数组（生产中毒形态）。
+    cluster.merge_real_node_info(&RealNodeInfo {
+        id: "node-dyn-roam".into(),
+        name: "dyn-roam".into(),
+        address: "192.168.199.199:21949".into(),
+        rpc_port: 21949,
+        addresses: vec!["192.168.199.199:21949".into()],
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "general".into(),
+        capabilities: vec!["llm".into()],
+        tags: Vec::new(),
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+        security_level: None,
+    });
+
+    let p = cluster.get_peer("node-dyn-roam").unwrap();
+    assert_eq!(p.base.address, "192.168.199.199:21949"); // primary 照常刷新
+    assert_eq!(
+        p.addresses,
+        vec![iroh, "192.168.199.199:21949".to_string()],
+        "F9(a)：merge_real_node_info 不得整组替换既有池（iroh 不得被逐出）"
+    );
 }
 
 #[test]
