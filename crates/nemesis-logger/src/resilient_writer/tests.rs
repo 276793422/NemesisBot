@@ -6,7 +6,6 @@
 //! 单点收敛（结构性防漂移），本文件锁「打开 ⇒ 在册 / 退场 ⇒ 注销」主链。
 
 use super::*;
-use std::io::Write as _;
 use std::time::Duration;
 
 #[test]
