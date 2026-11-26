@@ -3002,3 +3002,44 @@ mod cov_sec {
         .expect("离线校准必须跑通");
     }
 }
+
+// ---------------------------------------------------------------------------
+// parse_pending —— pending.json 解析（BUG-20261126-119 回归钉：原形态
+// unwrap_or_default() 把解析失败塌缩成空列表，CLI 谎报「No pending
+// operations」——文件存在且腐坏 ≠ 无待审批）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_pending_valid_array_passes_through() {
+    let v = parse_pending(r#"[{"id":"op-1","tool_name":"exec"}]"#).unwrap();
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0]["id"], "op-1");
+}
+
+#[test]
+fn parse_pending_empty_array_is_legal_empty_state() {
+    let v = parse_pending("[]").unwrap();
+    assert!(v.is_empty(), "空数组是合法空态，照常放行显示 No pending");
+}
+
+#[test]
+fn parse_pending_corrupt_json_is_loud_err() {
+    // 截断/手改坏的文件——原形态塌缩成空列表谎报无待审批，现必须报错。
+    let err = parse_pending(r#"{"id": "op-1""#).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("pending.json 解析失败"),
+        "错误必须点名 pending.json 腐坏: {msg}"
+    );
+}
+
+#[test]
+fn parse_pending_non_array_top_level_is_err() {
+    // 顶层对象/标量不是 Vec<Value> 形态——同样不得洗白成空列表。
+    assert!(parse_pending(r#"{"pending": []}"#).is_err());
+    assert!(parse_pending("42").is_err());
+    assert!(
+        parse_pending("").is_err(),
+        "空文件（截断写残留）= 腐坏，报错"
+    );
+}

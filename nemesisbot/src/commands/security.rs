@@ -794,6 +794,15 @@ fn cmd_deny(security_cfg: &std::path::Path, id: &str, reason: Option<&str>) -> R
     Ok(())
 }
 
+/// pending.json 解析（BUG-20261126-119）：腐坏文件必须响亮报错——原
+/// `unwrap_or_default()` 形态把解析失败塌缩成空列表，CLI 谎报
+/// 「No pending operations」（文件存在且腐坏 ≠ 无待审批）。安全状态
+/// 展示的读侧失败不得洗白成合法空态；空数组 `[]` 是合法空态照常放行。
+fn parse_pending(data: &str) -> Result<Vec<serde_json::Value>> {
+    serde_json::from_str(data)
+        .map_err(|e| anyhow::anyhow!("pending.json 解析失败（文件损坏）：{e}"))
+}
+
 fn cmd_pending(security_cfg: &std::path::Path) -> Result<()> {
     let pending_path = security_cfg
         .parent()
@@ -813,7 +822,7 @@ fn cmd_pending(security_cfg: &std::path::Path) -> Result<()> {
     }
 
     let data = std::fs::read_to_string(&pending_path)?;
-    let pending: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap_or_default();
+    let pending = parse_pending(&data)?;
 
     if pending.is_empty() {
         println!("  No pending operations.");
