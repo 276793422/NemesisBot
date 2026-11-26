@@ -213,3 +213,51 @@ fn anchor_disabled_by_default_has_no_side_effects() {
         "无锚注入 = 不产生任何锚文件"
     );
 }
+
+/// BUG-20261126-109 回归：撕裂尾 Restored 臂 + 锚开启 = 持 last_hash
+/// guard 调 write_anchor_locked（内部经 current_hash() 再取同一锁）——
+/// parking_lot 不可重入，同线程永久死锁；死锁线程持有 append_lock →
+/// 审计链 append 全部阻塞 → 安全 8 层管线第 8 层冻结。修复 = Restored
+/// 臂先 drop(lh) 再写锚。append 在独立线程跑、主线程 10s 超时收口：
+/// 修复前本测试必超时（死锁复现），修复后正常通过。
+#[test]
+fn anchor_restored_tail_append_does_not_deadlock() {
+    let fx = AnchorFixture::new("deadlock");
+    // seed 链造一个合法事件行（json1\n）——提供真实 hash 供 prev 校验。
+    let seed = fx.chain();
+    seed.append("exec", "shell", "u", "web", "t1", "deny", "r1")
+        .expect("seed append");
+    let raw = std::fs::read_to_string(&fx.chain_path).expect("segment readable");
+    let json1 = raw.trim_end_matches('\n').to_string();
+    let ev1: AuditEvent = serde_json::from_str(&json1).expect("parse ev1");
+
+    // 被测链：同段文件、内存链尾全零（模拟上一进程撕裂写后重启的新实例）。
+    let chain = fx.chain();
+    // 段文件重写为「丢换行的完整事件」残迹形态（heal 的 Restored 判定：
+    // 末字节非 \n + 残迹整体可解析为完整事件）。
+    std::fs::write(&fx.chain_path, &json1).expect("rewrite torn tail");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = chain.append("exec", "shell", "u", "web", "t2", "allow", "r2");
+        let head = chain.current_hash();
+        let _ = tx.send((r, head));
+        // chain 在此 drop（线程结束）。
+    });
+    let (appended, head) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("append 10s 未返回 = BUG-109 死锁复现（Restored 臂持 guard 写锚）");
+    let event2 = appended.expect("append after restored tail succeeds");
+
+    // 撕裂事件被采纳为链尾（prev_hash=全零 匹配新实例内存尾），事件 2
+    // 链在其后；锚最终同步到事件 2 的链尾。
+    assert_eq!(event2.prev_hash, ev1.hash, "事件 2 链在采纳的撕裂事件之后");
+    let anchor = fx.read_anchor();
+    assert_eq!(anchor.head_hash, head, "锚头 = 链尾");
+    assert_eq!(anchor.total_events, 2, "撕裂事件 + 事件 2");
+
+    // 盘上两行完整事件（撕裂 \n 已补 + 新事件）。
+    let raw2 = std::fs::read_to_string(&fx.chain_path).expect("segment readable");
+    assert_eq!(raw2.lines().count(), 2, "两行完整事件");
+    assert!(raw2.ends_with('\n'), "尾行为完整行");
+}

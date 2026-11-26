@@ -249,6 +249,10 @@ impl AuditChain {
                     ));
                 }
                 *lh = ev.hash.clone();
+                drop(lh); // BUG-20261126-109：guard 必须先释放——下方
+                // write_anchor_locked 经 current_hash() 再取 last_hash，
+                // parking_lot 不可重入，持 guard 调用 = 同线程永久死锁
+                // （append_lock 被死锁线程持有 → 审计管线整体冻结）。
                 self.event_count
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.total_events
