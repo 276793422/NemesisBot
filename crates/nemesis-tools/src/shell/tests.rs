@@ -1298,7 +1298,10 @@ async fn test_timeout_kills_child_tree() {
     let dir = tempfile::tempdir().expect("tempdir");
     let marker = dir.path().join("orphan_marker");
     let command = if cfg!(target_os = "windows") {
-        format!("ping -n 21 127.0.0.1 >nul & type nul > {}", marker.display())
+        format!(
+            "ping -n 21 127.0.0.1 >nul & type nul > {}",
+            marker.display()
+        )
     } else {
         format!("sleep 21 && touch {}", marker.display())
     };
