@@ -170,9 +170,13 @@ fn access_control(token: &str) -> Arc<dyn DynAccessControl> {
     }
 }
 
-/// 常数时间字节比较（插件自持依赖，不引 nemesis-utils；XOR 折叠形态与
-/// 宿主 nemesis_utils::verify_token 同族——纵深防御全覆盖口径）。
-fn constant_time_eq(a: &str, b: &str) -> bool {
+/// 常数时间字节比较（等长才逐字节 XOR 折叠；插件自持依赖，不引 nemesis-utils；
+/// XOR 折叠形态与宿主 nemesis_utils::verify_token 同族）。
+///
+/// 消费方 = 同一预共享 token 的**全部公网比对面**：中继 SharedTokenAccess
+/// 与 rendezvous 名册 `token_ok`（BUG-20261126-126 前名册侧是普通 `==`，
+/// 同一 token 两个公网面时序防御不一致——收口到本函数后全覆盖口径成立）。
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }

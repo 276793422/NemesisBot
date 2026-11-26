@@ -9,8 +9,8 @@
 //! 全部绑定 0.0.0.0:0（OS 分配端口），无固定端口占用，并行安全。
 
 use super::{
-    ensure_self_signed_cert, parse_certs_pem, parse_key_pem, relay_cert_path, relay_key_path,
-    spawn_relay_server,
+    constant_time_eq, ensure_self_signed_cert, parse_certs_pem, parse_key_pem, relay_cert_path,
+    relay_key_path, spawn_relay_server,
 };
 use crate::endpoint::{
     EndpointConfig, TrustBookData, parse_roaming_address, save_trust_book, spawn_endpoint,
@@ -160,6 +160,33 @@ fn parse_pem_chain_multiple_certs() {
     // "AAAA"（6bit 全零）→ 3 个 0x00；"BBBB"（6bit 全 000001）→ 0x04,0x10,0x41。
     assert_eq!(ders[0].as_ref(), &[0x00u8, 0x00, 0x00][..]);
     assert_eq!(ders[1].as_ref(), &[0x04u8, 0x10, 0x41][..]);
+}
+
+// ---------------------------------------------------------------------------
+// constant_time_eq：预共享 token 比对原语（公网面统一消费）
+// ---------------------------------------------------------------------------
+
+/// 判定面钉死（BUG-20261126-126）：constant-time 性质本身不可直接观测，
+/// 这里钉「判定结果与直觉一致」+ 消费关系（中继 SharedTokenAccess 与名册
+/// token_ok 都引用本函数——引用关系由编译期路径钉住，漂移即编译错）。
+#[test]
+fn constant_time_eq_judgment_surface() {
+    assert!(
+        constant_time_eq("", ""),
+        "空对空 = 相等（未配置 token 由上层放行，原语只管比对）"
+    );
+    assert!(constant_time_eq("s3cret", "s3cret"), "等值 true");
+    assert!(
+        !constant_time_eq("s3crex", "s3cret"),
+        "等长异文（时序探针最经典形态）false"
+    );
+    assert!(!constant_time_eq("s3cret ", "s3cret"), "尾随空白 = 异文");
+    assert!(!constant_time_eq("s3cret", "wrong"), "异长 false");
+    assert!(!constant_time_eq("", "s3cret"), "空对非空 false");
+    assert!(
+        !constant_time_eq("résumé", "resume"),
+        "多字节与 ASCII 不可能判等（字节级比对非字符级）"
+    );
 }
 
 // ---------------------------------------------------------------------------

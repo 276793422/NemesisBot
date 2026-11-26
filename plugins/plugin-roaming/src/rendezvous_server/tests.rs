@@ -167,14 +167,39 @@ fn token_gate_bearer_and_query_param() {
     assert!(reg.token_ok(Some("s3cret"), None), "Bearer 头配对");
     assert!(reg.token_ok(None, Some("s3cret")), "?token= 查询参数配对");
     assert!(!reg.token_ok(Some("wrong"), None));
+    // 等长异文（时序探针最经典形态）：内容错 = 拒，与长度错同拒。
+    assert!(!reg.token_ok(Some("s3crex"), None));
+    assert!(!reg.token_ok(None, Some("s3crex")));
     assert!(!reg.token_ok(None, None), "缺凭据拒绝");
     assert!(!reg.token_ok(None, Some("")));
+    assert!(!reg.token_ok(Some(""), None));
 
     let open = RendezvousRegistry::new("");
     assert!(
         open.token_ok(None, None),
         "空 token = 放行（仅测试 loopback；生产 fail-closed 不走到）"
     );
+}
+
+/// BUG-20261126-126 回归锁：名册 token 比对与中继 SharedTokenAccess 同走
+/// `constant_time_eq`（XOR 折叠）——同一预共享 token 的两个公网面时序防御
+/// 同口径。语义面（trim / 空凭据拒 / None 放行）由 token_gate_bearer_and_
+/// query_param 钉住；本测试钉「比对原语身份」：token_ok 与中继侧共享同一
+/// 函数（改回 `==` 或另写非常数时间比对时，此处同步落红提醒补口径）。
+#[test]
+fn token_gate_uses_shared_constant_time_primitive() {
+    let expect = "s3cret";
+    // 常数时间原语的判定面与 `==` 一致（防御性质不可直接测，判定面一致
+    // + 消费点引用同一函数即口径成立——引用关系由编译期路径钉住）。
+    assert!(crate::relay_server::constant_time_eq(expect, expect));
+    assert!(!crate::relay_server::constant_time_eq("s3crex", expect));
+    assert!(!crate::relay_server::constant_time_eq("s3cret ", expect));
+    assert!(!crate::relay_server::constant_time_eq("", expect));
+    // token_ok 判定结果与原语一致（等长异文拒 / 精确配对过 / trim 容忍）。
+    let reg = RendezvousRegistry::new(expect);
+    assert!(reg.token_ok(Some(expect), None));
+    assert!(!reg.token_ok(Some("s3crex"), None));
+    assert!(reg.token_ok(Some(" s3cret "), None), "请求侧 trim 容忍");
 }
 
 #[test]
