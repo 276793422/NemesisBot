@@ -16,6 +16,7 @@
 //! 东西是 UB——vm_display 同款）。
 
 mod atomic;
+mod cert_pin;
 mod endpoint;
 mod identity;
 mod registry_client;
@@ -26,7 +27,11 @@ mod roaming; // 契约副本（与 crates/nemesis-plugin/src/roaming.rs 逐字�
 mod types;
 
 #[cfg(test)]
+mod cert_pin_tests;
+#[cfg(test)]
 mod drift_tests;
+#[cfg(test)]
+mod endpoint_tests;
 #[cfg(test)]
 mod identity_tests;
 #[cfg(test)]
@@ -353,11 +358,16 @@ pub unsafe extern "C" fn roaming_status() -> *const c_char {
         "registry_running": registry_running,
         "registry_sync": registry_sync,
         "endpoint": endpoint_slot.as_ref().map(|h| {
+            // net 投影（2026-11-26 §4.4 补盲；复查⑧收敛）：QAD 死活 + 观测到
+            // 的反射地址——非本机绑定形态（公网 ip:port）到账 = 打洞候选在产。
+            // JSON 形态单一真相 = NetObservation 的 Serialize（qad_v4 rename）。
+            let net = h.net_snapshot().and_then(|n| serde_json::to_value(n).ok());
             serde_json::json!({
                 "running": true,
                 "node_id": h.node_id_hex(),
                 "direct_addrs": h.direct_addrs().iter().map(|a| a.to_string()).collect::<Vec<_>>(),
                 "dial_paths": h.dial_paths_snapshot(),
+                "net": net,
             })
         }),
     });
@@ -933,6 +943,12 @@ pub unsafe extern "C" fn roaming_endpoint_start(config: *const c_char) -> *const
         Ok(v) => v,
         Err(out) => return out,
     };
+    // 复查②：配置完整性校验**先行**——必须在停旧端点之前 loud 失败。
+    // （配错指纹/地址若在停旧后才发现 = 旧端点已死新端点未起，漫游瘫痪
+    // 到人工修配置；校验单一真相在 endpoint::validate_endpoint_config。）
+    if let Err(e) = endpoint::validate_endpoint_config(&cfg) {
+        return set_out(err_json("bad_config", &e));
+    }
     let id = match Identity::load(&identity::roaming_key_path(&workspace)) {
         Ok(i) => i,
         Err(e) => return set_out(err_json("identity_missing", &e)),
@@ -965,7 +981,13 @@ pub unsafe extern "C" fn roaming_endpoint_start(config: *const c_char) -> *const
         "endpoint",
         &format!("端点已启动 {node_id}"),
     );
-    set_out(serde_json::json!({ "ok": true, "node_id": node_id }).to_string())
+    // 复查④：回执带 `qad_armed`（QUIC 臂是否装配）——宿主据此戳穿
+    // 「exe 新/dll 旧」斜 skew 的谎言日志（旧 dll 不认识本键 = serde 缺席
+    // → 宿主读到 false/缺省 → WARN）。
+    let qad_armed = !cfg.relay_url.trim().is_empty() && cfg.relay_quic_port > 0;
+    set_out(
+        serde_json::json!({ "ok": true, "node_id": node_id, "qad_armed": qad_armed }).to_string(),
+    )
 }
 
 /// stop：停端点（router 收流 + 注册连接强关 + endpoint.close；幂等）。

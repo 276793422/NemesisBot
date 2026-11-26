@@ -146,6 +146,45 @@ fn client_direct_port_u16_max_boundary_honored() {
     assert_eq!(cfg.client.direct_port, 65535);
 }
 
+// -- 2026-11-26 打洞通路激活：client.relay_quic_port + relay_cert_fp（QAD 钥匙 B）---
+
+#[test]
+fn client_qad_keys_missing_default_off_and_empty_fp() {
+    // 缺键 = 钥匙 B 关（0）+ 指纹空——旧文件零迁移，字节级旧行为。
+    let cfg = parse_quic_value(Some(&serde_json::json!({
+        "client": { "relay_url": "http://vps:3340" }
+    })));
+    assert_eq!(cfg.client.relay_quic_port, 0);
+    assert_eq!(cfg.client.relay_cert_fp, "");
+}
+
+#[test]
+fn client_qad_keys_explicit_values_honored() {
+    let fp = "a".repeat(64);
+    let cfg = parse_quic_value(Some(&serde_json::json!({
+        "client": { "relay_quic_port": 7842, "relay_cert_fp": fp }
+    })));
+    assert_eq!(cfg.client.relay_quic_port, 7842);
+    assert_eq!(cfg.client.relay_cert_fp, fp);
+}
+
+#[test]
+fn client_qad_port_type_mismatch_or_out_of_range_falls_back_zero() {
+    // 非 u64 / 超 u16 值域 → 0（钥匙 B 关；0 即显式关，不与缺键区分）。
+    for v in [
+        serde_json::json!("7842"),
+        serde_json::json!(-1),
+        serde_json::json!(65536),
+        serde_json::json!(true),
+        serde_json::json!(null),
+    ] {
+        let cfg = parse_quic_value(Some(&serde_json::json!({
+            "client": { "relay_quic_port": v }
+        })));
+        assert_eq!(cfg.client.relay_quic_port, 0, "v = {v}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 旧位置首读迁移（ensure_quic_config）
 // ---------------------------------------------------------------------------

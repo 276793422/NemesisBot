@@ -267,3 +267,66 @@ async fn trust_gate_tcp_form_has_no_trust_face() {
     assert_eq!(ok.unwrap(), (45678, 7), "TCP 形态不经 trust 闸");
     assert_eq!(inner.dial_calls.load(Ordering::SeqCst), 1);
 }
+
+// ---------------------------------------------------------------------------
+// 复查⑧：net 投影单一真相出口（net_projection 三态 + wire 键名契约）
+// ---------------------------------------------------------------------------
+
+use super::{NetObservation, net_projection};
+
+/// 三态之一：None（插件缺席 / 旧插件无段 / 报告未产出）→ `Value::Null`。
+#[test]
+fn net_projection_none_is_null() {
+    assert_eq!(net_projection(None), serde_json::Value::Null);
+}
+
+/// 三态之二：有观测且 QAD 到账——`{"qad_v4":true,"observed_v4":"..."}`。
+#[test]
+fn net_projection_hit_form() {
+    let net = NetObservation {
+        qad_v4: true,
+        observed_v4: Some("36.110.60.241:34287".to_string()),
+    };
+    let v = net_projection(Some(&net));
+    assert_eq!(
+        v,
+        serde_json::json!({"qad_v4": true, "observed_v4": "36.110.60.241:34287"}),
+        "wire 形态 = 插件侧同构投影（qad_v4 键名）"
+    );
+}
+
+/// 三态之三：有观测但 QAD 未到账（钥匙 B 关 / 服务端臂缺）——observed = null。
+#[test]
+fn net_projection_miss_form() {
+    let net = NetObservation {
+        qad_v4: false,
+        observed_v4: None,
+    };
+    assert_eq!(
+        net_projection(Some(&net)),
+        serde_json::json!({"qad_v4": false, "observed_v4": null})
+    );
+}
+
+/// wire 键名契约钉死：插件载荷以 `qad_v4` 键反序列化成功；旧内部名
+/// `udp_v4` 形态**不被读取**——serde 默认忽略未知键，缺 `qad_v4` 键**静默**
+/// 兜 default false（不报错：反序列化侧对键名漂移不做 loud 防御，二轮复查②
+/// 修正注释——原「必须被拒/解析失败」说法与事实相反）。两侧契约由序列化/
+/// 投影测试共同钉住：本文件 net_projection 三态（宿主投影形态）+ 插件工作区
+/// endpoint serialize 测试（插件 wire 形态）——任一侧键名漂移即对应测试红，
+/// 取代静默假绿。
+#[test]
+fn net_observation_wire_key_is_qad_v4() {
+    let raw = serde_json::json!({"qad_v4": true, "observed_v4": "1.2.3.4:5"});
+    let n: NetObservation = serde_json::from_value(raw).expect("qad_v4 键必须可解析");
+    assert!(n.qad_v4);
+    assert_eq!(n.observed_v4.as_deref(), Some("1.2.3.4:5"));
+    let wrong = serde_json::json!({"udp_v4": true});
+    let n2: NetObservation = serde_json::from_value(wrong)
+        .expect("未知键 serde 默认忽略——缺 qad_v4 落 default，解析不失败");
+    assert!(
+        !n2.qad_v4,
+        "udp_v4 键不是契约键——不得被读成 qad_v4（静默 false，防线在两侧序列化测试）"
+    );
+    assert_eq!(n2.observed_v4, None);
+}

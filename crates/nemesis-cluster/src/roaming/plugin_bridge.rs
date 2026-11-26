@@ -23,7 +23,7 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use nemesis_plugin::roaming::RoamingPluginHandle;
 
@@ -305,17 +305,32 @@ pub async fn close_conn(conn_id: u64) -> BridgeOutcome<bool> {
 
 /// 客户端连接面端点拉起/热更（幂等：插件侧停旧起新）。`config_json` 形态 =
 /// `{"relay_url":"","relay_token":"","idle_timeout_secs":0}`（relay_url 空 =
-/// n0 公共中继）。响应 `{"ok":true,"node_id":hex}`。
-pub async fn endpoint_start(config_json: String) -> BridgeOutcome<String> {
+/// n0 公共中继）。响应 `{"ok":true,"node_id":hex,"qad_armed":bool}`。
+#[derive(Debug, Clone)]
+pub struct EndpointStartInfo {
+    pub node_id: String,
+    /// QUIC 臂是否装配（复查④：旧版插件回执无此键 = 反序列化侧
+    /// `Shape` 的 `#[serde(default)]` 兜成 false——宿主据此识别「exe 新
+    /// /dll 旧」斜 skew：配置写着 QAD enabled、插件端却结构性关闭，
+    /// WARN 櫂穿谎言日志）。
+    pub qad_armed: bool,
+}
+
+pub async fn endpoint_start(config_json: String) -> BridgeOutcome<EndpointStartInfo> {
     #[derive(Deserialize)]
     struct Shape {
         node_id: String,
+        #[serde(default)]
+        qad_armed: bool,
     }
     call_bridge("roaming_endpoint_start", move |h| {
         h.endpoint_start(&config_json)
     })
     .await
-    .map(|s: Shape| s.node_id)
+    .map(|s: Shape| EndpointStartInfo {
+        node_id: s.node_id,
+        qad_armed: s.qad_armed,
+    })
 }
 
 /// 停客户端连接面端点（幂等；未运行 = ok）。
@@ -323,6 +338,18 @@ pub async fn endpoint_stop() -> BridgeOutcome<()> {
     call_bridge::<serde_json::Value>("roaming_endpoint_stop", |h| h.endpoint_stop())
         .await
         .map(|_| ())
+}
+
+/// QAD 观测投影（2026-11-26 打洞通路激活计划 §4.4 补盲；插件 endpoint 段
+/// `net` 键——旧插件二进制无段 = None，宿主按「未知」语义渲染）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct NetObservation {
+    /// QAD IPv4 往返成功（钥匙 B 开 × 服务端 QUIC 臂在跑才可能 true）。
+    #[serde(default)]
+    pub qad_v4: bool,
+    /// 观测到的全局 IPv4 ip:port（反射地址；None = 尚未学到）。
+    #[serde(default)]
+    pub observed_v4: Option<String>,
 }
 
 /// 客户端连接面快照（`roaming_status` 的 endpoint 段投影；插件/端点缺席 =
@@ -337,6 +364,9 @@ pub struct EndpointStatus {
     /// 观察任务维护，退出不清槽——「最近一次」语义）。
     #[serde(default)]
     pub dial_paths: std::collections::HashMap<String, String>,
+    /// QAD 观测（None = 旧插件二进制 / 报告未产出）。
+    #[serde(default)]
+    pub net: Option<NetObservation>,
 }
 
 pub async fn status_snapshot() -> BridgeOutcome<EndpointStatus> {
@@ -348,6 +378,15 @@ pub async fn status_snapshot() -> BridgeOutcome<EndpointStatus> {
     call_bridge::<Full>("roaming_status", |h| h.status())
         .await
         .map(|f| f.endpoint.unwrap_or_default())
+}
+
+/// net 观测投影 JSON（复查⑧单一真相收敛）：序列化形态 = [`NetObservation`]
+/// 的 `Serialize`，本 helper 是宿主侧唯一投影出口——web 两处消费面
+/// （cluster.roaming.status / nodes.list isLocal 行）一律经此，不再手拼。
+/// `None`（插件缺席 / 旧插件无段 / 报告未产出）→ `Value::Null`。
+pub fn net_projection(net: Option<&NetObservation>) -> serde_json::Value {
+    net.and_then(|n| serde_json::to_value(n).ok())
+        .unwrap_or(serde_json::Value::Null)
 }
 
 // ---------------------------------------------------------------------------
