@@ -1005,3 +1005,93 @@ describe('ModelsView effort 自动修正注记（C）', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 新建表单敏感草稿生命周期 + busy 闸（BUG-20261127-012/013）：
+// - 012：取消/收起路径此前不清 addForm——明文 API Key 留在响应式状态且重开
+//   预填旧值（BUG-009 同族，R3053 横向排查留线索点名本位点）。
+// - 013：addModel 此前无 busy 闸——快速连点「添加」并发双发 models.add
+//   （兄弟 submitCopy/submitRename 均有 copyBusy/renameBusy 闸）。
+describe('ModelsView 新建表单草稿清理与 busy 闸（BUG-20261127-012/013）', () => {
+  async function openAddForm(w: ReturnType<typeof mount>) {
+    const addBtn = w.findAll('button').find((b) => b.text().includes('添加模型'))!
+    await addBtn.trigger('click')
+    await flushPromises()
+  }
+
+  function addFormCard(w: ReturnType<typeof mount>) {
+    return w.findAll('.card').find((c) => c.find('h3').text() === '添加模型')!
+  }
+
+  async function fillAddForm(w: ReturnType<typeof mount>) {
+    const inputs = addFormCard(w).findAll('input.form-input')
+    await inputs[0].setValue('my-model') // 名称
+    await inputs[1].setValue('vendor/m1') // 模型 ID
+    await inputs[2].setValue('sk-secret-key-123') // 明文 API Key
+    return inputs
+  }
+
+  it('头部「取消」收起：重开恒为空白表单（明文 Key 不驻留不预填）', async () => {
+    const w = await mountView([modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })])
+    await openAddForm(w)
+    await fillAddForm(w)
+    // 头部按钮（文案已翻转为「取消」，btn-primary；表单内取消是普通 btn）。
+    const headerCancel = w.findAll('button.btn-primary').find((b) => b.text() === '取消')!
+    await headerCancel.trigger('click')
+    await flushPromises()
+    expect(w.findAll('.card').find((c) => c.find('h3').text() === '添加模型'), '表单已收起').toBeUndefined()
+    // 重开：三个输入框必须全空（修复前 Key 预填 sk-secret-key-123）。
+    await openAddForm(w)
+    const inputs = addFormCard(w).findAll('input.form-input')
+    expect((inputs[0].element as HTMLInputElement).value, '名称不驻留').toBe('')
+    expect((inputs[1].element as HTMLInputElement).value, '模型 ID 不驻留').toBe('')
+    expect((inputs[2].element as HTMLInputElement).value, '明文 Key 不驻留').toBe('')
+    w.unmount()
+  })
+
+  it('表单内「取消」：关闭并清草稿（同纪律第二路径）', async () => {
+    const w = await mountView([modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })])
+    await openAddForm(w)
+    await fillAddForm(w)
+    const cardCancel = addFormCard(w).findAll('button').find((b) => b.text() === '取消')!
+    await cardCancel.trigger('click')
+    await flushPromises()
+    expect(w.findAll('.card').find((c) => c.find('h3').text() === '添加模型'), '表单已收起').toBeUndefined()
+    await openAddForm(w)
+    const inputs = addFormCard(w).findAll('input.form-input')
+    expect((inputs[2].element as HTMLInputElement).value, '明文 Key 不驻留').toBe('')
+    w.unmount()
+  })
+
+  it('busy 闸：在飞期间再点「添加」不重复发 models.add；按钮禁用带文案', async () => {
+    let resolveAdd!: (v: any) => void
+    const addCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string) => {
+      if (module === 'models' && cmd === 'add') {
+        addCalls.push(1)
+        return new Promise((res) => { resolveAdd = res })
+      }
+      if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })] }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await openAddForm(w)
+    await fillAddForm(w)
+    const addBtn = addFormCard(w).findAll('button').find((b) => b.text() === '添加')!
+    await addBtn.trigger('click')
+    // 第一发在飞：按钮禁用 + 文案翻转；第二发被函数内 busy 闸拦住。
+    expect(addBtn.attributes('disabled')).toBeDefined()
+    expect(addBtn.text()).toBe('添加中…')
+    await addBtn.trigger('click')
+    expect(addCalls, '连点只发一次 models.add').toHaveLength(1)
+    resolveAdd({ ok: true })
+    await flushPromises()
+    expect(addCalls).toHaveLength(1)
+    // 成功后表单收起（成功路径 resetAddForm 共用出口）。
+    expect(w.findAll('.card').find((c) => c.find('h3').text() === '添加模型')).toBeUndefined()
+    w.unmount()
+  })
+})

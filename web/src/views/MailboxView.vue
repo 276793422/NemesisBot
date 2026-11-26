@@ -400,6 +400,10 @@ function fmtSize(n: number): string {
 
 // ---- 地址注册管理 ----
 async function addAddress() {
+  // 函数内 busy 闸（BUG-20261127-014）：输入框 @keyup.enter 不经按钮的
+  // :disabled——快速连按 Enter 会并发双发 addr_add。对齐 VaultView
+  // runUnlockTest 同形态先例（按钮闸之外补函数闸）。
+  if (addrBusy.value) return
   const address = addrInput.value.trim()
   if (!address) { toast.error('地址不能为空'); return }
   addrBusy.value = true

@@ -47,6 +47,33 @@ const showAdd = ref(false)
 // Backend add expects: name, model, key, base_url?, proxy?, protocol?, stream?
 // protocol = LLM 协议选择器：新建条目默认 Claude（anthropic）。
 const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic', stream: '' })
+// 新建请求在飞闸（BUG-20261127-013）：此前 addModel 无 busy 闸，快速连点
+// 「添加」会并发双发 models.add（同名重复条目/重复报错）——对齐兄弟
+// submitCopy/submitRename 的 copyBusy/renameBusy 形态。
+const addBusy = ref(false)
+
+/** 新建表单草稿重置（BUG-20261127-012 单一出口）：取消/收起路径此前不清
+ * addForm——明文 API Key 留在响应式状态且重开预填旧值（BUG-009 同族）。
+ * 成功/取消/收起三条路径共用本函数，敏感草稿不驻留。 */
+function resetAddForm() {
+  addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic', stream: '' }
+}
+
+/** 头部按钮开/收新建表单：收起即清草稿（重开恒为空白表单）。 */
+function toggleAdd() {
+  if (showAdd.value) {
+    showAdd.value = false
+    resetAddForm()
+  } else {
+    showAdd.value = true
+  }
+}
+
+/** 表单内「取消」：关闭并清草稿（与头部收起同纪律）。 */
+function cancelAdd() {
+  showAdd.value = false
+  resetAddForm()
+}
 
 // 协议类型下拉选项（值集与后端 normalize_model_protocol 一致）。
 const PROTOCOL_OPTIONS = [
@@ -221,6 +248,11 @@ function openCopy(m: Model) {
   copyNewModel.value = m.model // 预填源模型 ID，直接改成要用的 LLM
 }
 async function submitCopy() {
+  // 函数内 busy 闸（BUG-20261127-014 同族横向排查补修）：模板按钮有
+  // :disabled="copyBusy" 拦得住鼠标路径，但复制模态两个输入框
+  // @keyup.enter="submitCopy" 绕过按钮 disabled——在飞时连按 Enter
+  // 并发双发 models.copy。
+  if (copyBusy.value) return
   if (!copySource.value) return
   const nn = copyNewName.value.trim()
   if (!nn) { toast.warn('请输入新名称'); return }
@@ -254,6 +286,9 @@ function openRename(m: Model) {
   renameNewModel.value = m.model
 }
 async function submitRename() {
+  // 函数内 busy 闸（BUG-20261127-014 同族横向排查补修）：同 submitCopy，
+  // 改名模态两个输入框 @keyup.enter 绕过按钮 :disabled="renameBusy"。
+  if (renameBusy.value) return
   const oldName = renameSource.value
   if (!oldName) return
   const nn = renameNewName.value.trim()
@@ -614,9 +649,11 @@ function compactCtxClampHint(m: Model): string {
 }
 
 async function addModel() {
+  if (addBusy.value) return
   if (!addForm.value.name) { toast.warn('请输入模型名称'); return }
   if (!addForm.value.model) { toast.warn('请输入模型 ID'); return }
   if (!addForm.value.key) { toast.warn('请输入 API Key'); return }
+  addBusy.value = true
   try {
     const payload: any = {
       name: addForm.value.name,
@@ -630,10 +667,12 @@ async function addModel() {
     await request('models', 'add', payload)
     toast.success('模型已添加')
     showAdd.value = false
-    addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic', stream: '' }
+    resetAddForm()
     await loadModels()
   } catch (e: any) {
     toast.error('添加失败: ' + e)
+  } finally {
+    addBusy.value = false
   }
 }
 
@@ -699,7 +738,7 @@ onMounted(() => {
           <span class="test-progress">测试中 {{ testProgress?.done }}/{{ testProgress?.total }}</span>
           <button class="btn btn-danger" @click="cancelTestAll">取消</button>
         </template>
-        <button class="btn btn-primary" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '+ 添加模型' }}</button>
+        <button class="btn btn-primary" @click="toggleAdd">{{ showAdd ? '取消' : '+ 添加模型' }}</button>
       </div>
     </div>
     <div class="page-body">
@@ -767,8 +806,8 @@ onMounted(() => {
             <input class="form-input" v-model="addForm.proxy" placeholder="http://proxy:port" style="max-width: 300px;">
           </div>
           <div style="margin-top: var(--space-3); display: flex; justify-content: flex-end; gap: var(--space-2);">
-            <button class="btn" @click="showAdd = false">取消</button>
-            <button class="btn btn-primary" @click="addModel">添加</button>
+            <button class="btn" @click="cancelAdd">取消</button>
+            <button class="btn btn-primary" :disabled="addBusy" @click="addModel">{{ addBusy ? '添加中…' : '添加' }}</button>
           </div>
         </div>
       </div>

@@ -679,8 +679,8 @@ describe('SettingsView Agent TAB 批次 4 键与实验区（gap 补测）', () =
     await temp.setValue('0.9')
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'agents.defaults.temperature', value: 0.9 })
-    // max_tokens
-    const tokens = w.findAll('input[type="number"]').find(i => (i.element as HTMLInputElement).value === '4096')!
+    // max_tokens（BUG-20261127-015：展示缺省 4096→65536 对齐 serde default_max_tokens）
+    const tokens = w.findAll('input[type="number"]').find(i => (i.element as HTMLInputElement).value === '65536')!
     await tokens.setValue('2048')
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'agents.defaults.max_tokens', value: 2048 })
@@ -1002,6 +1002,67 @@ describe('SettingsView 编辑器放行 / 会话放行 / 配色 / 原始 JSON / �
     await flushPromises()
     // 异步面板挂载点渲染（真面板依赖 useSkin/authFetch，WSAPI 走本文件 mock 返回 {}）
     expect(w.findAll('button.tab').find(b => b.text() === '皮肤')!.classes()).toContain('active')
+    w.unmount()
+  })
+})
+
+// BUG-20261127-015：温度/最大 Tokens 两输入此前裸 parseFloat/parseInt 直传
+// set_field——清空/非法输入 NaN 序列化成 null，后端 typed f64/i64 诚实拒绝
+// 成一条 serde 原始错误 toast；且最大 Tokens 展示缺省 4096 谎报（serde
+// default_max_tokens() = DEFAULT_MAX_TOKENS = 65536）。回归锁：展示缺省
+// 同源 serde + 非法回退不落盘 + 合法值照常 set_field。
+describe('SettingsView Agent TAB 数字输入校验（BUG-20261127-015）', () => {
+  function agentInput(w: ReturnType<typeof mount>, label: string) {
+    const group = w.findAll('.form-group').find(g => g.find('label.form-label').text() === label)!
+    return group.find('input.form-input')
+  }
+  const setFieldCalls = (path: string) =>
+    requestMock.mock.calls.filter((c: any[]) => c[1] === 'set_field' && c[2].path === path)
+
+  it('键缺席展示缺省同源 serde：温度 0.7、最大 Tokens 65536（非旧 4096）', async () => {
+    const w = await mountView()
+    await toTab(w, 'Agent')
+    expect((agentInput(w, '温度').element as HTMLInputElement).value).toBe('0.7')
+    expect((agentInput(w, '最大 Tokens').element as HTMLInputElement).value).toBe('65536')
+    w.unmount()
+  })
+
+  it('温度清空/越界：不落 set_field、回退展示缺省 + error toast', async () => {
+    const w = await mountView()
+    await toTab(w, 'Agent')
+    const input = agentInput(w, '温度')
+    // 注：setValue 自带 input+change 双触发（test-utils 对 v-model.lazy 的
+    // 支持），这里一次 setValue 即完整走一遍 @change 校验路径，勿再显式
+    // trigger('change')——第二遍会把回退值当合法值存回去。
+    // 清空 → NaN → 拒绝落盘 + 回退展示 + error toast
+    await input.setValue('')
+    expect(setFieldCalls('agents.defaults.temperature')).toHaveLength(0)
+    expect((input.element as HTMLInputElement).value).toBe('0.7')
+    expect(useToast().toasts.some(t => t.message.includes('已回退'))).toBe(true)
+    // 越界（>2）同款拒绝
+    await input.setValue('2.5')
+    expect(setFieldCalls('agents.defaults.temperature')).toHaveLength(0)
+    expect((input.element as HTMLInputElement).value).toBe('0.7')
+    // 合法值照常落盘
+    await input.setValue('1.2')
+    const calls = setFieldCalls('agents.defaults.temperature')
+    expect(calls).toHaveLength(1)
+    expect(calls[0][2].value).toBe(1.2)
+    w.unmount()
+  })
+
+  it('最大 Tokens 清空：不落 set_field、回退 65536；合法值落整数', async () => {
+    const w = await mountView()
+    await toTab(w, 'Agent')
+    const input = agentInput(w, '最大 Tokens')
+    await input.setValue('')
+    expect(setFieldCalls('agents.defaults.max_tokens')).toHaveLength(0)
+    expect((input.element as HTMLInputElement).value).toBe('65536')
+    expect(useToast().toasts.some(t => t.message.includes('已回退'))).toBe(true)
+    await input.setValue('8192')
+    const calls = setFieldCalls('agents.defaults.max_tokens')
+    expect(calls).toHaveLength(1)
+    expect(calls[0][2].value).toBe(8192)
     w.unmount()
   })
 })

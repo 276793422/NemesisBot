@@ -366,6 +366,9 @@ async function openJsonEditor() {
 }
 
 async function addSource() {
+  // 函数内 busy 闸（BUG-20261127-014 同族横向排查补修）：输入框 @keyup.enter
+  // 直调绕过按钮 :disabled——在飞时连按 Enter 并发双发请求。
+  if (adding.value) return
   if (!addUrl.value.trim()) return
   adding.value = true
   try {
