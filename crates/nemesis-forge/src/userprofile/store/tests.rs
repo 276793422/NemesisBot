@@ -1496,8 +1496,14 @@ fn move_habit_scope_idempotent_substring_echo_hits_entry_not_first() {
         "幂等回显必须是命中条目全文，不是 habits[0]"
     );
     // 条目不搬移（幂等，两份画像不变）。
-    assert_eq!(load_profile_scope(ws, ProfileScope::Project).habits.len(), 2);
-    assert_eq!(load_profile_scope(ws, ProfileScope::Dialogue).habits.len(), 1);
+    assert_eq!(
+        load_profile_scope(ws, ProfileScope::Project).habits.len(),
+        2
+    );
+    assert_eq!(
+        load_profile_scope(ws, ProfileScope::Dialogue).habits.len(),
+        1
+    );
 }
 
 /// 来源子串命中多条 = Err（搬移是单条操作）。
