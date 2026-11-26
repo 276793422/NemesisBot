@@ -37,6 +37,14 @@ const WARN_THROTTLE: Duration = Duration::from_secs(300);
 
 struct State {
     file: Option<std::fs::File>,
+    /// 活跃守卫（BUG-20261126-112 横向面）：句柄开着 = 路径在册，
+    /// logs_sweeper 的 Gateway 族 TTL（默认 14 天）删除前查
+    /// [`nemesis_utils::active_files::is_active`] 跳过——完全静默的
+    /// gateway（14 天零日志行）文件 mtime 照旧过期，Unix unlink 不受
+    /// 打开句柄阻挡。**必须经 [`State::set_file`]/[`State::clear_file`]
+    /// 与 `file` 同步替换**（单点收敛，杜绝句柄/守卫漂移）。下划线前缀：
+    /// 本体只在 Drop 路径起作用（注销注册表），无读取点。
+    _guard: Option<nemesis_utils::active_files::ActiveFile>,
     /// 当前打开文件对应的日期（None = 未打开；下次写入必先 open）。
     open_date: Option<NaiveDate>,
     /// 连续写失败计数（成功即清零）。
@@ -49,6 +57,20 @@ struct State {
     last_warn: Option<Instant>,
     /// 失败/降级期间丢弃的写入调用数（≈事件条数，恢复标记行上报）。
     dropped: u64,
+}
+
+impl State {
+    /// file 与守卫成对赋值（唯一合法的句柄安装点）。
+    fn set_file(&mut self, f: std::fs::File, path: &std::path::Path) {
+        self.file = Some(f);
+        self._guard = Some(nemesis_utils::active_files::ActiveFile::acquire(path));
+    }
+
+    /// file 与守卫成对清空（轮转预清 / 写失败自愈入口共用）。
+    fn clear_file(&mut self) {
+        self.file = None;
+        self._guard = None;
+    }
 }
 
 /// 带自恢复的按天滚动日志 writer。实现 [`MakeWriter`]，可直接喂给
@@ -81,6 +103,7 @@ impl ResilientRollingWriter {
             retry_interval,
             state: Mutex::new(State {
                 file: None,
+                _guard: None,
                 open_date: None,
                 consecutive_fails: 0,
                 degraded_since: None,
@@ -150,7 +173,7 @@ impl ResilientRollingWriter {
                 Ok(f) => {
                     let since = st.degraded_since.take().expect("checked above");
                     let dropped = st.dropped;
-                    st.file = Some(f);
+                    st.set_file(f, &self.file_path_for(today));
                     st.open_date = Some(today);
                     st.consecutive_fails = 0;
                     st.dropped = 0;
@@ -193,10 +216,10 @@ impl ResilientRollingWriter {
 
         // 正常态：日期轮转检查（首次打开 / 跨天）。
         if st.open_date != Some(today) {
-            st.file = None;
+            st.clear_file(); // 旧日期守卫随句柄一并注销
             match self.open_and_repair(today) {
                 Ok(f) => {
-                    st.file = Some(f);
+                    st.set_file(f, &self.file_path_for(today));
                     st.open_date = Some(today);
                 }
                 Err(e) => {
@@ -215,7 +238,7 @@ impl ResilientRollingWriter {
             }
             Err(e) => {
                 // 失败即关句柄：下次写入强制 reopen（自愈入口）。
-                st.file = None;
+                st.clear_file();
                 st.open_date = None;
                 self.record_failure(&mut st, today, &e);
             }
@@ -287,3 +310,6 @@ impl Write for ResilientRollingWriter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

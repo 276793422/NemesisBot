@@ -161,7 +161,24 @@ fn agt_audit_writer_roundtrip_dir_fail_and_no_workspace() {
     assert!(a.file.is_some(), "valid workspace must open audit file");
     a.frame(b"I", b"hello");
     a.frame(b"O", b"out-bytes");
+    // BUG-20261126-112 活跃守卫：句柄开着 = 路径在册（logs_sweeper
+    // terminal TTL 删除前跳过的依据；sweeper 侧语义由 logs_sweeper
+    // tests 锁，这里锁 pty 侧注册/注销对称性）。
+    let audit_path = std::fs::read_dir(dir.path().join("logs").join("terminal"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(
+        nemesis_utils::active_files::is_active(&audit_path),
+        "审计文件打开期间必须在活跃守卫在册"
+    );
     drop(a);
+    assert!(
+        !nemesis_utils::active_files::is_active(&audit_path),
+        "句柄退场守卫必须注销"
+    );
     let term = std::fs::read_dir(dir.path().join("logs").join("terminal"))
         .expect("audit dir created")
         .count();

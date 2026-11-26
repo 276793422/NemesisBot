@@ -21,6 +21,10 @@ pub mod child_decode;
 pub mod degraded;
 pub mod file;
 pub mod fsutil;
+// 进程内活跃文件注册表（BUG-20261126-112）：「文件打开 ⇒ 路径在册」守卫
+// ——mtime TTL 清扫对活着但静默的长驻 append 句柄文件（B4 tee / PTY 审计）
+// 删除前跳过；Unix unlink 不受打开句柄阻挡，注册表是跨平台单一真相源。
+pub mod active_files;
 // TCP accept 循环韧性退避（BUG-20261122-019）：瞬态/资源耗尽/未知三分诊
 // + 差异化退避——家族正解先例 nemesis-guest::serve_tcp 收敛为共享 API。
 pub mod accept_retry;

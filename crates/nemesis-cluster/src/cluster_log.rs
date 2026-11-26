@@ -38,6 +38,14 @@ pub struct ClusterLogInner {
     log_dir: PathBuf,
     current_date: String,
     file: Option<File>,
+    /// 活跃守卫（BUG-20261126-112 横向面）：句柄开着 = 路径在册，
+    /// logs_sweeper 的 ClusterLogs 族 TTL（默认 14 天）删除根下
+    /// `cluster_{date}.log` legacy 每日事件流前查
+    /// [`nemesis_utils::active_files::is_active`] 跳过——无集群活动的
+    /// gateway（14 天零条目）文件 mtime 照旧过期，Unix unlink 不受打开
+    /// 句柄阻挡。轮转/打开失败清空时随句柄一并注销。下划线前缀：
+    /// 本体只在 Drop 路径起作用（注销注册表），无读取点。
+    _guard: Option<nemesis_utils::active_files::ActiveFile>,
 }
 
 impl ClusterLogWriter {
@@ -47,6 +55,7 @@ impl ClusterLogWriter {
                 log_dir,
                 current_date: String::new(),
                 file: None,
+                _guard: None,
             }),
         }
     }
@@ -95,6 +104,7 @@ impl ClusterLogWriter {
             match OpenOptions::new().create(true).append(true).open(&path) {
                 Ok(f) => {
                     inner.file = Some(f);
+                    inner._guard = Some(nemesis_utils::active_files::ActiveFile::acquire(path));
                     inner.current_date = date_str.clone();
                 }
                 Err(e) => {
@@ -104,6 +114,7 @@ impl ClusterLogWriter {
                         "[ClusterLog] Failed to open log file (will retry on next entry)"
                     );
                     inner.file = None;
+                    inner._guard = None;
                     return;
                 }
             }

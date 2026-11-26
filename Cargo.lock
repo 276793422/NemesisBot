@@ -4373,6 +4373,7 @@ name = "nemesis-logger"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "nemesis-utils",
  "parking_lot",
  "serde",
  "serde_json",

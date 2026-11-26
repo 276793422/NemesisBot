@@ -464,6 +464,13 @@ fn sweep_family(
                 continue;
             }
         }
+        // 活跃守卫在册（BUG-20261126-112，nemesis_utils::active_files）=
+        // 有写入方仍持 append 句柄（当前注册族：PTY 审计日志）：Unix
+        // unlink 不受打开句柄阻挡，删了会把后续写入引进已断链 inode。
+        // 跳过留给句柄退场后的下拍（拼写漂移退化为 miss = 保守方向）。
+        if nemesis_utils::active_files::is_active(&path) {
+            continue;
+        }
         let size = meta.len();
         match nemesis_utils::fsutil::remove_file_retry(&path) {
             Ok(()) => {
@@ -571,6 +578,12 @@ fn sweep_two_level(dir: &Path, ttl_days: u64, now: SystemTime, family: Family) -
                     continue;
                 };
                 if !is_expired(mtime, ttl_days, now) {
+                    continue;
+                }
+                // 活跃守卫在册（BUG-20261126-112）：cluster_log.rs 持常驻
+                // 句柄（按日轮换，跨日零条目时 mtime 照旧过期），Unix
+                // unlink 不受打开句柄阻挡——跳过留给句柄退场后的下拍。
+                if nemesis_utils::active_files::is_active(&parent) {
                     continue;
                 }
                 let size = meta.len();

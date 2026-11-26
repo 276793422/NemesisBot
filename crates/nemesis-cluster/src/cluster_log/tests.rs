@@ -33,6 +33,35 @@ fn test_cluster_log_writer_basic() {
     let _ = fs::remove_dir_all(log_dir);
 }
 
+// BUG-20261126-112 横向面：句柄开着 = 路径在册（logs_sweeper ClusterLogs
+// 族 14d TTL 删除根下 legacy 每日事件流前跳过的依据）；writer 退场守卫
+// 注销，恢复可清扫。
+#[test]
+fn test_cluster_log_writer_active_guard_registration() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+    let writer = ClusterLogWriter::new(log_dir.to_path_buf());
+
+    writer.write_entry("guard_probe", serde_json::json!({"msg": "probe"}));
+
+    let now = chrono::Local::now();
+    let date_str = now.format("%Y-%m-%d").to_string();
+    let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+    assert!(log_file.exists(), "Log file should be created");
+    assert!(
+        nemesis_utils::active_files::is_active(&log_file),
+        "句柄开着 = 路径在册（Unix unlink 不受打开句柄阻挡的防护）"
+    );
+
+    drop(writer);
+    assert!(
+        !nemesis_utils::active_files::is_active(&log_file),
+        "writer 退场守卫必须注销"
+    );
+
+    let _ = fs::remove_dir_all(log_dir);
+}
+
 // Test multiple writes append to file
 #[test]
 fn test_cluster_log_writer_multiple_entries() {

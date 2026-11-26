@@ -223,11 +223,18 @@ pub(crate) fn utf8_safe_len(chunk: &[u8]) -> usize {
 /// - **不删文件**：条目移除 / kill / 注册表 Drop 均不删——盘上日志是档案
 ///   （gateway 重启杀全部 job 时文件保留已产出内容，本机制的意义所在）。
 ///   唯一保留面 = 7 天 TTL 清扫（BUG-20261123-005，[`sweep_expired_tee_logs`]：
-///   与 uploads / task_result / chat_log spill 同惯例；kill/Drop 语义不变）。
+///   与 uploads / task_result / chat_log spill 同惯例；kill/Drop 语义不变；
+///   活跃守卫在册的镜像跳过——见 [`sweep_expired_tee_logs`] 文档）。
 pub(crate) struct TeeFile {
     file: std::sync::Mutex<std::fs::File>,
     path: PathBuf,
     warn_once: AtomicBool,
+    /// 活跃守卫（BUG-20261126-112）：句柄开着 = 路径在册。TTL 清扫删除前
+    /// 检查 [`nemesis_utils::active_files::is_active`]，静默超龄任务（无
+    /// 输出 → mtime 停在最后 append）的活跃镜像不被误删——Unix unlink
+    /// 不受打开句柄阻挡，Windows sharing-violation 只是平台巧合。守卫随
+    /// 本结构体退场（Arc<TeeFile> 最后一个 pump 退出）注销，此后恢复可清扫。
+    _active: nemesis_utils::active_files::ActiveFile,
 }
 
 impl TeeFile {
@@ -268,8 +275,9 @@ impl TeeFile {
         let _ = writeln!(file);
         Ok(Self {
             file: std::sync::Mutex::new(file),
-            path,
+            path: path.clone(),
             warn_once: AtomicBool::new(false),
+            _active: nemesis_utils::active_files::ActiveFile::acquire(path),
         })
     }
 
@@ -306,10 +314,16 @@ const TEE_LOG_RETENTION_DAYS: u64 = 7;
 
 /// Tee 镜像日志 7 天 TTL 清扫（BUG-20261123-005）。只认 `bg_*.log`
 /// 命名（专用目录 + 模式守卫双保险，外来文件不动）；mtime < cutoff
-/// 判过期——活跃任务的镜像每次 append 都 flush，mtime 恒新鲜，不会被
-/// 误删（7 天长跑任务才可能撞上，届时 Windows 上打开中的句柄也会让
-/// remove 失败跳过）。清扫是家务不是正确性路径：单文件失败 warn 后
-/// 继续，目录缺席/不可读 = 无可清扫返回 0。
+/// 判过期。**活跃保护**（BUG-20261126-112）：删除前查
+/// [`nemesis_utils::active_files::is_active`]，守卫在册 = 句柄仍开着
+/// （活着但静默的任务——7 天无输出 mtime 照旧过期，append 恒新鲜
+/// 的假设只对有输出的任务成立）——跳过不删。Unix unlink 不受打开
+/// 句柄阻挡，删了会把后续 append 引进已断链 inode（档案静默丢失 +
+/// `log_path` 悬空）；Windows sharing-violation 只是平台巧合不是
+/// 保护，注册表守卫才是跨平台单一真相源。句柄退场（任务结束，
+/// pump 管道 EOF）后守卫注销，镜像恢复常规 TTL 判定。清扫是家务
+/// 不是正确性路径：单文件失败 warn 后继续，目录缺席/不可读 =
+/// 无可清扫返回 0。
 ///
 /// **挂载点 = [`TeeFile::create`]（pay-as-you-go）**：每个新后台任务
 /// 创建镜像时顺带清扫超龄档案——启动期单点清扫（task_result_store
@@ -349,6 +363,11 @@ fn sweep_expired_tee_logs(dir: &Path, retention_days: u64) -> usize {
             .map(|mt| mt < cutoff)
             .unwrap_or(false);
         if expired {
+            // 活跃守卫在册（BUG-20261126-112）= 句柄仍开着：跳过留给
+            // 句柄退场后的后续轮次（Unix unlink 不受打开句柄阻挡）。
+            if nemesis_utils::active_files::is_active(&path) {
+                continue;
+            }
             // fsutil 韧性删除（Windows AV/索引器瞬时句柄是常态，裸
             // remove_file 会把家务失败放大成 warn 噪声；重试耗尽仍失败
             // 才返回 false——留给下个任务启动再试）。

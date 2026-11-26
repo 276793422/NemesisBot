@@ -287,6 +287,51 @@ fn half_expired_sweep_keeps_fresh_deletes_old() {
 }
 
 #[test]
+fn terminal_active_guard_skips_live_audit_handle() {
+    // BUG-20261126-112 横向面回归锁：PTY 审计日志在连接生命周期内持
+    // append 句柄（活跃守卫在册）；7 天静默会话的 mtime 早过期——Unix
+    // unlink 不受打开句柄阻挡，删了会把后续写入引进已断链 inode。守卫
+    // 注销后恢复常规 TTL 判定。
+    let ws = tempfile::tempdir().unwrap();
+    let term = ws.path().join("logs").join("terminal");
+    std::fs::create_dir_all(&term).unwrap();
+    let audit = term.join("pty_1.log");
+    std::fs::write(&audit, "io").unwrap();
+    let guard = nemesis_utils::active_files::ActiveFile::acquire(audit.clone());
+
+    let ttl = LogsTtl::default();
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &ttl,
+        SystemTime::now() + Duration::from_secs(8 * 86400),
+    );
+    let terminal = stats
+        .iter()
+        .find(|(f, _)| f.name() == "terminal")
+        .unwrap()
+        .1;
+    assert_eq!(
+        terminal.deleted, 0,
+        "活跃守卫在册：超龄审计日志跳过不删，{stats:?}"
+    );
+    assert_eq!(names(&term), vec!["pty_1.log"]);
+
+    drop(guard);
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &ttl,
+        SystemTime::now() + Duration::from_secs(8 * 86400),
+    );
+    let terminal = stats
+        .iter()
+        .find(|(f, _)| f.name() == "terminal")
+        .unwrap()
+        .1;
+    assert_eq!(terminal.deleted, 1, "守卫注销：恢复常规 TTL 判定");
+    assert_eq!(names(&term), Vec::<String>::new());
+}
+
+#[test]
 fn session_meta_sidecar_pairs_with_body_deletion() {
     let ws = tempfile::tempdir().unwrap();
     let sl = ws.path().join("logs").join("session_logs");
@@ -482,6 +527,54 @@ fn cluster_logs_two_level_sweeps_task_dirs_and_empty_devices() {
         Vec::<String>::new(),
         "空壳设备目录摘除（内容口径）"
     );
+}
+
+#[test]
+fn cluster_legacy_daily_log_active_guard_skips_live_handle() {
+    // BUG-20261126-112 横向面回归锁：cluster_log.rs 持常驻句柄（按日轮换
+    // 只建不删），ClusterLogs 族 14d TTL 删根下 legacy 每日事件流前查
+    // active_files 跳过——静默 gateway（14 天零集群条目）mtime 照旧过期，
+    // Unix unlink 不受打开句柄阻挡。守卫注销后恢复可清扫。
+    let ws = tempfile::tempdir().unwrap();
+    let cl = ws.path().join("logs").join("cluster_logs");
+    std::fs::create_dir_all(&cl).unwrap();
+    let legacy = cl.join("cluster_2026-11-01.log");
+    std::fs::write(
+        &legacy, "{}
+",
+    )
+    .unwrap();
+    let guard = nemesis_utils::active_files::ActiveFile::acquire(legacy.clone());
+
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(20 * 86400),
+    );
+    let cl_stats = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(
+        cl_stats.deleted, 0,
+        "活跃守卫在册：超龄 legacy 日志跳过不删，{stats:?}"
+    );
+    assert!(legacy.exists());
+
+    drop(guard);
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(20 * 86400),
+    );
+    let cl_stats = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(cl_stats.deleted, 1, "守卫注销：恢复常规 TTL 判定");
+    assert!(!legacy.exists());
 }
 
 // —— gateway / eval：2026-11-06 横扫补族 ——

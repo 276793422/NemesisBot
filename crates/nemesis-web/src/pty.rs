@@ -263,18 +263,29 @@ enum Control {
 /// 审计文件句柄（None = 无 workspace，审计缺席 + 启动时 warn）。
 struct AuditWriter {
     file: Option<std::fs::File>,
+    /// 活跃守卫（BUG-20261126-112）：连接生命周期内句柄常开 = 路径在册，
+    /// logs_sweeper 的 terminal TTL 清扫（7 天）删除前查
+    /// [`nemesis_utils::active_files::is_active`] 跳过——静默会话的审计
+    /// 日志 mtime 早过期，Unix unlink 不受打开句柄阻挡。随结构体退场注销。
+    _active: Option<nemesis_utils::active_files::ActiveFile>,
 }
 
 impl AuditWriter {
     fn open(workspace: Option<&str>, shell: &str, conn_id: u64) -> Self {
         let Some(ws) = workspace else {
             tracing::warn!("[Pty] session {conn_id} opened without workspace — audit disabled");
-            return Self { file: None };
+            return Self {
+                file: None,
+                _active: None,
+            };
         };
         let dir = PathBuf::from(ws).join("logs").join("terminal");
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!("[Pty] audit dir create failed: {e}");
-            return Self { file: None };
+            return Self {
+                file: None,
+                _active: None,
+            };
         }
         let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let path = dir.join(format!("pty_{ts}_{conn_id}.log"));
@@ -291,10 +302,16 @@ impl AuditWriter {
                 chrono::Local::now().to_rfc3339()
             );
             let _ = f.write_all(header.as_bytes());
-            Self { file: Some(f) }
+            Self {
+                file: Some(f),
+                _active: Some(nemesis_utils::active_files::ActiveFile::acquire(path)),
+            }
         } else {
             tracing::warn!("[Pty] audit file open failed: {}", path.display());
-            Self { file: None }
+            Self {
+                file: None,
+                _active: None,
+            }
         }
     }
 

@@ -1462,8 +1462,13 @@ async fn adopt_exec_teeds_seed_and_forwarded_output() {
 fn make_tee_log(dir: &std::path::Path, name: &str, age_secs: u64, body: &str) {
     let path = dir.join(name);
     std::fs::write(&path, body).unwrap();
+    backdate_mtime(&path, age_secs);
+}
+
+/// 已存在文件的 mtime 回拨（同一打开-写改形态的复用点）。
+fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
     let past = std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
-    let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     f.set_modified(past).unwrap();
 }
 
@@ -1503,4 +1508,29 @@ async fn test_tee_log_sweep_missing_dir_is_noop() {
     let dir = tempfile::tempdir().expect("tempdir");
     let absent = dir.path().join("no_such_dir");
     assert_eq!(sweep_expired_tee_logs(&absent, 7), 0);
+}
+
+#[tokio::test]
+async fn test_tee_log_sweep_spares_active_job_mirror() {
+    // BUG-20261126-112 回归锁：「活着但静默」的任务（超 TTL 无输出 →
+    // mtime 停在最后 append）的活跃镜像必须被守卫跳过——mtime 恒新鲜
+    // 假设只对有输出的任务成立，Unix unlink 不受打开句柄阻挡（Windows
+    // sharing-violation 是平台巧合不是保护）。句柄退场后恢复可清扫。
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tee = TeeFile::create(dir.path(), 42, "long-running-silent-job", ".").unwrap();
+    backdate_mtime(tee.path(), 10 * 24 * 3600);
+    assert_eq!(
+        sweep_expired_tee_logs(dir.path(), 7),
+        0,
+        "活跃守卫在册：超龄镜像跳过不删"
+    );
+    assert!(tee.path().exists(), "活跃镜像保留");
+    let path = tee.path().to_path_buf();
+    drop(tee); // 等价 pump 管道 EOF：守卫注销
+    assert_eq!(
+        sweep_expired_tee_logs(dir.path(), 7),
+        1,
+        "守卫注销后超龄镜像恢复可清扫"
+    );
+    assert!(!path.exists());
 }
