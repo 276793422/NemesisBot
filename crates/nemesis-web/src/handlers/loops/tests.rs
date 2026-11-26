@@ -5,7 +5,8 @@
 //! - get：详情面（progress_log 留痕）/ 不存在诚实错；
 //! - pause/resume：状态机（仅 active 可暂停 / 仅 paused+parked 可恢复 /
 //!   留痕 progress）；
-//! - update：budget 修改（停车场解除前置）/ 无字段拒绝；
+//! - update：budget 按字段合并（部分更新保留未提及维 / 显式 0 = 设不限 /
+//!   停车场解除前置）/ 无字段拒绝；
 //! - remove：删除 + 不存在拒绝；
 //! - unknown command + commands() 清单钉死。
 //!
@@ -284,6 +285,89 @@ async fn parked_loop_resumes_then_budget_widens() {
         .unwrap()
         .unwrap();
     assert_eq!(got["budget"]["max_turns_total"].as_u64(), Some(10));
+}
+
+// BUG-20261127-020 回归钉：update 的 budget 此前是整体替换语义——部分
+// 形态（LoopsView「调预算」按钮只发 max_turns_total）经 serde default
+// 全零反序列化后整体写回，把未提及维度的预算静默清成 0=不限（墙钟/token
+// 保险丝静默拆除）。修复后按字段合并：缺席 = 保留现值，显式 0 = 刻意设
+// 不限；显式清零仍可表达（三字段全显式 0）。
+
+/// 预置三维预算（create 不带 budget = 全零，直接改状态文件补齐）。
+fn seed_full_budget(home: &Path) {
+    let loops_dir = home.join("workspace").join("loops");
+    let mut st = nemesis_loop::load_loop(&loops_dir, "L1").unwrap().unwrap();
+    st.budget.max_turns_total = 5;
+    st.budget.wall_clock_budget_secs = 3600;
+    st.budget.max_tokens = 100_000;
+    nemesis_loop::save_loop(&loops_dir, &st).unwrap();
+}
+
+async fn get_budget(ctx: &RequestContext) -> serde_json::Value {
+    LoopsHandler
+        .handle_cmd("get", Some(serde_json::json!({"id": "L1"})), ctx)
+        .await
+        .unwrap()
+        .unwrap()["budget"]
+        .clone()
+}
+
+#[tokio::test]
+async fn update_budget_partial_merges_preserves_other_dims() {
+    let home = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(home.path());
+    let _g = isolate(home.path(), SESSION_KEY);
+    create_loop(&ctx).await.unwrap();
+    seed_full_budget(home.path());
+
+    // 部分更新：只调 max_turns_total（LoopsView widenBudget 同款形态）。
+    LoopsHandler
+        .handle_cmd(
+            "update",
+            Some(serde_json::json!({"id": "L1", "budget": {"max_turns_total": 10}})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let budget = get_budget(&ctx).await;
+    assert_eq!(budget["max_turns_total"].as_u64(), Some(10));
+    assert_eq!(
+        budget["wall_clock_budget_secs"].as_u64(),
+        Some(3600),
+        "部分更新不得静默解除墙钟预算（BUG-20261127-020）"
+    );
+    assert_eq!(
+        budget["max_tokens"].as_u64(),
+        Some(100_000),
+        "部分更新不得静默解除 token 预算（BUG-20261127-020）"
+    );
+}
+
+#[tokio::test]
+async fn update_budget_explicit_zero_sets_unlimited_others_kept() {
+    let home = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(home.path());
+    let _g = isolate(home.path(), SESSION_KEY);
+    create_loop(&ctx).await.unwrap();
+    seed_full_budget(home.path());
+
+    // 显式 0 = 刻意设不限（该维生效），未提及维保留现值。
+    LoopsHandler
+        .handle_cmd(
+            "update",
+            Some(serde_json::json!(
+                {"id": "L1", "budget": {"wall_clock_budget_secs": 0}}
+            )),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let budget = get_budget(&ctx).await;
+    assert_eq!(budget["wall_clock_budget_secs"].as_u64(), Some(0));
+    assert_eq!(budget["max_turns_total"].as_u64(), Some(5));
+    assert_eq!(budget["max_tokens"].as_u64(), Some(100_000));
 }
 
 #[tokio::test]
