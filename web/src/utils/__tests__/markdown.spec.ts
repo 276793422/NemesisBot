@@ -270,6 +270,19 @@ describe('renderMarkdownHtml linkify（文件路径）', () => {
     expect(html).toContain('和')
     expect(html).toContain('都在')
   })
+
+  it('SVG 内文本不 linkify（HTML-ns anchor 塞进 SVG 不渲染=路径字样凭空消失；保留原文）', () => {
+    const html = renderMarkdownHtml(
+      '<svg><text>见 docs/总结.md 节点</text></svg>',
+    )
+    expect(html).toContain('docs/总结.md')
+    // svg 块内不得出现任何 <a（HTML 命名空间 anchor 在 SVG 里不可见）
+    const svgBlock = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'))
+    expect(svgBlock).not.toContain('<a')
+    // SVG 之外的 HTML 正文 linkify 照常
+    const html2 = renderMarkdownHtml('<svg><text>x</text></svg>\n\n正文 reports/a.md')
+    expect(paths(html2)).toEqual(['reports/a.md'])
+  })
 })
 
 // ---- 锚规范化：markdown 链接语法 [label](path) 与纯文本路径同一真相源 ----
@@ -441,5 +454,39 @@ describe('renderMarkdownHtml 锚规范化（markdown 链接收编）', () => {
     expect(paths(html)).toEqual(['x.md'])
     expect(html).toContain('>x.md</a>')
     expect(html).toContain('title="打开文件"')
+  })
+
+  // ---- SVG 命名空间（真 Chromium 实证的 TypeError 回归锁）----
+  // querySelectorAll('a[href]') 跨命名空间命中 SVG <a>；SVGElement.className
+  // 是只读 WebIDL 属性，ES module 严格模式下 `a.className = ...` 抛 TypeError
+  // （Chrome: "Cannot set property className of #<SVGElement> which has only a
+  // getter"）——jsdom 不复现抛错，本组测试钉行为契约：SVG anchor 不抛、同收
+  // 编（去 href 消灭导航面 + data-path 就位供事件委托命中）。
+
+  it('SVG anchor scheme-less 路径 href 同样收编且不抛（className 赋值命名空间安全）', () => {
+    const html = renderMarkdownHtml(
+      '<svg><a href="docs/x.md"><text>流程图节点</text></a></svg>',
+    )
+    expect(paths(html)).toEqual(['docs/x.md'])
+    expect(html).not.toContain('href=')
+    expect(html).toContain('class="file-link"')
+    expect(html).toContain('流程图节点')
+  })
+
+  it('SVG anchor https href 补 target 不抛', () => {
+    const html = renderMarkdownHtml(
+      '<svg><a href="https://example.com"><text>外链</text></a></svg>',
+    )
+    expect(html).toContain('href="https://example.com"')
+    expect(html).toContain('target="_blank"')
+    expect(html).not.toContain('file-link')
+  })
+
+  it('SVG anchor 非 linkable href（裸词）解包不抛', () => {
+    const html = renderMarkdownHtml(
+      '<svg><a href="word"><text>标签</text></a></svg>',
+    )
+    expect(html).not.toContain('href=')
+    expect(html).toContain('标签')
   })
 })

@@ -261,6 +261,11 @@ export function linkifyFilePaths(html: string): string {
     const t = walker.currentNode as Text
     const parent = t.parentElement
     if (!parent || parent.closest('a, pre')) continue
+    // 外来内容（SVG 等）文本不 linkify：本函数产出的 <a> 是 HTML 命名空间
+    // 元素，塞进 SVG 子树不渲染（SVG 只认自身命名空间的 <a>）——路径 token
+    // 视觉上凭空消失。SVG 图（模型常画流程图/架构图）内的路径字样保留原
+    // 文本最诚实；SVG 内链接收编归 normalizeAnchors 的命名空间安全臂。
+    if (parent.namespaceURI && parent.namespaceURI !== 'http://www.w3.org/1999/xhtml') continue
     if (PATH_TOKEN_TEST_RE.test(t.data)) targets.push(t)
   }
   for (const t of targets) replacePathTokensIn(t)
@@ -319,13 +324,21 @@ function normalizeAnchors(html: string): string {
     const stripped = decoded.replace(HREF_LINE_SUFFIX_RE, '')
     if (stripped && isLinkablePath(stripped)) {
       // 本地路径形态：收编进 file-link 通道（与纯文本 arm 同一真相源）。
+      // 属性写入一律 setAttribute：querySelectorAll('a[href]') 跨命名空间
+      // 命中 SVG 的 <a>（CSS 类型选择器不限命名空间），而 SVGElement.className
+      // 是只读 WebIDL 属性（SVGAnimatedString getter）——ES module 严格模式下
+      // `a.className = ...` 抛 TypeError（真 Chromium 实证），7/9 消费方无
+      // try/catch 兜底，一条 SVG 图即打崩整个视图。setAttribute 对 HTML/SVG
+      // 通用，SVG anchor 同样被收编（去 href 消灭导航面 + data-path 供
+      // ChatPanel 事件委托 closest('a.file-link') 命中——类型/class 选择器
+      // 同样跨命名空间匹配）。
       a.removeAttribute('href')
-      a.className = 'file-link'
-      a.dataset.path = stripped
+      a.setAttribute('class', 'file-link')
+      a.setAttribute('data-path', stripped)
       // 空标签（`[](x.md)`）转换后零可见文本=隐形不可点；与纯文本 arm
       // 的 textContent = tok 同源回填路径文本。
       if (!a.textContent?.trim()) a.textContent = stripped
-      a.title = '打开文件'
+      a.setAttribute('title', '打开文件')
     } else {
       // 其余 scheme-less（//、裸词、未知协议、坏编码）：解包消灭导航面。
       unwrapAnchor(a)
