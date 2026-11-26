@@ -259,7 +259,7 @@ impl BoardStore {
                 acceptance_criteria, origin_type, origin_id, origin_meta,
                 required_role, required_tags, required_profession, required_capabilities,
                 required_backend, requires_evidence, quality, unattended, milestone, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?27)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
             params![
                 number,
                 new.title,
@@ -295,6 +295,7 @@ impl BoardStore {
                 new.unattended.map(|b| b as i64),
                 new.milestone as i64,
                 now,
+                now, // updated_at（BUG-20261126-136：此前错引 ?27 复用 created_at 槽位）
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -2057,7 +2058,7 @@ impl BoardStore {
         conn.execute(
             "INSERT INTO board_touchpoints
                 (issue_id, project_id, kind, status, deadline_ms, payload, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?6)",
+             VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7)",
             params![
                 new.issue_id,
                 new.project_id,
@@ -2065,6 +2066,7 @@ impl BoardStore {
                 new.deadline_ms,
                 new.payload,
                 now,
+                now, // updated_at（BUG-20261126-136 同族：此前错引 ?6 复用 created_at 槽位）
             ],
         )
         .map_err(|e| format!("create_touchpoint: {e}"))?;
@@ -3403,7 +3405,7 @@ impl BoardStore {
         conn.execute(
             "INSERT INTO autopilot
              (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, session_key, mode, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 n.name,
                 n.cron,
@@ -3418,6 +3420,7 @@ impl BoardStore {
                 n.session_key.as_deref().unwrap_or(""),
                 mode,
                 now,
+                now, // updated_at（BUG-20261126-136 同族：此前错引 ?13 复用 created_at 槽位）
             ],
         )
         .map_err(|e| format!("create_autopilot: {e}"))?;

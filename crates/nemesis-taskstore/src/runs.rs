@@ -85,7 +85,7 @@ impl TaskDb {
             conn.execute(
                 "INSERT INTO runs (id, kind, title, status, action, peer_id, payload, \
                  created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?7)",
+                 VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?7, ?8)",
                 params![
                     id,
                     run.kind,
@@ -94,6 +94,7 @@ impl TaskDb {
                     run.peer_id,
                     run.payload.to_string(),
                     now_rfc3339(),
+                    now_rfc3339(), // updated_at（BUG-20261126-136 同族：此前错引 ?7 复用 created_at 槽位）
                 ],
             )
             .map_err(|e| format!("tasks.db insert run failed: {e}"))?;
