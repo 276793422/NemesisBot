@@ -2101,3 +2101,27 @@ fn test_loop_subcommand_primary_name_is_loop_with_loops_alias() {
     // 反向锚点：裸变体派生名不得作为主名回流。
     assert_ne!(loops_cmd.get_name(), "Loops");
 }
+
+/// BUG-20261126-135 回归锁：`take_bare_launch_flag` 消费即焚语义——
+/// 标记在 env 时 take=true 并焚毁；再 take=false；env 干净时 take=false。
+/// 焚毁是修的关键半边：只读不焚时标记常驻 gateway env 被子进程继承
+/// （shell 工具 sanitize 黑名单只剥凭据后缀族），双击直启 gateway 常驻
+/// 期间 spawn 的无参 `nemesisbot`（Gateway 语义）会继承标记误弹
+/// Dashboard，违反「显式 gateway = server 语义不弹窗」契约。
+#[test]
+fn test_take_bare_launch_flag_consumes_env_marker() {
+    // 独立 env 键；用 GLOBAL_STATE_LOCK 串行防同进程其他 env 测试竞速。
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe { std::env::remove_var(common::BARE_LAUNCH_ENV) };
+
+    // env 干净：不弹窗，不报错。
+    assert!(!common::take_bare_launch_flag());
+
+    // 标记在：take=true 且 env 被焚。
+    unsafe { std::env::set_var(common::BARE_LAUNCH_ENV, "1") };
+    assert!(common::take_bare_launch_flag());
+    unsafe { assert!(std::env::var(common::BARE_LAUNCH_ENV).is_err()) };
+
+    // 焚毁后再 take=false（后代继承链已断）。
+    assert!(!common::take_bare_launch_flag());
+}
