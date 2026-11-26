@@ -566,12 +566,10 @@ fn last_time_rank(e: &serde_json::Value) -> i64 {
 
 /// 会话列表「最近活跃优先」全序比较（scan_session_logs 与
 /// logs.session_list 收尾重排共用，BUG-20261116-011；sessions.list 后端
-/// 收尾也用它——BUG-20261118-168）：lastTime 解析序 desc + id 字典序
+/// 收尾也用它——BUG-20261118-168；MCP `sessions_list` 工具截断前重排
+/// 同源——BUG-20261126-117）：lastTime 解析序 desc + id 字典序
 /// asc 破平——全键有序 = 跨平台逐位一致。
-pub(crate) fn session_recency_cmp(
-    a: &serde_json::Value,
-    b: &serde_json::Value,
-) -> std::cmp::Ordering {
+pub fn session_recency_cmp(a: &serde_json::Value, b: &serde_json::Value) -> std::cmp::Ordering {
     last_time_rank(b)
         .cmp(&last_time_rank(a))
         .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
