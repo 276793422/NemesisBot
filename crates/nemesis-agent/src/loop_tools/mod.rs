@@ -211,6 +211,13 @@ mod present_files_tests;
 #[cfg(test)]
 mod multiedit_tests;
 
+// （R3123 / BUG-20261127-039）写族工具 preview kind 的路径解析同源回归：
+// write_file / edit_file(append) 的存在性判定经边界解析（相对路径不再
+// 对照进程 CWD 误报 Create → checkpoint 基线漏捕 → rewind 整删）+
+// checkpoint 级还原闭环锁。
+#[cfg(test)]
+mod fs_preview_kind_tests;
+
 // read_file 二进制/PDF 分支——非 UTF-8 按 magic byte 分类
 // 诚实摘要（png vision 提示 / pdf 诚实说明 / exe·无 magic 报字节数），
 // 文本路径字节不变。

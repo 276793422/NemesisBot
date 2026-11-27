@@ -473,7 +473,18 @@ impl Tool for WriteFileTool {
 
     fn preview(&self, args: &str) -> Option<FileChange> {
         let (path, _content) = extract_path_and_content(args).ok()?;
-        let kind = if Path::new(&path).exists() {
+        // BUG-20261127-039：kind 的存在性判定必须与 execute 同源——相对
+        // 路径先经边界解析到实际写入落点再 `exists()`。此前直接对裸 args
+        // 路径判定，相对路径对照的是进程 CWD（gateway 启动目录 ≠ 工作区），
+        // 工作区已有文件被系统性误报 Create → checkpoint 基线内容漏捕
+        // （快照按 Create 语义记 content=None，不读现盘）→ rewind 落删除
+        // 臂把文件整删而非还原上一版（JSON 形态无影子 tree，前向内容不
+        // 可恢复）。围栏必拒的路径返回 None（调用不会执行，无从基线）。
+        let resolved = match &self.boundary {
+            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete).ok()?,
+            None => PathBuf::from(&path),
+        };
+        let kind = if resolved.exists() {
             FileChangeKind::Modify
         } else {
             FileChangeKind::Create
@@ -810,8 +821,15 @@ impl Tool for EditFileTool {
         let path = val.get("path")?.as_str()?.to_string();
         let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("edit");
         let kind = if action == "append" {
-            // append 分支允许目标不存在（create=true），按存在性如实申报。
-            if Path::new(&path).exists() {
+            // BUG-20261127-039 同族：append 的存在性判定与 execute_append
+            // 同源——先按边界解析到实际落点再 `exists()`（此前裸路径对照
+            // 进程 CWD，相对路径指向的工作区已有文件被系统性误报 Create
+            // → checkpoint 基线漏捕 → rewind 整删）。围栏必拒 = None。
+            let resolved = match &self.boundary {
+                Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete).ok()?,
+                None => PathBuf::from(&path),
+            };
+            if resolved.exists() {
                 FileChangeKind::Modify
             } else {
                 FileChangeKind::Create
