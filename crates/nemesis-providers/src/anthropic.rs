@@ -378,8 +378,13 @@ impl AnthropicProvider {
         // caching 是手动断点语义，无断点 = 零缓存命中（长 system prompt +
         // 大工具清单每轮全价重算）。开启时在两个稳定前缀的尾部各放一个
         // ephemeral 断点：tools 清单尾 + system 尾（官方推荐顺序 tools →
-        // system → messages；messages 区变动频繁，不打断点）。缺省关 =
-        // 本分支整体不进，请求体字节与现网一致（回归锁测试钉死）。
+        // system → messages）。messages 区刻意不打断点——不只是「变动频繁」：
+        // agent 侧每轮在最新 user 消息前重注 ephemeral 动态快照
+        // （build_messages merged digest），快照位随历史增长逐轮前移，消息
+        // 区任何断点标记的前缀在下一轮请求里都不再是前缀（cache 写 1.25x
+        // 买零命中，净亏损）。消息区增量缓存的前提是把动态注入持久化进
+        // 历史（结构级改动，未做）。缺省关 = 本分支整体不进，请求体字节
+        // 与现网一致（回归锁测试钉死）。
         if self.config.cache_breakpoints {
             // S15（2026-11-06）：cache 断点闲置预警——上一请求距今超过
             // ephemeral TTL（300s）时本轮断点命中预期失效（重建按

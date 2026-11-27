@@ -306,12 +306,25 @@ impl AgentLoop {
     /// Build the LLM message list from the instance conversation history.
     ///
     /// Injects an ephemeral "# Current Time / # Environment" system message
-    /// immediately before the latest user message. The historical prefix (system
-    /// prompt + earlier turns) stays byte-identical across requests, preserving
-    /// prompt-cache hits; only the trailing user message and the dynamic marker
-    /// are billed at the cache-miss rate. The platform/shell hint steers the
-    /// model away from interactive commands that hang the exec tool (e.g. bare
-    /// Windows `date` vs `date /t`) — small-model-tool-robustness plan.
+    /// immediately before the latest user message. The prefix through the
+    /// pre-digest history stays byte-identical across requests and turns, so
+    /// provider prefix caches always cover [system + history up to the digest
+    /// slot]. Honest cross-turn cost shape: the digest slot MOVES FORWARD as
+    /// history grows, so the whole previous turn's exchange (user message +
+    /// assistant tool calls + tool results) sits after the divergence point
+    /// and re-bills uncached once on the following turn; from the turn after
+    /// that it lives inside the shared prefix and is cached. Within a turn,
+    /// every iteration shares [prefix + digest + last user message]
+    /// (minute-stable digest, steer relocation aside), so tool-loop
+    /// iterations only miss on genuinely new content. This is the local
+    /// optimum for an UNPERSISTED injection: persisting the digest would
+    /// extend the cached prefix by the full previous turn, at the cost of
+    /// polluting session files/replay/UI (deliberate non-goal); end-of-array
+    /// placement trades the digest out of the within-turn shared prefix for
+    /// one extra cached message cross-turn (equivalent-or-worse). The
+    /// platform/shell hint steers the model away from interactive commands
+    /// that hang the exec tool (e.g. bare Windows `date` vs `date /t`) —
+    /// small-model-tool-robustness plan.
     ///
     /// .1 (sixth batch): `memory_hits` (caller-side async prefetch — search
     /// is async, this fn is sync) renders a `# Memory Context` section into
