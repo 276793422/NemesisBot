@@ -9584,6 +9584,129 @@ fn canonical_peer_id_case_insensitive_fallback() {
     assert_eq!(cluster.canonical_peer_id("ALEX2"), None);
 }
 
+// BUG-20261128-013：占位遮蔽防护臂与 fold 回落层的大小写口径分裂。
+// 同一节点两形态并存（单机拓扑常态：announce 永不含回环 → 静态占位
+// 按地址升级永不命中）：占位 id==name=="NODE-B"（operator 手写键）+
+// 真实条目 name=="node-b"（Linux 小写 hostname 自报；id 全小写而 name
+// 保留 COMPUTERNAME 原大小写，大小写分叉是结构性而非手误）。此时：
+// 防护臂 `p.base.name == target` 精确匹配失灵 → 占位拼写仍解析到占位
+// id；fold 层先扫到排序靠前的占位 → 大写拼写也落占位。派发账本
+// worker_id 随调用拼写漂移 = 评论作者身份失配（该函数防护注释自证
+// 的 UAT 实证形态）。修复后两拼写都必须归一到真实运行时 id。
+#[test]
+fn canonical_peer_id_case_varied_shadow_prefers_real() {
+    let cluster = Cluster::new(make_config());
+    // 占位（静态 peers 键控形态：id==name）——大写键，排序在真实条目前
+    // （'N' < 'n'，list_peers sorted (name,id) 确定序）。
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "NODE-B".into(),
+            name: "NODE-B".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "127.0.0.1:11949".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "gateway".into(),
+        build: String::new(),
+        security_level: None,
+    });
+    // 真实条目（announce 学来：uuid id + 小写 hostname 人类名）。
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-b-uuid".into(),
+            name: "node-b".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.2:11949".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+        security_level: None,
+    });
+
+    // 占位键精确拼写（get 命中占位 → 防护臂须按大小写折叠扫出真实条目）。
+    assert_eq!(
+        cluster.canonical_peer_id("NODE-B"),
+        Some("node-b-uuid".into()),
+        "占位拼写必须解析到真实 id（防护臂大小写折叠）"
+    );
+    // 混合大小写拼写（get/精确扫描双未命中 → fold 层须真实条目优先，
+    // 不落排序靠前的占位）。
+    assert_eq!(
+        cluster.canonical_peer_id("Node-B"),
+        Some("node-b-uuid".into()),
+        "fold 层占位遮蔽：真实条目优先于占位"
+    );
+    // 真实 id 直通（幂等）。
+    assert_eq!(
+        cluster.canonical_peer_id("node-b-uuid"),
+        Some("node-b-uuid".into())
+    );
+    // 真实名精确拼写（排序上真实条目在占位后，精确扫描仍须命中）。
+    assert_eq!(
+        cluster.canonical_peer_id("node-b"),
+        Some("node-b-uuid".into())
+    );
+    assert_eq!(cluster.canonical_peer_id("ghost"), None);
+}
+
+// 旧行为保留：纯静态拓扑（无真实条目）下占位是唯一可用句柄——
+// 防护注释钦定语义，折叠修复不得吞掉。
+#[test]
+fn canonical_peer_id_placeholder_only_static_topology_unchanged() {
+    let cluster = Cluster::new(make_config());
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "NODE-B".into(),
+            name: "NODE-B".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "127.0.0.1:11949".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "gateway".into(),
+        build: String::new(),
+        security_level: None,
+    });
+
+    assert_eq!(
+        cluster.canonical_peer_id("NODE-B"),
+        Some("NODE-B".into()),
+        "纯静态拓扑：占位精确键直通"
+    );
+    assert_eq!(
+        cluster.canonical_peer_id("node-b"),
+        Some("NODE-B".into()),
+        "纯静态拓扑：fold 回落仍指占位（唯一句柄）"
+    );
+}
+
 // -- peer_udp_endpoints（根修：异端口拓扑定向单播）--
 
 #[test]

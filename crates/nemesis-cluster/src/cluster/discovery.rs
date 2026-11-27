@@ -1348,14 +1348,17 @@ impl Cluster {
             // 时 id（worker 侧 `_rpc.from` 的形态），否则派发账本 worker_id
             // 落占位 id、写回评论作者身份失配（统一定义被占位击穿，
             // UAT 实证：作者落 "Node-B" 而非 node-* 运行时 id）。扫描
-            // 按 name 精确匹配、排除占位自身；无真实条目 = 维持占位 id
-            //（旧行为，纯静态拓扑下这是唯一可用句柄）。
+            // 按 name 大小写折叠匹配（BUG-20261128-013：id 生成全小写
+            // 而 name 保留 hostname 原大小写，占位键与自报名的大小写
+            // 分叉是结构性形态——精确匹配会让占位拼写继续解析到占位 id，
+            // 防护对目标拼写失灵）、排除占位自身；无真实条目 = 维持占位
+            // id（旧行为，纯静态拓扑下这是唯一可用句柄）。
             if info.base.id == info.base.name
                 && let Some(real) = self
                     .registry
                     .list_peers()
                     .into_iter()
-                    .find(|p| p.base.id != target && p.base.name == target)
+                    .find(|p| p.base.id != target && p.base.name.eq_ignore_ascii_case(target))
             {
                 return Some(real.base.id);
             }
@@ -1370,13 +1373,24 @@ impl Cluster {
                 // 大小写不敏感回落（派发目标校验前置——人读
                 // 名手工输入大小写失配是常态，文档承诺「大小写不敏感」；
                 // 精确未命中再扫一轮 ASCII 折叠，歧义（两节点仅大小写异）
-                // 取先匹配，实际拓扑不存在。
+                // 取先匹配，实际拓扑不存在。BUG-20261128-013：fold 层
+                // 须真实条目优先——占位（id==name）与真实条目同指一个
+                // 节点时，fold 命中占位会让该拼写解析到占位 id（防护臂
+                // 只护 get 命中路径，护不住 fold 路径）；纯静态拓扑无
+                // 真实条目时回落占位，旧行为保留。
                 self.registry
                     .list_peers()
                     .into_iter()
                     .find(|p| {
-                        p.base.id.eq_ignore_ascii_case(target)
-                            || p.base.name.eq_ignore_ascii_case(target)
+                        p.base.id != p.base.name
+                            && (p.base.id.eq_ignore_ascii_case(target)
+                                || p.base.name.eq_ignore_ascii_case(target))
+                    })
+                    .or_else(|| {
+                        self.registry.list_peers().into_iter().find(|p| {
+                            p.base.id.eq_ignore_ascii_case(target)
+                                || p.base.name.eq_ignore_ascii_case(target)
+                        })
                     })
                     .map(|p| p.base.id)
             })
