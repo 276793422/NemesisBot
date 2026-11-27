@@ -384,6 +384,47 @@ fn agt_parse_cluster_dir_name_none_and_sorted_files_missing_dir() {
     assert!(empty.is_empty());
 }
 
+// BUG-20261127-032：同前缀 tie 组内按文件名排序（副键）。旧实现
+// sort_by_key 只按数字前缀（stable），tie 组保持 read_dir 返回序——
+// NTFS 字典序恰合写序、ext4 哈希序可任意翻转 → parse_request_iterations
+// 的 response/Local 挂靠错配（Response.raw 先于 Request.raw 被消费时
+// 挂上一迭代并覆盖其 response）。纯函数直测：对抗序输入 → 断言
+// (前缀数值, 文件名) 全序。注：Windows/NTFS 上 read_dir 本就按名字序
+// 返回，端到端红不可观测——本测试是纯函数级红绿锚点（突变
+// sort_by_key-only 即红），端到端语义由既有 parse_request_iterations
+// 用例覆盖。
+#[test]
+fn agt_sort_files_tie_breaks_by_name() {
+    let mk = |n: &str| {
+        (
+            n.split('.').next().unwrap().parse::<usize>().unwrap(),
+            n.to_string(),
+            PathBuf::from(n),
+        )
+    };
+    // 对抗序输入：idx 5 组内 Local/Response 先于 Request（ext4 哈希序
+    // 形态），idx 10 排在 idx 9 前（前缀数值序仍优先于名字序）。
+    let mut files = vec![
+        mk("05.Local.md"),
+        mk("10.AI.Response.raw.json"),
+        mk("05.AI.Response.raw.json"),
+        mk("05.AI.Request.raw.json"),
+        mk("09.AI.Response.raw.json"),
+    ];
+    sort_files_by_prefix_then_name(&mut files);
+    let names: Vec<&str> = files.iter().map(|(_, n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "05.AI.Request.raw.json",
+            "05.AI.Response.raw.json",
+            "05.Local.md",
+            "09.AI.Response.raw.json",
+            "10.AI.Response.raw.json",
+        ]
+    );
+}
+
 // BUG-20261123-033：parse 函数防穿越前置闸。ts 段被 chrono 全串严格匹配
 // 锁死，但 suffix 段此前放行——`"2026-01-01_00-00-00_../../x"` 会以更靠
 // 前的 `_` 分割让 ts 段 parse 成功、`../../x` 回传给调用方 join，相对组

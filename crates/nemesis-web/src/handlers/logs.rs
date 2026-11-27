@@ -1,4 +1,4 @@
-//! Logs handler — 9 commands for the Logs Dashboard.
+//! Logs handler — 17 commands for the Logs Dashboard.
 //!
 //! Reads from four on-disk data sources:
 //! - `request_logs/{ts}_{rand}/` (markdown + raw.json files per LLM call)
@@ -1005,8 +1005,21 @@ fn sorted_files(dir: &Path) -> Vec<PathBuf> {
             (prefix_num, name, e.path())
         })
         .collect();
-    files.sort_by_key(|(n, _, _)| *n);
+    sort_files_by_prefix_then_name(&mut files);
     files.into_iter().map(|(_, _, p)| p).collect()
+}
+
+/// BUG-20261127-032：排序键 = (数字前缀, 文件名)。此前只按数字前缀排
+/// （stable sort），同前缀 tie 组内的相对顺序留给 read_dir 返回序——
+/// 那是平台实现细节（NTFS 字典序恰合写序，ext4 哈希序可任意翻转）。
+/// 同一轮 idx 内 `AI.Request.raw.json` / `AI.Response.raw.json` /
+/// `Local.md` 的消费顺序对 [`parse_request_iterations`] 有语义：
+/// Response 先于 Request 被消费时按轮回溯不中 → 挂到上一迭代并覆盖其
+/// response；Local 先于 Request 时挂错迭代。副键=文件名，ASCII 序与
+/// 写序一致（`AI.Request.*` < `AI.Response.*` < `Local.md`），跨平台
+/// 确定性复现写序。
+fn sort_files_by_prefix_then_name(files: &mut [(usize, String, PathBuf)]) {
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 }
 
 /// Strip the `NN.` numeric prefix from a filename. Returns the rest (e.g. "AI.Request.raw.json").
