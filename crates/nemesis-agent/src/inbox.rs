@@ -170,6 +170,43 @@ pub struct QueuePeek {
     pub capacity: usize,
 }
 
+/// 等待队列选择器（2026-11-27 资源看板「等待队列」逐条删除）：与
+/// [`QueuePeek`] 两数组的键一一对应——`Steer` = next_step（⚡插队），
+/// `FollowUp` = next_turn（⏳排队）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueKind {
+    Steer,
+    FollowUp,
+}
+
+impl QueueKind {
+    /// wire 值解析（loud 拒绝未知值，不静默纠偏）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "steer" => Some(Self::Steer),
+            "follow_up" => Some(Self::FollowUp),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Steer => "steer",
+            Self::FollowUp => "follow_up",
+        }
+    }
+}
+
+/// [`Inbox::remove_entry`] 失败两态（web handler 透传诚实文案）：
+/// `NotFound` = 队列/条目不存在（已被消费、队列已清、下标越界）；
+/// `Mismatch` = 身份复核失败——peek→delete 窗口内队列已变化（条目被
+/// claim/transfer），按下标盲删会误删相邻条目，诚实拒绝让前端刷新重试。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueRemoveError {
+    NotFound,
+    Mismatch,
+}
+
 /// Sixth-batch sweep: `VecDeque` — the queues are FIFOs (push_back/pop_front);
 /// the previous `Vec` + `remove(0)` was an O(n) shift per head claim.
 #[derive(Default)]
@@ -475,6 +512,47 @@ impl Inbox {
             follow_up: q.next_turn.iter().map(&map).collect(),
             capacity: self.capacity,
         }
+    }
+
+    /// 等待队列单条摘除（2026-11-27 资源看板逐条删除）：`queue` 选队、
+    /// `index` = [`Self::peek`] 同一队列数组内的位置、`expect_sender` +
+    /// `expect_timestamp` = 快照时该条的身份（peek 行原样回传）。
+    ///
+    /// **身份复核先行**：peek→delete 窗口内条目可能被 claim/transfer 消费，
+    /// 下标随之漂移——盲删会误删相邻条目。复核不符 = [`QueueRemoveError::Mismatch`]
+    /// 诚实拒绝（前端刷新重试），不猜不将就。摘除后 [`Self::mirror_session_state`]
+    /// 写穿侧车（漏了 = 重启 hydrate 复活已删条目）。
+    ///
+    /// 返回剩余计数 `(next_turn, next_step)`（与 [`Self::pending`] 同形，
+    /// 响应即时报新队列长度）。busy 中删除合法（抢在执行前撤回是主用例）；
+    /// Mutex 保证与 claim/transfer 并发安全。
+    pub fn remove_entry(
+        &self,
+        session_key: &str,
+        queue: QueueKind,
+        index: usize,
+        expect_sender: &str,
+        expect_timestamp: &str,
+    ) -> Result<(usize, usize), QueueRemoveError> {
+        let mut all = self.queues.lock();
+        let Some(q) = all.get_mut(session_key) else {
+            return Err(QueueRemoveError::NotFound);
+        };
+        let deque = match queue {
+            QueueKind::Steer => &mut q.next_step,
+            QueueKind::FollowUp => &mut q.next_turn,
+        };
+        match deque.get(index) {
+            None => return Err(QueueRemoveError::NotFound),
+            Some(m) => {
+                if m.msg.sender_id != expect_sender || m.timestamp != expect_timestamp {
+                    return Err(QueueRemoveError::Mismatch);
+                }
+            }
+        }
+        deque.remove(index);
+        self.mirror_session_state(session_key, q);
+        Ok((q.next_turn.len(), q.next_step.len()))
     }
 
     /// （cron 合闸）：会话队列里是否已有同一 cron job 的待处

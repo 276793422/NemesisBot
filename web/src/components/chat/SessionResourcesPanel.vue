@@ -335,8 +335,15 @@ const pendingCategories = computed(() =>
 interface WqRow {
   icon: string
   kind: string
+  /** wire 队列键：'steer'（⚡插队/next_step）| 'follow_up'（⏳排队/next_turn）——
+   *  删除入参原样回传（2026-11-27 逐条删除批）。 */
+  queue: 'steer' | 'follow_up'
+  /** 本条在各自队列数组内的下标（删除寻址键）。 */
+  idx: number
   content: string
   timestamp: string
+  /** 发送者 id（删除身份复核对之一——防快照过期后下标漂移误删）。 */
+  senderId: string
   priority: string
 }
 
@@ -349,16 +356,25 @@ const wqRows = computed<WqRow[]>(() => {
   const s = waitingQueue.value?.summary ?? {}
   const steer = Array.isArray(s.steer) ? (s.steer as Record<string, unknown>[]) : []
   const follow = Array.isArray(s.follow_up) ? (s.follow_up as Record<string, unknown>[]) : []
-  const toRow = (e: Record<string, unknown>, icon: string, kind: string): WqRow => ({
+  const toRow = (
+    e: Record<string, unknown>,
+    idx: number,
+    icon: string,
+    kind: string,
+    queue: WqRow['queue'],
+  ): WqRow => ({
     icon,
     kind,
+    queue,
+    idx,
     content: typeof e.content === 'string' ? e.content : '',
     timestamp: typeof e.timestamp === 'string' ? e.timestamp : '',
+    senderId: typeof e.sender_id === 'string' ? e.sender_id : '',
     priority: typeof e.priority === 'string' ? e.priority : 'normal',
   })
   return [
-    ...steer.map(e => toRow(e, '⚡', '插队')),
-    ...follow.map(e => toRow(e, '⏳', '排队')),
+    ...steer.map((e, i) => toRow(e, i, '⚡', '插队', 'steer')),
+    ...follow.map((e, i) => toRow(e, i, '⏳', '排队', 'follow_up')),
   ]
 })
 
@@ -417,6 +433,32 @@ const wqPopStyle = computed(() => {
     top: `${Math.max(8, Math.min(h.y + 12, window.innerHeight - 240))}px`,
   }
 })
+
+/** 逐条删除（2026-11-27）：行尾 ✕ → `session.queue_remove`，随行身份
+ *  复核对（sender_id + timestamp，快照行原样回传）——快照过期（条目已被
+ *  消费/下标漂移）= 后端诚实拒绝，前端 toast + 自动重拉自愈。成功/失败
+ *  都 scheduleRefresh（成功=确认新队列序；失败=重拿新快照）。单飞锁防
+ *  双击双发。 */
+const wqDeleting = ref(false)
+async function wqDelete(row: WqRow): Promise<void> {
+  if (!props.sessionId || wqDeleting.value) return
+  wqDeleting.value = true
+  try {
+    await request('session', 'queue_remove', {
+      session_id: props.sessionId,
+      queue: row.queue,
+      index: row.idx,
+      sender_id: row.senderId,
+      timestamp: row.timestamp,
+    })
+    toast.success('已删除该条（不会执行）')
+  } catch (e: any) {
+    toast.error(`删除失败：${e?.message ?? e}`)
+  } finally {
+    wqDeleting.value = false
+    scheduleRefresh()
+  }
+}
 
 /** 资源卡流：排除执行态/在途区/identity 后的 ok 类目，order 升序。
  *  session_allow 例外：empty（未开启=常态）也渲染——开关是「状态开关」
@@ -1082,7 +1124,8 @@ function subagentElapsed(row: Record<string, unknown>): string {
       </div>
 
       <!-- 等待队列（2026-11-24）：插队/排队消息逐条可见，行 hover 弹层看
-           全文（fixed 定位逃裁剪链）；无等待 = Empty 不渲染，与执行态同机制 -->
+           全文（fixed 定位逃裁剪链）；无等待 = Empty 不渲染，与执行态同机制。
+           行尾 ✕ 逐条删除（2026-11-27）：hover 显现，点击摘除该条不执行。 -->
       <div v-if="waitingQueue" class="srp-card srp-queue">
         <div class="srp-card-head">
           <span class="srp-card-title">{{ waitingQueue.label }}</span>
@@ -1099,6 +1142,12 @@ function subagentElapsed(row: Record<string, unknown>): string {
           >
             <span class="srp-key">{{ e.icon }}</span>
             <span class="srp-wq-preview">{{ wqPreview(e.content) }}</span>
+            <button
+              class="srp-wq-del"
+              type="button"
+              title="删除此条（从队列摘除，不再执行）"
+              @click.stop="wqDelete(e)"
+            >✕</button>
           </li>
         </ul>
       </div>
@@ -1507,6 +1556,24 @@ function subagentElapsed(row: Record<string, unknown>): string {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 行尾逐条删除键（2026-11-27）：hover 显现（触屏常显可见），danger 色
+   hover 强化；点击不冒泡（行无 click 链，.stop 是双保险）。 */
+.srp-wq-del {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.srp-wq-row:hover .srp-wq-del,
+.srp-wq-del:focus-visible { opacity: 1; }
+.srp-wq-del:hover { color: var(--danger, #e5484d); background: var(--bg-secondary); }
 .srp-wq-pop {
   position: fixed;
   z-index: 500;

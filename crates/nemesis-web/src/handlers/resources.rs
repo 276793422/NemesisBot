@@ -66,6 +66,26 @@ fn session_resources() -> Option<std::sync::Arc<nemesis_types::resources::Sessio
         .clone()
 }
 
+/// data.session_id → (原始 sid, sanitize 后的安全 sid)：空 sid = legacy 键
+/// （口径地雷 2，agent.rs 特判同源）；非空过 sanitize（`:`→`_`，
+/// sessions.list 同款公式）。session_key = WEB_SESSION_KEY_PREFIX + 安全
+/// sid（两调用点各自拼装）。resources / queue_remove 两命令共用。
+fn session_key_from_data(data: Option<&serde_json::Value>) -> (String, String) {
+    let raw_sid = data
+        .and_then(|d| d.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string();
+    let safe_sid =
+        nemesis_agent::session::SessionStore::sanitize_session_id(if raw_sid.is_empty() {
+            "legacy"
+        } else {
+            &raw_sid
+        });
+    (raw_sid, safe_sid)
+}
+
 #[async_trait::async_trait]
 impl ModuleHandler for ResourcesHandler {
     fn module_name(&self) -> &str {
@@ -73,7 +93,7 @@ impl ModuleHandler for ResourcesHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["resources"]
+        &["resources", "queue_remove"]
     }
 
     async fn handle_cmd(
@@ -82,66 +102,91 @@ impl ModuleHandler for ResourcesHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        if cmd != "resources" {
+        if cmd != "resources" && cmd != "queue_remove" {
             return Err(format!("unknown session command: {cmd}"));
         }
-        let registry =
-            session_resources().ok_or_else(|| "资源盘点未装配（本网关形态未启用）".to_string())?;
-
-        let raw_sid = data
-            .as_ref()
-            .and_then(|d| d.get("session_id"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or("");
-        // 空 sid = legacy 键（口径地雷 2，agent.rs 特判同源）；非空过
-        // sanitize（`:`→`_`，sessions.list 同款公式）。
-        let safe_sid =
-            nemesis_agent::session::SessionStore::sanitize_session_id(if raw_sid.is_empty() {
-                "legacy"
-            } else {
-                raw_sid
-            });
-        let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, safe_sid);
-        let workspace = require_workspace(ctx)?.to_string();
-        let rc = ResourceCtx {
-            session_key: &session_key,
-            bare_sid: &safe_sid,
-            workspace_root: std::path::Path::new(&workspace),
-        };
-
-        // PerLoop 路由一次（非每 provider 一次）；Err（loop 未运行/项目不
-        // 可用）不炸整命令——按类目 Unavailable，原因透传诚实文案。
-        let loop_api = resolve_session_loop(ctx, &session_key).ok();
-
-        let mut categories = serde_json::Map::new();
-        for provider in registry.providers() {
-            let meta = provider.meta();
-            let view = match provider {
-                ResourceProvider::Global(p) => p.collect(&rc),
-                ResourceProvider::PerLoop(p) => match &loop_api {
-                    Some(loop_ref) => p.collect(&rc, loop_ref.as_ref()),
-                    None => CategoryView::unavailable("会话执行引擎未运行"),
-                },
-            };
-            let mut entry = serde_json::Map::new();
-            entry.insert("label".into(), json!(meta.label));
-            entry.insert("order".into(), json!(meta.order));
-            entry.insert("transient".into(), json!(meta.transient));
-            entry.insert("status".into(), json!(view.status.as_str()));
-            if let Some(reason) = view.status.unavailable_reason() {
-                entry.insert("reason".into(), json!(reason));
+        // 等待队列逐条删除（2026-11-27 资源看板删除键后端面）：不需要
+        // registry（直查 loop 的 inbox），先于 registry 检查——headless
+        // 无 registry 形态下有 loop 也应能删（诚实降级面与聚合视图解耦）。
+        if cmd == "queue_remove" {
+            let (raw_sid, safe_sid) = session_key_from_data(data.as_ref());
+            let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, safe_sid);
+            let d = data.as_ref().ok_or_else(|| "missing data".to_string())?;
+            let queue_str = d.get("queue").and_then(Value::as_str).unwrap_or("");
+            let queue = nemesis_agent::inbox::QueueKind::parse(queue_str).ok_or_else(|| {
+                format!("unknown queue: {queue_str:?} (expected \"steer\" | \"follow_up\")")
+            })?;
+            let index = d
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "missing index".to_string())? as usize;
+            // 身份复核对（快照行原样回传）：不符 = 快照过期（条目已被
+            // claim/消费、下标漂移），诚实拒绝让前端刷新重试——不猜不盲删。
+            let sender = d.get("sender_id").and_then(Value::as_str).unwrap_or("");
+            let ts = d.get("timestamp").and_then(Value::as_str).unwrap_or("");
+            let loop_api = resolve_session_loop(ctx, &session_key)?;
+            match loop_api.inbox_remove(&session_key, queue, index, sender, ts) {
+                Ok((follow_up, steer)) => Ok(Some(json!({
+                    "removed": true,
+                    "session_id": raw_sid,
+                    "session_key": session_key,
+                    "queue": queue.as_str(),
+                    "follow_up": follow_up,
+                    "steer": steer,
+                }))),
+                Err(nemesis_agent::inbox::QueueRemoveError::NotFound) => {
+                    Err("该条已不在队列（可能已被执行或清空），面板已自动刷新".to_string())
+                }
+                Err(nemesis_agent::inbox::QueueRemoveError::Mismatch) => {
+                    Err("队列已变化（该条位置已移动或已被消费），请刷新后重试".to_string())
+                }
             }
-            entry.insert("total".into(), json!(view.total));
-            entry.insert("summary".into(), view.summary);
-            categories.insert(meta.category_id.to_string(), Value::Object(entry));
-        }
+        } else {
+            let registry = session_resources()
+                .ok_or_else(|| "资源盘点未装配（本网关形态未启用）".to_string())?;
 
-        Ok(Some(json!({
-            "session_id": raw_sid,
-            "session_key": session_key,
-            "revision": ctx.state.event_hub.latest_seq(),
-            "categories": Value::Object(categories),
-        })))
+            let (raw_sid, safe_sid) = session_key_from_data(data.as_ref());
+            let session_key = format!("{}{}", WEB_SESSION_KEY_PREFIX, safe_sid);
+            let workspace = require_workspace(ctx)?.to_string();
+            let rc = ResourceCtx {
+                session_key: &session_key,
+                bare_sid: &safe_sid,
+                workspace_root: std::path::Path::new(&workspace),
+            };
+
+            // PerLoop 路由一次（非每 provider 一次）；Err（loop 未运行/项目不
+            // 可用）不炸整命令——按类目 Unavailable，原因透传诚实文案。
+            let loop_api = resolve_session_loop(ctx, &session_key).ok();
+
+            let mut categories = serde_json::Map::new();
+            for provider in registry.providers() {
+                let meta = provider.meta();
+                let view = match provider {
+                    ResourceProvider::Global(p) => p.collect(&rc),
+                    ResourceProvider::PerLoop(p) => match &loop_api {
+                        Some(loop_ref) => p.collect(&rc, loop_ref.as_ref()),
+                        None => CategoryView::unavailable("会话执行引擎未运行"),
+                    },
+                };
+                let mut entry = serde_json::Map::new();
+                entry.insert("label".into(), json!(meta.label));
+                entry.insert("order".into(), json!(meta.order));
+                entry.insert("transient".into(), json!(meta.transient));
+                entry.insert("status".into(), json!(view.status.as_str()));
+                if let Some(reason) = view.status.unavailable_reason() {
+                    entry.insert("reason".into(), json!(reason));
+                }
+                entry.insert("total".into(), json!(view.total));
+                entry.insert("summary".into(), view.summary);
+                categories.insert(meta.category_id.to_string(), Value::Object(entry));
+            }
+
+            Ok(Some(json!({
+                "session_id": raw_sid,
+                "session_key": session_key,
+                "revision": ctx.state.event_hub.latest_seq(),
+                "categories": Value::Object(categories),
+            })))
+        }
     }
 }

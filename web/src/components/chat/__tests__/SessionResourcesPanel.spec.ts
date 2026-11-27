@@ -409,6 +409,84 @@ describe('等待队列气泡（2026-11-24）', () => {
     expect(genericTitles).not.toContain('等待队列')
     w.unmount()
   })
+
+  // 逐条删除（2026-11-27）：行尾 ✕ → session.queue_remove，随行身份复
+  // 核对（sender_id + timestamp 快照行原样回传）；成功/失败都 debounce 重拉。
+  it('每行渲染 ✕ 删除钮（title 提示不再执行）', async () => {
+    const w = await mountPanel('s1', wqPayload())
+    const dels = w.findAll('.srp-wq-del')
+    expect(dels.length).toBe(3)
+    expect(dels[0].attributes('title')).toContain('不再执行')
+    w.unmount()
+  })
+
+  it('点击 ✕ 发出随行寻址载荷 + 成功 toast + 单飞防双发 + debounce 重拉', async () => {
+    vi.useFakeTimers()
+    // 受控挂起 promise：请求在途期间双击，第二次必须落单飞锁
+    // （mock 立即 resolve 的话 finally 先放锁，压不到窗口）。
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    const w = await mountPanel('s1', wqPayload(), (_mod, cmd) => {
+      if (cmd === 'queue_remove') return gate.then(() => ({}))
+      return undefined
+    })
+    const resourcesCallsBefore = requestMock.mock.calls.filter(c => c[1] === 'resources').length
+    const del0 = w.findAll('.srp-wq-row')[0].find('.srp-wq-del')
+    await del0.trigger('click')
+    await del0.trigger('click')
+    await flushPromises()
+    const qr = requestMock.mock.calls.filter(c => c[1] === 'queue_remove')
+    expect(qr.length, '单飞锁：请求在途双击只发一次').toBe(1)
+    expect(qr[0][0]).toBe('session')
+    expect(qr[0][2]).toEqual({
+      session_id: 's1', queue: 'steer', index: 0, sender_id: 'web', timestamp: '14:32:05',
+    })
+    release()
+    await flushPromises()
+    expect(toastMocks.success).toHaveBeenCalledTimes(1)
+    expect(toastMocks.error).not.toHaveBeenCalled()
+    // 成功也 debounce 400ms 重拉（确认新队列序）。
+    await vi.advanceTimersByTimeAsync(450)
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'resources').length)
+      .toBeGreaterThan(resourcesCallsBefore)
+    w.unmount()
+  })
+
+  it('follow_up 行寻址 = 组内下标（steer 数不计入）', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1', wqPayload())
+    await w.findAll('.srp-wq-row')[2].find('.srp-wq-del').trigger('click')
+    await flushPromises()
+    const qr = requestMock.mock.calls.filter(c => c[1] === 'queue_remove')
+    expect(qr[0][2]).toEqual({
+      session_id: 's1', queue: 'follow_up', index: 1, sender_id: 'web', timestamp: '14:36:00',
+    })
+    w.unmount()
+  })
+
+  it('失败（快照过期被后端拒绝）→ error toast + 仍重拉自愈', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1', wqPayload(), (_mod, cmd) => {
+      if (cmd === 'queue_remove') {
+        return Promise.reject(new Error('队列已变化（该条位置已移动或已被消费），请刷新后重试'))
+      }
+      return undefined
+    })
+    const resourcesCallsBefore = requestMock.mock.calls.filter(c => c[1] === 'resources').length
+    await w.findAll('.srp-wq-row')[0].find('.srp-wq-del').trigger('click')
+    await flushPromises()
+    expect(toastMocks.error).toHaveBeenCalledTimes(1)
+    expect(String(toastMocks.error.mock.calls[0][0])).toContain('删除失败')
+    expect(String(toastMocks.error.mock.calls[0][0])).toContain('队列已变化')
+    expect(toastMocks.success).not.toHaveBeenCalled()
+    // 失败也重拉（重拿新快照 = 自愈）。
+    await vi.advanceTimersByTimeAsync(450)
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'resources').length)
+      .toBeGreaterThan(resourcesCallsBefore)
+    w.unmount()
+  })
 })
 
 describe('C1 subagents 专用渲染', () => {
