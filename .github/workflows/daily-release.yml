@@ -458,7 +458,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p staging/share
-          cp web/public/favicon.png staging/share/icon.png
+          # favicon 随 BUG-20261127-005 自 public/ 迁入 src/assets（vite 打包资产）。
+          cp web/src/assets/favicon.png staging/share/icon.png
 
       # 骨架构建：锚（NEMESIS_BUILD_ROOT_ANCHOR）已在 GITHUB_ENV（上方 Inject
       # root anchor 步），经 nemesis-verify build.rs rerun-if-env-changed 自动
