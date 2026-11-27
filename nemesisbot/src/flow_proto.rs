@@ -72,7 +72,15 @@ pub(crate) fn safe_external_url(raw: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// 比较式拆解：最早出现位置命中，同位取最长 op（`>=` 不被 `>` 截断）；
+/// **引号感知**（BUG-20261127-041）：引号字面量内部出现的算子字符不参与
+/// 命中（`'a > b' == done` 的 `>` 不得截胡——旧实现裸 `find(op)` 会在引号
+/// 内错误位置拆分，两侧错乱后 `when` 条件步 / 对账匹配静默判错）；引号
+/// 配对语义与 `strip_quotes` 同型（成对同字符；不配对引号内全标引号态，
+/// 畸形形态诚实保持旧拆分结果）。
 /// 两侧 trim + 成对引号剥离；任一侧为空 = None（畸形，调用方诚实报错）。
+/// 已知限制（与 workflow `conditions.rs` 同口径）：**未包裹引号的值**内含
+/// 算子字符（token 渲染值 `good -> bad`）仍会在值内误拆——值替换与算子
+/// 定位无分隔符，引号包裹值是规避手段，模板文档已注。
 pub(crate) fn split_compare_expr(expr: &str) -> Option<(&str, &str, &str)> {
     fn strip_quotes(s: &str) -> &str {
         let t = s.trim();
@@ -85,10 +93,36 @@ pub(crate) fn split_compare_expr(expr: &str) -> Option<(&str, &str, &str)> {
             t
         }
     }
+    // 每字节标记：是否处于引号字面量内（含引号自身字节）。
+    let mut quoted = vec![false; expr.len()];
+    let mut open_quote: Option<char> = None;
+    for (bi, ch) in expr.char_indices() {
+        if let Some(q) = open_quote {
+            quoted[bi] = true;
+            if ch == q {
+                open_quote = None;
+            }
+        } else if ch == '"' || ch == '\'' {
+            open_quote = Some(ch);
+            quoted[bi] = true;
+        }
+    }
     const OPS: [&str; 6] = ["==", "!=", ">=", "<=", ">", "<"];
+    // 算子命中判定：op 全 ASCII（首尾字节即全部字节），任一字节在引号内
+    // 即跳过；从 pos+1 逐字节前进重找后续出现位置（pos 恒为边界，pos+1
+    // 落在 ASCII op 内部亦为边界，切片安全）。
     let hit = OPS
         .iter()
-        .filter_map(|op| expr.find(op).map(|pos| (pos, *op)))
+        .filter_map(|op| {
+            let mut from = 0usize;
+            loop {
+                let pos = expr[from..].find(op)? + from;
+                if !quoted[pos] && !quoted[pos + op.len() - 1] {
+                    break Some((pos, *op));
+                }
+                from = pos + 1;
+            }
+        })
         .min_by_key(|(pos, op)| (*pos, std::cmp::Reverse(op.len()))); // 同位时长 op（>=/>）先中
     let (pos, op) = hit?;
     let left = strip_quotes(&expr[..pos]);

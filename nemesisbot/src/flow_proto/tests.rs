@@ -69,6 +69,31 @@ fn split_compare_expr_forms() {
 }
 
 #[test]
+fn split_compare_expr_skips_operators_inside_quotes() {
+    // BUG-20261127-041 回归锁：引号字面量内部的算子字符不参与命中——
+    // 旧实现裸 find(op) 在引号内错误位置拆分，两侧错乱后 when 条件步 /
+    // 对账匹配静默判错。
+    // 单引号字面量含 `>`：真算子是 `==`。
+    let (l, op, r) = split_compare_expr("'a > b' == done").unwrap();
+    assert_eq!((l, op, r), ("a > b", "==", "done"));
+    // 双引号字面量含 `==`：真算子是 `!=`。
+    let (l, op, r) = split_compare_expr("\"x == y\" != z").unwrap();
+    assert_eq!((l, op, r), ("x == y", "!=", "z"));
+    // 引号字面量紧贴算子（闭引号后直接 `>`）：引号内 `>=` 不截胡。
+    let (l, op, r) = split_compare_expr("\"a>=b\" > c").unwrap();
+    assert_eq!((l, op, r), ("a>=b", ">", "c"));
+    // 同位取长语义在引号修复后保持：>= 不被 > 截断。
+    let (l, op, r) = split_compare_expr("\"x\" >= y").unwrap();
+    assert_eq!((l, op, r), ("x", ">=", "y"));
+    // 两侧引号字面量（渲染值含算子的对账匹配形态）。
+    let (l, op, r) = split_compare_expr("'$a > $b' != \"c == d\"").unwrap();
+    assert_eq!((l, op, r), ("$a > $b", "!=", "c == d"));
+    // 既有非引号形态不受影响。
+    let (l, op, r) = split_compare_expr("status == done").unwrap();
+    assert_eq!((l, op, r), ("status", "==", "done"));
+}
+
+#[test]
 fn compare_str_numeric_and_lexical_arms() {
     // 数值可比走数值面。
     assert!(compare_str(">=", "3", "3"));
