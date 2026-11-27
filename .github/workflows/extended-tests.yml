@@ -122,9 +122,18 @@ jobs:
       # 同一时间线死在同一秒）。清盘回收预装大件（Android SDK ~12G 大头，
       # 另含 dotnet/JVM 多套/boost/CodeQL）；不影响构建语义，纯平台资源
       # 操作。清盘后 df -h 留取证基线。
+      #
+      # 二加强化（2026-11-27 实录：清盘 14G 后同签名复发——零日志上传
+      # BlobNotFound 全程 + UI 流停在 nemesis-board watcher 测试行，死线
+      # 前于 54:01）：天工 v1 后全仓更大，14G 不够。再挖 docker 镜像池
+      # （/var/lib/docker 数 GB 级）、swift/heroku/pip 缓存/toolcache 残余；
+      # 跑测试期间后台 df 采样落 /tmp（存活轮留墙逼近曲线取证，暴毙轮
+      # 与日志同殁——至少存活轮可见消耗速率）。
       - name: Free runner disk (resource wall mitigation)
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo rm -rf /usr/local/.ghcup /opt/ghcup /usr/share/swift /opt/pipx ~/.cache/pip /opt/az-modulecache 2>/dev/null || true
+          sudo docker image prune -a -f 2>/dev/null || sudo rm -rf /var/lib/docker 2>/dev/null || true
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           echo "=== disk after cleanup ==="
@@ -156,6 +165,10 @@ jobs:
         run: |
           echo "=== disk before test build ==="
           df -h /
+          # 二加强化取证：后台 df 采样（60s 粒度，40 点封顶 = 40min）。
+          # 存活轮留下墙逼近曲线（各 test binary 编译峰值消耗速率）；
+          # 暴毙轮与日志同殁（agent 死了后台进程也没了）——零成本尝试。
+          nohup bash -c 'for i in $(seq 1 40); do date -u +%H:%M:%S >> /tmp/df_trace.txt; df --output=avail -h / | tail -1 >> /tmp/df_trace.txt; sleep 60; done' >/dev/null 2>&1 &
           ulimit -n 8192
           cargo test --workspace --no-fail-fast
 
