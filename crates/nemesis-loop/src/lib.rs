@@ -32,12 +32,17 @@ pub mod wake;
 #[cfg(test)]
 mod resources_tests;
 #[cfg(test)]
+mod state_tests;
+#[cfg(test)]
 mod store_tests;
 #[cfg(test)]
 mod wake_tests;
 
 pub use resources::DurableLoopsResourceProvider;
-pub use state::{LoopBudget, LoopSpent, LoopState, LoopStatus, ProgressEntry, PROGRESS_LOG_CAP};
+pub use state::{
+    cap_text, LoopBudget, LoopSpent, LoopState, LoopStatus, ProgressEntry, MAX_TEXT_CHARS,
+    PROGRESS_LOG_CAP,
+};
 pub use store::{
     alloc_id, create_loop, list_loops, load_loop, loops_dir, remove_loop, save_loop, update_loop,
 };

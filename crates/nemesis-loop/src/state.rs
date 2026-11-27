@@ -10,6 +10,26 @@ use serde::{Deserialize, Serialize};
 /// 尾部可见性由 [`progress_tail`] 消费（唤醒消息注入最近 3 条）。
 pub const PROGRESS_LOG_CAP: usize = 200;
 
+/// 单条文本字段上限（goal/plan/note/summary 共用，字符数）。
+///
+/// 无界资源闸（BUG-20261128-012）：loops 模块（2026-11-17）落地晚于
+/// R272 无界资源普查（2026-10-30），文本面入口/消费曾双裸奔——状态文件
+/// 随输入无界增长（驱动器每 10s sweep 全量重读解析），唤醒消息全文注入
+/// 会话烧 LLM 上下文。4000 与 goals gate 评估材料封顶同族口径；操作者
+/// 入口（WSAPI/CLI create/update goal）在此之上另有 loud 拒绝（不静默
+/// 截断人的意志）。存量超长状态文件由消费侧兜底（[`crate::wake`]）。
+pub const MAX_TEXT_CHARS: usize = 4000;
+
+/// 文本封顶：超限保留头部 + 截断标记（goal/plan 语义重心在前部；与
+/// goals gate 尾部保留相反——评估材料的结论多在末尾，这里的声明在开头）。
+pub fn cap_text(s: &str) -> String {
+    if s.chars().count() <= MAX_TEXT_CHARS {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(MAX_TEXT_CHARS).collect();
+    format!("{head}…（截断）")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LoopStatus {
@@ -112,7 +132,7 @@ impl LoopState {
     pub fn new(id: String, goal: String, session_key: String, now_ms: i64) -> Self {
         Self {
             id,
-            goal,
+            goal: cap_text(&goal),
             session_key,
             status: LoopStatus::Active,
             plan: String::new(),
@@ -128,11 +148,13 @@ impl LoopState {
         }
     }
 
-    /// 追加进度条目（环形截断，丢最旧）。调用方负责落盘。
+    /// 追加进度条目（环形截断，丢最旧；单条文本封顶 [`MAX_TEXT_CHARS`]）。
+    /// 调用方负责落盘。
     pub fn push_progress(&mut self, now_ms: i64, text: impl Into<String>) {
+        let text = cap_text(&text.into());
         self.progress_log.push(ProgressEntry {
             at_ms: now_ms,
-            text: text.into(),
+            text,
         });
         if self.progress_log.len() > PROGRESS_LOG_CAP {
             let drop = self.progress_log.len() - PROGRESS_LOG_CAP;

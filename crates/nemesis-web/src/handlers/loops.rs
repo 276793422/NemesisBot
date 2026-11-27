@@ -182,6 +182,14 @@ impl ModuleHandler for LoopsHandler {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .ok_or("missing goal")?;
+                // 超长 loud 拒绝（BUG-20261128-012）：人写的内容不静默截断
+                // （截断=篡改意志）；状态面容量由 nemesis-loop 文本闸兜底。
+                if goal.chars().count() > nemesis_loop::MAX_TEXT_CHARS {
+                    return Err(format!(
+                        "goal 超长（>{} 字符），请精简后再创建",
+                        nemesis_loop::MAX_TEXT_CHARS
+                    ));
+                }
                 let session_key = resolve_session_key(&data)?;
                 // 在场校验：不绑死会话（sessions.create 产 meta sidecar，
                 // 未发言会话也算在场——session_occupied 双形态判定）。
@@ -258,6 +266,15 @@ impl ModuleHandler for LoopsHandler {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(String::from);
+                // 超长 loud 拒绝（BUG-20261128-012）：同 create，锁外预检段。
+                if let Some(g) = &new_goal
+                    && g.chars().count() > nemesis_loop::MAX_TEXT_CHARS
+                {
+                    return Err(format!(
+                        "goal 超长（>{} 字符），请精简后再更新",
+                        nemesis_loop::MAX_TEXT_CHARS
+                    ));
+                }
                 let new_budget = parse_budget_partial(&data)?;
                 let ts = now_ms();
                 let st = update_loop(&dir, id, |st| {

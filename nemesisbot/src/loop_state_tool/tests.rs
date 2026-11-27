@@ -220,3 +220,46 @@ async fn finish_requires_summary_then_terminal_idempotent() {
         .unwrap();
     assert!(out2.contains("终态"), "unexpected: {out2}");
 }
+
+#[tokio::test]
+async fn wakeup_caps_oversize_plan_and_note() {
+    // BUG-20261128-012：agent 面 plan/note 超长封顶存储（不拒绝——journal
+    // 保持流动，goals 消费侧封顶同哲学；拒绝会烧轮次且可能放大循环）。
+    let dir = tempfile::tempdir().unwrap();
+    let loops = dir.path().join("loops");
+    std::fs::create_dir_all(&loops).unwrap();
+    seed_loop(&loops, "L1", LoopStatus::Active);
+    let big = "P".repeat(5000);
+    let payload = serde_json::json!({ "delay_secs": 120, "note": big, "plan": big }).to_string();
+    let out = wakeup(&loops).execute(&payload, &ctx()).await.unwrap();
+    assert!(out.contains("已排程"), "unexpected: {out}");
+    let st = load_loop(&loops, "L1").unwrap().unwrap();
+    let plan_len = st.plan.chars().count();
+    assert!(plan_len <= 4005, "plan 未封顶：{plan_len} chars");
+    assert!(st.plan.ends_with("…（截断）"), "plan 封顶应带标记");
+    let last = st.progress_log.last().unwrap();
+    let note_len = last.text.chars().count();
+    assert!(note_len <= 4005, "note 未封顶：{note_len} chars");
+}
+
+#[tokio::test]
+async fn finish_caps_oversize_summary() {
+    // BUG-20261128-012：loop_finish summary 超长封顶存储。
+    let dir = tempfile::tempdir().unwrap();
+    let loops = dir.path().join("loops");
+    std::fs::create_dir_all(&loops).unwrap();
+    seed_loop(&loops, "L1", LoopStatus::Active);
+    let tool = LoopFinishTool::new(loops.clone());
+    let payload = serde_json::json!({ "summary": "S".repeat(5000) }).to_string();
+    let out = tool.execute(&payload, &ctx()).await.unwrap();
+    assert!(out.contains("已收尾"), "unexpected: {out}");
+    let st = load_loop(&loops, "L1").unwrap().unwrap();
+    let summary_len = st
+        .finish_summary
+        .as_deref()
+        .map(|s| s.chars().count())
+        .unwrap_or(0);
+    assert!(summary_len <= 4005, "finish_summary 未封顶：{summary_len}");
+    let last = st.progress_log.last().unwrap();
+    assert!(last.text.chars().count() <= 4005, "finish 进度留痕未封顶");
+}

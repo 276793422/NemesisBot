@@ -4,7 +4,7 @@
 //! （Wake / Park / None）。宿主（gateway 驱动器）消费返回值执行注入与
 //! 落盘——本模块零 IO，全可单测。
 
-use crate::state::{LoopState, LoopStatus};
+use crate::state::{cap_text, LoopState, LoopStatus};
 
 /// 唤醒消息标记（注入内容前缀——脚本模型/测试按此识别唤醒轮）。
 pub const WAKE_MARKER: &str = "[循环:";
@@ -142,15 +142,23 @@ pub fn sweep_loop(st: &mut LoopState, now_ms: i64, estop: bool) -> Option<SweepO
 }
 
 /// 组装唤醒注入消息（计划钦定文案骨架：目标 + 进度尾部 + 自主决策提示）。
+///
+/// 消费侧封顶（BUG-20261128-012 存量兜底）：入口闸落地前已落盘的超长
+/// goal/进度条目，注入会话（LLM 上下文）前同样封顶——消费点防线不依赖
+/// 写入点纪律。
 fn wake_message(st: &LoopState, _now_ms: i64) -> String {
-    let mut msg = format!("{WAKE_MARKER}{}] 继续你的目标：{}\n\n", st.id, st.goal);
+    let mut msg = format!(
+        "{WAKE_MARKER}{}] 继续你的目标：{}\n\n",
+        st.id,
+        cap_text(&st.goal)
+    );
     let tail = st.progress_tail(PROGRESS_TAKE);
     if tail.is_empty() {
         msg.push_str("（尚无进度记录）\n\n");
     } else {
         msg.push_str("进度尾部：\n");
         for e in tail {
-            msg.push_str(&format!("- {}\n", e.text));
+            msg.push_str(&format!("- {}\n", cap_text(&e.text)));
         }
         msg.push('\n');
     }

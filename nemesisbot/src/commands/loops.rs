@@ -135,6 +135,14 @@ fn cmd_create(
     if goal.is_empty() {
         bail!("goal 不能为空");
     }
+    // 超长 loud 拒绝（BUG-20261128-012）：人写的内容不静默截断；
+    // WSAPI create/update 同款闸（handlers/loops.rs）。
+    if goal.chars().count() > nemesis_loop::MAX_TEXT_CHARS {
+        bail!(
+            "goal 超长（>{} 字符），请精简后重试",
+            nemesis_loop::MAX_TEXT_CHARS
+        );
+    }
     let session_key = format!(
         "{}{}",
         WEB_SESSION_KEY_PREFIX,

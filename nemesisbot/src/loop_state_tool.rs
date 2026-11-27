@@ -151,7 +151,9 @@ impl nemesis_agent::r#loop::Tool for LoopWakeupTool {
             st.next_wake_ms = next;
             st.cron = cron_set;
             if let Some(p) = plan {
-                st.plan = p.to_string();
+                // 超长封顶（BUG-20261128-012）：agent 面不拒绝（journal 保持
+                // 流动，拒绝烧轮次），存储侧截断。
+                st.plan = nemesis_loop::cap_text(p);
             }
             if let Some(n) = note {
                 st.push_progress(ts, n.to_string());
@@ -289,7 +291,8 @@ impl nemesis_agent::r#loop::Tool for LoopFinishTool {
                 return Ok(false);
             }
             st.status = LoopStatus::Done;
-            st.finish_summary = Some(summary.to_string());
+            // 超长封顶（BUG-20261128-012）：summary 同 plan 语义。
+            st.finish_summary = Some(nemesis_loop::cap_text(summary));
             st.next_wake_ms = None;
             st.cron = None;
             st.push_progress(ts, format!("[finish] {summary}"));

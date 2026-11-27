@@ -528,3 +528,43 @@ async fn create_without_schedule_keeps_legacy_behavior() {
     assert_eq!(detail["next_wake"], serde_json::Value::Null);
     assert_eq!(detail["cron"], serde_json::Value::Null);
 }
+
+#[tokio::test]
+async fn create_rejects_oversize_goal() {
+    // BUG-20261128-012：操作者入口 goal 超长 loud 拒绝（不静默截断——
+    // 人写的内容静默截断是篡改意志）。
+    let home = tempfile::tempdir().unwrap();
+    let _g = isolate(home.path(), SESSION_KEY);
+    let ctx = make_ctx(home.path());
+    let err = LoopsHandler
+        .handle_cmd(
+            "create",
+            Some(serde_json::json!({
+                "goal": "G".repeat(5000),
+                "session_id": "bench-loop-a",
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("超长"), "unexpected: {err}");
+}
+
+#[tokio::test]
+async fn update_rejects_oversize_goal() {
+    // BUG-20261128-012：update 臂同款 loud 拒绝（锁外预检段，不进临界区）。
+    let home = tempfile::tempdir().unwrap();
+    let _g = isolate(home.path(), SESSION_KEY);
+    let ctx = make_ctx(home.path());
+    let out = create_loop(&ctx).await.unwrap();
+    let id = out["id"].as_str().unwrap().to_string();
+    let err = LoopsHandler
+        .handle_cmd(
+            "update",
+            Some(serde_json::json!({ "id": id, "goal": "G".repeat(5000) })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("超长"), "unexpected: {err}");
+}

@@ -1,7 +1,7 @@
 //! wake 纯逻辑单测：唤醒计算（delay/cron/互斥）、预算三维、sweep 裁决
 //! （到期唤醒 / cron 重算 / estop 冻结 / 预算停车 / cron 失效停车）。
 
-use crate::state::{LoopState, LoopStatus};
+use crate::state::{LoopState, LoopStatus, ProgressEntry};
 use crate::wake::{budget_exhausted, compute_next_wake, sweep_loop, SweepOutcome, WAKE_MARKER};
 use chrono::Timelike;
 
@@ -271,4 +271,43 @@ fn wake_after_restart_picks_up_past_due() {
         panic!();
     };
     assert!(message.contains("重启续跑"));
+}
+
+// ── 消费侧封顶（BUG-20261128-012 存量兜底）────────────────────────
+
+#[test]
+fn sweep_wake_message_caps_legacy_oversize_texts() {
+    // 入口闸落地前已落盘的超长状态文件（struct 直构绕过 new 的封顶，
+    // 模拟旧文件）：唤醒消息对 goal / 进度条目必须消费侧封顶——不得把
+    // 超长文本全文注入会话（LLM 上下文燃烧 + 压缩风暴）。
+    let mut s = LoopState {
+        id: "L9".to_string(),
+        goal: "G".repeat(5000),
+        session_key: "agent:main:session:a".to_string(),
+        status: LoopStatus::Active,
+        plan: String::new(),
+        progress_log: vec![ProgressEntry {
+            at_ms: 0,
+            text: "N".repeat(5000),
+        }],
+        next_wake_ms: Some(5_000),
+        cron: None,
+        budget: Default::default(),
+        spent: Default::default(),
+        started_at_ms: 0,
+        updated_at_ms: 0,
+        tokens_base: 0,
+        finish_summary: None,
+    };
+    let SweepOutcome::Wake { message } = sweep_loop(&mut s, 10_000, false).unwrap() else {
+        panic!("expected Wake");
+    };
+    assert!(
+        !message.contains(&"G".repeat(4500)),
+        "唤醒消息注入了未封顶 goal"
+    );
+    assert!(
+        !message.contains(&"N".repeat(4500)),
+        "唤醒消息注入了未封顶进度条目"
+    );
 }
