@@ -372,8 +372,17 @@ pub async fn fetch_url_media(
         let pinned_client: Option<reqwest::Client> = None;
         let client = match &pinned_client {
             Some(c) => c,
-            // fail-closed：client 构建失败 = 本图诚实注记跳过（不静默
-            // 降级为可跟随重定向的默认 client，BUG-20261123-028 横向扫）。
+            // None 两臂语义（勿再写成 fail-closed——真实形态见
+            // build_pinned_no_redirect_client 契约「构建失败返回 None，
+            // 调用方回退 build_no_redirect_client」）：
+            // ① 闸关/白名单直通（Ok 空 ips）→ 共享 client 正常解析，正确；
+            // ② pinned 构建失败（Ok 非空 ips）→ 同样落到本臂 = 回退
+            //    **未钉死** no-redirect client：Policy::none 语义保留
+            //    （302 绕闸防线在），但钉死丢失 = 该罕见分支 rebinding
+            //    TOCTOU 窗口重开（共享契约刻意的可用性权衡，web.rs
+            //    hop_client unwrap_or_else(plain) 同形）；
+            // ③ 共享 client 也构建失败 → 本图诚实注记跳过（这才是不跟随
+            //    可跟随重定向默认 client 的 fail-closed，BUG-20261123-028）。
             None => match no_redirect_client() {
                 Ok(c) => c,
                 Err(e) => {

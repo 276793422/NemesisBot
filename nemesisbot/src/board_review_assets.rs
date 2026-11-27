@@ -73,7 +73,14 @@ fn extract_image_bundles_from(text: &str) -> Vec<AssetTokenBundle> {
                 _ => {}
             }
         }
-        let Some(end) = end else { break };
+        // 未闭合 `{`（行文/代码片段散落花括号是常态，bundle 按惯例粘在
+        // 汇报文本之后）：扫描点前移一格继续——break 会把后面真实 bundle
+        // 一起杀掉（review_images 为空 → 纯文本评审且零注记，静默截半
+        // 违反本模块「不静默截半」纪律）。BUG-20261128-001。
+        let Some(end) = end else {
+            i += 1;
+            continue;
+        };
         let candidate = &text[i..end];
         if let Ok(bundle) = serde_json::from_str::<AssetTokenBundle>(candidate)
             && !bundle.asset_ref.is_empty()

@@ -105,6 +105,28 @@ fn extract_bundles_reject_invalid_refs_but_keep_legal_ones() {
     assert_eq!(out[0].asset_ref, "img_v2.png");
 }
 
+/// 未闭合 `{`（行文/代码片段散落花括号是常态，bundle 按惯例粘在汇报
+/// 文本之后）不得终止整个扫描——其后真实 bundle 仍须被提取
+/// （BUG-20261128-001）。旧形态 break：首个未闭合 `{` 的扫描深度到文本
+/// 末尾恒不归零 → break → 后续 bundle 全部丢失；review_images 为空 →
+/// 纯文本评审且零注记（collect 侧 is_empty → None 无「图片已取回」降级
+/// 注记），静默截半违反本模块「不静默截半」诚实纪律。数学上 break 必然
+/// 误杀：后缀平衡区间净贡献 0，「从 i 起深度恒 ≥1」与「后段存在可配对
+/// 对象」完全兼容。
+#[test]
+fn extract_bundles_survives_unbalanced_brace_before_bundle() {
+    let sha = nemesis_board::sha256_bytes(b"x");
+    // 形态：行文未闭合 `{` → 平衡的普通 JSON（非 bundle，须跳过不误收）
+    // → 真实图像 bundle。
+    let text = format!(
+        "修复要点：代码片段 {{config 未闭合花括号\n状态：{{\"verdict\":\"PASS\"}}\n交付：{}",
+        bundle_text("shot.png", &sha, "http://127.0.0.1:1")
+    );
+    let out = extract_image_bundles_from(&text);
+    assert_eq!(out.len(), 1, "未闭合花括号后的 bundle 仍须被提取: {out:?}");
+    assert_eq!(out[0].asset_ref, "shot.png");
+}
+
 // ---------------------------------------------------------------------------
 // collect_review_images：本地命中 / HTTP 取回 / 过滤 / 上限
 // ---------------------------------------------------------------------------
