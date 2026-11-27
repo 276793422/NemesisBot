@@ -551,7 +551,8 @@ impl Tool for WriteFileTool {
         // 重定向感知（第五轮横扫 2026-11-27）：存在性判定与声明路径都用
         // 解析后路径（镜像命中时 kind 如实反映镜像侧现状）；围栏拒 → None
         // （无基线可预览，BUG-20261127-048）。
-        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref())?;
+        let path =
+            preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref())?;
         let kind = if path.exists() {
             FileChangeKind::Modify
         } else {
@@ -906,7 +907,8 @@ impl Tool for EditFileTool {
         // 重定向感知（第五轮横扫 2026-11-27）：同 write_file——声明路径
         // 必须是 execute 的落盘路径（镜像）；围栏拒 → None（同
         // BUG-20261127-048）。
-        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref())?;
+        let path =
+            preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref())?;
         let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("edit");
         let kind = if action == "append" {
             // append 分支允许目标不存在（create=true），按存在性如实申报。
