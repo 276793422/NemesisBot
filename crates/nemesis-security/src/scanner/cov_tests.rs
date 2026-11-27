@@ -675,16 +675,42 @@ fn extract_zip_archive_capped_sanitizes_ads_and_reserved_entry_names() {
     let dest = dir.join("out");
     super::extract_zip_archive_capped(&zip_file, &dest, 4 * 1024 * 1024).unwrap();
 
-    // 冒号条目 → 净化名落盘、内容完整（照扫，不进 ADS）。
-    let ads = dest.join("virus").join("scan.txt_ads");
-    assert_eq!(
-        std::fs::read(&ads).unwrap(),
-        b"ads-payload",
-        "ADS 名净化后内容必须照扫"
-    );
-    // 保留设备名 → 前缀下划线（不再写「成功」缺件）。
-    let nul = dest.join("_NUL");
-    assert_eq!(std::fs::read(&nul).unwrap(), b"nul-payload");
+    // 冒号条目：Windows 上 enclosed_name 拒 ADS 语法（zip 9.7
+    // is_windows_invalid_component 是 cfg(windows) 门）→ 净化名
+    // scan.txt_ads 落盘；Unix 上冒号是合法文件名 → Some 臂原文落盘。
+    // BUG-20261128-007：原测试把 Windows 净化名当普适断言，Linux CI
+    // NotFound 假红（coverage 七轮首见）。两平台不变量一致：内容完整
+    // 落盘、照扫不缺件——文件名平台各异，按平台分叉断言。
+    #[cfg(windows)]
+    {
+        let ads = dest.join("virus").join("scan.txt_ads");
+        assert_eq!(
+            std::fs::read(&ads).unwrap(),
+            b"ads-payload",
+            "ADS 名净化后内容必须照扫"
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        let ads = dest.join("virus").join("scan.txt:ads");
+        assert_eq!(
+            std::fs::read(&ads).unwrap(),
+            b"ads-payload",
+            "冒号名原文落盘，内容必须照扫"
+        );
+    }
+    // 保留设备名：Windows → 前缀下划线（不再写「成功」缺件）；Unix 上
+    // `NUL` 是合法名 → 原文落盘。
+    #[cfg(windows)]
+    {
+        let nul = dest.join("_NUL");
+        assert_eq!(std::fs::read(&nul).unwrap(), b"nul-payload");
+    }
+    #[cfg(not(windows))]
+    {
+        let nul = dest.join("NUL");
+        assert_eq!(std::fs::read(&nul).unwrap(), b"nul-payload");
+    }
     // 普通名逐字节不变（阳性对照）。
     let ok = dest.join("ok.txt");
     assert_eq!(std::fs::read(&ok).unwrap(), b"normal-content");
