@@ -88,6 +88,36 @@ pub fn parse_read_mem_resp(resp: &str) -> Result<Vec<u8>, PipeError> {
     base64_decode(data).map_err(|e| PipeError::Payload(format!("base64 解码失败: {e}")))
 }
 
+/// 单次 decode_struct 的解码元素总量预算（全字段声明元素数合计）。
+///
+/// BUG-20261127-022：validate/decode 重验只查**单字段** `end ≤ ds.size`
+/// （字段重叠合法、字段数无上限）——N 个重叠的 `u8[ds.size]` 字段是合法
+/// profile，但解码输出体积 = Σ(声明元素数) × ~32B/Value，与实际数据体量
+/// （管道帧帽 ≤4MB）完全脱钩：字段数加大即巨量分配打爆进程（read_struct
+/// 单次 / scheduler 周期轮询 / poll_captures 批级累积三个消费面同炸）。
+/// 预算 = identity for sane（真实游戏结构：几十字段×小数组，合计远低于
+/// 此值），只封荒诞声明。对齐 time_bounds 统一界哲学（R735/BUG-20261127-021）。
+pub const MAX_DECODE_ELEMS: u64 = 4 * 1024 * 1024;
+
+/// 单字段解码元素数（标量/标量数组 = 元素数；文本 = 字符单元数）。
+/// 与 decode_field 的实际产出量同源：文本域产出 String 长度 ≈ 单元数
+/// （char 1 字节/单元、wchar 2 字节/单元），标量数组产出等长 Value 数组。
+fn field_elem_count(ft: &FieldType) -> u64 {
+    if matches!(ft.base, FieldBase::Char | FieldBase::WChar) {
+        ft.size_of() / u64::from(elem_size(ft.base))
+    } else {
+        // None → 1；Some(0) → 0（零长数组不虚耗预算，decode_field 产空数组）；
+        // Some(k) → k。
+        u64::from(ft.array_len.unwrap_or(1))
+    }
+}
+
+/// 数据结构的解码元素总量（Σ 各字段）——poll_captures 批级预算闸的
+/// 静态估算（解码前即可知，零分配完成拒绝）。
+pub fn ds_decode_elems(ds: &DataStructure) -> u64 {
+    ds.fields.iter().map(|f| field_elem_count(&f.type_)).sum()
+}
+
 /// 按 profile 数据结构解码内存镜像 → JSON 对象。
 ///
 /// 解码语义（FieldDecode）：
@@ -97,11 +127,12 @@ pub fn parse_read_mem_resp(resp: &str) -> Result<Vec<u8>, PipeError> {
 /// - 数组（array_len>1）：值数组（标量）或拼合字符串（char/wchar）。
 pub fn decode_struct(data: &[u8], ds: &DataStructure) -> Result<serde_json::Value, String> {
     let mut out = serde_json::Map::new();
+    let mut total_elems: u64 = 0;
     for f in &ds.fields {
-        // 解码前重验字段界（validate 同闸 u64 真值）——
-        // decode 自含，不依赖调用方先跑过 validate；此前 u32 乘法回绕使
-        // `u64[536870913]` 这类字段绕闸进解码，0 步长死循环 + 巨量
-        // with_capacity 可打爆进程。
+        // 解码前重验字段界（validate 同闸 u64 真值）——decode 自含，不
+        // 依赖调用方先跑过 validate；此前 u32 乘法回绕使 `u64[536870913]`
+        // 这类字段绕闸进解码，0 步长死循环 + 巨量 with_capacity 可打爆
+        // 进程（BUG-20261123-017 同期修复只封了回绕进路）。
         let end = u64::from(f.offset) + f.type_.size_of();
         if end > u64::from(ds.size) {
             return Err(format!(
@@ -113,6 +144,17 @@ pub fn decode_struct(data: &[u8], ds: &DataStructure) -> Result<serde_json::Valu
                 ds.size
             ));
         }
+        // BUG-20261127-022 元素总量预算闸（分配前逐字段累计）——声明驱动
+        // 放大面（重叠字段 × 数组长度 × 字段数无上限）在分配任何 Value
+        // 之前 loud 拒绝。
+        let new_total = total_elems.saturating_add(field_elem_count(&f.type_));
+        if new_total > MAX_DECODE_ELEMS {
+            return Err(format!(
+                "结构 {} 解码元素总量 {} 超预算 {MAX_DECODE_ELEMS}（字段数×数组长度声明与数据体量脱钩，放大面防线）",
+                ds.name, new_total
+            ));
+        }
+        total_elems = new_total;
         let val = decode_field(data, f.offset, &f.type_, f.decode)?;
         out.insert(f.name.clone(), val);
     }
@@ -161,7 +203,15 @@ fn decode_field(
 
     // 标量/标量数组
     let n = ft.array_len.unwrap_or(1);
-    let mut vals = Vec::with_capacity(n as usize);
+    if n == 0 {
+        return Ok(serde_json::Value::Array(Vec::new()));
+    }
+    // BUG-20261127-022 防线之二：分配按实际数据可支撑的元素数封顶——
+    // 分配不先于验证（声明 n 与数据体量脱钩时，巨量 with_capacity 在任何
+    // 边界检查之前执行）。首个越界元素仍走 decode_scalar 的 Err——不产
+    // 部分数据、不产截短数组，语义与封顶前完全一致。
+    let avail = data.len().saturating_sub(offset as usize) / elem as usize;
+    let mut vals = Vec::with_capacity((n as usize).min(avail));
     for i in 0..n {
         let at = offset + i * elem;
         vals.push(decode_scalar(data, at, ft.base, decode)?);
