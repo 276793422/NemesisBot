@@ -1889,7 +1889,11 @@ impl CcHookBridge {
         let mut dead = HashSet::new();
         dead.insert(sid.to_string());
         // 分发（SessionEnd 钩子自身若圈定到本会话已在上面响过最后一次）之后
-        // 摘圈定；锁在 remove_session_scopes_locked 内部自持。
+        // 摘圈定。BUG-20261128-010：调用方必须自持 [`HOOKS_FILE_LOCK`] 再进
+        // `_locked` 后缀函数（其契约 = 调用方已持锁、内部不再加锁）——此前
+        // 本函数未取锁就调，与 Dashboard hooks.set / agent `hooks` 工具并发
+        // 时本 purge 的陈旧读-写会覆盖刚写入的钩子（丢失更新）。
+        let _guard = lock_hooks_file();
         match remove_session_scopes_locked(&config_dir, &dead) {
             Ok(0) => {}
             Ok(n) => tracing::info!(

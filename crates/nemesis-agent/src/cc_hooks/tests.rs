@@ -3018,3 +3018,61 @@ async fn purge_removes_prompt_hooks_from_bridge_memory() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-20261128-010 回归锁：`purge_session_hooks` 必须持 [`HOOKS_FILE_LOCK`]
+/// 才调 `remove_session_scopes_locked`（`_locked` 契约 = 调用方已持锁）。
+/// 锁被占用时 purge 必须阻塞等待，不得绕过锁直接 RMW——否则与 Dashboard
+/// hooks.set / agent `hooks` 工具并发时，purge 的陈旧读-写覆盖刚写入的
+/// 钩子（丢失更新）。占锁窗口内其他测试无法抢到全局锁，断言确定性成立。
+#[test]
+fn purge_session_hooks_waits_for_hooks_file_lock() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        cfg.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {
+                "Stop": [
+                    {
+                        "scope": {"sessions": ["s-gone"]},
+                        "hooks": [{"type": "command", "command": "echo gone"}]
+                    }
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
+
+    // 占住 HOOKS_FILE_LOCK（模拟并发 RMW 进行中）。
+    let guard = super::lock_hooks_file();
+
+    // 后台线程跑 purge：修复后阻塞在锁上（done 不置位）；修复前绕锁写盘。
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done_t = done.clone();
+    let h = std::thread::spawn(move || {
+        bridge.purge_session_hooks("agent:main:session:s-gone");
+        done_t.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !done.load(std::sync::atomic::Ordering::SeqCst),
+        "HOOKS_FILE_LOCK 被占用时 purge 不得绕过锁完成写盘（_locked 契约）"
+    );
+    let text = std::fs::read_to_string(cfg.join("hooks.json")).unwrap();
+    assert!(
+        text.contains("s-gone"),
+        "锁占用期间 hooks.json 不得被 purge 改写"
+    );
+
+    drop(guard);
+    h.join().unwrap();
+    let text = std::fs::read_to_string(cfg.join("hooks.json")).unwrap();
+    assert!(!text.contains("s-gone"), "锁释放后 purge 应完成摘除");
+    let _ = std::fs::remove_dir_all(&dir);
+}
