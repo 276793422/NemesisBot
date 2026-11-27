@@ -226,22 +226,36 @@ pub fn redirect_instruction_path(path: &Path, cfg: &KnowledgeConfig) -> PathBuf 
     let Some(parent) = path.parent() else {
         return path.to_path_buf();
     };
+    // BUG-20261127-047：parent 先词法归一再做子树判定。组件级前缀匹配不折
+    // `..`——净 `..` 超出后缀深度的路径（真实落点在 code 子树外，如
+    // `code/a/b/../../..` ≡ 子树外的兄弟目录）照样命中前缀，镜像 rel 含
+    // 越根 `..` → 归一后越出 info_root。链路语义：围栏前臂（绝对入参）
+    // 的越界产物被围栏 backstop 拦住；**围栏后臂（相对入参围栏放行后二次
+    // 重定向）输出无人复检** = 越授权根读写原语。归一后 parent 内不可能
+    // 残留可折叠 `..`（每个 `..` 要么折叠、要么落在最前不成前缀）→ 后缀
+    // rel 恒无 `..` → 镜像恒在 info_root 内（info_root 本就是授权根——
+    // fence_roots 放行面）；归一后落点出子树的路径不再命中 → 透传真实
+    // 路径（overlay 语义：子树外本来就不该重定向）。合法形态（`..` 折叠
+    // 后仍落子树内，如 `code/src/../AGENTS.md`）行为不变。
+    let parent = normalize_lexical(parent.to_path_buf());
     for pair in &cfg.pairs {
         let code = Path::new(&pair.code_root);
-        if !path_components_prefix_of(code, parent) {
+        if !path_components_prefix_of(code, &parent) {
             continue;
         }
         // overlay：本地存在 = 本地生效（现状零变化）。
         if path.exists() {
             return path.to_path_buf();
         }
-        let Some(rel) = path_strip_prefix_ci(code, parent) else {
+        let Some(rel) = path_strip_prefix_ci(code, &parent) else {
             continue;
         };
-        // 镜像路径词法归一（第五轮横扫 2026-11-27）：LLM 入参可能带
-        // `..` 组件（如 `proj/src/../TIANGONG.md`）——未归一的镜像路径
-        // 含 `..` 时 checkpoint 的 safe_path 诚实拒绝（快照读 None），
-        // rewind 恢复把该声明当「不存在」走删除臂，会误删已有镜像文件；
+        // 镜像路径词法归一（第五轮横扫 2026-11-27 + BUG-20261127-047）：
+        // LLM 入参可能带 `.`/`..` 组件——BUG-047 修复后 rel 恒无 `..`
+        // （parent 归一后才做子树判定，见循环上方），此处归一只剩剔除
+        // 残余 `.` 的作用，保留为防线冗余。归一的意义史：未归一时镜像
+        // 含 `..` 会被 checkpoint 的 safe_path 诚实拒绝（快照读 None），
+        // rewind 恢复把该声明当「不存在」走删除臂，误删已有镜像文件；
         // 归一后声明路径即真实路径，快照/恢复/指纹全链对齐（OS 语义
         // 等价——纯词法折叠，镜像路径不含 symlink 间接）。
         let mirror = Path::new(&pair.info_root).join(rel).join(name);

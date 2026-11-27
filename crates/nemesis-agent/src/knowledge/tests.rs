@@ -159,27 +159,67 @@ fn test_redirect_dotdot_components_lexically_normalized() {
         PathBuf::from("C:/info/src/AGENTS.md"),
         "`.` 组件应剔除"
     );
-    // 折叠越过镜像根时 `..` 保留（不折叠出盘前缀——OS 语义：盘根之上
-    // 即盘根；此形态仍含 `..`，checkpoint safe_path 拒绝 = 诚实不设防）。
-    // 期望值随平台组件语义分叉：Windows `C:` 是盘前缀组件，`..` 到
-    // RootDir 保留；Linux 无前缀组件，`C:` 是普通组件被两级 `..` 全折
-    // （相对路径词法语义）——normalize_lexical 两平台各自正确（CI
-    // coverage 腿 ubuntu 实录），断言按平台编码同一契约。
+    // BUG-20261127-047：净 `..` 越出 code 子树的形态（真实落点 `C:/x`，
+    // 不在挂载子树内）——修复后 parent 先归一再匹配，归一落点（Windows
+    // `C:/..` / Linux `..`）均不含 code 组件 → 不命中 → 透传。原断言
+    // 产出越出 info_root 的镜像（Windows `C:/../x/TIANGONG.md`），恰是
+    // 本 BUG 的逃逸形态；overlay 语义下子树外路径本就不该重定向，两平台
+    // 统一透传，不再有平台分叉断言。
     let p3 = Path::new("C:/code/../../x/TIANGONG.md");
-    let got = redirect_instruction_path(p3, &cfg);
-    if cfg!(windows) {
-        assert_eq!(
-            got,
-            PathBuf::from("C:/../x/TIANGONG.md"),
-            "越根折叠应停在盘前缀: {got:?}"
-        );
-    } else {
-        assert_eq!(
-            got,
-            PathBuf::from("x/TIANGONG.md"),
-            "无盘前缀组件，越根 `..` 全折: {got:?}"
-        );
-    }
+    assert_eq!(redirect_instruction_path(p3, &cfg), p3.to_path_buf());
+}
+
+#[test]
+fn test_redirect_dotdot_net_escape_out_of_subtree_passthrough() {
+    // BUG-20261127-047 红证：裸组件前缀匹配不折 `..`——净 `..` 超出后缀
+    // 深度的路径**真实落点在 code 子树外**，仍误命中 → 镜像 rel 含越根
+    // `..`，归一后落点越出 info_root。链路语义：围栏前臂（绝对入参）
+    // 的越界产物靠围栏 backstop 兜底；围栏后臂（相对入参围栏放行后二次
+    // 重定向）输出无人复检 → 写/读落在 info_root 之外。修复 = parent 先
+    // 词法归一再做子树判定：归一后落点出子树 → 不命中 → 透传真实路径
+    // （overlay 语义：子树外本来就不该重定向）。
+    let dir = tmp_dir("redirect_escape");
+    let code = dir.join("code");
+    let info = dir.join("info");
+    let cfg = KnowledgeConfig {
+        enabled: true,
+        pairs: vec![pair(
+            &code.to_string_lossy(),
+            &info.to_string_lossy(),
+            TIANGONG_LOAD_POINTER,
+        )],
+    };
+    // 形态一：code_root 根下两级净 `..` ×3——真实落点 dir/AGENTS.md
+    // （code 子树外）。修复前镜像归一后落 dir/AGENTS.md（越出 info_root）。
+    let p = code.join("a/b/../../../AGENTS.md");
+    assert_eq!(redirect_instruction_path(&p, &cfg), p, "越子树形态应透传");
+
+    // 形态二（设计常态）：code_root 挂更深的「工作区」子树内——真实落点
+    // dir/ws/AGENTS.md 在边界内（若挂围栏照常放行）、在 code 子树外。
+    // 修复前镜像落 dir/AGENTS.md（越出 info_root = dir/kb）。
+    let cfg2 = KnowledgeConfig {
+        enabled: true,
+        pairs: vec![pair(
+            &dir.join("ws/proj").to_string_lossy(),
+            &dir.join("kb").to_string_lossy(),
+            TIANGONG_LOAD_POINTER,
+        )],
+    };
+    let p2 = dir.join("ws/proj/a/b/../../../AGENTS.md");
+    assert_eq!(
+        redirect_instruction_path(&p2, &cfg2),
+        p2,
+        "越子树形态应透传"
+    );
+
+    // 非回归（合法形态行为不变）：`..` 折叠后仍落子树内 → 照常重定向，
+    // 镜像不含 `..` 且恒在 info_root 内。
+    let p3 = code.join("src/a/../AGENTS.md"); // 真实落点 code/src/AGENTS.md（子树内）
+    assert_eq!(
+        redirect_instruction_path(&p3, &cfg),
+        info.join("src/AGENTS.md")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
