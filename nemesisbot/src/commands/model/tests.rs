@@ -4750,3 +4750,21 @@ mod cov_m4 {
         .unwrap();
     }
 }
+
+/// 2026-11-27 模型串回退匹配批：entry_ref_matches 三层谓词回归钉。
+/// Remove 此前缺别名层（`model remove <别名>` 恒 not found）；本钉锁
+/// 模型串/别名/尾段三层命中与非命中边界（含「别处前缀不吞」）。
+#[test]
+fn entry_ref_matches_three_layers_and_non_hits() {
+    use super::entry_ref_matches;
+    let (full, alias) = ("vendor/x", "eval-x");
+    // 三层命中：模型串精确 / 别名精确 / 尾段软匹配。
+    assert!(entry_ref_matches(full, alias, "vendor/x"));
+    assert!(entry_ref_matches(full, alias, "eval-x"));
+    assert!(entry_ref_matches(full, alias, "x"));
+    // 非命中：完全无关名；他条目前缀不吞（"a" ≠ "vendor/x" 尾段）；
+    // 他条目模型串（含同名尾段的另一 vendor）≠ 本条目。
+    assert!(!entry_ref_matches(full, alias, "nope"));
+    assert!(!entry_ref_matches(full, alias, "a"));
+    assert!(!entry_ref_matches(full, alias, "y/x"));
+}

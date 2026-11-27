@@ -843,7 +843,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 || model_list.iter().any(|m| {
                     let full_model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
                     let alias = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-                    (full_model == name || full_model.ends_with(&format!("/{}", name)))
+                    entry_ref_matches(full_model, alias, &name)
                         && (full_model == default_model || alias == default_model)
                 });
 
@@ -876,7 +876,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             {
                 arr.retain(|m| {
                     let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                    if model == name || model.ends_with(&format!("/{}", name)) {
+                    let alias = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                    if entry_ref_matches(model, alias, &name) {
                         found = true;
                         false
                     } else {
@@ -1554,6 +1555,19 @@ fn write_config_atomic(cfg_path: &Path, cfg: &serde_json::Value) -> anyhow::Resu
         .map_err(anyhow::Error::msg)
 }
 
+/// 条目引用匹配谓词（model CLI 单一真相源）：`update_model_entry`
+///（set-tier/set-effort/set-size/set-real-name/set-stream/set-compact-context）
+/// 与 `Remove` 的 retain 共用。层序：精确 model（模型串）→ 精确 model_name
+///（显示别名）→ 尾段软匹配（`vendor/<name>` 形态；name 含 `/` 时退化为
+/// model 后缀命中）。与 WSAPI models.* 的 entry_index_by_ref / resolver
+/// 匹配层序同语义（首条优先由调用方迭代序保证）。
+/// 2026-11-27 模型串回退匹配批：Remove 此前缺别名层——`model remove <别名>`
+///（`model list` 展示的主身份）恒报 Model not found，与 WSAPI models.* 只认
+/// 别名的缺陷同族镜像。
+fn entry_ref_matches(full: &str, alias: &str, name: &str) -> bool {
+    full == name || alias == name || full.ends_with(&format!("/{name}"))
+}
+
 fn update_model_entry<F>(cfg: &mut serde_json::Value, name: &str, f: F) -> bool
 where
     F: FnOnce(&mut serde_json::Value),
@@ -1573,7 +1587,7 @@ where
         }
         let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         let alias = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-        if full == name || alias == name || full.ends_with(&format!("/{}", name)) {
+        if entry_ref_matches(full, alias, name) {
             f(m);
             return true;
         }

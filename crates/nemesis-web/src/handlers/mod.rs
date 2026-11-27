@@ -285,6 +285,12 @@ mod models_add_validation_tests;
 #[cfg(test)]
 mod models_effort_autofix_tests;
 
+// 回归钉: models.* 条目引用三层查找（entry_index_by_ref 单一真相源）——
+// set_default/delete/copy/rename/test/probe_effort 收编 model 串回退匹配
+//（此前各点只认 model_name 别名，传 model 串恒 not found）。
+#[cfg(test)]
+mod models_ref_lookup_tests;
+
 // (, devtool-upgrade): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + wsapi-commands 文档生成 +
 // 安全子集 dispatch 冒烟。
