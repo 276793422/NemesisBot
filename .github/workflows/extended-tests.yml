@@ -211,9 +211,13 @@ jobs:
           # BUG-20261128-008：守卫 grep 模式 `[0-9]+/[0-9]+ tests passed` 与
           # nextest 真实摘要（`Summary [...] N tests run: N passed, M skipped`）
           # 永不匹配 → n 恒空 → 全绿分片也 exit 1（shard2 11126 全过假红实锤）。
-          # 数 "tests run"（执行数）：pipefail 下 nextest 非零即步骤先红，走不到
-          # 本守卫——能走到这里必然零失败，执行数即通过数。
-          n=$(grep -oE '[0-9]+ tests run' nextest-s${{ matrix.shard }}.log | grep -oE '^[0-9]+' | tail -1)
+          # BUG-20261128-011：CI env CARGO_TERM_COLOR=always 在管道里也强制着
+          # 色，Summary 真字节为 `\x1b[1m11127\x1b[0m tests run`——数字与
+          # "tests run" 之间夹色码，上式对原始字节依旧永不匹配（round-2 三分
+          # 片全过 Summary 后 161ms 静默死、零输出实证）。先 sed 剥 ANSI 再
+          # grep；`|| true` 兜底：守卫自身失败必走下面 ::error:: 显式红并带
+          # 诊断，而不是 pipefail+bash -e 的无痕秒死。
+          n=$(sed 's/\x1b\[[0-9;]*m//g' nextest-s${{ matrix.shard }}.log | grep -oE '[0-9]+ tests run' | grep -oE '^[0-9]+' | tail -1 || true)
           echo "nextest shard ${{ matrix.shard }} executed: ${n:-0} passed (floor 500)"
           if [ -z "$n" ] || [ "$n" -lt 500 ]; then
             echo "::error::nextest shard ${{ matrix.shard }} passed ${n:-0} < floor 500（partition 参数 typo 或套件未跑完，不许假绿）"
