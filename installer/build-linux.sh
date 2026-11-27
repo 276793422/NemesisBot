@@ -66,7 +66,8 @@ fi
 
 # ② 图标进载荷（share/icon.png；.desktop 入口引用）。
 mkdir -p "$ROOT/bin/bin_linux/share"
-cp -f "$ROOT/web/public/favicon.png" "$ROOT/bin/bin_linux/share/icon.png"
+# favicon 随 BUG-20261127-005 自 public/ 迁入 src/assets（vite 打包资产）。
+cp -f "$ROOT/web/src/assets/favicon.png" "$ROOT/bin/bin_linux/share/icon.png"
 echo "[2/5] 图标已同步 share/icon.png"
 
 # ③ 安装器构建（本 workspace release；骨架 = 未签名原始二进制）。
