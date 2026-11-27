@@ -108,6 +108,11 @@ const SEND_QUEUE_LO_CAP: usize = 256;
 /// 写者单轮从各通道最多取的帧数（batch flush 的批量上限）。
 const SEND_QUEUE_HI_BATCH: usize = 64;
 const SEND_QUEUE_LO_BATCH: usize = 128;
+/// 写者对 sink 的单次写操作（feed/send/flush）超时。零窗口/挂起但 TCP 栈
+/// 存活的客户端会让底层写永远 pending——无界 await = writer 任务冻结、
+/// done 永不置位、close 臂不可达（BUG-20261115-016 家族：channels/
+/// websocket.rs 同值 30s，本位点是其遗漏面）。超时 = 连接死语义收尾。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 
 impl SendQueue {
     /// Create a new send queue wrapping a WebSocket sink.
@@ -304,12 +309,39 @@ async fn run_send_writer<S>(
                 }
             }
             _ = close_rx.changed() => {
-                let _ = sink.send(Message::Close(None)).await;
+                // BUG-20261127-045：Close 帧写同族无界 await——挂死客户端上
+                // 收尾路径本身被挂死。超时放弃（warn 留痕），语义等同写死。
+                let close_write = tokio::time::timeout(
+                    Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                    sink.send(Message::Close(None)),
+                )
+                .await;
+                if close_write.is_err() {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        "[WebSocket] close frame write timed out (wedged client)"
+                    );
+                }
                 break 'writer;
             }
             Some(_) = ping_rx.recv() => {
-                if sink.send(Message::Ping(Bytes::new())).await.is_err() {
-                    break 'writer;
+                // BUG-20261127-045：ping 写同族无界 await——超时 = 连接死
+                // 语义收尾（与写失败同路径）。
+                match tokio::time::timeout(
+                    Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                    sink.send(Message::Ping(Bytes::new())),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => break 'writer,
+                    Err(_) => {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            "[WebSocket] ping write timed out (wedged client)"
+                        );
+                        break 'writer;
+                    }
                 }
             }
         }
@@ -325,12 +357,36 @@ async fn run_send_writer<S>(
         }
         for frame in hi_batch.drain(..).chain(lo_batch.drain(..)) {
             let text = String::from_utf8_lossy(&frame).into_owned();
-            if sink.feed(Message::Text(text.into())).await.is_err() {
-                break 'writer;
+            // BUG-20261127-045：feed（poll_ready 背压）与 flush（poll_flush）
+            // 是零窗口客户端的两个挂死点——超时 = 连接死语义收尾（与写
+            // 失败同路径，warn 区分留痕）。
+            match tokio::time::timeout(
+                Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                sink.feed(Message::Text(text.into())),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => break 'writer,
+                Err(_) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        "[WebSocket] frame feed timed out (wedged client)"
+                    );
+                    break 'writer;
+                }
             }
         }
-        if sink.flush().await.is_err() {
-            break 'writer;
+        match tokio::time::timeout(Duration::from_secs(WS_WRITE_TIMEOUT_SECS), sink.flush()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break 'writer,
+            Err(_) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "[WebSocket] sink flush timed out (wedged client)"
+                );
+                break 'writer;
+            }
         }
     }
     let _ = done_tx.send(true);

@@ -726,3 +726,53 @@ fn test_unlimited_timeout_does_not_evict() {
     std::thread::sleep(std::time::Duration::from_millis(80));
     assert_eq!(mgr.active_count(), 1, "0=不限：会话不得被逐出");
 }
+
+// BUG-20261127-045 红证：失败投递不得刷新 last_active——修复前三广播方法
+// 在入队前无条件 touch，死/挂会话被出站流量喂成永生（evict_inactive 逐出
+// 窗口不可达 = 僵尸会话 + 冻结 writer 任务永久泄漏；writer 侧配对红证见
+// websocket_handler/agt_tests.rs）。
+#[tokio::test]
+async fn test_failed_send_does_not_touch_last_active() {
+    let mgr = SessionManager::with_default_timeout();
+    let session = mgr.create_session();
+    let created_at = session.created_at;
+    let sid = session.id.clone();
+
+    // 双通道各 cap=1：各塞 1 帧占满（接收端存活但不消费），三种广播形态
+    // 全部必然失败。
+    let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(1);
+    let queue = Arc::new(queue);
+    queue.send(b"fill-hi".to_vec()).await.unwrap();
+    queue.send_droppable(b"fill-lo".to_vec()).unwrap();
+    mgr.set_send_queue(&sid, queue);
+
+    // 拉开时差：创建时 last_active == created_at；若 touch 被错误执行，
+    // last_active 会 >= created_at + 30ms。
+    std::thread::sleep(std::time::Duration::from_millis(30));
+
+    // ① broadcast（hi 满背压挂起 → 测试层 timeout 兜底成失败投递）。
+    let r1 = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        mgr.broadcast(&sid, b"x"),
+    )
+    .await;
+    assert!(r1.is_err(), "hi 满必须背压超时（失败投递形态一）");
+    // ② broadcast_droppable（lo 满即丢）。
+    assert!(
+        mgr.broadcast_droppable(&sid, b"x").is_err(),
+        "lo 满必须立即丢（失败投递形态二）"
+    );
+    // ③ broadcast_bounded（hi 满带上限等待超时）。
+    assert!(
+        mgr.broadcast_bounded(&sid, b"x", std::time::Duration::from_millis(50))
+            .await
+            .is_err(),
+        "hi 满必须上限等待超时（失败投递形态三）"
+    );
+
+    let after = mgr.get_session(&sid).unwrap();
+    assert_eq!(
+        after.last_active, created_at,
+        "失败投递不得刷新 last_active（否则死会话被出站流量喂成永生）"
+    );
+}

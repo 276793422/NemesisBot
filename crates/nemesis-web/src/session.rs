@@ -223,8 +223,15 @@ impl SessionManager {
             .get(session_id)
             .map(|q| Arc::clone(q.value()));
         if let Some(queue) = queue {
-            self.touch_session(session_id);
-            return queue.send(message.to_vec()).await;
+            let result = queue.send(message.to_vec()).await;
+            // BUG-20261127-045：入队**成功**才 touch——失败/超时投递不刷新
+            // last_active。无条件 touch 会把死/挂会话被出站流量喂成永生，
+            // evict_inactive 逐出窗口不可达（僵尸会话 + 冻结 writer 任务
+            // 永久泄漏）。健康客户端不受影响（成功投递照常 touch）。
+            if result.is_ok() {
+                self.touch_session(session_id);
+            }
+            return result;
         }
 
         // No send queue means session has no active WebSocket
@@ -245,8 +252,12 @@ impl SessionManager {
     /// 未落环的帧必须走 `broadcast`。慢客户端隔离墙（BUG）。
     pub fn broadcast_droppable(&self, session_id: &str, message: &[u8]) -> Result<(), String> {
         if let Some(queue) = self.send_queues.get(session_id) {
-            self.touch_session(session_id);
-            return queue.send_droppable(message.to_vec());
+            let result = queue.send_droppable(message.to_vec());
+            // BUG-20261127-045：同 broadcast——入队成功才 touch。
+            if result.is_ok() {
+                self.touch_session(session_id);
+            }
+            return result;
         }
 
         // 无队列 = 无活跃 WS：droppable 语义下降为 debug（丢帧可补拉，
@@ -288,13 +299,18 @@ impl SessionManager {
             .map(|q| Arc::clone(q.value()));
         match queue {
             Some(queue) => {
-                self.touch_session(session_id);
-                match tokio::time::timeout(timeout, queue.send(message.to_vec())).await {
+                let result = match tokio::time::timeout(timeout, queue.send(message.to_vec())).await
+                {
                     Ok(r) => r,
                     Err(_) => Err(format!(
                         "send queue backlog timeout after {timeout:?} (slow/dead client isolation)"
                     )),
+                };
+                // BUG-20261127-045：同 broadcast——入队成功才 touch。
+                if result.is_ok() {
+                    self.touch_session(session_id);
                 }
+                result
             }
             None => {
                 tracing::debug!(

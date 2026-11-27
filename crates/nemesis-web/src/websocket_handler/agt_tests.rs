@@ -135,6 +135,150 @@ async fn agt_writer_hi_piggyback_takes_frames_beyond_batch() {
     );
 }
 
+// BUG-20261127-045 红证：挂死 sink（零窗口客户端：TCP 栈存活但 flush 永不
+// 就绪）上 writer 的全部 sink await 必须带超时——修复前 feed/flush/close/ping
+// 四处无界 await，writer 永挂、done 永不置位（SessionManager 逐出 GC 也被
+// touch-on-failed-send 击穿：见 session/tests.rs 配对红证）。外层兜底取
+// 60s > 内层 30s 写超时：start_paused 虚拟时钟推进到最近 deadline——修复后
+// 先推进到 30s 内层写超时 → writer 收尾；修复前无内层 timer，推进到 60s
+// 外层兜底 → expect 炸红。
+
+/// 挂死 sink：poll_ready/start_send 正常（帧可入缓冲），poll_flush 永远
+/// Pending。登记 waker 但永不唤醒（Sink 契约：Pending 必须登记 waker；
+/// 「登记了但永不就绪」= 客户端挂起但存活的零窗口语义）。
+struct WedgeSink {
+    waker: std::cell::RefCell<Option<std::task::Waker>>,
+    fed: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl futures::Sink<Message> for WedgeSink {
+    type Error = std::convert::Infallible;
+
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+        if let Message::Text(t) = item {
+            self.fed.lock().unwrap().push(t.to_string());
+        }
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut()
+            .waker
+            .borrow_mut()
+            .replace(cx.waker().clone());
+        Poll::Pending
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// 主路径：批量帧 feed+flush 挂死 → 写超时必须收尾退出且 done 置位。
+#[tokio::test(start_paused = true)]
+async fn agt_writer_wedged_sink_flush_timeout_breaks_writer() {
+    let (hi_tx, hi_rx) = mpsc::channel(8);
+    let (lo_tx, lo_rx) = mpsc::channel(8);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+
+    hi_tx.send(b"wedged".to_vec()).await.unwrap();
+    drop(hi_tx);
+    drop(lo_tx);
+
+    let fed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = WedgeSink {
+        waker: std::cell::RefCell::new(None),
+        fed: fed.clone(),
+    };
+    let writer = run_send_writer(
+        sink,
+        hi_rx,
+        lo_rx,
+        ping_rx,
+        close_rx,
+        done_tx,
+        "agt-wedge".to_string(),
+    );
+    tokio::time::timeout(Duration::from_secs(60), writer)
+        .await
+        .expect("writer 必须在写超时后收尾退出（不能在挂死 sink 上永挂）");
+    assert!(*done_rx.borrow(), "done 已置位");
+    assert_eq!(
+        *fed.lock().unwrap(),
+        vec!["wedged".to_string()],
+        "帧已入 sink 缓冲（挂点在 flush）"
+    );
+}
+
+/// close 臂同包裹：挂死 sink 上礼貌收尾不能把 writer 拖死在 Close 帧写。
+#[tokio::test(start_paused = true)]
+async fn agt_writer_wedged_sink_close_frame_timeout_breaks_writer() {
+    let (_hi_tx, hi_rx) = mpsc::channel(8);
+    let (_lo_tx, lo_rx) = mpsc::channel(8);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+
+    // 数据通道发送端保活且空（recv_many 挂起）→ close 臂可达；close 先行
+    // 置位（changed() 首轮即命中）。
+    close_tx.send(true).unwrap();
+    drop(close_tx);
+
+    let sink = WedgeSink {
+        waker: std::cell::RefCell::new(None),
+        fed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+    };
+    let writer = run_send_writer(
+        sink,
+        hi_rx,
+        lo_rx,
+        ping_rx,
+        close_rx,
+        done_tx,
+        "agt-wedge-close".to_string(),
+    );
+    tokio::time::timeout(Duration::from_secs(60), writer)
+        .await
+        .expect("close 臂必须在写超时后收尾退出");
+    assert!(*done_rx.borrow(), "done 已置位");
+}
+
+/// ping 臂同包裹：挂死 sink 上保活 ping 不能把 writer 拖死。
+#[tokio::test(start_paused = true)]
+async fn agt_writer_wedged_sink_ping_timeout_breaks_writer() {
+    let (_hi_tx, hi_rx) = mpsc::channel(8);
+    let (_lo_tx, lo_rx) = mpsc::channel(8);
+    let (ping_tx, ping_rx) = mpsc::channel::<()>(1);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+
+    ping_tx.send(()).await.unwrap();
+
+    let sink = WedgeSink {
+        waker: std::cell::RefCell::new(None),
+        fed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+    };
+    let writer = run_send_writer(
+        sink,
+        hi_rx,
+        lo_rx,
+        ping_rx,
+        close_rx,
+        done_tx,
+        "agt-wedge-ping".to_string(),
+    );
+    tokio::time::timeout(Duration::from_secs(60), writer)
+        .await
+        .expect("ping 臂必须在写超时后收尾退出");
+    assert!(*done_rx.borrow(), "done 已置位");
+}
+
 // handle_chat_send：无效 media 注记 + workflow_edit metadata
 
 #[test]
