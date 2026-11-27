@@ -1221,9 +1221,18 @@ async fn input_exe_stderr_flood_does_not_block_stdout_lines_unix() {
     let script = tmp.path().join("input_flood.sh");
     std::fs::write(
         &script,
-        "head -c 200000 /dev/zero 1>&2\necho READY\nsleep 30\n",
+        "#!/bin/sh\nhead -c 200000 /dev/zero 1>&2\necho READY\nsleep 30\n",
     )
     .unwrap();
+    // BUG-20261128-005：fs::write 落 0644 无执行位——Linux execve 直接
+    // EACCES（std 只对 ENOEXEC 回落 /bin/sh，EACCES 原样报错）→ input EXE
+    // spawn 失败 → READY 永不到（coverage 五连红才见光的潜伏死）。+x 后
+    // 无 shebang 亦走 sh 回落；shebang 一并补上双保险。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     let (bus, mut rx) = tokio::sync::broadcast::channel(16);
     let config = ExternalConfig {
