@@ -173,6 +173,151 @@ fn dir_size_skips_link_entries_in_swept_session_dir() {
     assert!(names(&rl).is_empty(), "内容口径：条目已删");
 }
 
+// —— BUG-20261127-033：sweep 枚举位点链接不跟随（two_level 穿透删除主害） ——
+
+/// 主害锁：cluster_logs 根级 junction 指向 logs 子树外目录。旧形态
+/// `parent.is_file()`（跟随）判否 → `read_dir` 穿链接枚举**外部真实子目录**
+/// → 按族 TTL 验龄删除 = 数据破坏面（13-137 修的 dir_size 只是只读统计）。
+/// 守卫后：链接条目不分类不穿不入册——外部树原样、链接本体留存。
+#[test]
+fn two_level_parent_link_not_traversed_no_deletion_through_link() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let base = tempfile::tempdir().unwrap();
+    // 外部目录：一个 40 天前的真实子目录 + 一个新文件——按 cluster_logs
+    // 默认 14d 验龄，子目录是旧形态的必删目标。
+    let outside = base.path().join("outside_data");
+    let victim = outside.join("20240101_abcdef");
+    std::fs::create_dir_all(&victim).unwrap();
+    std::fs::write(victim.join("payload.bin"), vec![0u8; 512]).unwrap();
+    std::fs::write(outside.join("fresh.txt"), "keep").unwrap();
+
+    let cl = base.path().join("logs").join("cluster_logs");
+    std::fs::create_dir_all(&cl).unwrap();
+    plant_link(&cl, "planted", &outside);
+
+    let stats = sweep_workspace_logs(base.path(), &LogsTtl::default(), old_now());
+    let c = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(c.deleted, 0, "穿透删除被守卫: {stats:?}");
+    assert!(
+        victim.join("payload.bin").is_file(),
+        "外部真实数据必须原样（旧形态在此被删）"
+    );
+    assert!(outside.join("fresh.txt").is_file(), "外部新文件原样");
+    assert!(
+        cl.join("planted").exists(),
+        "链接本体保守留存（不分类不删不穿）"
+    );
+}
+
+/// 子层同守卫：真实父目录下的链接子条目（指向外部旧目录）不验龄不删
+///——remove_dir_all 顶层虽不穿，删链接本体仍是「未知形态不动」之外的行为。
+#[test]
+fn two_level_child_link_skipped_external_tree_intact() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let base = tempfile::tempdir().unwrap();
+    let outside = base.path().join("outside_data");
+    let old_dir = outside.join("ancient");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::write(old_dir.join("data.bin"), vec![0u8; 256]).unwrap();
+
+    let cl = base.path().join("logs").join("cluster_logs");
+    let dev = cl.join("node-a");
+    std::fs::create_dir_all(&dev).unwrap();
+    plant_link(&dev, "escape", &outside);
+    // 对照组：真实过期子目录照常删（守卫不误伤正常清扫）。
+    let real = dev.join("20240101_real");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("r.log"), "x").unwrap();
+
+    let stats = sweep_workspace_logs(base.path(), &LogsTtl::default(), old_now());
+    let c = stats
+        .iter()
+        .find(|(f, _)| f.name() == "cluster_logs")
+        .unwrap()
+        .1;
+    assert_eq!(c.deleted, 1, "真实过期子目录照常删: {stats:?}");
+    assert!(old_dir.join("data.bin").is_file(), "链接目标树原样");
+    assert!(dev.join("escape").exists(), "链接本体留存");
+    assert!(!dev.join("20240101_real").exists(), "真实目录已删");
+}
+
+/// 单层目录族同守卫：request_logs 条目位置的链接（旧形态按目标 mtime 验龄
+/// 并删链接本体 + dir_size 穿链接把外部字节谎报进 bytes_freed）——守卫后
+/// 链接条目整条跳过。
+#[test]
+fn flat_family_link_entry_skipped() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let base = tempfile::tempdir().unwrap();
+    let outside = base.path().join("outside_data");
+    let old_dir = outside.join("ancient_session");
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::write(old_dir.join("leak.bin"), vec![0u8; 4096]).unwrap();
+
+    let rl = base.path().join("logs").join("request_logs");
+    std::fs::create_dir_all(&rl).unwrap();
+    plant_link(&rl, "link_entry", &outside);
+
+    let stats = sweep_workspace_logs(base.path(), &LogsTtl::default(), old_now());
+    let req = stats
+        .iter()
+        .find(|(f, _)| f.name() == "request_logs")
+        .unwrap()
+        .1;
+    assert_eq!(req.deleted, 0, "链接条目整条跳过: {stats:?}");
+    assert_eq!(req.bytes_freed, 0, "外部树字节不得计入: {stats:?}");
+    assert!(old_dir.join("leak.bin").is_file(), "外部树原样");
+    assert!(rl.join("link_entry").exists(), "链接本体留存");
+}
+
+/// 单文件族同守卫：heartbeat.log 位置种目录链接——symlink_metadata 判
+/// 链接形态整条不动（未知形态，链接目标树不是本族射程）。
+#[test]
+fn single_file_link_shape_skipped() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let base = tempfile::tempdir().unwrap();
+    let outside = base.path().join("outside_dir");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("x.txt"), "keep").unwrap();
+
+    let logs_root = base.path().join("logs");
+    std::fs::create_dir_all(&logs_root).unwrap();
+    plant_link(&logs_root, "heartbeat.log", &outside);
+
+    let stats = sweep_workspace_logs(base.path(), &LogsTtl::default(), old_now());
+    let hb = stats
+        .iter()
+        .find(|(f, _)| f.name() == "heartbeat")
+        .unwrap()
+        .1;
+    assert_eq!(hb.deleted, 0, "链接形态不删: {stats:?}");
+    assert!(outside.join("x.txt").is_file(), "外部树原样");
+    assert!(logs_root.join("heartbeat.log").exists(), "链接本体留存");
+}
+
+/// 链接种植：Windows `mklink /J`（junction，无特权）/ unix symlink。
+fn plant_link(at: &std::path::Path, name: &str, target: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(at.join(name))
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, at.join(name)).expect("symlink");
+}
+
 // —— 账本末行判定 ——
 
 #[test]
@@ -1032,7 +1177,8 @@ impl LogsTtl {
 }
 
 // ---------------------------------------------------------------------------
-// read_logs_ttl（2026-11-20 热生效语义读侧）：现读解析 / 缺失与坏文件兜底
+// read_logs_ttl（2026-11-20 热生效语义读侧）：现读解析 / 读失败跳拍
+//（BUG-20261127-034：删除面失败回落保守方向）/ 缺文件=默认（Ok 分支）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1045,7 +1191,7 @@ fn read_logs_ttl_parses_config_values() {
         r#"{"logs": {"session_logs": 9, "terminal": 3, "exec_checkpoints": 2, "forge_learn": 45}}"#,
     )
     .unwrap();
-    let ttl = read_logs_ttl(&cfg_path);
+    let ttl = read_logs_ttl(&cfg_path).expect("合法 config = Some");
     assert_eq!(ttl.session_logs, 9);
     assert_eq!(ttl.terminal, 3);
     assert_eq!(ttl.exec_checkpoints, 2);
@@ -1054,16 +1200,25 @@ fn read_logs_ttl_parses_config_values() {
     assert_eq!(ttl.trash, LogsTtl::default().trash);
 }
 
+/// BUG-20261127-034 回归锁：config 读失败 = None（跳拍），不回落默认 TTL。
+/// 旧形态坏 JSON 回 `LogsTtl::default()`——用户把族设 0（关）或长保留时，
+/// 一次并发改写窗口/坏 config 就让该拍按默认值删掉用户显式保留的数据
+///（删除面 fail-open）。缺文件不在此锁内：load_config 对缺失路径回默认
+/// Config（Ok 分支）= 「无用户覆盖」语义，Some(默认) 照常。
 #[test]
-fn read_logs_ttl_defaults_on_missing_and_broken_config() {
-    // 缺文件：load_config 对缺失路径回默认 Config → logs 段缺键 = 全默认。
+fn read_logs_ttl_none_on_broken_config_some_on_missing_file() {
+    // 坏 JSON：读失败 → None（跳拍；warn 在函数内）。
     let dir = tempfile::tempdir().unwrap();
-    let missing = dir.path().join("absent.json");
-    assert_eq!(read_logs_ttl(&missing), LogsTtl::default());
-    // 坏 JSON：读失败 → Default 兜底 + warn（诚实降级，不 panic 不中断清扫）。
     let broken = dir.path().join("broken.json");
     std::fs::write(&broken, "{ not json").unwrap();
-    assert_eq!(read_logs_ttl(&broken), LogsTtl::default());
+    assert_eq!(
+        read_logs_ttl(&broken),
+        None,
+        "读失败必须 None，不得默认兜底"
+    );
+    // 缺文件：Ok 分支（默认 Config）→ Some(默认 TTL)——语义不变。
+    let missing = dir.path().join("absent.json");
+    assert_eq!(read_logs_ttl(&missing), Some(LogsTtl::default()));
 }
 
 // —— forge_learn：学习对话留痕（第十七族，2026-11-24 自学习批次补） ——

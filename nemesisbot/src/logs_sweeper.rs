@@ -404,11 +404,23 @@ fn sweep_family(
     let Ok(entries) = std::fs::read_dir(dir) else {
         return stats; // 目录不存在 = 无可清扫（诚实静默，不为缺目录刷日志）
     };
-    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
+    // BUG-20261127-033：条目分类用 `DirEntry::file_type()`（非跟随，同
+    // dir_size 的 BUG-20261113-137 守卫形态）。旧形态对每个 path 走
+    // `std::fs::metadata`（跟随）：外指 junction/symlink 条目（agent 可
+    // `mklink /J` 无特权在 workspace logs 子树内种）会以目标的 mtime 验龄
+    // 并删除链接本身——链接是未知形态（保守不动哲学），且 dir_size 穿链接
+    // 统计会把外部树字节谎报进 bytes_freed。
+    let mut paths: Vec<(PathBuf, std::fs::FileType)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_type().ok().map(|ft| (e.path(), ft)))
+        .collect();
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, ft) in paths {
         if stats.deleted >= MAX_DELETIONS_PER_SWEEP as u64 {
             break;
+        }
+        if ft.is_symlink() {
+            continue; // 链接条目（含 Windows junction）不分类不删不穿
         }
         // 条目年龄：读不到 mtime = 跳过（保留，诚实——不确定的东西不动）。
         let Ok(meta) = std::fs::metadata(&path) else {
@@ -562,13 +574,26 @@ fn sweep_two_level(dir: &Path, ttl_days: u64, now: SystemTime, family: Family) -
     let Ok(parents) = std::fs::read_dir(dir) else {
         return stats;
     };
-    let mut parent_paths: Vec<PathBuf> = parents.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-    parent_paths.sort();
-    for parent in parent_paths {
+    // BUG-20261127-033：双层枚举全程非跟随（`DirEntry::file_type()`）。
+    // 主害形态：根级 junction/symlink 条目指向 logs 子树外目录时，旧形态
+    // `parent.is_file()`（跟随）判否 → `read_dir(&parent)` 穿链接枚举**外部
+    // 目录的真实子目录** → 按本族 TTL 验龄删除——agent 可 `mklink /J` 无特权
+    // 在 workspace logs 子树内种（BUG-20261113-137 同类威胁模型，该轮修的
+    // dir_size 是只读统计面，本位点是**数据破坏面**：穿链接删外部真实数据）。
+    // 守卫后：链接条目不分类不穿不入册（保守不动），真实目录照常清扫。
+    let mut parent_entries: Vec<(PathBuf, std::fs::FileType)> = parents
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_type().ok().map(|ft| (e.path(), ft)))
+        .collect();
+    parent_entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (parent, pft) in parent_entries {
         if stats.deleted >= MAX_DELETIONS_PER_SWEEP as u64 {
             break;
         }
-        if parent.is_file() {
+        if pft.is_symlink() {
+            continue;
+        }
+        if pft.is_file() {
             // 根级平铺文件：仅 ClusterLogs 族认领 legacy 每日事件流形态。
             if family == Family::ClusterLogs && is_legacy_cluster_daily_log(&parent) {
                 let Ok(meta) = std::fs::metadata(&parent) else {
@@ -608,14 +633,20 @@ fn sweep_two_level(dir: &Path, ttl_days: u64, now: SystemTime, family: Family) -
         let Ok(entries) = std::fs::read_dir(&parent) else {
             continue;
         };
-        let mut child_paths: Vec<PathBuf> =
-            entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-        child_paths.sort();
-        for child in child_paths {
+        // BUG-20261127-033 子层同守卫：真实父目录下的链接子条目（指向外部
+        // 旧目录）不验龄不删——remove_dir_all 顶层虽不跟随链接，删掉链接
+        // 本身仍是「未知形态不动」哲学之外的行为，且 bytes_freed 会穿链接
+        // 统计外部树字节。
+        let mut child_entries: Vec<(PathBuf, std::fs::FileType)> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_type().ok().map(|ft| (e.path(), ft)))
+            .collect();
+        child_entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (child, cft) in child_entries {
             if stats.deleted >= MAX_DELETIONS_PER_SWEEP as u64 {
                 break;
             }
-            if !child.is_dir() {
+            if cft.is_symlink() || !cft.is_dir() {
                 continue;
             }
             // 子目录年龄：读不到 mtime = 跳过（保留，诚实）。
@@ -687,9 +718,13 @@ fn sweep_single_file(path: &Path, ttl_days: u64, now: SystemTime, family: Family
     if ttl_days == 0 {
         return stats; // 族关：零触碰
     }
-    let Ok(meta) = std::fs::metadata(path) else {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
         return stats; // 文件不存在 = 无可清扫
     };
+    if meta.is_symlink() {
+        return stats; // BUG-20261127-033：链接形态保守不动（未知形态——
+        // 链接指向的目标树不是本族射程，删链接只是徒劳拆件）
+    }
     let Ok(mtime) = meta.modified() else {
         return stats; // 读不到 mtime = 保留（诚实）
     };
@@ -881,31 +916,40 @@ fn run_sweep_once(ttl: &LogsTtl) {
 /// 传入，改 config 永不生效且 UI 无提示）。恒装配（全 0 只空转待命，
 /// 否则全 0 启动后改键永不生效）；全 0 = 该拍跳过。
 pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
-    let initial = read_logs_ttl(&config_path);
-    if initial.all_disabled() {
-        info!("[LogsSweeper] logs 十七族 TTL 全 0 —— 清扫待命（每拍现读 config，改键下拍生效）");
-    } else {
-        info!(
-            session_logs_days = initial.session_logs,
-            boundary_days = initial.boundary,
-            request_logs_days = initial.request_logs,
-            terminal_days = initial.terminal,
-            event_ledger_days = initial.event_ledger,
-            trash_days = initial.trash,
-            gateway_days = initial.gateway,
-            cluster_logs_days = initial.cluster_logs,
-            eval_days = initial.eval,
-            capture_days = initial.capture,
-            dreaming_days = initial.dreaming,
-            calibration_days = initial.calibration,
-            deliveries_days = initial.deliveries,
-            heartbeat_days = initial.heartbeat,
-            ziwei_days = initial.ziwei,
-            exec_checkpoints_days = initial.exec_checkpoints,
-            forge_learn_days = initial.forge_learn,
-            interval_secs = SWEEP_INTERVAL_SECS,
-            "[LogsSweeper] logs 十七族 TTL 清扫装配（每拍现读 config，改键下拍生效）"
-        );
+    match read_logs_ttl(&config_path) {
+        Some(ttl) if !ttl.all_disabled() => {
+            info!(
+                session_logs_days = ttl.session_logs,
+                boundary_days = ttl.boundary,
+                request_logs_days = ttl.request_logs,
+                terminal_days = ttl.terminal,
+                event_ledger_days = ttl.event_ledger,
+                trash_days = ttl.trash,
+                gateway_days = ttl.gateway,
+                cluster_logs_days = ttl.cluster_logs,
+                eval_days = ttl.eval,
+                capture_days = ttl.capture,
+                dreaming_days = ttl.dreaming,
+                calibration_days = ttl.calibration,
+                deliveries_days = ttl.deliveries,
+                heartbeat_days = ttl.heartbeat,
+                ziwei_days = ttl.ziwei,
+                exec_checkpoints_days = ttl.exec_checkpoints,
+                forge_learn_days = ttl.forge_learn,
+                interval_secs = SWEEP_INTERVAL_SECS,
+                "[LogsSweeper] logs 十七族 TTL 清扫装配（每拍现读 config，改键下拍生效）"
+            );
+        }
+        Some(_) => {
+            info!(
+                "[LogsSweeper] logs 十七族 TTL 全 0 —— 清扫待命（每拍现读 config，改键下拍生效）"
+            );
+        }
+        None => {
+            // BUG-20261127-034：config 读失败 = 待命（删除面不确定不动），
+            // 下拍现读重试；不回落默认 TTL。
+            info!("[LogsSweeper] config 读失败——清扫待命（下拍现读 config 重试）");
+        }
     }
     tokio::spawn(async move {
         // BUG-20261118-172：run_sweep_once 是重阻塞 sync 清扫（十七族遍历，
@@ -914,9 +958,10 @@ pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
         // 直跑 tokio worker 会阻塞 executor。fsutil.rs LOW-5 家族纪律：
         // spawn_blocking 移出（同族先例 anchors.rs、sessions.rs
         // BUG-20261031-248、outbox.rs BUG-20261114-013）。
-        // 启动扫一次：全 0 = 跳过（待命态，下拍现读再判）。
-        let startup_ttl = read_logs_ttl(&config_path);
-        if !startup_ttl.all_disabled()
+        // 启动扫一次：全 0 / config 读失败（BUG-20261127-034）= 跳过
+        //（待命态，下拍现读再判）。
+        if let Some(startup_ttl) = read_logs_ttl(&config_path)
+            && !startup_ttl.all_disabled()
             && let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&startup_ttl)).await
         {
             warn!("[LogsSweeper] 启动清扫任务 join 失败: {e}");
@@ -929,8 +974,10 @@ pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
             if !terminal_loop_tick(terminal_cancel_token(), interval.tick()).await {
                 break;
             }
-            // 每拍现读 config（热生效语义）；全 0 = 该拍跳过空转。
-            let ttl = read_logs_ttl(&config_path);
+            // 每拍现读 config（热生效语义）；读失败 / 全 0 = 该拍跳过空转。
+            let Some(ttl) = read_logs_ttl(&config_path) else {
+                continue;
+            };
             if ttl.all_disabled() {
                 continue;
             }
@@ -941,15 +988,19 @@ pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
     });
 }
 
-/// 现读 config `logs` 段解析十七族 TTL（热生效语义的读侧）。读失败 /
-/// 缺文件 = 默认值兜底 + warn——诚实降级不中断清扫（与缺键=全默认的
-/// 解析语义同源；坏 config 不清空既有保留策略）。
-fn read_logs_ttl(config_path: &std::path::Path) -> LogsTtl {
+/// 现读 config `logs` 段解析十七族 TTL（热生效语义的读侧）。`None` =
+/// config 读失败（含缺文件）——本拍跳过清扫（BUG-20261127-034：删除面的
+/// 失败回落必须保守。旧形态回落 `LogsTtl::default()`，用户把族设 0（关）
+/// 或长保留时，一次并发改写窗口/坏 config 就会让该拍按**默认值**删掉用户
+/// 显式保留的数据——fail-open 方向；跳过一拍只是延迟 6h，代价不对称）。
+/// config 解析成功但缺 `logs` 键 = `Some(LogsTtl::default())`（缺键=全默认
+/// 的解析语义不变——那是用户的真实选择空间，不是读取失败）。
+fn read_logs_ttl(config_path: &std::path::Path) -> Option<LogsTtl> {
     match nemesis_config::load_config(config_path) {
-        Ok(cfg) => LogsTtl::from_config(cfg.logs.as_ref()),
+        Ok(cfg) => Some(LogsTtl::from_config(cfg.logs.as_ref())),
         Err(e) => {
-            warn!("[LogsSweeper] config 读失败（{e}）——本拍用默认 TTL");
-            LogsTtl::default()
+            warn!("[LogsSweeper] config 读失败（{e}）——本拍跳过清扫（下拍重读）");
+            None
         }
     }
 }

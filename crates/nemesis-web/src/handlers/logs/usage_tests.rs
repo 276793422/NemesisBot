@@ -1,7 +1,8 @@
-//! C（2026-11-22 批二）：logs.usage 十六族占用统计测试。
+//! C（2026-11-22 批二）：logs.usage 十七族占用统计测试。
 //!
 //! 夹具：tempdir workspace + 用生产 resolver/写端同构路径造族文件。
-//! 钉住三面契约：①族表齐全恰 16 族（漏族=前端占用条缺行）；
+//! 钉住三面契约：①族表齐全恰 17 族（漏族=前端占用条缺行；
+//! BUG-20261127-035：forge_learn 补族时漏镜像，此锁防再犯）；
 //! ②逐族 bytes/entries 与盘上实测一致（含单文件族 heartbeat、混合根族
 //! ziwei 的 reports 树）；③缺席族诚实 0/0、totals 恒等于逐族合计。
 
@@ -16,13 +17,14 @@ fn write_file(dir: &std::path::Path, rel: &str, content: &str) -> u64 {
 }
 
 #[test]
-fn usage_reports_sixteen_families_with_accurate_stats() {
+fn usage_reports_seventeen_families_with_accurate_stats() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
     let logs_root = nemesis_path::logs_dir_in_workspace(ws);
 
     // 三族夹具：request_logs（resolver 定位）、terminal（logs 根拼装）、
-    // heartbeat（单文件族）、ziwei（混合根族 reports 树）。
+    // heartbeat（单文件族）、ziwei（混合根族 reports 树）、forge_learn
+    //（跨根族，BUG-20261127-035 补镜像后进断言）。
     let b1 = write_file(
         &nemesis_path::resolve_request_logs_dir_in_workspace(ws),
         "20261122_abc/00.request.md",
@@ -42,13 +44,18 @@ fn usage_reports_sixteen_families_with_accurate_stats() {
         "report.json",
         "1234",
     ); // 4 B
+    let b6 = write_file(
+        &ws.join("forge").join("learn"),
+        "20261124_180000_reflect/outcome.json",
+        "fledge",
+    ); // 6 B
 
     let out = LogsHandler.usage(ws.to_str().unwrap()).unwrap().unwrap();
     let families = out["families"].as_object().expect("families map");
     assert_eq!(
         families.len(),
-        16,
-        "十六族齐全: {:?}",
+        17,
+        "十七族齐全: {:?}",
         families.keys().collect::<Vec<_>>()
     );
     for name in [
@@ -66,6 +73,7 @@ fn usage_reports_sixteen_families_with_accurate_stats() {
         "calibration",
         "deliveries",
         "exec_checkpoints",
+        "forge_learn",
         "heartbeat",
         "ziwei",
     ] {
@@ -84,6 +92,8 @@ fn usage_reports_sixteen_families_with_accurate_stats() {
     assert_eq!(families["heartbeat"]["entries"], 1);
     assert_eq!(families["ziwei"]["bytes"], b5, "ziwei reports 树合计");
     assert_eq!(families["ziwei"]["entries"], 1);
+    assert_eq!(families["forge_learn"]["bytes"], b6, "forge_learn 跨根族");
+    assert_eq!(families["forge_learn"]["entries"], 1);
 
     // totals = 逐族合计（sum over families，与夹具总和一致）。
     let sum_bytes: u64 = families
@@ -98,10 +108,10 @@ fn usage_reports_sixteen_families_with_accurate_stats() {
     assert_eq!(out["total_entries"], sum_entries);
     assert_eq!(
         out["total_bytes"],
-        b1 + b2 + b3 + 2 + b5,
+        b1 + b2 + b3 + 2 + b5 + b6,
         "totals 与盘上实测一致: {out}"
     );
-    assert_eq!(out["total_entries"], 2 + 1 + 1 + 1);
+    assert_eq!(out["total_entries"], 2 + 1 + 1 + 1 + 1);
 }
 
 #[test]
@@ -112,7 +122,7 @@ fn usage_missing_families_report_zero() {
         .unwrap()
         .unwrap();
     let families = out["families"].as_object().unwrap();
-    assert_eq!(families.len(), 16);
+    assert_eq!(families.len(), 17);
     for (name, v) in families {
         assert_eq!(v["bytes"], 0, "缺席族 {name} 应 0/0: {v}");
         assert_eq!(v["entries"], 0);

@@ -260,7 +260,7 @@ impl ModuleHandler for LogsHandler {
             "history_reindex" => tokio::task::spawn_blocking(move || LogsHandler.history_reindex())
                 .await
                 .map_err(|e| format!("logs.history_reindex task join failed: {e}"))?,
-            // C（2026-11-22 批二）：十六族日志占用统计（数据治理 TAB 占用
+            // C（2026-11-22 批二）：十七族日志占用统计（数据治理 TAB 占用
             // 条）。on-demand 递归游走，request_logs 675MB 级单次打开可接受
             // ——重活移阻塞线程（本文件顶部纪律）。
             "usage" => {
@@ -2158,11 +2158,13 @@ impl LogsHandler {
         })))
     }
 
-    /// C（2026-11-22 批二）：十六族日志占用统计（数据治理 TAB 占用条）。
+    /// C（2026-11-22 批二）：十七族日志占用统计（数据治理 TAB 占用条）。
     /// on-demand 递归游走，返回每族 `{bytes, entries}`；族→路径映射与
     /// 清扫器 `nemesisbot::logs_sweeper::sweep_workspace_logs` 同构（可独立
     /// resolver 的族复用 nemesis-path 写端真相源，无 resolver 的族与写端
-    /// 同构拼装——清扫侧真相源在 nemesisbot crate，本表是读侧镜像）。
+    /// 同构拼装——清扫侧真相源在 nemesisbot crate，本表是读侧镜像；
+    /// BUG-20261127-035：族增删两侧需同步，2026-11-24 补 forge_learn 族时
+    /// 曾漏本表）。
     /// `entries` = 递归文件件数（目录不计数；heartbeat 单文件在场=1；
     /// ziwei 三根合计）。族缺席 = 0/0（诚实上报，不区分「没开过」与
     /// 「TTL 刚清完」）。纯只读，不动任何文件。
@@ -2180,7 +2182,7 @@ impl LogsHandler {
                 serde_json::json!({ "bytes": stats.0, "entries": stats.1 }),
             );
         };
-        // 十四目录族（次序 = 清扫器 sweep_workspace_logs 同构）。
+        // 十五目录族（次序 = 清扫器 sweep_workspace_logs 同构）。
         for (name, dir) in [
             (
                 "session_logs",
@@ -2214,6 +2216,11 @@ impl LogsHandler {
             ("calibration", logs_root.join("calibration")),
             ("deliveries", logs_root.join("deliveries")),
             ("exec_checkpoints", logs_root.join("exec_checkpoints")),
+            // BUG-20261127-035：forge_learn 第十七族（2026-11-24 清扫器补族
+            // 时漏了本读侧镜像）——不在 logs/ 根下，写端 forge.rs trace_dir
+            // = `<ws>/forge/learn/{ts}_{trigger}/`，与清扫器 sweep_workspace_logs
+            // 同构拼装（ziwei 跨根先例同款）。
+            ("forge_learn", ws.join("forge").join("learn")),
         ] {
             push(name, walk_dir_stats(&dir));
         }
