@@ -179,23 +179,16 @@ fn detect_known_small_api_tier_names_not_big() {
 
 #[test]
 fn resolve_passes_through_explicit() {
-    let h = TierHint {
-        full_model: Some("qwen/qwen3-30b".into()),
-        real_name: None,
-        size_b: None,
-    };
-    assert_eq!(ModelTier::Mini.resolve(&h), ModelTier::Mini);
-    assert_eq!(ModelTier::Big.resolve(&h), ModelTier::Big);
+    assert_eq!(ModelTier::Mini.resolve(), ModelTier::Mini);
+    assert_eq!(ModelTier::Big.resolve(), ModelTier::Big);
+    assert_eq!(ModelTier::Normal.resolve(), ModelTier::Normal);
 }
 
 #[test]
-fn resolve_auto_uses_hint() {
-    let h = TierHint {
-        full_model: Some("qwen/qwen3-30b".into()),
-        real_name: None,
-        size_b: None,
-    };
-    assert_eq!(ModelTier::Auto.resolve(&h), ModelTier::Mini);
+fn resolve_auto_maps_to_big() {
+    // 2026-11-28 检测退役：Auto 直落 Big（名字 hint 不再参与——旧形态
+    // qwen3-30b 会被误判 Mini，demo glm-5.3-flash 同型事故）。
+    assert_eq!(ModelTier::Auto.resolve(), ModelTier::Big);
 }
 
 #[test]
@@ -226,21 +219,49 @@ fn resolve_active_tier_from_config() {
              "model_tier": "big"}
         ]
     });
-    // Auto-detected from name.
-    assert_eq!(resolve_active_tier(&cfg, "qwen3-30b-a3b"), ModelTier::Mini);
+    // 检测退役（2026-11-28）：auto/缺席统一直落 Big——qwen3-30b-a3b 在
+    // 旧检测下会被名字关键词误判 Mini（demo glm-5.3-flash 同型事故实证）。
+    assert_eq!(resolve_active_tier(&cfg, "qwen3-30b-a3b"), ModelTier::Big);
     // Explicit tier, passes through.
     assert_eq!(resolve_active_tier(&cfg, "claude-sonnet-4"), ModelTier::Big);
     // Unknown alias → Big (safest default).
     assert_eq!(resolve_active_tier(&cfg, "nonexistent"), ModelTier::Big);
 }
 
-/// BUG-20261114-055 回归锁：`model_size_b` 越域值按「未设」处理。
-/// 0 = resolver 家族缺席惯例（修复前 Some(0)→tier_from_size_b 0..=39 桶
-/// →Mini 钉死）；>u32::MAX 修复前裸 `as u32` 静默回绕（4_294_967_296→0
-/// →Mini——误判强模型为小 = 模块设计原则点名的不可恢复方向）。修复后
-/// 越域 → None → opaque 别名落默认 Big；正常值行为不变。
+/// 2026-11-28 默认 big 拍板回归锁：glm-5.3-flash 型条目（`model_tier`
+/// 缺席或显式 `"auto"`）必须直落 Big——demo 实证旧 auto 检测把该名字
+/// 关键词误判 Mini，惰性供给折叠 schema 后纯文字解锁失效、三轮
+/// validation 停轮（不可恢复方向）。显式 mini/normal/big 不受影响。
 #[test]
-fn resolve_active_tier_model_size_b_out_of_domain_treated_as_unset() {
+fn resolve_active_tier_auto_and_absent_default_to_big() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model": "zhipu/glm-5.3-flash", "model_name": "glm-5.3-flash"},
+            {"model": "zhipu/glm-5.3-flash-2", "model_name": "glm-5.3-flash-2",
+             "model_tier": "auto"},
+            {"model": "m/x", "model_name": "explicit-mini", "model_tier": "mini"}
+        ]
+    });
+    assert_eq!(
+        resolve_active_tier(&cfg, "glm-5.3-flash"),
+        ModelTier::Big,
+        "字段缺席 = Big（旧检测误判 Mini 的实证形态）"
+    );
+    assert_eq!(
+        resolve_active_tier(&cfg, "glm-5.3-flash-2"),
+        ModelTier::Big,
+        "显式 \"auto\" = Big"
+    );
+    // 显式值照旧采信（用户最大）。
+    assert_eq!(resolve_active_tier(&cfg, "explicit-mini"), ModelTier::Mini);
+}
+
+/// BUG-20261114-055 回归锁（历史行为锚）：`model_size_b` 任何取值——缺席
+/// 惯例 0、u32/u64 越域回绕值、域内正常值——都不得把档位拉离 Big。
+/// 2026-11-28 检测退役后解析路径不再消费 `model_size_b`（resolver 层越域
+/// filter 已随 TierHint 构造一并退役），四臂恒 Big 即本锁的新形态。
+#[test]
+fn resolve_active_tier_model_size_b_never_pulls_tier_off_big() {
     let cfg = serde_json::json!({
         "model_list": [
             {"model_name": "zero", "model": "x/zero", "model_size_b": 0},
@@ -251,7 +272,6 @@ fn resolve_active_tier_model_size_b_out_of_domain_treated_as_unset() {
             {"model_name": "valid", "model": "x/valid", "model_size_b": 30}
         ]
     });
-    // opaque 别名无名字标记可依，model_size_b 是唯一 tier 信号。
     assert_eq!(
         resolve_active_tier(&cfg, "zero"),
         ModelTier::Big,
@@ -260,7 +280,7 @@ fn resolve_active_tier_model_size_b_out_of_domain_treated_as_unset() {
     assert_eq!(
         resolve_active_tier(&cfg, "wrap"),
         ModelTier::Big,
-        "u32::MAX+1 回绕值不吞（修复前 as u32 → 0 → Mini）"
+        "u32::MAX+1 回绕值不吞（历史 as u32 → 0 → Mini 形态）"
     );
     assert_eq!(
         resolve_active_tier(&cfg, "huge"),
@@ -269,8 +289,8 @@ fn resolve_active_tier_model_size_b_out_of_domain_treated_as_unset() {
     );
     assert_eq!(
         resolve_active_tier(&cfg, "valid"),
-        ModelTier::Mini,
-        "正常值行为不变（30 → Mini 桶）"
+        ModelTier::Big,
+        "域内正常值（30）也不再驱动档位（检测退役）"
     );
 }
 

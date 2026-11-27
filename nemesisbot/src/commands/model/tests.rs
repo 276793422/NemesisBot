@@ -2241,9 +2241,10 @@ async fn test_run_set_family_empty_name_bails() {
 // wave_b（coverage 补测）：miss 行清零补洞。
 //
 // 目标行（model.rs）与本模块的对应关系：
-//  - 195（config 无 model_list 键时的首次插入臂）+ 236-238（tinyllama 命中
-//    small_markers → 非 big 提示 else 臂）→
-//    wave_b_run_add_inserts_model_list_key_and_mini_hint；
+//  - 195（config 无 model_list 键时的首次插入臂）→
+//    wave_b_run_add_inserts_model_list_key_and_defaults_tier_auto
+//    （2026-11-28 检测退役后 add 恒提示默认 big 档，旧 tinyllama else 臂
+//    已随之移除，测试只锚落盘形态）；
 //  - 333（非 verbose 也打印的 "Base URL:" 行）+ 337-355 verbose 全臂
 //    （key 非空圆点遮蔽 / key 空串 "(not set)" / API Base / Proxy 非空 /
 //    Auth Method 非空）→ wave_b_run_list_verbose_and_base_url_rows；
@@ -2282,7 +2283,7 @@ mod wave_b {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
-    async fn wave_b_run_add_inserts_model_list_key_and_mini_hint() {
+    async fn wave_b_run_add_inserts_model_list_key_and_defaults_tier_auto() {
         let _guard = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -2292,8 +2293,9 @@ mod wave_b {
 
         run(
             ModelAction::Add {
-                // tinyllama 在 capability small_markers 里 ⇒ detect_tier=Mini
-                // ⇒ 提示打印走 else 臂（236-238），而非 big 建议。
+                // 2026-11-28 检测退役：add 不再按名字判断档位（旧 tinyllama
+                // 命中 small_markers → 非 big 提示的 else 臂已移除），本测试
+                // 只锚落盘形态——model_tier=auto 是合法值，解析时 = big。
                 model: Some("tinyllama/local-1".into()),
                 provider: None,
                 key: Some("k".into()),

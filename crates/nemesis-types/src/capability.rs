@@ -2,18 +2,21 @@
 //!
 //! A per-model size/capability classification that drives tool-set size,
 //! validation-retry budget, and format-repair gating. Stored on each model
-//! entry in `config.json` as `model_tier` (default `"auto"`), resolved to a
-//! concrete tier at agent-construction time via name/size heuristics.
+//! entry in `config.json` as `model_tier` (default `"auto"`).
 //!
-//! Design note: when detection is unsure, we default to [`ModelTier::Big`] (full
-//! toolset). Wrongly withholding tools from a strong model is unrecoverable;
-//! wrongly over-provisioning a weak model is caught by schema validation
-//! and degrades gracefully.
+//! 2026-11-28 auto 检测退役（用户拍板「不管什么模型默认都是 big」）：名字/
+//! 参数量启发式把强模型误判成小档是设计原则点名的不可恢复方向，且事后
+//! 无法由模型自救（demo glm-5.3-flash 实证——auto 误判 mini，惰性供给折叠
+//! schema 后纯文字解锁指令对 schema 权威模型失效，三轮 validation 烧尽
+//! 停轮）。`Auto`（显式 `"auto"` 或字段缺席）统一直落 [`ModelTier::Big`]；
+//! 显式 `mini`/`normal`/`big` 照旧采信（用户最大）。[`detect_tier`] 检测链
+//! 保留为 pub 纯函数（历史回归测试锚定），解析路径不再消费。
 
 use serde::{Deserialize, Serialize};
 
-/// User-facing tier. `Auto` means "detect via heuristic"; the others are
-/// explicit user overrides that short-circuit detection ("user knows best").
+/// User-facing tier. `Auto`（显式 `"auto"` 或字段缺席）= 默认 big 档
+/// （2026-11-28 检测退役，见模块文档）；`mini`/`normal`/`big` 为显式用户
+/// 指定，原样采信（"user knows best"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelTier {
@@ -33,11 +36,12 @@ impl ModelTier {
         matches!(self, ModelTier::Auto)
     }
 
-    /// Resolve a (possibly `Auto`) tier against gathered hints. Explicit
-    /// (non-Auto) tiers always pass through unchanged.
-    pub fn resolve(self, hint: &TierHint) -> ModelTier {
+    /// Resolve a (possibly `Auto`) tier. Explicit (non-Auto) tiers always
+    /// pass through unchanged; `Auto` maps straight to [`ModelTier::Big`]
+    /// （2026-11-28 检测退役，见模块文档——不再按名字/参数量猜测）。
+    pub fn resolve(self) -> ModelTier {
         match self {
-            ModelTier::Auto => detect_tier(hint),
+            ModelTier::Auto => ModelTier::Big,
             other => other,
         }
     }
@@ -225,42 +229,15 @@ pub fn find_model_entry<'a>(
 ///
 /// Looks up `model_list[]` for the entry matching `active_alias` (by
 /// `model_name` or `model`, bare-suffix 回落见 [`find_model_entry`]), reads its
-/// `model_tier` (default `Auto`), and resolves via the heuristic. Returns `Big`
-/// if the model can't be found.
+/// `model_tier`：显式 `mini`/`normal`/`big` 采信，`auto`/字段缺席 = Big
+/// （2026-11-28 检测退役——`model_size_b`/`real_name` 保留为展示元数据，
+/// 不再参与解析）。Returns `Big` if the model can't be found.
 pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> ModelTier {
-    let Some(entry) = find_model_entry(cfg, active_alias) else {
-        return ModelTier::Big;
-    };
-
-    let tier: ModelTier = entry
-        .get("model_tier")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    let hint = TierHint {
-        full_model: entry
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        real_name: entry
-            .get("real_name")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        // BUG-20261114-055：越域值按「未设」（None）处理——0 = resolver
-        // 家族缺席惯例（max_output_tokens / context_window /
-        // compact_context_tokens 全 `.filter(>0)` 同族）；>u32::MAX 旧代码
-        // 裸 `as u32` 静默回绕（4_294_967_296→0→Mini 钉死，恰是本模块
-        // 设计原则点名的「误判强模型为小 = 不可恢复」方向；loud 拒绝
-        // 先例：config_port_to_u16 同理由拒绝裸 `as u16`）。误输入宁落
-        // 名字检测 / 默认 Big，不吞进错误桶。
-        size_b: entry
-            .get("model_size_b")
-            .and_then(|v| v.as_u64())
-            .filter(|n| *n > 0 && *n <= u32::MAX as u64)
-            .map(|n| n as u32),
-    };
-
-    tier.resolve(&hint)
+    find_model_entry(cfg, active_alias)
+        .and_then(|entry| entry.get("model_tier").cloned())
+        .and_then(|v| serde_json::from_value::<ModelTier>(v).ok())
+        .unwrap_or_default()
+        .resolve()
 }
 
 /// Resolve the per-model output token cap (`max_output_tokens`) for the active

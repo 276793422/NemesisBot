@@ -1183,9 +1183,10 @@ impl AgentLoop {
         nemesis_types::constants::BUILTIN_SLASH_COMMANDS;
 
     /// a: re-resolve the capability tier against the currently active
-    /// model by reading config.json live. Per-model `model_tier`/`real_name`/
-    /// `model_size_b` are honoured; a missing/unreadable config falls back to
-    /// the name heuristic. Called after every model switch and on config change.
+    /// model by reading config.json live. Per-model `model_tier` is honoured:
+    /// 显式 mini/normal/big 采信；`auto`/缺席 = Big（2026-11-28 检测退役）。
+    /// A missing/unreadable config also falls back to Big. Called after every
+    /// model switch and on config change.
     // 热重载收编登记：此处非纯数据加载（读 config 后写多个
     // AgentLoop 状态），HotReloader<T> 的 fn(&Path)->T 形状装不下——保留独立
     // 实现并登记（计划原文"诚实优于强行统一"）。收编需 trait 形状的 reloader。
@@ -1195,25 +1196,20 @@ impl AgentLoop {
             return;
         }
         let active = self.active_model.read().clone();
-        // standalone（无 config_path）→ 保持启动 tier（旧语义；名字启发式
-        // 回退只属于「绑定了 config 但代缺席」的失败路径）。
+        // standalone（无 config_path）→ 保持启动 tier（旧语义；Big 回退只
+        // 属于「绑定了 config 但代缺席」的失败路径）。
         if self.config_path.read().is_none() {
             return;
         }
         // 切换点先对账发布（盘上 config 可能已变——dashboard/CLI 改键），
         // 内容闸未变 = 现行代仍是盘上真相；再从现行代解析。无代（绑定后
-        // 发布失败）→ 名字启发式，与旧读盘失败的回退同语义。
+        // 发布失败）→ 与「条目缺席」同口径落 Big，不再走名字启发式
+        // （2026-11-28 检测退役）。
         self.republish_config_generation(false);
         let tier = self
             .config_generation()
             .map(|v| nemesis_types::capability::resolve_active_tier(&v, &active))
-            .unwrap_or_else(|| {
-                nemesis_types::capability::detect_tier(&nemesis_types::capability::TierHint {
-                    full_model: Some(active.clone()),
-                    real_name: None,
-                    size_b: None,
-                })
-            });
+            .unwrap_or(nemesis_types::capability::ModelTier::Big);
         if *self.tier.read() != tier {
             info!(
                 "[AgentLoop] Active model '{}' → capability tier {} (re-resolved from config.json)",

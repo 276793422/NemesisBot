@@ -521,23 +521,12 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
 
             println!("Model added: {}", model);
-            // a: print the auto-detected capability tier (advisory).
-            {
-                let hint = nemesis_types::capability::TierHint {
-                    full_model: Some(model.clone()),
-                    real_name: None,
-                    size_b: None,
-                };
-                let resolved = nemesis_types::capability::detect_tier(&hint);
-                if resolved == nemesis_types::capability::ModelTier::Big {
-                    println!(
-                        "  → 能力档位：big（全量工具）。若此模型实际是小模型（如 30B 左右），建议：nemesisbot model set-tier {} mini",
-                        model_name_alias
-                    );
-                } else {
-                    println!("  → 能力档位：{}（自动检测）", resolved);
-                }
-            }
+            // 档位提示（2026-11-28 检测退役）：auto/缺席统一直落 big，
+            // 不再按名字猜测——小模型显式降档。
+            println!(
+                "  → 能力档位：big（默认档，全量工具）。小模型请显式降档：nemesisbot model set-tier {} mini|normal",
+                model_name_alias
+            );
             if default {
                 println!("Set as default model.");
             } else {
@@ -1000,15 +989,13 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     anyhow::anyhow!("Invalid size '{}'. Examples: 30B, 9b, 70, 120B", size)
                 })?;
             // BUG-20261114-055：0 非法（与 Dashboard 同字段写入面
-            // models.rs attribute 编辑器 "must be > 0" 同规则）——写 0 会被
-            // auto 检测钉死 Mini（0..=39 桶，13 工具）。清除尺寸语义走
-            // 显式 `model set-tier`，不借 0。
+            // models.rs attribute 编辑器 "must be > 0" 同规则）。清除档位
+            // 语义走显式 `model set-tier`，不借 0。
             if size_b == 0 {
                 anyhow::bail!("Invalid size '0': model_size_b must be > 0.");
             }
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
-            let resolved = nemesis_types::capability::tier_from_size_b(size_b);
             let updated = update_model_entry(&mut cfg, &name, |e| {
                 e["model_size_b"] = serde_json::Value::Number(size_b.into());
             });
@@ -1016,8 +1003,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 println!(
-                    "✓ {} → model_size_b={} (auto 检测将解析为 tier={})",
-                    name, size_b, resolved
+                    "✓ {} → model_size_b={}（展示元数据；2026-11-28 检测退役后档位解析不再使用参数量，降档用 model set-tier）",
+                    name, size_b
                 );
             } else {
                 anyhow::bail!("Model not found: {}", name);
@@ -1035,19 +1022,12 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let updated = update_model_entry(&mut cfg, &name, |e| {
                 e["real_name"] = serde_json::Value::String(real_name.clone());
             });
-            // Show what the auto-detection resolves to now.
-            let hint = nemesis_types::capability::TierHint {
-                full_model: None,
-                real_name: Some(real_name.clone()),
-                size_b: None,
-            };
-            let resolved = nemesis_types::capability::detect_tier(&hint);
             if updated {
                 // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 println!(
-                    "✓ {} → real_name=\"{}\" (auto 检测将解析为 tier={})",
-                    name, real_name, resolved
+                    "✓ {} → real_name=\"{}\"（展示元数据；2026-11-28 检测退役后档位解析不再使用名字检测，降档用 model set-tier）",
+                    name, real_name
                 );
             } else {
                 anyhow::bail!("Model not found: {}", name);
