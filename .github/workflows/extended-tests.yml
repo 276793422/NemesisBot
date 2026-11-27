@@ -45,9 +45,22 @@ jobs:
     # seed_cache=true 引导轮：job 名带醒目 SEED 标注——该轮故意红（见文件尾
     # Seed-run marker），红脸在 Actions 页一眼可辨是引导不是故障（2026-10-12
     # 实录：seed 轮红灯被误读为 ET 出错）。非 dispatch 触发时 inputs 为空，后缀为空串。
-    name: Full workspace tests (Linux)${{ inputs.seed_cache == true && ' 【SEED·仅构建落缓存·不跑测试·故意红】' || '' }}
+    name: Full workspace tests (Linux, shard ${{ matrix.shard }})${{ inputs.seed_cache == true && ' 【SEED·仅构建落缓存·不跑测试·故意红】' || '' }}
     # seed_cache 引导轮只构建落缓存，测试 job 全跳过（省 VM 时长）
     if: ${{ inputs.seed_cache != true }}
+    # 三切片（BUG-20261127-032）：单腿制连续多日确定性暴死（11-20 八连死
+    # 54:01 恒定；11-27 实录 BUG-029 配置 66min 死、BUG-031 资源姿势仍 ~54min
+    # 死，全零日志 BlobNotFound）——方差大于配置差 = 冻结彩票模型（同 UAT
+    # 战役终局模型：与负载/时长无关、任意 phase、切段不降单点概率，真实
+    # 价值 = 失败半径缩小 + rerun 只重跑死片）。资源姿势（清盘 escalation
+    # + JOBS:3 + 无增量）保留为地板，但根治靠把单腿 70-90min 暴露面切成
+    # 三片 ~25-35min，滑出 45-55min 冻结窗。nextest hash 分区与 ci.yml
+    # rust-test 同机制（切片并集=全集，无重叠）。doc 测试落 shard 1 兜底
+    # （nextest 不跑 doctest，原 cargo test 的这一面不能丢）。
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     # ubuntu-latest 已迁 26.04（resolute），GTK/webkit2gtk dev 包 apt 找不到
     # （libwebkit2gtk-4.1-dev 等 Unable to locate，exit 100）——本 job 装
     # GTK 系依赖，钉回 24.04（迁移前原镜像，行为不变）。
@@ -91,13 +104,23 @@ jobs:
         shell: bash
         run: rustup target add wasm32-wasip2
 
+      # cargo-nextest（BUG-20261127-032 切片前置）：hash 分区与 ci.yml
+      # rust-test 同机制。prebuilt 直装秒级。
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       # workspaces 收编示例插件（嵌套独立 workspace）：fixture 构建产物
       # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
       # plugins/plugin-roaming 同理（QUIC 插件化 M1：独立 workspace，
       # iroh 全家桶冷构建 10 分钟级，不收编则每夜白烧）。
+      # prefix-key 按片隔离（BUG-20261127-032）：三片测试集不同→产物集
+      # 不同，共用 key 会互相踢；分片独立缓存，各自渐进变暖。
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: et-linux-s${{ matrix.shard }}
           cache-on-failure: true
           workspaces: |
             .
@@ -157,14 +180,10 @@ jobs:
           rm -rf ../crates/nemesis-web/static/assets
           npm run build
 
-      - name: cargo test --workspace
+      - name: cargo nextest --workspace (partition ${{ matrix.shard }}/3)
         # 雷区 11（2026-09-01 nemesis_web 实录）：GH ubuntu runner 默认
         # ulimit -n 1024，fd 表进程级终生持有——nemesis_web 全量跑到 ~400
         # 个后耗尽，后续上千个连坐 panic（Os error 24）。跑前抬高，不改代码。
-        # --no-fail-fast（2026-09-02 bwrap 实录）：cargo 默认一个测试二进制
-        # 失败就中止整个 workspace 跑——nemesis-sandbox 一红，后面
-        # security..nemesisbot 约 2000 个测试全没跑。nightly 要的是全量
-        # 体检报告，一轮把所有红都暴露出来，不在半路掐断。
         # 平台形态标记约定（2026-09-02 起，替代旧的 --exclude nemesisbot）：
         # Windows 形态的 CLI 测试（.exe 硬编码 / taskkill / ComSpec 等
         # 进程边界假设）在测试 fn 上挂 `#[cfg(windows)]`——Linux 上编译期
@@ -172,6 +191,10 @@ jobs:
         # （雷区 21 家族，模块粒度不可行：29 个失败模块里 28 个混合，
         # 1,386 个 Linux 绿测试会被陪葬）。新增此类测试不挂标记会在本
         # job 红出来——有兜底，不静默。
+        # Passed floor（BUG-20261127-032，同 UAT 切段守卫哲学）：partition
+        # 参数 typo 会静默退化成小集合假绿，floor 拦住。全量 ~3800+，三分
+        # 片公平份额 ~1250+，hash 不平衡下最坏桶也 >800——floor 500 只拦
+        # typo 级退化，不拦正常波动。
         run: |
           echo "=== disk before test build ==="
           df -h /
@@ -180,16 +203,31 @@ jobs:
           # 暴毙轮与日志同殁（agent 死了后台进程也没了）——零成本尝试。
           nohup bash -c 'for i in $(seq 1 40); do date -u +%H:%M:%S >> /tmp/df_trace.txt; df --output=avail -h / | tail -1 >> /tmp/df_trace.txt; sleep 60; done' >/dev/null 2>&1 &
           ulimit -n 8192
-          cargo test --workspace --no-fail-fast
+          set -o pipefail
+          cargo nextest run --workspace --partition hash:${{ matrix.shard }}/3 2>&1 | tee nextest-s${{ matrix.shard }}.log
+          n=$(grep -oE '[0-9]+/[0-9]+ tests passed' nextest-s${{ matrix.shard }}.log | grep -oE '^[0-9]+' | tail -1)
+          echo "nextest shard ${{ matrix.shard }} executed: ${n:-0} passed (floor 500)"
+          if [ -z "$n" ] || [ "$n" -lt 500 ]; then
+            echo "::error::nextest shard ${{ matrix.shard }} passed ${n:-0} < floor 500（partition 参数 typo 或套件未跑完，不许假绿）"
+            exit 1
+          fi
+
+      # doc 测试兜底（BUG-20261127-032）：nextest 不跑 doctest，原单腿
+      # cargo test 的这一面不能丢。落 shard 1（失败不掐后面步）。
+      - name: doc tests (workspace)
+        if: always() && matrix.shard == 1
+        run: |
+          ulimit -n 8192
+          cargo test --doc --workspace
 
       # plugin-roaming（QUIC 插件化 M1）独立 workspace——主 cargo test
       # --workspace 永远够不到（根 Cargo.toml 的 members 不含它），不在此
       # 显式跑 = 32 个测试（drift/identity/Phase 2 merge 规则等）零 CI
       # 覆盖。失败不掐后面步（与 --no-fail-fast 同哲学：nightly 要全量
       # 体检报告）。跨平台面：先 Linux 夜更一处兜底，Windows 形态测试
-      # 出现后再挂 ci.yml Windows 全量 job。
+      # 出现后再挂 ci.yml Windows 全量 job。落 shard 1，三分片不重复跑。
       - name: plugin-roaming tests (independent workspace)
-        if: always()
+        if: always() && matrix.shard == 1
         run: cargo test --manifest-path plugins/plugin-roaming/Cargo.toml --release
 
   feature-matrix:

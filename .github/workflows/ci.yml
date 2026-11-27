@@ -161,12 +161,19 @@ jobs:
   coverage:
     name: Line coverage floor (cargo-llvm-cov)
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # 75→90（BUG-20261127-032）：清盘+JOBS:3 把墙死从 51 推到 64min 仍未完赛，
+    # 加上增量关闭后的构建减速，预算留足（实测完赛线未知，盖过即可）。
+    timeout-minutes: 90
     env:
       # BUG-20261127-031：插桩构建内存峰值高，-j4 rustc 并行承诺峰值同 ET
       # Linux 腿墙杀面（031 实录：清盘后仍 54:01 零日志冻结死）。对齐 ET
       # Linux / UAT 的 JOBS:3 资源姿势，削一个 rustc 的并行峰值（约 2-4GB）。
       CARGO_BUILD_JOBS: 3
+      # BUG-20261127-032：插桩构建的 incremental 目录数 GB 级纯增量盘耗
+      # （032 实录：清盘+JOBS:3 后墙死从 54 推到 64min，仍零日志 BlobNotFound
+      # ——coverage 死点单调后移 51→53→54→64 但 0/4 完赛）。关增量削掉
+      # 这块盘耗（同 ET Linux/UAT 惯例）。
+      CARGO_INCREMENTAL: 0
       # 扩展计划 T7a/D6（docs/INFO/2026-11-16_公开基准.md §5）：行覆盖硬地板，
       # 防倒退不追高。基线口径：全 workspace lib（nemesis-config 除外——
       # llvm-cov 独立 target-dir 环境特定失败；test-harness / nemesis-build-config
