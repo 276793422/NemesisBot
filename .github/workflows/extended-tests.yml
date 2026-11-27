@@ -53,6 +53,16 @@ jobs:
     # GTK 系依赖，钉回 24.04（迁移前原镜像，行为不变）。
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      # BUG-20261127-031：Linux 腿此前无任何资源限制——JOBS=4 + 增量 ON 是
+      # 全舰队最重的磁盘/内存组合（target/debug/incremental 数 GB 级、-j4
+      # rustc 并行承诺峰值最高；line 117 处"CARGO_BUILD_JOBS:3 已另行落地"
+      # 系陈旧注释，本 job 实际从未有过 env 块）。同日实录：escalation 清盘
+      # 赢了时间（死线 54:01→66min+）赢不了终局（attempt1/2 仍墙杀，零日志
+      # 冻结族）；同 workflow 的 UAT 七段（JOBS:3 + 无增量 + Windows 同款
+      # 资源姿势）当日全绿。对齐 UAT 资源配置，削峰值等续命。
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 3
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
