@@ -474,7 +474,31 @@ async fn handle_vm_display_socket(
                             break;
                         }
                     }
-                    Some(Ok(Message::Close(_))) | None => break,
+                    // BUG-20261128-015 同族：tungstenite 收到 Close 已把回帧
+                    // auto-queue 进 additional（read 循环入口 flush 冲出），
+                    // 直接 break + drop 会把回帧闷死在队列里，对端只收到 TCP
+                    // 断开（RFC 6455 §5.5.1 双向握手未完成，close code 失真
+                    // 1006）。继续 recv 驱动回帧冲出：recv 返回 None =
+                    // ConnectionClosed = 握手完成（tungstenite 文档钦定收尾
+                    // 模式）。带护栏：对端 Close 后 TCP 悬挂不 FIN 的异常场景
+                    // 不能挂死会话收尾。
+                    Some(Ok(Message::Close(_))) => {
+                        let drain_deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while tokio::time::Instant::now() < drain_deadline {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                socket.recv(),
+                            )
+                            .await
+                            {
+                                Ok(Some(Ok(_))) => continue,
+                                _ => break,
+                            }
+                        }
+                        break;
+                    }
+                    None => break,
                     Some(Ok(_)) => {}
                     Some(Err(_)) => break,
                 }

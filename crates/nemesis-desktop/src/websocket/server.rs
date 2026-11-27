@@ -25,6 +25,11 @@ use crate::websocket::protocol::Message;
 /// spawned per-connection task forever.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Bounded wait for per-write and close-handshake sinks (BUG-20261128-015
+/// 同族收尾；对齐 nemesis-channels/nemesis-web 家族值 30s——挂死连接上
+/// 收尾路径本身不能挂死）。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
+
 /// Error type for WebSocket server operations.
 #[derive(Debug, thiserror::Error)]
 pub enum WsServerError {
@@ -385,6 +390,16 @@ impl WebSocketServer {
                     break;
                 }
             }
+            // BUG-20261128-015 同族：收尾 sink.close() 驱动 tungstenite 把
+            // close 回帧冲出（客户端主动 Close 场景回帧 auto-queue 在
+            // additional 里，flush 才能写出），对端才能完成 RFC 6455 §5.5.1
+            // 双向握手而非收到 TCP reset。有界写纪律同 BUG-20261115-016
+            // （挂死连接上收尾不能挂死）。
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                ws_write.close(),
+            )
+            .await;
             debug!("[WebSocketServer] Write loop ended for {}", write_key);
         });
 

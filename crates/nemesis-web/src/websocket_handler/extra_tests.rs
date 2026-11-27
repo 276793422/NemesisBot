@@ -1142,3 +1142,57 @@ fn test_handle_chat_send_blank_priority_dropped() {
         .unwrap();
     assert!(!result.metadata.contains_key("priority"));
 }
+
+// BUG-20261128-015（R3208 实机资源曲线审计发现）：RFC 6455 §5.5.1 close
+// handshake——客户端发 Close 帧后服务端必须回发 Close 帧完成双向握手。
+// 缺陷形态：read loop 的 `Message::Close(_)` 分支直接 break → socket 读侧
+// drop，writer 未被置位 close → 对端只收到 TCP 断开（close code 失真 1006、
+// 关闭握手超时、依赖正常关闭语义的三方 WS 客户端误报连接错误）。
+#[tokio::test]
+async fn test_client_close_frame_gets_server_close_reply() {
+    let state = make_state("", None, None);
+    let (addr, listener) = bind_ephemeral().await;
+    let _server = start_test_server(listener, state).await;
+    let mut ws = ws_connect(&addr, None).await;
+
+    // 排掉服务端在途欢迎帧（会话建立消息），再主动发 Close。
+    let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < drain_deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(200), ws.next()).await {
+            Ok(Some(Ok(WsMessage::Text(_)))) => break,
+            Ok(Some(Ok(_))) => continue,
+            _ => break,
+        }
+    }
+    ws.send(WsMessage::Close(None)).await.unwrap();
+
+    // 服务端必须回发 Close 帧（RFC 6455 §5.5.1）；其他帧跳过。
+    let mut got_close = false;
+    let mut saw = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), ws.next()).await {
+            Ok(Some(Ok(WsMessage::Close(_)))) => {
+                got_close = true;
+                break;
+            }
+            Ok(Some(Ok(other))) => saw.push(format!("{other:?}")),
+            Ok(Some(Err(e))) => {
+                saw.push(format!("Err({e})"));
+                break;
+            }
+            Ok(None) => {
+                saw.push("None(stream-end)".to_string());
+                break;
+            }
+            Err(_) => {
+                saw.push("timeout".to_string());
+                break;
+            }
+        }
+    }
+    assert!(
+        got_close,
+        "server must reply with a Close frame after receiving client Close (RFC 6455 §5.5.1); saw: {saw:?}"
+    );
+}

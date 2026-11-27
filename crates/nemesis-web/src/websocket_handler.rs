@@ -309,18 +309,40 @@ async fn run_send_writer<S>(
                 }
             }
             _ = close_rx.changed() => {
+                // BUG-20261128-015：礼貌收尾必须走 SinkExt::close（poll_close
+                // → tungstenite close()）而非 send(Message::Close)。send 走
+                // write 入口的 is_active 状态闸：客户端主动 Close 场景读侧
+                // 已把共享态置 ClosedByPeer，用户写一律 SendAfterClosing 拒
+                // 绝——Close 帧发不出去（自方回帧由 tungstenite 收到 Close
+                // 时 auto-queue 进 additional，只能经 flush 冲出）。close()
+                // 对 Active 态 = queue close frame + flush（与 send(Close)
+                // 等价）；对 ClosedByPeer 态 = 幂等跳过、flush 把 auto-queue
+                // 回帧冲出；ConnectionClosed（回帧已写出的完成语义）由
+                // tokio-tungstenite poll_close 归一为 Ok。
                 // BUG-20261127-045：Close 帧写同族无界 await——挂死客户端上
                 // 收尾路径本身被挂死。超时放弃（warn 留痕），语义等同写死。
                 let close_write = tokio::time::timeout(
                     Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
-                    sink.send(Message::Close(None)),
+                    sink.close(),
                 )
                 .await;
-                if close_write.is_err() {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        "[WebSocket] close frame write timed out (wedged client)"
-                    );
+                match close_write {
+                    Err(_) => {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            "[WebSocket] close frame write timed out (wedged client)"
+                        );
+                    }
+                    // BUG-20261128-015：立即失败也要留痕——静默 break 会让
+                    // 「Close 帧没发出去」不可观测（诊断盲区）。（泛型 sink
+                    // 的 Error 无 Display/Debug 约束，只记失败事实。）
+                    Ok(Err(_)) => {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            "[WebSocket] close frame write failed"
+                        );
+                    }
+                    Ok(Ok(())) => {}
                 }
                 break 'writer;
             }
@@ -579,6 +601,11 @@ pub async fn handle_websocket(
     // Message read loop
     let mut ping_interval = tokio::time::interval(Duration::from_secs(ws_ping_interval_secs()));
 
+    // BUG-20261128-015：客户端主动 Close 路径需要等 writer 完成 Close 帧写
+    // 出后 handle_websocket 才能返回——回调提前返回会让 axum/hyper 丢
+    // upgraded IO（TCP 先断，writer 的 Close 帧永远到不了对端）。
+    let mut handshake_reply_pending = false;
+
     loop {
         tokio::select! {
             msg = stream.next() => {
@@ -781,6 +808,18 @@ pub async fn handle_websocket(
                             session_id = %session_id,
                             "[WebSocket] Close frame received"
                         );
+                        // BUG-20261128-015：RFC 6455 §5.5.1——收到 Close 帧
+                        // 后必须回发 Close 帧完成双向握手。此前直接 break 落
+                        // 读侧 drop，writer 未被置位 close，对端只收到 TCP
+                        // 断开（close code 失真 1006、三方客户端关闭握手
+                        // 超时误报）。复用既有礼貌断连管线（close_tx →
+                        // writer 排空在途帧后发 Close 收尾），与服务端主动
+                        // 逐出路径同一出口；并置位握手等待——cleanup 后等
+                        // writer 的 Close 帧写出再返回，防止 hyper 提前丢
+                        // upgraded IO 截断握手（读错误/stream 结束分支连接
+                        // 已死，无需也不应等待）。
+                        send_queue.close();
+                        handshake_reply_pending = true;
                         break;
                     }
                     Some(Ok(Message::Binary(_))) => {
@@ -830,6 +869,19 @@ pub async fn handle_websocket(
         session_id = %session_id,
         "[WebSocket] Connection closed"
     );
+
+    // BUG-20261128-015：客户端 Close 路径等 writer 完成 Close 帧写出再返
+    // 回——回调提前返回会让 axum/hyper 丢 upgraded IO，TCP 先断，writer
+    // 的 Close 帧永远到不了对端（实测 "Connection reset without closing
+    // handshake"）。逐出路径不受此害（主任务仍在 read loop，回调未返回，
+    // hyper 不丢 IO）。上限 WS_WRITE_TIMEOUT_SECS 与 writer 发 Close 的
+    // 超时一致：writer 侧超时放弃后同样置位 done，不会双倍挂起。
+    if handshake_reply_pending {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(WS_WRITE_TIMEOUT_SECS);
+        while !send_queue.is_done() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
 }
 
 // Protocol message dispatch

@@ -897,6 +897,18 @@ impl futures::Sink<axum::extract::ws::Message> for MockSink {
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
+        // 模拟 tokio-tungstenite poll_close 真实契约（BUG-20261128-015：
+        // writer 礼貌收尾走 SinkExt::close 而非 send(Message::Close)）——
+        // tungstenite close() 对 Active 态 = queue close frame + flush
+        // （对端可观察效果与 send(Message::Close) 一致），ConnectionClosed
+        // 归一 Ok。哨兵记录沿用 __CLOSE__（帧序断言覆盖「在途帧先于
+        // Close」），flush 计数同步。
+        let this = self.get_mut();
+        this.frames
+            .lock()
+            .unwrap()
+            .push_back("__CLOSE__".to_string());
+        this.flushes.fetch_add(1, Ordering::SeqCst);
         std::task::Poll::Ready(Ok(()))
     }
 }
