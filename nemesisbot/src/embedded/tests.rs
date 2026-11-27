@@ -34,7 +34,6 @@ fn test_extract_dir() {
 
     assert!(temp.path().join("index.html").exists());
     assert!(temp.path().join("assets").is_dir());
-    assert!(temp.path().join("fonts").is_dir());
 
     // Verify assets contain JS and CSS bundles
     let assets_dir = temp.path().join("assets");
@@ -53,8 +52,22 @@ fn test_extract_dir() {
                 .unwrap_or(false)
         })
         .collect();
+    // BUG-20261127-036：字体迁移（BUG-20261127-005 把 web/public/fonts/ 迁
+    // web/src/assets/fonts/）后 vite 产物不再有 static/fonts/ 目录——字体以
+    // hash 文件名落 assets/*.woff2，断言从 fonts/ 目录改为 woff2 在 assets。
+    let font_files: Vec<_> = std::fs::read_dir(&assets_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "woff2")
+                .unwrap_or(false)
+        })
+        .collect();
     assert!(!js_files.is_empty(), "assets/ should contain JS bundles");
     assert!(!css_files.is_empty(), "assets/ should contain CSS bundles");
+    assert!(!font_files.is_empty(), "assets/ should contain woff2 fonts");
 }
 
 // ============================================================
@@ -102,7 +115,8 @@ fn test_list_embedded_files_contains_known_paths() {
             .any(|f| f == "index.html" || f.contains("index.html"))
     );
     assert!(files.iter().any(|f| f.contains("assets/")));
-    assert!(files.iter().any(|f| f.contains("fonts/")));
+    // BUG-20261127-036：字体迁移后无 fonts/ 目录——woff2 以 hash 名在 assets/。
+    assert!(files.iter().any(|f| f.contains(".woff2")));
 }
 
 #[cfg(feature = "web-static")]
@@ -224,7 +238,13 @@ fn test_extract_dir_skip_existing_preserves_user_files() {
 #[cfg(feature = "web-static")]
 #[test]
 fn test_embedded_static_has_fonts() {
-    assert!(EMBEDDED_STATIC.contains("fonts"));
+    // BUG-20261127-036：字体迁移（BUG-20261127-005）后无 static/fonts/ 目录——
+    // 断言改为嵌入文件含 woff2（字体以 hash 文件名在 assets/ 下）。注意用
+    // list_embedded_files()（递归收集）而非 Dir::files()（浅迭代只吐顶层文件）。
+    assert!(
+        list_embedded_files().iter().any(|f| f.ends_with(".woff2")),
+        "embedded static should contain woff2 fonts"
+    );
 }
 
 #[test]
