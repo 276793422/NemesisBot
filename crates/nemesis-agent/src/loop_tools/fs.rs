@@ -45,20 +45,23 @@ pub(crate) fn resolve_tool_path_with_redirect(
 /// [`resolve_tool_path_with_redirect`——单一真相源，写工具 preview 的
 /// 声明路径必须等于 execute 的落盘路径，否则 checkpoint/rewind 对
 /// 重定向写不设防：快照记原路径、镜像写永不回滚，第五轮横扫
-/// 2026-11-27 修正）。失败（围栏拒绝等）回落原路径——execute 届时同样
-/// 失败不产生写入，对原路径的快照是无害 no-op。knowledge=None 时仍须
-/// 走边界解析（BUG-20261127-039：preview 的存在性判定必须与 execute
-/// 同源——裸相对路径对照进程 CWD 会把工作区已有文件系统性误报
-/// Create → checkpoint 基线漏捕 → rewind 整删；合并天工链时此语义
-/// 并入本单一真相源，不再因 knowledge 缺席回落裸路径）。preview 契约
+/// 2026-11-27 修正）。失败（围栏拒绝等）= **None**（BUG-20261127-048，
+/// 契约锚 `fs_preview_kind_tests::preview_write_outside_ws_returns_none`，
+/// BUG-20261127-039 落的锁）：围栏必死的写不许预览基线——execute 届时
+/// 同样失败不产生写入，但 Some 会令 checkpoint 捕获界外路径的幻影
+/// 基线，rewind 还原臂反而**写工作区外的文件**（restore 的 written
+/// 臂不设围栏）。曾短暂回落原路径（第五轮横扫中间态），判定被测试
+/// 契约否决。knowledge=None 时仍须走边界解析（BUG-20261127-039：
+/// preview 的存在性判定必须与 execute 同源——裸相对路径对照进程 CWD
+/// 会把工作区已有文件系统性误报 Create → checkpoint 基线漏捕 →
+/// rewind 整删；合并天工链时此语义并入本单一真相源）。preview 契约
 /// （[`crate::loop::tools_trait::Tool::preview`]）：绝不 panic。
 fn preview_resolve_path(
     path: &str,
     boundary: Option<&WorkspaceBoundary>,
     knowledge: Option<&crate::knowledge::KnowledgeHandle>,
-) -> PathBuf {
-    resolve_tool_path_with_redirect(path, boundary, FenceOpFamily::WriteDelete, knowledge)
-        .unwrap_or_else(|_| PathBuf::from(path))
+) -> Option<PathBuf> {
+    resolve_tool_path_with_redirect(path, boundary, FenceOpFamily::WriteDelete, knowledge).ok()
 }
 
 /// A tool that reads the contents of a file from disk.
@@ -546,8 +549,9 @@ impl Tool for WriteFileTool {
     fn preview(&self, args: &str) -> Option<FileChange> {
         let (path, _content) = extract_path_and_content(args).ok()?;
         // 重定向感知（第五轮横扫 2026-11-27）：存在性判定与声明路径都用
-        // 解析后路径（镜像命中时 kind 如实反映镜像侧现状）。
-        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref());
+        // 解析后路径（镜像命中时 kind 如实反映镜像侧现状）；围栏拒 → None
+        // （无基线可预览，BUG-20261127-048）。
+        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref())?;
         let kind = if path.exists() {
             FileChangeKind::Modify
         } else {
@@ -900,8 +904,9 @@ impl Tool for EditFileTool {
         let val: serde_json::Value = serde_json::from_str(args).ok()?;
         let path = val.get("path")?.as_str()?.to_string();
         // 重定向感知（第五轮横扫 2026-11-27）：同 write_file——声明路径
-        // 必须是 execute 的落盘路径（镜像）。
-        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref());
+        // 必须是 execute 的落盘路径（镜像）；围栏拒 → None（同
+        // BUG-20261127-048）。
+        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref())?;
         let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("edit");
         let kind = if action == "append" {
             // append 分支允许目标不存在（create=true），按存在性如实申报。
@@ -1344,11 +1349,13 @@ impl Tool for MultiEditTool {
         edits
             .into_iter()
             .filter_map(|e| {
+                // 围栏拒 → None → 该 edit 丢弃不快照（BUG-20261127-048，
+                // 同 write/edit：必死的写无基线）。
                 let resolved = preview_resolve_path(
                     &e.path,
                     self.boundary.as_deref(),
                     self.knowledge.as_deref(),
-                );
+                )?;
                 seen.insert(resolved.clone()).then_some(FileChange {
                     path: resolved.to_string_lossy().to_string(),
                     kind: FileChangeKind::Modify,
