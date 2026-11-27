@@ -378,7 +378,11 @@ impl Forge {
         // 面**（主语 = 助手，userprofile upsert 硬拒双保险）。队列缺失/
         // 损坏 = 空 Vec 诚实降级，不炸反思循环。Dashboard 手动反思 /
         // CLI reflect 不走本循环，天然只读。
-        let dialogue_owns_lesson_ack = self.config.learn.enabled && self.config.reflection.use_llm;
+        // 同一判据的另一职责（2026-11-27 语义消费收敛）：开启时深学对话
+        // 也是本周期语义判断的唯一 LLM 消费方——Step 2 跳过一次性语义
+        // 分析（对话证据包含报告，双消费=同证据烧两遍 + 一次性结论先入
+        // 锚定对话）。变量因此得名 dialogue_owns_semantics。
+        let dialogue_owns_semantics = self.config.learn.enabled && self.config.reflection.use_llm;
         let (user_lessons, lesson_ids, veto_notes) = match self.forge_dir.parent() {
             Some(ws) => {
                 let lessons = crate::userprofile::bridge::read_pending_lessons(ws, 20);
@@ -422,12 +426,18 @@ impl Forge {
         // 不炸循环。use_llm=false = 纯统计反思（修复：该键文档契约
         // 「是否用 LLM 做语义分析」，此前 gateway 无条件走 LLM、键只在 CLI
         // 被消费——用户设 false 省成本的意图被静默无视）。
+        // 语义消费收敛（2026-11-27）：深学对话开启（dialogue_owns_semantics）
+        // 时跳过一次性语义分析——对话是本周期唯一语义消费方；报告落纯统计
+        // （对话证据包的 latest_report 节拿到当轮新鲜统计，且不再被另一个
+        // LLM 的一次性结论先入锚定）。learn 关时本分支是唯一语义路径，照旧。
+        // Dashboard 手动反思 / CLI reflect 不走本循环、不受此判据影响——
+        // 显式用户动作保持语义分析。
         // A4：period 从硬编码 "today" 换成实际数据窗口（最近 N 条 +
         // 首末时间戳），反思报告的 Period 行第一次反映真实覆盖面。
         // 标签计算单一真相源 = compute_reflection_period（三入口同源：
         // run_reflection_cycle / Dashboard 手动反思 / CLI reflect）。
         let period = Reflector::compute_reflection_period(&experiences);
-        let report = if self.config.reflection.use_llm {
+        let report = if self.config.reflection.use_llm && !dialogue_owns_semantics {
             reflector
                 .reflect_with_llm(
                     &experiences,
@@ -470,7 +480,7 @@ impl Forge {
             // 费，at-least-once）。ack 按精确 id 确认（bridge 纪律），失
             // 败 loud warn 不炸循环。
             if !lesson_ids.is_empty()
-                && !dialogue_owns_lesson_ack
+                && !dialogue_owns_semantics
                 && let Some(ws) = self.forge_dir.parent()
             {
                 match crate::userprofile::bridge::ack_lessons(ws, &lesson_ids) {
