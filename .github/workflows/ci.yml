@@ -120,6 +120,12 @@ jobs:
       - name: Inline-tests discipline gate
         run: bash scripts/check-inline-tests.sh
 
+      # 注释坐标文书闸（2026-11-28 用户裁决：四闸收缩为 coord 单指标——
+      # bug/narr/truth 与现行 BUG 溯源注记纪律矛盾摘除；防阶段/批次坐标
+      # 文书注释复发，规则与校准见 scripts/check-comment-style.sh 头注）
+      - name: Comment coord-style gate
+        run: bash scripts/check-comment-style.sh
+
       # 路径消毒纪律闸（SAN-05：路径成分派生禁裸 replace(':')，走
       # nemesis_utils::sanitize::sanitize_path_segment 单一真相源）
       - name: Sanitize-discipline gate
