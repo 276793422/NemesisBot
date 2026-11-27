@@ -648,3 +648,160 @@ async fn uploads_sweeper_cancel_during_park_exits_after_startup_sweep() {
         .expect("park 期间取消必须抢占退出（裸 park 形态 park 满 6h 超时红）")
         .expect("sweeper 任务不得 panic（JoinError）");
 }
+
+// --- BUG-20261127-037：uploads 清扫树枚举臂链接穿透（BUG-20261127-033 同
+// --- 威胁模型漏网）回归锁。agents/<x> 条目或 <x>/home 是 junction 时，旧
+// --- 形态派生 home/uploads 路径穿透链接枚举外部真实文件并按 7 天 TTL 删除
+// --- （数据破坏面）。修复后三层守卫（条目 file_type / home
+// --- symlink_metadata / sweep 根位）整树跳过。
+//
+// 链接种植：Windows `mklink /J`（junction，无特权，与 033 回归测试同款）/
+// unix symlink。
+fn plant_link(at: &std::path::Path, name: &str, target: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(at.join(name))
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, at.join(name)).expect("symlink");
+}
+
+/// 8 天前 mtime（TTL 7 天之上，保证按龄判定过期）。
+fn backdate_old(path: &std::path::Path) {
+    let old = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+}
+
+/// 根位链接锁：uploads_dir 本身是 junction → 整目录跳过（返回 0），外部
+/// 真实过期文件原样留存（穿链接删除 = 数据破坏）。
+#[test]
+fn sweep_uploads_dir_link_root_not_traversed() {
+    let external = tempfile::tempdir().unwrap();
+    let target = external.path().join("real-uploads");
+    std::fs::create_dir_all(&target).unwrap();
+    let old_file = target.join("old.png");
+    std::fs::write(&old_file, b"x").unwrap();
+    backdate_old(&old_file);
+
+    let holder = tempfile::tempdir().unwrap();
+    plant_link(holder.path(), "uplink", &target);
+
+    let removed = sweep_uploads_older_than(&holder.path().join("uplink"), UPLOADS_TTL);
+    assert_eq!(removed, 0, "链接根必须整目录跳过");
+    assert!(
+        old_file.is_file(),
+        "外部真实过期文件必须原样留存（数据破坏锁）"
+    );
+}
+
+/// 条目链接锁（spawn_uploads_sweeper 全链路）：agents/<x> 本身是 junction
+/// → 整 home 跳过，外部 home/uploads 的过期文件留存。确定性控制：全局
+/// uploads 过期文件被删 = 启动清扫确实跑过（真扫了的正面证据）。
+#[tokio::test]
+async fn sweeper_home_tree_entry_link_skipped() {
+    let _lock = uploads_state_lock();
+    let external = tempfile::tempdir().unwrap();
+    let ext_up = external.path().join("home").join("uploads");
+    std::fs::create_dir_all(&ext_up).unwrap();
+    let old_file = ext_up.join("old.png");
+    std::fs::write(&old_file, b"x").unwrap();
+    backdate_old(&old_file);
+
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+    let workspace = nemesis_path::default_path_manager().workspace();
+    let agents = nemesis_path::resolve_agents_root_in_workspace(&workspace);
+    std::fs::create_dir_all(&agents).unwrap();
+    plant_link(&agents, "deadbeef", external.path());
+
+    let uploads = nemesis_path::resolve_uploads_dir_in_workspace(&workspace);
+    std::fs::create_dir_all(&uploads).unwrap();
+    let control = uploads.join("control.png");
+    std::fs::write(&control, b"x").unwrap();
+    backdate_old(&control);
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = spawn_uploads_sweeper(token.clone());
+    for _ in 0..200 {
+        if !control.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        !control.exists(),
+        "控制文件应被启动清扫删除（清扫已运行的正面证据）"
+    );
+    assert!(
+        old_file.is_file(),
+        "agents 条目链接整树跳过：外部真实过期文件必须原样留存（数据破坏锁）"
+    );
+    token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("取消后 2s 内退出")
+        .expect("sweeper 任务不得 panic（JoinError）");
+}
+
+/// home 链接锁：<x> 真实目录但 home 是 junction → 派生 home/uploads 穿透
+/// 枚举外部树。守卫后整 home 跳过，外部过期文件留存。控制同上。
+#[tokio::test]
+async fn sweeper_home_dir_link_skipped() {
+    let _lock = uploads_state_lock();
+    let external = tempfile::tempdir().unwrap();
+    let ext_up = external.path().join("uploads");
+    std::fs::create_dir_all(&ext_up).unwrap();
+    let old_file = ext_up.join("old.png");
+    std::fs::write(&old_file, b"x").unwrap();
+    backdate_old(&old_file);
+
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+    let workspace = nemesis_path::default_path_manager().workspace();
+    let node_dir = nemesis_path::resolve_agents_root_in_workspace(&workspace).join("realnode");
+    std::fs::create_dir_all(&node_dir).unwrap();
+    plant_link(&node_dir, "home", external.path());
+
+    let uploads = nemesis_path::resolve_uploads_dir_in_workspace(&workspace);
+    std::fs::create_dir_all(&uploads).unwrap();
+    let control = uploads.join("control.png");
+    std::fs::write(&control, b"x").unwrap();
+    backdate_old(&control);
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = spawn_uploads_sweeper(token.clone());
+    for _ in 0..200 {
+        if !control.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        !control.exists(),
+        "控制文件应被启动清扫删除（清扫已运行的正面证据）"
+    );
+    assert!(
+        old_file.is_file(),
+        "home 链接整树跳过：外部真实过期文件必须原样留存（数据破坏锁）"
+    );
+    token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("取消后 2s 内退出")
+        .expect("sweeper 任务不得 panic（JoinError）");
+}

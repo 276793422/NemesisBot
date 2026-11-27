@@ -464,6 +464,12 @@ pub fn trash_list_in(loc: &TrashLocations) -> Vec<serde_json::Value> {
         return out; // 根目录不存在 = 空回收站
     };
     for e in entries.flatten() {
+        // BUG-20261127-038：链接条目跳过（BUG-20261127-033 同款守卫纪律）
+        // ——junction 条目会按目标形态进清单（读侧穿链接披露外部目录内容），
+        // 「不确定的东西不动」。file_type 非跟随；读取失败按不可信跳过。
+        if e.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
+            continue;
+        }
         let path = e.path();
         if !path.is_dir() {
             continue;
@@ -838,12 +844,29 @@ pub fn trash_purge_all() -> Result<usize, String> {
 /// read_dir 不含路径分隔符，valid_entry_name 校验天然通过）。
 pub fn trash_purge_all_in(loc: &TrashLocations) -> Result<usize, String> {
     let root = loc.trash_root();
+    // BUG-20261127-038：根位链接守卫——回收站根本身是 junction 时，枚举会
+    // 穿透链接列出外部真实子目录并逐一 remove_dir_all（数据破坏面，
+    // BUG-20261127-033 同威胁模型在回收站清空臂的漏网；触发面 = WSAPI
+    // trash_purge_all「清空回收站」）。链接根 = 诚实 no-op（Ok(0)，与根
+    // 目录缺席同形态）；symlink_metadata 非跟随，读取失败按不可信跳过。
+    if std::fs::symlink_metadata(&root)
+        .map(|m| m.is_symlink())
+        .unwrap_or(true)
+    {
+        return Ok(0);
+    }
     let Ok(entries) = std::fs::read_dir(root) else {
         return Ok(0); // 根目录不存在 = 无事可清
     };
     let mut purged = 0usize;
     let mut failures = Vec::new();
     for e in entries.flatten() {
+        // BUG-20261127-038：链接条目整条跳过（不确定的东西不动）——
+        // remove_dir_all 对 junction 虽只删链接本体（外部完好），但属
+        // 033 修复纪律里「未知形态不动」之外的行为，对齐为跳过。
+        if e.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
+            continue;
+        }
         let path = e.path();
         if !path.is_dir() {
             continue;

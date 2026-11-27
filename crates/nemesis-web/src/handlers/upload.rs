@@ -231,6 +231,16 @@ pub fn sweep_uploads_older_than(uploads_dir: &std::path::Path, max_age: Duration
     let cutoff = std::time::SystemTime::now()
         .checked_sub(max_age)
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    // BUG-20261127-037：根位链接守卫——uploads_dir 本身是 junction/symlink
+    // 时 read_dir 会穿透链接枚举外部真实文件并按 TTL 删除（BUG-20261127-033
+    // 同威胁模型在会话 home 树枚举臂的漏网）。链接根 = 整目录跳过（读取
+    // 失败按不可信处理，行为与目录缺席一致返回 0）。
+    if std::fs::symlink_metadata(uploads_dir)
+        .map(|m| m.is_symlink())
+        .unwrap_or(true)
+    {
+        return 0;
+    }
     let mut removed = 0usize;
     let Ok(entries) = std::fs::read_dir(uploads_dir) else {
         return 0;
@@ -307,8 +317,21 @@ pub fn spawn_uploads_sweeper(
                 if let Ok(entries) = std::fs::read_dir(&agents_root) {
                     // 有序消费 read_dir（遍历序是平台实现细节；清扫结果与顺序
                     // 无关，排序让行为可复现）。
+                    // BUG-20261127-037：链接条目整树跳过（BUG-20261127-033 同款
+                    // 守卫纪律，「不确定的东西不动」）——agents/<x> 本身是
+                    // junction，或 <x> 真实但 home 是 junction 时，派生路径
+                    // home/uploads 会穿透链接枚举外部真实文件并按 TTL 删除
+                    // （数据破坏面）。file_type/symlink_metadata 均非跟随；
+                    // 读取失败按不可信处理（跳过，不降级为清扫）。
                     let mut homes: Vec<PathBuf> = entries
                         .flatten()
+                        .filter(|e| !e.file_type().map(|ft| ft.is_symlink()).unwrap_or(true))
+                        .filter(|e| {
+                            let home = e.path().join("home");
+                            !std::fs::symlink_metadata(&home)
+                                .map(|m| m.is_symlink())
+                                .unwrap_or(true)
+                        })
                         .map(|e| e.path().join("home").join("uploads"))
                         .collect();
                     homes.sort();

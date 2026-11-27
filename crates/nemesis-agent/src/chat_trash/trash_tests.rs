@@ -1009,3 +1009,132 @@ fn trash_meta_locked_err_keeps_jsonl_in_session_logs() {
         "重试后 jsonl 离开 session_logs"
     );
 }
+
+// =========================================================================
+// BUG-20261127-038：回收站清空/清单臂链接穿透（BUG-20261127-033 同威胁模型
+// 漏网）回归锁。回收站根或条目位是 junction 时，旧形态清空会枚举外部真实
+// 子目录逐一 remove_dir_all（数据破坏面）；清单臂穿链接披露外部目录内容。
+// 修复后：链接根 = 诚实 no-op（Ok(0)），链接条目整条跳过。
+//
+// 链接种植：Windows `mklink /J`（junction，无特权）/ unix symlink。
+// =========================================================================
+
+fn plant_link(at: &std::path::Path, name: &str, target: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(at.join(name))
+            .arg(target)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, at.join(name)).expect("symlink");
+}
+
+/// 外部真实树夹具：<root>/sub/f.txt。
+fn plant_external_tree(root: &std::path::Path) -> std::path::PathBuf {
+    let sub = root.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let f = sub.join("f.txt");
+    std::fs::write(&f, b"precious").unwrap();
+    f
+}
+
+/// 清单形态真实条目夹具（对照：真实条目照常处理）。
+fn plant_manifest_entry(trash_root: &std::path::Path, name: &str, key: &str) {
+    let dir = trash_root.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("chat.jsonl"),
+        "{\"role\":\"user\",\"content\":\"x\"}\n",
+    )
+    .unwrap();
+    let manifest = serde_json::json!({
+        "original_session_key": key,
+        "deleted_at_ms": 1u64,
+        "message_count": 1u64,
+        "bytes": 30u64,
+    });
+    std::fs::write(dir.join("trash.json"), manifest.to_string()).unwrap();
+}
+
+/// 根位链接锁：回收站根本身是 junction → 清空 = 诚实 no-op（Ok(0)），
+/// 外部真实子目录原样留存（remove_dir_all 穿链接 = 数据破坏）。
+#[test]
+fn purge_all_junction_root_skipped_external_intact() {
+    let external = tempfile::tempdir().unwrap();
+    let f = plant_external_tree(external.path());
+
+    // 注入夹具：trash 根位换成 junction（真实目录拆除后原位种链接指外部树）。
+    let t = TempTrash::new("purge_junc_root");
+    let trash = t.loc.trash_root().to_path_buf();
+    std::fs::remove_dir(&trash).unwrap();
+    plant_link(trash.parent().unwrap(), "trash", external.path());
+
+    let n = trash_purge_all_in(&t.loc).expect("链接根 = 诚实 no-op");
+    assert_eq!(n, 0, "链接根必须整目录跳过");
+    assert!(f.is_file(), "外部真实文件必须原样留存（数据破坏锁）");
+}
+
+/// 条目链接锁：junction 条目整条跳过（外部树原样），真实条目照常清空
+/// （守卫不误伤的对照证据）。
+#[test]
+fn purge_all_junction_entry_skipped_real_entry_still_purged() {
+    let external = tempfile::tempdir().unwrap();
+    let f = plant_external_tree(external.path());
+
+    let t = TempTrash::new("purge_junc_entry");
+    plant_link(&t.loc.trash_root().to_path_buf(), "junc", external.path());
+    plant_manifest_entry(&t.loc.trash_root(), "good", "web:t1");
+
+    let n = trash_purge_all_in(&t.loc).expect("清空应成功");
+    assert_eq!(n, 1, "真实条目照常清空（守卫不误伤）");
+    assert!(
+        !t.loc.trash_root().join("good").exists(),
+        "真实条目已被清空"
+    );
+    assert!(
+        t.loc.trash_root().join("junc").exists(),
+        "链接条目本体留存（跳过非删除）"
+    );
+    assert!(f.is_file(), "外部真实文件必须原样留存（数据破坏锁）");
+}
+
+/// 清单臂链接锁：junction 条目不进清单（读侧不穿链接披露外部目录）。
+#[test]
+fn trash_list_junction_entry_not_listed() {
+    let external = tempfile::tempdir().unwrap();
+    let f = plant_external_tree(external.path());
+
+    let t = TempTrash::new("list_junc_entry");
+    // 链接名用可派生形态（<ms>_<safe>）——不成形态的名字会被下游
+    // 「目录名都不成形态跳过」掩蔽，守卫锁就不咬合了。
+    plant_link(
+        &t.loc.trash_root().to_path_buf(),
+        "1700000000000_web_zz",
+        external.path(),
+    );
+    plant_manifest_entry(&t.loc.trash_root(), "good", "web:t2");
+
+    let list = trash_list_in(&t.loc);
+    let names: Vec<String> = list
+        .iter()
+        .filter_map(|v| v.get("entry").and_then(|e| e.as_str()).map(String::from))
+        .collect();
+    assert!(
+        names.iter().all(|n| n != "1700000000000_web_zz"),
+        "链接条目不得进清单: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "good"),
+        "真实条目照常列出（守卫不误伤）"
+    );
+    assert!(f.is_file(), "外部真实文件原样（读侧守卫）");
+}
