@@ -54,6 +54,9 @@ const corsOrigins = ref<string[]>([])
 const corsEnabled = ref(false)
 const corsError = ref('')
 const newOrigin = ref('')
+// 函数内 busy 闸配套（BUG-20261127-014 同族横向排查补修）：addCorsOrigin 此前
+// 无任何在飞闸，输入框 @keyup.enter 直调连按并发双发 cors.add（重复 origin 条目）。
+const corsAdding = ref(false)
 
 const tabs = [
   { id: 'agent', label: 'Agent' },
@@ -183,7 +186,11 @@ async function loadCors() {
 }
 
 async function addCorsOrigin() {
+  // 函数内 busy 闸（BUG-20261127-014 同族横向排查补修）：输入框 @keyup.enter
+  // 直调绕过按钮 :disabled——在飞时连按 Enter 并发双发请求。
+  if (corsAdding.value) return
   if (!newOrigin.value) return
+  corsAdding.value = true
   try {
     await request('config', 'cors.add', { origin: newOrigin.value })
     toast.success('已添加')
@@ -191,6 +198,8 @@ async function addCorsOrigin() {
     await loadCors()
   } catch (e: any) {
     toast.error('添加失败: ' + e)
+  } finally {
+    corsAdding.value = false
   }
 }
 
@@ -228,6 +237,20 @@ function saveNum(path: string, e: any, fallback: number, min = -Infinity, max = 
   if (Number.isNaN(n) || n < min || n > max) {
     e.target.value = String(fallback)
     toast.error(`须为 ${min === -Infinity ? '' : '≥' + min}${max !== Infinity ? '≤' + max : ''} 的数字（已回退 ${fallback}）`)
+    return
+  }
+  saveField(path, n)
+}
+
+/** 通用整数保存（整数语义 + 同款回退；BUG-20261127-015：与 saveNum 同族
+ * 补齐——温度/最大 Tokens 两输入此前裸 parseFloat/parseInt 直传 set_field，
+ * 清空/非法输入 NaN 序列化成 null，后端 typed f64/i64 诚实拒绝成一条
+ * serde 原始错误 toast；saveTtlFamily 的整数校验形态同源）。 */
+function saveInt(path: string, e: any, fallback: number, min = -Infinity, max = Infinity) {
+  const n = parseInt(e.target.value, 10)
+  if (Number.isNaN(n) || n < min || n > max) {
+    e.target.value = String(fallback)
+    toast.error(`须为 ${min === -Infinity ? '' : '≥' + min}${max !== Infinity ? '≤' + max : ''} 的整数（已回退 ${fallback}）`)
     return
   }
   saveField(path, n)
@@ -531,13 +554,19 @@ onMounted(async () => {
             </div>
             <div class="form-group">
               <label class="form-label">温度</label>
+              <!-- BUG-20261127-015：改走 saveNum（0-2 界 + 非法回退），fallback
+                   = 当前配置值或 serde 缺省 0.7（default_temperature 同源）。 -->
               <input class="form-input" type="number" step="0.1" min="0" max="2" :value="config.agents?.defaults?.temperature ?? 0.7"
-                @change="(e: any) => saveField('agents.defaults.temperature', parseFloat(e.target.value))" style="max-width: 200px;">
+                @change="(e: any) => saveNum('agents.defaults.temperature', e, config.agents?.defaults?.temperature ?? 0.7, 0, 2)" style="max-width: 200px;">
             </div>
             <div class="form-group">
               <label class="form-label">最大 Tokens</label>
-              <input class="form-input" type="number" :value="config.agents?.defaults?.max_tokens ?? 4096"
-                @change="(e: any) => saveField('agents.defaults.max_tokens', parseInt(e.target.value))" style="max-width: 200px;">
+              <!-- BUG-20261127-015 两面：①展示缺省 4096 → 65536 对齐
+                   default_max_tokens() = DEFAULT_MAX_TOKENS（65_536，批次4
+                   「展示缺省同源 serde default」纪律此前漏本键——键未配置时
+                   页面谎报 4096、真实生效 64K）；②改走 saveInt 校验（同上）。 -->
+              <input class="form-input" type="number" :value="config.agents?.defaults?.max_tokens ?? 65536"
+                @change="(e: any) => saveInt('agents.defaults.max_tokens', e, config.agents?.defaults?.max_tokens ?? 65536)" style="max-width: 200px;">
             </div>
             <div class="form-group">
               <label class="form-label">工作空间限制</label>

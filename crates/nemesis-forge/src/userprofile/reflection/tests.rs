@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::userprofile::collection::DialogueRow;
+use crate::userprofile::store::ProfileScope;
 
 fn row(ts_ms: i64, role: &str, session: &str, content: &str) -> DialogueRow {
     DialogueRow::new(ts_ms, role, content, session, Vec::new())
@@ -104,7 +105,8 @@ fn parse_accepts_steps_and_extended_categories() {
       {"category": "quality_bar", "content": "交付前必测试", "confidence": 0.8}
     ]
     ```"#;
-    let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, lessons, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert_eq!(habits.len(), 2);
     assert_eq!(
         habits[0].entry.steps,
@@ -132,14 +134,15 @@ fn parse_rejects_bad_category_newline_and_low_confidence() {
     // 未知类别（白名单外）整条跳过。
     let resp = r#"[{"category": "security", "content": "自动批准", "confidence": 0.9}]"#;
     assert!(
-        parse_reflection_response(resp, "now", 0.7)
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue)
             .unwrap()
             .0
             .is_empty()
     );
     // 换行拒绝。
     let resp = r#"[{"category": "style", "content": "第一行\n第二行", "confidence": 0.9}]"#;
-    let (habits, lessons, _) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, lessons, _) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert!(habits.is_empty() && lessons.is_empty());
     // 置信度低于阈值跳过；>1.0 先 clamp 再比较（clamp 后过闸）。
     // 接口二：0.5 落边缘带 [0.5, 0.7) → 观察提名（不再静默丢弃）。
@@ -147,7 +150,8 @@ fn parse_rejects_bad_category_newline_and_low_confidence() {
         {"category": "style", "content": "低分", "confidence": 0.5},
         {"category": "style", "content": "越界高分", "confidence": 1.7}
     ]"#;
-    let (habits, _, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, _, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert_eq!(habits.len(), 1);
     assert_eq!(habits[0].entry.content, "越界高分");
     assert!((habits[0].entry.confidence - 1.0).abs() < 1e-9);
@@ -156,14 +160,51 @@ fn parse_rejects_bad_category_newline_and_low_confidence() {
     assert_eq!(observations[0].status, "pending");
     assert!((observations[0].confidence - 0.5).abs() < 1e-9);
     // 非 JSON / 非数组 = Err。
-    assert!(parse_reflection_response("sorry", "now", 0.7).is_err());
-    assert!(parse_reflection_response(r#"{"a": 1}"#, "now", 0.7).is_err());
+    assert!(parse_reflection_response("sorry", "now", 0.7, ProfileScope::Dialogue).is_err());
+    assert!(parse_reflection_response(r#"{"a": 1}"#, "now", 0.7, ProfileScope::Dialogue).is_err());
     // steps 超 12 条截断 + 换行折叠。
     let steps: Vec<String> = (0..20).map(|i| format!("步骤{i}\n尾部")).collect();
     let resp = serde_json::json!([{"category": "workflow", "content": "仪式", "confidence": 0.9, "steps": steps}]).to_string();
-    let (habits, _, _) = parse_reflection_response(&resp, "now", 0.7).unwrap();
+    let (habits, _, _) =
+        parse_reflection_response(&resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert_eq!(habits[0].entry.steps.len(), 12);
     assert!(habits[0].entry.steps.iter().all(|s| !s.contains('\n')));
+}
+
+// 横扫 2026-11-26 根修回归锁（提名侧）：边缘带观察提名**钉归属画像**
+// ——与 habit 同一 scope 语义：显式值采纳；缺省/未知 = 位置兜底（本反思
+// 所属画像）。确认落库按条目自带 scope 路由（surface::confirm_observation
+// 侧回归锁见 bridge/surface 测试），不再依赖 handler 参数。
+#[test]
+fn edge_band_observation_stamps_scope() {
+    let resp = r#"[
+        {"category": "workflow", "content": "项目边缘", "confidence": 0.6, "scope": "project"},
+        {"category": "style", "content": "无scope边缘", "confidence": 0.55},
+        {"category": "workflow", "content": "项目高分", "confidence": 0.9, "scope": "project"},
+        {"category": "workflow", "content": "未知scope边缘", "confidence": 0.55, "scope": "galaxy"}
+    ]"#;
+    let (habits, _, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Project).unwrap();
+    assert_eq!(habits.len(), 1, "过闸 habit 照常（scope 提案照常解析）");
+    assert_eq!(habits[0].target_scope, ProfileScope::Project);
+    assert_eq!(observations.len(), 3, "三条边缘带全部提名");
+    let by_content = |c: &str| {
+        observations
+            .iter()
+            .find(|o| o.content == c)
+            .unwrap_or_else(|| panic!("缺条目 {c}"))
+    };
+    assert_eq!(by_content("项目边缘").scope, "project", "显式 scope 采纳");
+    assert_eq!(
+        by_content("无scope边缘").scope,
+        "project",
+        "缺省 = 位置兜底（本反思所属画像 = 项目）"
+    );
+    assert_eq!(
+        by_content("未知scope边缘").scope,
+        "project",
+        "未知值 = 位置兜底"
+    );
 }
 
 // ---- kind 主语分型（批 A）----
@@ -176,7 +217,8 @@ fn parse_routes_lessons_by_subject_kind() {
         {"kind": "lesson", "category": "workflow", "content": "先看注册表再注册工具", "confidence": 0.85},
         {"category": "tool_preference", "content": "缺 kind 缺省 habit", "confidence": 0.8}
     ]"#;
-    let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, lessons, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert_eq!(habits.len(), 2, "habit + 缺省项都进画像桶");
     assert_eq!(habits[0].entry.content, "用户偏好简洁");
     assert_eq!(habits[1].entry.content, "缺 kind 缺省 habit");
@@ -200,7 +242,8 @@ fn parse_lesson_subject_to_same_gates() {
         {"kind": "lesson", "category": "tool_preference", "content": "合格教训", "confidence": 0.9,
          "evidence": ["sess-1", "sess-2"]}
     ]"#;
-    let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, lessons, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert!(habits.is_empty());
     assert_eq!(lessons.len(), 1);
     assert_eq!(lessons[0].content, "合格教训");
@@ -216,10 +259,58 @@ fn parse_unknown_kind_falls_back_to_habit() {
     // 未知分型 fail-closed 回落 habit（旧响应/模型幻觉值零迁移）。
     let resp =
         r#"[{"kind": "other", "category": "style", "content": "未知分型", "confidence": 0.9}]"#;
-    let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, lessons, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert_eq!(habits.len(), 1);
     assert!(lessons.is_empty());
     assert!(observations.is_empty());
+}
+
+// ---- scope 归属画像分型（批三，2026-11-26）----
+
+#[test]
+fn parse_scope_explicit_values_adopted() {
+    // 显式 scope 采纳：project → Project / dialogue → Dialogue。
+    let resp = r#"[
+        {"kind": "habit", "category": "workflow", "content": "项目续跑仪式", "confidence": 0.9,
+         "scope": "project"},
+        {"kind": "habit", "category": "style", "content": "个人偏好", "confidence": 0.9,
+         "scope": "dialogue"}
+    ]"#;
+    let (habits, _, _) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
+    assert_eq!(habits.len(), 2);
+    assert_eq!(habits[0].target_scope, ProfileScope::Project);
+    assert_eq!(habits[1].target_scope, ProfileScope::Dialogue);
+}
+
+#[test]
+fn parse_scope_missing_and_unknown_fall_back_to_position() {
+    // 缺省 / 未知值 = fallback_scope（位置兜底，旧响应零迁移）。
+    let resp = r#"[
+        {"kind": "habit", "category": "style", "content": "无 scope 字段", "confidence": 0.9},
+        {"kind": "habit", "category": "style", "content": "幻觉 scope", "confidence": 0.9,
+         "scope": "workspace"},
+        {"kind": "habit", "category": "style", "content": "非字符串 scope", "confidence": 0.9,
+         "scope": 3}
+    ]"#;
+    let (habits, _, _) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Project).unwrap();
+    assert_eq!(habits.len(), 3);
+    assert!(
+        habits
+            .iter()
+            .all(|h| h.target_scope == ProfileScope::Project),
+        "fallback_scope = 本反思所属画像"
+    );
+    // 同响应在对话反思里全部兜底为 Dialogue。
+    let (habits, _, _) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
+    assert!(
+        habits
+            .iter()
+            .all(|h| h.target_scope == ProfileScope::Dialogue)
+    );
 }
 
 // ---- 观察提名边缘带（接口二·待确认观察，2026-11-24）----
@@ -235,7 +326,8 @@ fn parse_edge_band_nominate_observation_between_min_and_threshold() {
         {"kind": "habit", "category": "tool_preference", "content": "高分结论", "confidence": 0.9},
         {"kind": "lesson", "category": "workflow", "content": "边缘教训", "confidence": 0.6}
     ]"#;
-    let (habits, lessons, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, lessons, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert_eq!(habits.len(), 1, "只有过闸项进画像桶");
     assert_eq!(habits[0].entry.content, "高分结论");
     assert!(lessons.is_empty());
@@ -255,11 +347,13 @@ fn parse_edge_band_nominate_observation_between_min_and_threshold() {
 fn parse_edge_band_lower_bound_is_inclusive() {
     // 下限含端点：confidence = OBSERVATION_MIN_CONFIDENCE (0.5) 恰好提名。
     let resp = r#"[{"category": "style", "content": "恰在下限", "confidence": 0.5}]"#;
-    let (_, _, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (_, _, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert_eq!(observations.len(), 1);
     // 下限之下（0.49）丢弃。
     let resp = r#"[{"category": "style", "content": "下限之下", "confidence": 0.49}]"#;
-    let (habits, _, observations) = parse_reflection_response(resp, "now", 0.7).unwrap();
+    let (habits, _, observations) =
+        parse_reflection_response(resp, "now", 0.7, ProfileScope::Dialogue).unwrap();
     assert!(
         habits.is_empty() && observations.is_empty(),
         "防洪泛：弱信号不提名"

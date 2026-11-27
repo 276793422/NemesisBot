@@ -4075,6 +4075,7 @@ dependencies = [
  "nemesis-path",
  "nemesis-plugin",
  "nemesis-prompts",
+ "nemesis-providers",
  "nemesis-taskstore",
  "nemesis-types",
  "nemesis-utils",

@@ -2638,7 +2638,15 @@ function handleHistoryResponse(data: any) {
   loadingHistorySid = null
 
   // M6：rewind/redo 后的重同步（无条件 replace + oldest_index 重建行号）。
-  if (pendingResync) {
+  // kind 门控（BUG-20261127-019）：旗标只认 resync 登记的响应。服务端
+  // WSAPI 每消息 tokio::spawn 并发派发（websocket_handler.rs），响应顺序
+  // 不保证与请求一致；翻页响应若在旗标置位后才到达（rewind 的 jsonl 重写
+  // 与翻页读同会话锁争用即可乱序），无门控时会冒领旗标走本分支——拿最旧
+  // 翻页窗口整表 replace 视图（读位丢失+窗口闪跳），真 resync 响应反落
+  // 合并路径。门控后跨 kind 响应按自身 kind 走翻页/合并路径，旗标留给
+  // 真响应；双 resync 并发（BUG-20261127-011）同为 resync kind，孤儿
+  // 兑现语义不变。
+  if (pendingResync && inflight.kind === 'resync') {
     pendingResync = false
     // 视口锚保位（2026-11-09 滚动批）：重灌不再无条件贴底——用户正读着
     // 上文被拽到底已多次被点名；锚滑出（列表变短等）回落条件贴底。
@@ -2702,7 +2710,12 @@ function handleHistoryResponse(data: any) {
   // session_log, the lost response landed — replace from source of truth and
   // un-stick. Otherwise keep the current view and re-check (never drop the
   // just-sent user message).
-  if (pendingWatchdogReload) {
+  // kind 门控（BUG-20261127-019，同 pendingResync）：翻页响应在旗标置位后
+  // 到达不得冒领——否则翻页旧窗走 landed 判定，窗口内恰有同文 user 行及其
+  // 旧回复（重发场景）时 landed+anchor 双真 → mid-turn replaceMessages +
+  // setBusy(false) + clearWatchdog：活 turn 视图被旧窗打乱、busy 指示被杀、
+  // 恢复检查被取消。门控后翻页响应照常前插，旗标留给真 watchdog 响应。
+  if (pendingWatchdogReload && inflight.kind === 'watchdog') {
     pendingWatchdogReload = false
     const rawMsgs: any[] = data.messages || []
     // 「回复已落」语义化判定:磁盘历史尾部向前,遇到本轮发送文本的 user
@@ -2891,8 +2904,25 @@ function handleHistoryResponse(data: any) {
 
   if (chatStore.oldestIndex === 0 || !data.has_more) {
     chatStore.hasMoreHistory = false
-    nextTick(() => scrollToBottom())
+    // BUG-20261127-010：翻页触底不拽人——翻页批次抵达历史起点（oldest_index
+    // = 0 / has_more=false）时，上方 scrollTop 补偿已把视口锚定在刚前插的
+    // 最旧内容上；此前的无条件贴底会把用户从「刚翻到的最旧消息」拽回最新
+    // 回复（scrollToBottom=jumpToBottom 还会强制重臂 follow、清未读）。与
+    // 2026-11-09 滚动批「用户正读着上文被拽到底已多次被点名」同族——该批
+    // 把 resync/watchdog 两处无条件贴底改成了锚恢复+条件贴底，此处是漏网的
+    // 第三处（翻页响应同样流经本尾部块）。初拉/重连全量（paginated=false）
+    // 保持贴底——会话打开/恢复的意图明确，行为不变。
+    if (!inflight.paginated) nextTick(() => scrollToBottom())
   }
+
+  // BUG-20261127-011：孤儿 resync 响应的 onDone 兑现——双 resync 并发时
+  // （subagent_reply 与 rewind 的重同步重叠等），pendingResync 旗标被首个
+  // 响应消费后，第二个 resync 响应落进上面的合并路径（此时视图已被首个
+  // 响应 replace，合并是全认领重建，视图终态与 resync 分支同构）。onDone
+  // 此前只在 resync 分支兑现 → 第二个请求的 await 方（rewindToTurnStart
+  // 的重发链等）只能干等 10s 安全超时。响应既已落地且视图终态正确，在此
+  // 即时兑现（page/watchdog 登记不带 onDone，本调用对它们是 no-op）。
+  inflight.onDone?.()
 }
 
 // P4（2026-09-21）：全量历史的「已载会话 / 在飞目标会话」钉子——

@@ -154,8 +154,11 @@ export function renderMarkdownHtml(text: string, opts?: MarkdownRenderOptions): 
   // （皮肤引擎 data-nb-html 同源消费）；stripRemoteMedia 是消毒后的第二道
   // 增量收窄（远程/相对媒体加载剥离，仅 markdown 管线，BUG-20261115-033）。
   const html = stripRemoteMedia(sanitizeHtmlFragment(raw))
+  // 锚规范化先行：scheme-less 路径 href 收编 file-link、其余 scheme-less
+  // 解包为文本——解包出的路径文本随后被 linkifyFilePaths 正常收编。
+  const normalized = normalizeAnchors(html)
   // marked 输出的表格标签无属性、形态稳定——就地包装为滚动容器。
-  const linked = linkifyFilePaths(html)
+  const linked = linkifyFilePaths(normalized)
   return linked
     .replace(/<table>/g, '<div class="md-table-wrap"><table>')
     .replace(/<\/table>/g, '</table></div>')
@@ -258,8 +261,88 @@ export function linkifyFilePaths(html: string): string {
     const t = walker.currentNode as Text
     const parent = t.parentElement
     if (!parent || parent.closest('a, pre')) continue
+    // 外来内容（SVG 等）文本不 linkify：本函数产出的 <a> 是 HTML 命名空间
+    // 元素，塞进 SVG 子树不渲染（SVG 只认自身命名空间的 <a>）——路径 token
+    // 视觉上凭空消失。SVG 图（模型常画流程图/架构图）内的路径字样保留原
+    // 文本最诚实；SVG 内链接收编归 normalizeAnchors 的命名空间安全臂。
+    if (parent.namespaceURI && parent.namespaceURI !== 'http://www.w3.org/1999/xhtml') continue
     if (PATH_TOKEN_TEST_RE.test(t.data)) targets.push(t)
   }
   for (const t of targets) replacePathTokensIn(t)
+  return holder.innerHTML
+}
+
+// ---------------------------------------------------------------------------
+// 锚规范化：markdown 链接与 file-link 两条形态同一真相源。marked 把
+// [label](dest) 一律渲染成 <a href>，而 linkifyFilePaths 显式跳过已有 <a>——
+// 同一本地路径「纯文本写」成 file-link（点击走 fs.open 安全打开），「链接
+// 语法写」却是裸 href，无任何委托拦截 → 浏览器按相对 URL 导航（报错页）。
+// 本 pass 在消毒后 DOM 上把锚分成四类：页内锚点 / mailto/tel 不动；http(s)
+// 补 target=_blank + rel noopener（不把整个 Dashboard 导航走）；scheme-less
+// 路径形态（与纯文本 arm 同一 isLinkablePath/白名单口径）收编 file-link；
+// 其余 scheme-less（协议相对 //、裸词、未知外部协议）解包为纯文本——
+// `.markdown-body a` 有链接样式，保元素删 href 会留假可点击观感，解包才诚实
+// （DOMPurify 已把 javascript:/data: 等活动 scheme 连 href 摘掉，本 pass 见到
+// 的 scheme-less 只剩 inert 导航面；盘符形态 href（`C:\...`/`C:/...`）同样在
+// DOMPurify 层被整体摘除（/i 旗标下 `[^a-z]` 连大写字母一起排除，`C:` 被当
+// scheme 拒绝）——到不了本 pass，label 保留、无导航，属上游已中性化）。
+// 注意 marked 对 href 跑 encodeURI
+// （中文/空格/反斜杠 → 百分号编码），判定与 data-path 都基于解码后的原始
+// 路径；解不开（坏编码）按不可信处理解包。
+// ---------------------------------------------------------------------------
+
+/// 行号后缀（`path.md:12`）：fs.open 不认识 `:行号`，收编前剥掉；只认
+/// 「冒号紧邻数字且在结尾」（`C:\dir` 盘符冒号不在结尾，不受影响）。
+const HREF_LINE_SUFFIX_RE = /:\d+$/
+
+function unwrapAnchor(a: HTMLAnchorElement): void {
+  a.replaceWith(...Array.from(a.childNodes))
+}
+
+function normalizeAnchors(html: string): string {
+  if (!/<a[\s>]/i.test(html)) return html
+  const holder = document.createElement('div')
+  holder.innerHTML = html // 已过 DOMPurify，安全
+  for (const a of Array.from(holder.querySelectorAll<HTMLAnchorElement>('a[href]'))) {
+    const href = a.getAttribute('href') ?? ''
+    if (href.startsWith('#')) continue // 页内锚点
+    if (/^https?:/i.test(href)) {
+      // 外部网页：新窗口打开，不把 Dashboard 整页导航走；rel 防反向接管。
+      a.setAttribute('target', '_blank')
+      a.setAttribute('rel', 'noopener noreferrer')
+      continue
+    }
+    if (/^(mailto|tel):/i.test(href)) continue
+    let decoded = ''
+    try {
+      decoded = decodeURIComponent(href)
+    } catch {
+      decoded = ''
+    }
+    // 行号后缀在判定前剥：isLinkablePath 的白名单扩展名口径认 `.md` 结尾、
+    // 不认 `.md:1`——先剥再判定，data-path 用同一剥离结果。
+    const stripped = decoded.replace(HREF_LINE_SUFFIX_RE, '')
+    if (stripped && isLinkablePath(stripped)) {
+      // 本地路径形态：收编进 file-link 通道（与纯文本 arm 同一真相源）。
+      // 属性写入一律 setAttribute：querySelectorAll('a[href]') 跨命名空间
+      // 命中 SVG 的 <a>（CSS 类型选择器不限命名空间），而 SVGElement.className
+      // 是只读 WebIDL 属性（SVGAnimatedString getter）——ES module 严格模式下
+      // `a.className = ...` 抛 TypeError（真 Chromium 实证），7/9 消费方无
+      // try/catch 兜底，一条 SVG 图即打崩整个视图。setAttribute 对 HTML/SVG
+      // 通用，SVG anchor 同样被收编（去 href 消灭导航面 + data-path 供
+      // ChatPanel 事件委托 closest('a.file-link') 命中——类型/class 选择器
+      // 同样跨命名空间匹配）。
+      a.removeAttribute('href')
+      a.setAttribute('class', 'file-link')
+      a.setAttribute('data-path', stripped)
+      // 空标签（`[](x.md)`）转换后零可见文本=隐形不可点；与纯文本 arm
+      // 的 textContent = tok 同源回填路径文本。
+      if (!a.textContent?.trim()) a.textContent = stripped
+      a.setAttribute('title', '打开文件')
+    } else {
+      // 其余 scheme-less（//、裸词、未知协议、坏编码）：解包消灭导航面。
+      unwrapAnchor(a)
+    }
+  }
   return holder.innerHTML
 }

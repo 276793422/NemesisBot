@@ -523,6 +523,77 @@ fn copy_with_new_model_overrides_copy_model_field() {
     assert_eq!(cfg["model_list"][0]["model"], "qwen/qwen3-30b");
 }
 
+// new_model identifier 形态校验（BUG-20261127-016）----
+// rename/copy 的 new_model 写的是 model identifier 字段，与 models.add 同族
+// 入口校验（宽松档：裸名合法，段级穿越/反斜杠/控制字符拒绝）。校验先于
+// 触碰 config.json——非法形态错误优先于一切 config 侧结果。
+
+#[test]
+fn rename_new_model_rejects_traversal_identifier_before_touching_config() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+    for bad in ["../../etc/passwd", "..", r"openai\gpt", "a//b", "openai/"] {
+        let err = h
+            .rename(
+                &home_str(&dir),
+                &serde_json::json!({ "name": "m2", "new_name": "m2-x", "new_model": bad }),
+                &make_ctx(&dir),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("Invalid model identifier"),
+            "'{bad}' 应被 identifier 校验拒绝，got: {err}"
+        );
+    }
+    // config 原封不动：条目未被改名、model 串未被写坏。
+    let cfg = read_config_raw(dir.path());
+    assert_eq!(cfg["model_list"][1]["model_name"], "m2");
+    assert_eq!(cfg["model_list"][1]["model"], "test/testai-1.1");
+}
+
+#[test]
+fn copy_new_model_rejects_traversal_identifier_before_touching_config() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+    for bad in ["../../etc/passwd", "..", r"openai\gpt"] {
+        let err = h
+            .copy_model(
+                &home_str(&dir),
+                &serde_json::json!({ "name": "m1", "new_name": "m1-x", "new_model": bad }),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("Invalid model identifier"),
+            "'{bad}' 应被 identifier 校验拒绝，got: {err}"
+        );
+    }
+    // config 原封不动：没有落下任何复制体。
+    let cfg = read_config_raw(dir.path());
+    assert_eq!(cfg["model_list"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn new_model_validation_allows_bare_and_vendor_names() {
+    // 宽松档契约与 add 同源：裸名（dashboard 既有契约）与 vendor/model 都放行
+    // （happy path 详测见上方 new_model 扩展段，此处只钉校验器档位——
+    // 严格档会拆裸名契约，BUG-20261104-361 首版教训）。
+    let h = ModelsHandler::new();
+    for good in ["glm-5.3-flash", "zhipu/glm-4.8"] {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), SEED);
+        let out = h
+            .copy_model(
+                &home_str(&dir),
+                &serde_json::json!({ "name": "m1", "new_name": "c", "new_model": good }),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(out["copied"], true, "'{good}' 应放行");
+    }
+}
+
 // 用户报障复现：copy → set_default(copy) → 「弹回原模型」 ----
 
 fn repro_seed(defaults_llm: &str) -> String {

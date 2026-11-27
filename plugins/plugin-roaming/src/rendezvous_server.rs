@@ -112,14 +112,23 @@ impl RendezvousRegistry {
         }
     }
 
-    /// token 校验（Bearer 头或 ?token= 查询参数；与中继 SharedTokenAccess
-    /// 同款语义）。
+    /// token 校验（Bearer 头或 ?token= 查询参数）。
+    ///
+    /// 比对走 [`crate::relay_server::constant_time_eq`]——与中继
+    /// SharedTokenAccess 同一预共享 token、同机两个公网面（中继 transport
+    /// 与名册 register/members），时序侧信道防御必须同口径
+    /// （BUG-20261126-126：此前是普通 `==`，注释声称「同款语义」而
+    /// constant-time 性质实际缺席——纵深防御覆盖缺口）。
     pub fn token_ok(&self, bearer: Option<&str>, query_token: Option<&str>) -> bool {
         match &self.token {
             None => true,
             Some(expect) => {
-                bearer.map(str::trim) == Some(expect.as_str())
-                    || query_token.map(str::trim) == Some(expect.as_str())
+                bearer
+                    .map(str::trim)
+                    .is_some_and(|t| crate::relay_server::constant_time_eq(t, expect))
+                    || query_token
+                        .map(str::trim)
+                        .is_some_and(|t| crate::relay_server::constant_time_eq(t, expect))
             }
         }
     }

@@ -151,6 +151,17 @@ pub struct BudgetGuard {
 /// 预备占用超时扫尾窗口（远大于最长执行路径——RPC 上限 2h，24h 宽裕）。
 const PROVISIONAL_TTL_MS: i64 = 24 * HOUR_MS;
 
+/// 降级窗口 id 段基线（BUG-20261126-120）。store 模式的主路径只读写盘
+/// （进程内存态保持 default，next_id 从 0 起）；锁失败的降级窗口走内存态，
+/// id 序列若同样从 0 起步，会撞上盘上未收口的同号预备占用——跨恢复边界
+/// 的 commit/release 按 id 摘除时误摘/误回吐他人账目（具体危害链：盘上
+/// op1 预备占用 id=0 在途 → 锁故障窗口 op2 降级签发 id=0 → 锁恢复后 op2
+/// release(id=0) 摘掉 op1 的账并按 op2 的 qty 回吐 → op1 已实际执行但账
+/// 被错误回吐 → 限额少计）。降级态首次使用时把 next_id 抬到本基线，与
+/// 盘上 id 域（从 0 单调递增，实用上远达不到 2^62）永不相交；降级 id 的
+/// 跨边界收口落在盘上 = 未命中 = 文档化的「未知 id 静默忽略」。
+const DEGRADED_ID_BASE: u64 = 1 << 62;
+
 /// workspace → 预算存储路径（统一定义；`shared_budget_guard` 与测试
 /// 同源引用，别处不得自行拼路径）。
 pub fn budget_store_path(workspace: &Path) -> PathBuf {
@@ -198,6 +209,10 @@ impl BudgetGuard {
             Err(e) => {
                 tracing::warn!("[Connector] 预算存储锁不可用，回退进程内存态: {e}");
                 let mut st = self.state.lock();
+                // BUG-20261126-120：降级态 id 段隔离（见 DEGRADED_ID_BASE）。
+                if st.next_id < DEGRADED_ID_BASE {
+                    st.next_id = DEGRADED_ID_BASE;
+                }
                 f(&mut st)
             }
         }

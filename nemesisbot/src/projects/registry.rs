@@ -470,7 +470,15 @@ pub fn sweep_missing_projects(path: &Path, ttl_secs: u64) -> Result<MissingSweep
     let mut aged_out = Vec::new();
     let mut dirty = false;
     let now = chrono::Local::now();
-    let ttl = chrono::Duration::seconds(ttl_secs as i64);
+    // BUG-20261127-021：ttl_secs 是 u64 无上界校验，裸 `as i64` 双缺陷面
+    // ① ≥2^63 回绕成负 TTL → `age >= ttl` 恒真 → 全部缺失条目立即老化
+    // （「永不老化」意图反转为「马上全解除分组」）；② 正值超 chrono 毫秒
+    // i64 表示域（>~9.2e15 秒）Duration::seconds panic → gateway 装配期
+    // 崩溃。按 time_bounds 统一界（R735 数字恐慌面同族）钳到 100 年——
+    // 对 sane 值恒等，巨值 = 实际等于永不，意图不反转。
+    let ttl = chrono::Duration::seconds(
+        ttl_secs.min(nemesis_utils::time_bounds::MAX_AGE_SECS as u64) as i64,
+    );
     for entry in &mut file.projects {
         if entry.path.is_dir() {
             // 复活臂：目录回来了，清戳（dirty 仅在真有戳可清时置）。

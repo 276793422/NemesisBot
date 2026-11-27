@@ -375,3 +375,47 @@ fn store_missing_dir_falls_back_to_memory_honestly() {
     assert!(g.reserve(&lm, "paper", T0, None).is_ok(), "降级不拒绝执行");
     assert_eq!(g.rate_used("paper", T0), 1);
 }
+
+#[test]
+fn degraded_window_ids_never_collide_with_disk_ledger() {
+    // BUG-20261126-120 回归锁：降级窗口（锁路径被占成目录 → acquire 打开
+    // 失败）签发的 id 必须落在隔离段（≥ DEGRADED_ID_BASE），与盘上账目的
+    // id 空间（从 0 单调递增）永不相交——否则跨恢复边界的 release 会按
+    // 同号 id 误摘盘上他人的预备占用并错误回吐资金账目。
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("budget.json");
+    let lock_path = store.with_extension("lock");
+    let lm = limits(2, f64::INFINITY, 0);
+
+    // 盘上在途预备占用 id=0（模拟另一实例 reserve 后未收口——进程退出，
+    // 内存态蒸发，账目在盘上）
+    {
+        let a = store_guard(&store);
+        assert!(a.reserve(&lm, "paper", T0, None).is_ok());
+    }
+
+    // 降级窗口：锁文件位置被目录占住 → OpenOptions 打开必失败（确定性
+    // 触发，不依赖锁竞争时序）。首轮 reserve 的 acquire 已创建过锁文件
+    // （Drop 解锁但不删文件），先移除再占位。
+    std::fs::remove_file(&lock_path).unwrap();
+    std::fs::create_dir(&lock_path).unwrap();
+    let degraded = store_guard(&store);
+    let r = degraded
+        .reserve(&lm, "paper", T0 + 1, None)
+        .expect("降级窗口仍应放行");
+    assert!(
+        r.id >= super::DEGRADED_ID_BASE,
+        "降级 id 必须在隔离段，不得与盘上 id 空间重叠（修复前=0）"
+    );
+
+    // 锁恢复后，降级 id 的收口落在盘上 = 未命中 = 静默忽略；
+    // 盘上 id=0 的预备占用必须原样保留（修复前：同号 id=0 被误摘）
+    std::fs::remove_dir(&lock_path).unwrap();
+    degraded.release(&r);
+    let text = std::fs::read_to_string(&store).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        v["provisional"].get("0").is_some(),
+        "盘上 id=0 预备占用不得被降级 id 的收口误摘"
+    );
+}

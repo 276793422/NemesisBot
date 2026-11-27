@@ -652,3 +652,60 @@ fn test_read_lossy_missing_file_is_err() {
     let path = dir.path().join("nope.jsonl");
     assert!(read_lossy_to_string(&path).is_err());
 }
+
+/// 写侧撕裂尾防线（BUG-20261126-130 原语面）：无换行尾巴 → 补 `\n` 返回
+/// true；已完整换行尾 / 空文件 → 原样返回 false。句柄契约 read+append
+/// 并申请（Windows append 句柄无读权限）。
+#[test]
+fn test_repair_torn_tail() {
+    let open = |path: &Path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)
+            .unwrap()
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // 撕裂尾巴（完整 JSON 但无换行——上一会话 write 中途断头形态）：
+    // 补换行 + 返回 true。
+    let torn = dir.path().join("torn.jsonl");
+    fs::write(&torn, b"{\"kind\":\"torn\"").unwrap();
+    let mut f = open(&torn);
+    assert!(repair_torn_tail(&mut f), "无换行尾巴必须补换行");
+    // 修复后末字节是换行，再探测返回 false（幂等）。
+    assert!(!repair_torn_tail(&mut f), "修复后再探测应原样放行");
+    drop(f);
+    let bytes = fs::read(&torn).unwrap();
+    assert_eq!(
+        bytes, b"{\"kind\":\"torn\"\n",
+        "补的必须是单个换行: {bytes:?}"
+    );
+
+    // 完整换行尾：不动。
+    let clean = dir.path().join("clean.jsonl");
+    fs::write(&clean, b"{\"a\":1}\n").unwrap();
+    let mut f = open(&clean);
+    assert!(!repair_torn_tail(&mut f));
+    assert_eq!(fs::read(&clean).unwrap(), b"{\"a\":1}\n");
+
+    // 空文件：no-op（end==0 早退，无探测无补写）。
+    let empty = dir.path().join("empty.jsonl");
+    let mut f = open(&empty);
+    assert!(!repair_torn_tail(&mut f));
+    assert_eq!(fs::read(&empty).unwrap(), b"");
+
+    // 修复后句柄保持可写：append 模式写落文件末尾，且独立成完整行
+    // （撕裂尾巴行解析失败 = 原始半行诚实保留，新记录可解析）。
+    let mut f = open(&torn);
+    use std::io::Write;
+    f.write_all(b"{\"kind\":\"next\"}\n").unwrap();
+    drop(f);
+    let text = String::from_utf8(fs::read(&torn).unwrap()).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "撕裂尾巴 + 新记录各占一行: {text:?}");
+    assert!(serde_json::from_str::<serde_json::Value>(lines[0]).is_err());
+    assert!(serde_json::from_str::<serde_json::Value>(lines[1]).is_ok());
+}

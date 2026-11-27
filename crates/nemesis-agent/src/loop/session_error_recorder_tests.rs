@@ -318,3 +318,45 @@ fn hook_block_merged_line() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-20261126-130 回归锁：重开句柄时撕裂尾巴必须修复（补换行）——
+/// 上一会话写失败/崩溃留下的无换行尾巴不粘连恢复后第一条记录（不修复
+/// 时两条 JSONL 记录拼成一行、解析全丢）。摘掉 write_line 重开臂的
+/// repair_torn_tail 调用 → 本测试红。
+#[test]
+fn reopen_repairs_torn_tail_next_record_stays_parseable() {
+    let dir = temp_dir("torn-tail");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = today_file(&dir);
+    // 预置撕裂尾巴（模拟上一会话 write 中途断头：半截 JSON、无换行）。
+    std::fs::write(&path, "{\"kind\":\"torn\"").unwrap();
+
+    let rec = SessionErrorRecorder::new(dir.clone(), true);
+    rec.record_occurrence("sid-r", "trace-r", 1, "m-1", None, "boom");
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "撕裂尾巴 + 新记录各占一行（不粘连）: {content:?}"
+    );
+    // 恢复记录独占整行、可解析（修复前它被拼进撕裂尾巴 = 解析失败丢失）。
+    let recovered: serde_json::Value =
+        serde_json::from_str(lines[1]).expect("恢复记录必须完整可解析");
+    assert_eq!(recovered["kind"], "occurrence");
+    assert_eq!(recovered["trace_id"], "trace-r");
+    // 后续记录走已持有句柄（不重开），追加语义不受修复影响。
+    rec.record_outcome(
+        "trace-r",
+        1,
+        &SessionErrorOutcome::recovered("transient", None),
+    );
+    let content2 = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = content2.lines().collect();
+    assert_eq!(lines.len(), 3);
+    let out: serde_json::Value = serde_json::from_str(lines[2]).expect("outcome 行可解析");
+    assert_eq!(out["kind"], "outcome");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

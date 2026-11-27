@@ -25,6 +25,7 @@ use iroh_relay::server::{
     RelayConfig as ServerRelayConfig, Server, ServerConfig,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use sha2::{Digest, Sha256};
 
 use crate::types::{RelaySettings, RelayTls};
 
@@ -152,12 +153,26 @@ pub async fn spawn_relay_server(
 }
 
 /// QUIC 臂 TLS 装配（证书 PEM → rustls ServerConfig → QuicConfig）。
+///
+/// 启动期透出**首证书 DER 的 SHA-256**（与客户端 `relay_cert_fp` pin 同一口
+/// 径，2026-11-26 打洞通路激活计划 Phase 3）：服务器侧指纹自足——重启后从
+/// 日志复制指纹填客户端配置，无需 openssl/PowerShell 外部工具链。
 fn quic_tls_arm(cert_pem: &str, key_pem: &str, quic_port: u16) -> Result<QuicConfig, String> {
+    let certs = parse_certs_pem(cert_pem)?;
+    let key = parse_key_pem(key_pem)?;
+    if let Some(first) = certs.first() {
+        let fp: [u8; 32] = Sha256::digest(first.as_ref()).into();
+        crate::plugin_log(
+            crate::roaming::ROAMING_LOG_INFO,
+            "relay",
+            &format!(
+                "QUIC 臂证书指纹（SHA-256，DER）= {}（填入客户端 config client.relay_cert_fp）",
+                hex::encode(fp)
+            ),
+        );
+    }
     let mut config = QuicConfig::new(SocketAddr::from(([0, 0, 0, 0], quic_port)));
-    config.server_config = Some(build_rustls_server_config(
-        parse_certs_pem(cert_pem)?,
-        parse_key_pem(key_pem)?,
-    )?);
+    config.server_config = Some(build_rustls_server_config(certs, key)?);
     Ok(config)
 }
 
@@ -170,9 +185,13 @@ fn access_control(token: &str) -> Arc<dyn DynAccessControl> {
     }
 }
 
-/// 常数时间字节比较（插件自持依赖，不引 nemesis-utils；XOR 折叠形态与
-/// 宿主 nemesis_utils::verify_token 同族——纵深防御全覆盖口径）。
-fn constant_time_eq(a: &str, b: &str) -> bool {
+/// 常数时间字节比较（等长才逐字节 XOR 折叠；插件自持依赖，不引 nemesis-utils；
+/// XOR 折叠形态与宿主 nemesis_utils::verify_token 同族）。
+///
+/// 消费方 = 同一预共享 token 的**全部公网比对面**：中继 SharedTokenAccess
+/// 与 rendezvous 名册 `token_ok`（BUG-20261126-126 前名册侧是普通 `==`，
+/// 同一 token 两个公网面时序防御不一致——收口到本函数后全覆盖口径成立）。
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }

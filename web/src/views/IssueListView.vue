@@ -270,6 +270,9 @@ function openCreate() {
 }
 
 async function submitCreate() {
+  // 函数内 busy 闸（BUG-20261127-014 同族横向排查补修）：输入框 @keyup.enter
+  // 直调绕过按钮 :disabled——在飞时连按 Enter 并发双发请求。
+  if (busy.value) return
   if (!createForm.value.title.trim()) {
     toast.warn('请填写标题')
     return

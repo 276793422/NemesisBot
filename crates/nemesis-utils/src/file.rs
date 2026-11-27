@@ -56,6 +56,36 @@ pub fn read_lossy_to_string(path: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// 追加式 jsonl/日志的**写侧重开防线**（与 [`read_lossy_to_string`] 读侧
+/// 防线配对）：上一 writer 会话写失败（write 中途 ENOSPC/IO 错误）或进程
+/// 崩溃可留下**无换行尾巴**——不修复时恢复后第一条记录直接拼接其后成同
+/// 一行，逐行 JSON 解析两条全丢。本 helper 在（重）打开 append 句柄后探
+/// 测末字节，缺换行补一个 `\n`，保证后续每条记录都是完整行。
+///
+/// 调用方契约：句柄须以 `read(true) + append(true)` 并申请打开——append
+/// 句柄在 Windows 上无读权限，末字节探测会静默失败（先例：nemesis-logger
+/// resilient_writer BUG-2「半行不粘连」）。返回是否补了换行；探测/修复自
+/// 身故障 fail-open（返回 false 放弃，只影响撞窗口那一条，不阻塞记录主
+/// 流程——与这些记录面的 fail-open/尽力而为纪律同构）。
+pub fn repair_torn_tail(f: &mut std::fs::File) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(end) = f.seek(SeekFrom::End(0)) else {
+        return false;
+    };
+    if end == 0 {
+        return false;
+    }
+    if f.seek(SeekFrom::End(-1)).is_err() {
+        return false;
+    }
+    let mut last = [0u8; 1];
+    if f.read_exact(&mut last).is_ok() && last[0] != b'\n' {
+        f.write_all(b"\n").is_ok()
+    } else {
+        false
+    }
+}
+
 /// Atomically write data to a file: unique same-dir temp file → write →
 /// flush → `sync_all` → rename over target（unix 天然覆盖 / Windows
 /// `MOVEFILE_REPLACE_EXISTING`——rename 两平台都执行，见下方 bullet）

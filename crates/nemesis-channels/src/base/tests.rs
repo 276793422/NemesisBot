@@ -1367,3 +1367,87 @@ async fn test_ws_connect_bounded_ok_against_real_ws_server() {
         "expected successful handshake against a real WS server, got {result:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ws_message_or_stop（BUG-20261127-018）：内层 WS 读循环的 stop() 即时生效
+// 原语（200ms 粒度轮询家族，nostr/mattermost inline 语义的单一实现）。
+// ---------------------------------------------------------------------------
+
+// stop 已置位 + 流永不来消息（pending）→ 原语在一个 tick 内返回 Stopped，
+// 不依赖消息臂唤醒（旧形态纯旗标检查只在重连决策点，stop 后旧会话无限
+// 期继续收发的根因即此）。
+#[tokio::test]
+async fn test_ws_message_or_stop_returns_stopped_when_flag_cleared() {
+    let running = Arc::new(parking_lot::RwLock::new(false));
+    let mut rx = futures::stream::pending::<Option<std::result::Result<u8, ()>>>();
+    assert!(
+        matches!(ws_message_or_stop(&mut rx, &running).await, WsWait::Stopped),
+        "stop 置位时必须返回 Stopped（不等消息）"
+    );
+}
+
+// running=true + 流有消息 → Item 透传（与裸 next() 的 Item 一致）；
+// 流耗尽 → Item(None)（不是 Stopped——流结束照旧走消费方重连臂，
+// 与 stop 的「不重连」语义严格区分）。
+#[tokio::test]
+async fn test_ws_message_or_stop_item_and_stream_end_verbatim() {
+    let running = Arc::new(parking_lot::RwLock::new(true));
+    // 流元素 = 裸 Result（镜像 ws_rx 的 Item=Result<Message,Error>），
+    // next() 产出 Option<Result>——WsWait::Item 持有的正是它。
+    let mut rx = futures::stream::iter(vec![Ok::<u8, ()>(7u8)]);
+    assert_eq!(
+        ws_message_or_stop(&mut rx, &running).await,
+        WsWait::Item(Some(Ok(7u8)))
+    );
+    assert!(
+        matches!(
+            ws_message_or_stop(&mut rx, &running).await,
+            WsWait::Item(None)
+        ),
+        "流耗尽必须以 Item(None) 透传（不能并入 Stopped，否则服务器关连接后通道不再重连）"
+    );
+}
+
+// running=true 全程 + 流挂起 → 跨过多个 200ms tick 也不返回
+// （消息臂挂起是正确形态；若每 tick 误返回会破坏长连接语义）。
+#[tokio::test(start_paused = true)]
+async fn test_ws_message_or_stop_running_true_keeps_waiting() {
+    let running = Arc::new(parking_lot::RwLock::new(true));
+    let mut rx = futures::stream::pending::<Option<std::result::Result<u8, ()>>>();
+    let res = tokio::time::timeout(
+        std::time::Duration::from_millis(450),
+        ws_message_or_stop(&mut rx, &running),
+    )
+    .await;
+    assert!(
+        res.is_err(),
+        "running=true 时不得提前返回（须继续等消息臂），got {res:?}"
+    );
+}
+
+// stop 在挂起中途置位（250ms 处）→ 下一个 200ms tick（400ms 处）返回
+// Stopped：上界=置位后至多一个 tick。
+#[tokio::test(start_paused = true)]
+async fn test_ws_message_or_stop_interrupts_pending_stream_mid_wait() {
+    let running = Arc::new(parking_lot::RwLock::new(true));
+    let mut rx = futures::stream::pending::<Option<std::result::Result<u8, ()>>>();
+    let flag = Arc::clone(&running);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        *flag.write() = false;
+    });
+    let start = tokio::time::Instant::now();
+    assert!(
+        matches!(ws_message_or_stop(&mut rx, &running).await, WsWait::Stopped),
+        "stop 置位后必须返回 Stopped"
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(400),
+        "250ms 才置位 → 最早在第二个 tick（400ms）返回，got {elapsed:?}"
+    );
+    assert!(
+        elapsed <= std::time::Duration::from_millis(600),
+        "stop 置位后至多一个 200ms tick 必须退出，got {elapsed:?}"
+    );
+}

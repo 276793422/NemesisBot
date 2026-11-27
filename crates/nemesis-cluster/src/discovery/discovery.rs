@@ -904,13 +904,21 @@ pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> D
 
 /// Send an announce message using the listener's broadcast method.
 fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) {
-    let addresses = cluster.all_local_ips();
-    if addresses.is_empty() {
-        tracing::error!("[Discovery] No local IP addresses available for broadcast");
+    let msg = build_announce_from_callbacks(cluster);
+    // 空地址守卫口径 = **合并后载荷地址**（BUG-20261126-138）：守卫若只看
+    // `all_local_ips()`，会把「LAN IPv4 枚举为空但配置了 iroh 自建中继
+    // （`roaming_overlay_addresses`）」的纯跨网拓扑节点整拍拦掉——广播连同
+    // **定向单播**一起不发，发现层 UDP 面对该节点失聪。而载荷地址其实非空
+    // （validate 可过），单播通路也完全不依赖本地 LAN IP（UDP send_to 的
+    // 源地址由路由表决定）。构造点合并两个地址源（LAN IP + 漫游中继），
+    // 发送点守卫必须用同一合并口径；两者皆空时广播与单播才真无意义
+    // （validate 也会拒空地址 announce）。
+    if msg.addresses.is_empty() {
+        tracing::error!(
+            "[Discovery] No addresses available for announce (all_local_ips + roaming overlay both empty)"
+        );
         return;
     }
-
-    let msg = build_announce_from_callbacks(cluster);
 
     if let Err(e) = listener.broadcast(&msg) {
         tracing::error!(error = %e, "[Discovery] Failed to send announce");
@@ -933,13 +941,16 @@ fn send_announce_with(
     enc_key: Option<[u8; 32]>,
     cluster: &dyn ClusterCallbacks,
 ) {
-    let addresses = cluster.all_local_ips();
-    if addresses.is_empty() {
-        tracing::error!("[Discovery] No local IP addresses available for broadcast");
+    let msg = build_announce_from_callbacks(cluster);
+    // 同 send_announce_direct（BUG-20261126-138）：守卫口径 = 合并后载荷
+    // 地址（LAN IP + iroh 自建中继），纯跨网拓扑不得被 LAN-only 口径整拍
+    // 拦掉——定向单播不依赖本地 LAN IP。
+    if msg.addresses.is_empty() {
+        tracing::error!(
+            "[Discovery] No addresses available for announce (all_local_ips + roaming overlay both empty)"
+        );
         return;
     }
-
-    let msg = build_announce_from_callbacks(cluster);
 
     let data = match msg.to_bytes() {
         Ok(d) => d,

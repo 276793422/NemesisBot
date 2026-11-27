@@ -334,3 +334,120 @@ fn service_shell_is_constructible_and_cloneable() {
     let shell = BridgeSubpathService::new(Some("node-a".to_string()), axum::Router::new());
     let _cloned = shell.clone();
 }
+
+// BUG-20261127-006：子目录壳 `../assets/` 引用 × base 注入断链回归锁
+
+use crate::relay::subpath::normalize_shell_asset_refs;
+
+/// 单元：href/src 两形态归一、多次出现、已归一形态幂等不动。
+#[test]
+fn normalize_rewrites_href_and_src_forms() {
+    let html = b"<link href=\"../assets/a.css\"><script src=\"../assets/b.js\">\
+                 <link href=\"../assets/c.png\"><script src=\"./keep.js\"></script>";
+    let out = normalize_shell_asset_refs(html);
+    let s = String::from_utf8_lossy(&out);
+    assert!(s.contains("href=\"./assets/a.css\""), "href 归一: {s}");
+    assert!(s.contains("src=\"./assets/b.js\""), "src 归一: {s}");
+    assert!(s.contains("href=\"./assets/c.png\""), "多次出现全归一: {s}");
+    assert!(s.contains("src=\"./keep.js\""), "已归一形态不动: {s}");
+    assert!(!s.contains("../assets/"), "不应残留 ../assets/: {s}");
+}
+
+/// 单元：正文文本里的裸 `../assets/` 字面量（无属性前缀）不误伤。
+#[test]
+fn normalize_does_not_touch_non_attribute_text() {
+    let html = b"<p>docs mention the ../assets/ convention</p><a data-x=\"../assets/y\">t</a>";
+    let out = normalize_shell_asset_refs(html);
+    let s = String::from_utf8_lossy(&out);
+    assert!(
+        s.contains("the ../assets/ convention"),
+        "正文文本不误伤: {s}"
+    );
+    assert!(
+        s.contains("data-x=\"../assets/y\""),
+        "非 href/src 属性不误伤: {s}"
+    );
+}
+
+/// 集成：带 `../assets/` 引用的子目录壳经桥前缀访问 → base 注入 + 引用
+/// 归一为 `./assets/`（按 `/d/<node>/` base 解析到本设备 assets）。
+#[tokio::test]
+async fn self_prefix_shell_rewrites_relative_asset_refs() {
+    let mut files = HashMap::new();
+    files.insert(
+        "chat/index.html".to_string(),
+        b"<html><head><title>c</title></head><body>\
+          <link rel=\"icon\" href=\"../assets/f.png\">\
+          <script src=\"../assets/chat.js\"></script></body></html>"
+            .to_vec(),
+    );
+    let config_files: Arc<dyn crate::server::StaticFiles> = Arc::new(InMemStatic { files });
+    let config = WebServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        auth_token: String::new(),
+        cors_origins: vec![],
+        cors_allow_all: false,
+        ws_path: "/ws".to_string(),
+        workspace: None,
+        home: None,
+        version: "test".to_string(),
+        static_dir: None,
+        static_files: Some(config_files),
+        index_file: "index.html".to_string(),
+    };
+    let mut server = WebServer::new(config);
+    server.set_bridge_identity("node-a".to_string());
+    let router = server.build_router();
+
+    let (status, body) = send(router, "/d/node-a/chat").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#"<base href="/d/node-a/">"#),
+        "base 注入: {body}"
+    );
+    assert!(
+        body.contains("href=\"./assets/f.png\"") && body.contains("src=\"./assets/chat.js\""),
+        "壳引用应归一为 ./assets/，实际: {body}"
+    );
+    assert!(!body.contains("../assets/"), "不应残留 ../assets/: {body}");
+}
+
+/// 集成：壳自带 `<base>` 时既不注入也不归一（引用语义归壳作者自管）。
+#[tokio::test]
+async fn shell_with_own_base_not_normalized() {
+    let mut files = HashMap::new();
+    files.insert(
+        "share/index.html".to_string(),
+        b"<html><head><base href=\"/custom/\"></head><body>\
+          <link href=\"../assets/s.css\"></body></html>"
+            .to_vec(),
+    );
+    let config_files: Arc<dyn crate::server::StaticFiles> = Arc::new(InMemStatic { files });
+    let config = WebServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        auth_token: String::new(),
+        cors_origins: vec![],
+        cors_allow_all: false,
+        ws_path: "/ws".to_string(),
+        workspace: None,
+        home: None,
+        version: "test".to_string(),
+        static_dir: None,
+        static_files: Some(config_files),
+        index_file: "index.html".to_string(),
+    };
+    let mut server = WebServer::new(config);
+    server.set_bridge_identity("node-a".to_string());
+    let router = server.build_router();
+
+    let (status, body) = send(router, "/d/node-a/share").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("<base href=\"/d/node-a/\">"),
+        "已有 base 不重复注入: {body}"
+    );
+    assert!(
+        body.contains("href=\"../assets/s.css\""),
+        "自带 base 的壳引用不做归一改写: {body}"
+    );
+}

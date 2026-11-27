@@ -376,3 +376,66 @@ fn negative_tier_price_clamps_while_none_inherits_base() {
         "inherit path must price non-negative base, got {total}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 非有限价防御钳（BUG-20261126-137）：`f64::max(0.0)` 挡得住负价与 NaN
+// （Rust max 是 NaN-aware），挡不住 **±inf 原样保留**。进价路径：下载表/
+// import 的溢出字面量（serde_json 解析 `1e400` → inf 不报错；parse 层
+// is_finite skip 只查 input/output，cache 两列缺席）→ 正 token × inf =
+// inf 成本落账 → SUM 变 inf → usage.budget 费用闸 `inf >= limit` 恒真
+// → reject 模式首个请求即误熔断停车。计费域无 inf 语义——非有限一律
+// 钳 0（免费模型语义，与负价同族）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn infinite_prices_clamped_to_zero() {
+    let mut p = base_entry();
+    p.input_cost_per_million = f64::INFINITY;
+    p.output_cost_per_million = f64::NEG_INFINITY;
+    p.cache_read_cost_per_million = f64::INFINITY;
+    p.cache_creation_cost_per_million = f64::INFINITY;
+    // 修复前形态：正 token × inf = inf（负 token 列已钳 0 不触发
+    // -inf × 正 token = -inf 的另一路径），SUM 污染 + 预算闸恒熔断。
+    let total = cost_from_pricing(&p, 100_000, 50_000, 10_000, 20_000);
+    assert!(
+        total.is_finite() && total == 0.0,
+        "infinite prices must clamp to zero cost, got {total}"
+    );
+    let b = cost_breakdown_from_pricing(&p, 100_000, 50_000, 10_000, 20_000);
+    assert!(b.input_cost_usd.is_finite() && b.input_cost_usd == 0.0);
+    assert!(b.output_cost_usd.is_finite() && b.output_cost_usd == 0.0);
+    assert!(b.cache_creation_cost_usd.is_finite() && b.cache_creation_cost_usd == 0.0);
+    assert!(b.cache_read_cost_usd.is_finite() && b.cache_read_cost_usd == 0.0);
+    assert!(b.total_cost_usd.is_finite() && b.total_cost_usd == 0.0);
+}
+
+#[test]
+fn infinite_cache_price_with_cache_read_tokens_clamps() {
+    // 实锤触发形态：仅 cache_read 价 inf + 带缓存读的请求（无缓存读时
+    // token 钳 0 侧 0.0 * inf = NaN，同样被本钳收口——落 SQLite 会转
+    // NULL 掩盖，但 NaN 账面已是错）。
+    let mut p = base_entry();
+    p.cache_read_cost_per_million = f64::INFINITY;
+    let total = cost_from_pricing(&p, 100_000, 50_000, 0, 240_000);
+    assert!(
+        total.is_finite(),
+        "inf cache price must not poison total, got {total}"
+    );
+    // cache 列钳 0 = 缓存免费语义；input/output 照常计价：
+    // 100k*1 + 50k*2 + 0 = 0.2。
+    assert!(approx(total, 0.2), "only inf column clamps, got {total}");
+}
+
+#[test]
+fn nan_prices_clamped_to_zero_explicitly() {
+    // NaN 已被 f64::max 隐式归 0（NaN-aware max 返回另一参数）——回归锁
+    // 把这个隐式行为钉成显式契约，防未来改写钳位实现时丢失。
+    let mut p = base_entry();
+    p.input_cost_per_million = f64::NAN;
+    p.cache_read_cost_per_million = f64::NAN;
+    let total = cost_from_pricing(&p, 100_000, 50_000, 0, 20_000);
+    assert!(
+        total.is_finite() && approx(total, 0.1),
+        "NaN prices must clamp to zero, only output prices: got {total}"
+    );
+}

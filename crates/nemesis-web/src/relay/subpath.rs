@@ -167,13 +167,48 @@ async fn inject_base_into_html(res: Response, base: &str) -> Response {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     }
     let Some(new_body) = inject_base_tag(&bytes, base) else {
-        // 已有 <base>——原样返回。
+        // 已有 <base>——原样返回（引用语义归壳作者自管，不做归一改写）。
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     };
+    // BUG-20261127-006：子目录壳（chat/workflow-chat/share/prompt-viewer）
+    // 的 vite 产物资产引用是 `../assets/...`（按产物物理目录深度生成）。
+    // base 注入后所有相对引用按 base 解析：直连 base=`/` 时 `..` 在根
+    // 截停侥幸兜住；桥模式 base=`/d/<node>/` 是真实子目录，`../` 上跳
+    // 一层落到 `/d/assets/...`（被中继当 node_id）→ 资产 503 断链。
+    // 归一为 `./assets/...` 后两种 base 都解析到正确的 assets 目录。
+    // 只在本机实际注入 base 的响应上执行——转发响应（他人前缀/无身份）
+    // 由远端设备自己注入与归一，此处一律不碰。
+    let new_body = normalize_shell_asset_refs(&new_body);
     if let Ok(v) = HeaderValue::from_str(&new_body.len().to_string()) {
         parts.headers.insert(http::header::CONTENT_LENGTH, v);
     }
     Response::from_parts(parts, axum::body::Body::from(new_body))
+}
+
+/// 子目录壳的 `../assets/` 引用归一为 `./assets/`（属性前缀精准替换，
+/// 不误伤正文文本中的裸 `../assets/` 字面量）。
+///
+/// 与 base 注入绑定使用：归一后的引用按注入的 base 解析——直连
+/// `<base href="/">` → `/assets/...`；桥 `<base href="/d/<node>/">` →
+/// `/d/<node>/assets/...`。两种访问形态都落到正确的产物 assets 目录。
+pub(crate) fn normalize_shell_asset_refs(html: &[u8]) -> Vec<u8> {
+    const PAIRS: [(&[u8], &[u8]); 2] = [
+        (b"href=\"../assets/", b"href=\"./assets/"),
+        (b"src=\"../assets/", b"src=\"./assets/"),
+    ];
+    let mut current = html.to_vec();
+    for (needle, replacement) in PAIRS {
+        let mut replaced = Vec::with_capacity(current.len());
+        let mut rest = current.as_slice();
+        while let Some(pos) = find_subslice(rest, needle) {
+            replaced.extend_from_slice(&rest[..pos]);
+            replaced.extend_from_slice(replacement);
+            rest = &rest[pos + needle.len()..];
+        }
+        replaced.extend_from_slice(rest);
+        current = replaced;
+    }
+    current
 }
 
 /// 在 HTML 字节里找注入点并插入 `<base href="...">`。

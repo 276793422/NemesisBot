@@ -444,6 +444,36 @@ fn extract_md_first_message_truncates_at_2000_chars() {
     assert_eq!(extract_md_first_message("# nothing\n"), "");
 }
 
+/// BUG-20261126-122 配对锁：Local.md 错误判定必须**结构性**（精确标题行 +
+/// 围栏感知），不能全文子串扫描——Result/Arguments 节嵌的是工具结果原文，
+/// 内容里出现「### Error」字样（读含错误章节的 markdown 文档是常态）曾被
+/// 误判为任务失败（has_error → status "failed"）。
+#[test]
+fn local_md_has_error_section_structural_not_substring() {
+    // ① 历史定长 ``` 围栏内的 Result 内容含标题行 → 不算错误
+    let old_style = "# Local Operations\n\n\
+         ### Result\n```\nstep1\n### Error\n```\n\n";
+    assert!(!local_md_has_error_section(old_style));
+    // ② 新自适应围栏（≥4）同理
+    let new_style = "# Local Operations\n\n\
+         ### Result\n````text\n文档正文\n### Error\n子标题\n````\n\n";
+    assert!(!local_md_has_error_section(new_style));
+    // ③ 真错误节（写盘端 `### Error` 标题行）→ 算
+    let real_error = "# Local Operations\n\n\
+         ### Result\n````text\nok\n````\n\n\
+         ### Error\n````text\nboom\n````\n\n";
+    assert!(local_md_has_error_section(real_error));
+    // ④ 行中子串（非精确标题行）→ 不算
+    let inline = "### Result\n````text\n见下文 ### Error 说明\n````\n\n";
+    assert!(!local_md_has_error_section(inline));
+    // ⑤ 无围栏裸错误节（Go 节点旧形态）→ 算（标题行全等即可）
+    let bare = "# Local Operations\n\n### Error\nfile not found\n";
+    assert!(local_md_has_error_section(bare));
+    // ⑥ 围栏未闭合：错误标题行被吞在栏内 → 不算（保守）
+    let unclosed = "### Result\n```json\n### Error\n";
+    assert!(!local_md_has_error_section(unclosed));
+}
+
 /// BUG-20261117-071 配对锁：写入端（nemesis-security `audit_log.rs`）已把
 /// 字段内 `|` 中和为 Broken Bar `¦`（exec/run_script target=命令串本体，
 /// shell 管道是日常形态——未中和时行 split(" | ") 错位移列，danger 列被

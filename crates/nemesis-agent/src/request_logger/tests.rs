@@ -206,6 +206,206 @@ fn log_final_response() {
     assert!(content.contains("LLM Rounds**: 3"));
 }
 
+// ===========================================================================
+// BUG-20261126-122 家族横扫：Local.md / response.md / AI.Response.md /
+// AI.Request.md（ToolCalls）此前仍用定长 ``` 围栏或裸插正文——外部内容
+// （工具结果/LLM 输出/args）含 ``` 行或 `# 标题` 行即打碎文件结构。
+// Message 段的自适应围栏（md_fence_len）不变量扩展到全部嵌内容段。
+// ========================================================================
+
+/// 与 nemesis-web `local_md_has_error_section` 同语义的最小结构性判定
+/// （测试本地镜像：nemesis-agent 不依赖 nemesis-web）。
+fn has_structural_error_section(content: &str) -> bool {
+    let mut fence_open: Option<usize> = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let run = trimmed.chars().take_while(|&c| c == '`').count();
+        if run >= 3 {
+            let rest = &trimmed[run..];
+            if let Some(open) = fence_open {
+                if run >= open && rest.chars().all(char::is_whitespace) {
+                    fence_open = None;
+                    continue;
+                }
+            } else if !rest.contains('`') {
+                fence_open = Some(run);
+                continue;
+            }
+        }
+        if fence_open.is_none() && trimmed == "### Error" {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn local_md_hostile_result_stays_fenced_no_false_error() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    // 工具结果 = 读到的 markdown 文档原文（含 ``` 围栏行与 ### Error 标题行）
+    let hostile = "## 文档\n\n```rust\nfn main() {}\n```\n\n### Error\n不该被当成任务失败\n";
+    logger.log_local_operations(&LocalOperationInfo {
+        round: 1,
+        timestamp: Local::now(),
+        operations: vec![OperationInfo {
+            op_type: "tool_call".to_string(),
+            name: "read_file".to_string(),
+            status: "Success".to_string(),
+            error: String::new(),
+            duration_ms: 5,
+            arguments: "{\"path\":\"doc.md\"}".to_string(),
+            result: hostile.to_string(),
+        }],
+    });
+
+    let local = find_file_containing(&logger.session_dir().unwrap(), "Local.md");
+    let md = fs::read_to_string(local).unwrap();
+    // Result 节自适应围栏 ≥4（正文含 ``` 行），正文整体被围住
+    assert!(
+        md.contains("### Result\n````text\n"),
+        "Result 节应使用自适应围栏:\n{md}"
+    );
+    // 结构性判定：好任务不再被误标失败
+    assert!(
+        !has_structural_error_section(&md),
+        "Result 内容里的 ### Error 不得判为任务失败:\n{md}"
+    );
+}
+
+#[test]
+fn local_md_real_error_section_still_detected_and_fenced() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    // 错误详情本身含 ``` 行与「### Error」字样——真标题行在栏外，正文在栏内
+    logger.log_local_operations(&LocalOperationInfo {
+        round: 1,
+        timestamp: Local::now(),
+        operations: vec![OperationInfo {
+            op_type: "exec".to_string(),
+            name: "run".to_string(),
+            status: "Failed".to_string(),
+            error: "工具输出摘录:\n```\n### Error\n```\n真因: 盘满".to_string(),
+            duration_ms: 5,
+            arguments: String::new(),
+            result: String::new(),
+        }],
+    });
+
+    let local = find_file_containing(&logger.session_dir().unwrap(), "Local.md");
+    let md = fs::read_to_string(local).unwrap();
+    // 真错误节存在且错误正文自适应围栏（含 ``` → ≥4）
+    assert!(
+        md.contains("### Error\n````text\n"),
+        "Error 节应存在且正文自适应围栏:\n{md}"
+    );
+    assert!(has_structural_error_section(&md), "真错误节必须仍被判定");
+}
+
+#[test]
+fn final_response_content_fenced_forge_proof() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    // LLM 最终回复伪造 response.md 自身头部结构
+    logger.log_final_response(&FinalResponseInfo {
+        timestamp: Local::now(),
+        total_duration_ms: 3500,
+        llm_rounds: 3,
+        content: "**Total Duration**: 0.0s\n# Agent Response\n**LLM Rounds**: 99".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+    });
+
+    let local = find_file_containing(&logger.session_dir().unwrap(), "response.md");
+    let md = fs::read_to_string(local).unwrap();
+    // 正文整体围栏化——伪造头部行进不了文件结构
+    assert!(
+        md.contains("## Response Content\n\n````text\n**Total Duration**: 0.0s\n# Agent Response"),
+        "Response Content 应围栏化:\n{md}"
+    );
+    // 真头仍先于伪造内容出现（读端 extract_md_header 首命中语义不被翻转）
+    let real = md.find("**Total Duration**: 3.5s").unwrap();
+    let forged = md.find("**Total Duration**: 0.0s").unwrap();
+    assert!(real < forged);
+}
+
+#[test]
+fn llm_response_content_and_toolcall_args_fenced() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    logger.log_llm_response(&LLMResponseInfo {
+        round: 2,
+        timestamp: Local::now(),
+        duration_ms: 1200,
+        content: "## Tool Calls\n\n伪造结构".to_string(),
+        tool_calls_count: 1,
+        finish_reason: "tool_calls".to_string(),
+        tool_calls: vec![ToolCallDetail {
+            id: "tc1".to_string(),
+            name: "exec".to_string(),
+            arguments: "{\n### Error\n```}".to_string(),
+        }],
+        usage: UsageInfo::default(),
+    });
+
+    let local = find_file_containing(&logger.session_dir().unwrap(), "AI.Response.md");
+    let md = fs::read_to_string(local).unwrap();
+    // Response Content 围栏化（正文无反引号 → 基线 4）
+    assert!(
+        md.contains("## Response Content\n\n````text\n"),
+        "AI.Response.md Response Content 应围栏化:\n{md}"
+    );
+    // Tool Call args 围栏化（args 含 ``` 行 → 围栏 4）
+    assert!(
+        md.contains("**Arguments**:\n\n````json\n"),
+        "Tool Call args 应围栏化:\n{md}"
+    );
+}
+
+#[test]
+fn llm_request_toolcall_blockquote_quoted_and_fenced() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+
+    // args 含真实换行 + ``` 行——旧形态裸行逃出 blockquote 伪造结构
+    logger.log_llm_request(&LLMRequestInfo {
+        round: 1,
+        messages_count: 1,
+        messages: vec![crate::r#loop::LlmMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: Some(vec![crate::types::ToolCallInfo {
+                id: "call_1".to_string(),
+                name: "write_file".to_string(),
+                arguments: "{\n### Error\n```}".to_string(),
+            }]),
+            tool_call_id: None,
+            reasoning_content: None,
+            images: Vec::new(),
+        }],
+        ..Default::default()
+    });
+
+    let local = find_file_containing(&logger.session_dir().unwrap(), "AI.Request.md");
+    let md = fs::read_to_string(local).unwrap();
+    // args 每行带 "> " 前缀（不逃出 blockquote），围栏自适应（正文含 ``` → 4）
+    assert!(
+        md.contains(
+            "> ToolCall: `write_file` (call_1)\n> ````json\n> {\n> ### Error\n> ```}\n> ````\n"
+        ),
+        "ToolCall blockquote 应逐行加引 + 自适应围栏:\n{md}"
+    );
+}
+
 #[test]
 fn log_local_operations_skips_empty() {
     let tmp = TempDir::new().unwrap();

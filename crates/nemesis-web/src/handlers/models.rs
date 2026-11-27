@@ -727,6 +727,13 @@ impl ModelsHandler {
                 Some(s)
             }
         };
+        // new_model 写的是 model identifier 字段——与 `models.add` 同族入口
+        // 校验（宽松档：裸名合法，段级穿越/反斜杠/控制字符拒绝），且在触碰
+        // config.json 之前执行。BUG-20261104-361 横向排查把 copy 定性为
+        // 「安全——不引入新值」，漏看了本参数（2026-10-27 已落地）——补齐。
+        if let Some(nm) = &new_model {
+            nemesis_utils::sanitize::validate_model_entry_name(nm)?;
+        }
         super::config::update_raw_config(home, |cfg| {
             let list = cfg
                 .get_mut("model_list")
@@ -801,6 +808,13 @@ impl ModelsHandler {
                 Some(s)
             }
         };
+        // new_model 写的是 model identifier 字段——与 `models.add` 同族入口
+        // 校验（宽松档：裸名合法，段级穿越/反斜杠/控制字符拒绝），且在触碰
+        // config.json 之前执行。BUG-20261104-361 横向排查把 rename 定性为
+        // 「出族——不写 identifier」，漏看了本参数（2026-10-27 已落地）——补齐。
+        if let Some(nm) = &new_model {
+            nemesis_utils::sanitize::validate_model_entry_name(nm)?;
+        }
         let final_cfg = super::config::update_raw_config(home, |cfg| {
             // 第一趟（只读）：存在性、重名、引用归属普查。model_name 的可变
             // 写借用与 pointer_mut（引用同步）借不到一起——两趟分离（锁在

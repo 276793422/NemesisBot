@@ -698,6 +698,35 @@ fn test_sweep_ages_out_after_ttl_and_zero_disables() {
 }
 
 #[test]
+fn test_sweep_huge_ttl_clamped_no_panic_no_mass_ageout() {
+    // BUG-20261127-021 回归钉：orphan_ttl_secs 是 u64 且无上界校验，此前
+    // sweep 内 `chrono::Duration::seconds(ttl_secs as i64)` 裸转换双缺陷面：
+    // ① ≥2^63 的值 `as i64` 回绕成负 TTL → `age >= ttl` 恒真 → 全部缺失
+    //   条目立即老化（语义反转：用户想要「永不老化」得到「马上全解除分
+    //   组」——session.rs u64::MAX as i64 = -1 陷阱同族，BUG-20261102-326
+    //   / R735 有根）；
+    // ② 正值超出 chrono 毫秒 i64 表示域（>~9.2e15 秒）→ Duration::seconds
+    //   panic 语义 → gateway start_all 装配期崩溃（网关砖化）。
+    // 修复 = time_bounds::MAX_AGE_SECS（100 年）钳制：对一切 sane 值恒等，
+    // 巨值映射到「实际等于永不」，保用户意图不反转。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    let old = (chrono::Local::now() - chrono::Duration::days(8)).to_rfc3339();
+    let e = seed_entry(&reg, None, Some(&old));
+
+    // u64::MAX（「永不老化」意图）→ 钳到 100 年：8 天前的戳不老化、不回绕。
+    let (marked, aged) = sweep_missing_projects(&reg, u64::MAX).unwrap();
+    assert!(marked.is_empty(), "已有戳条目不进首次观测：{marked:?}");
+    assert!(aged.is_empty(), "回绕负 TTL 不得造成立即全量老化：{aged:?}");
+    assert!(find_project(&reg, &e.id).is_some(), "条目必须保留");
+
+    // chrono 表示域外的正值同样钳制，不 panic、不老化。
+    let (marked, aged) = sweep_missing_projects(&reg, 10_000_000_000_000_000).unwrap();
+    assert!(marked.is_empty() && aged.is_empty());
+    assert!(find_project(&reg, &e.id).is_some());
+}
+
+#[test]
 fn test_sweep_within_ttl_keeps_entry() {
     // 缺失 + 戳在 TTL 内 → 保持现状（条目在、戳不变、无新标记）。
     let ws = tempfile::tempdir().unwrap();

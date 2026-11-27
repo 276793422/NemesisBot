@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { useCredentials, type PendingCredential } from '../composables/useCredentials'
 
 /**
@@ -19,8 +19,22 @@ const { pendingCredentials, now, submitCredential, dismissCredential } = useCred
 
 const visible = computed(() => pendingCredentials.length > 0)
 
-/** 每张卡的值草稿（request_id → 输入内容；提交后随卡清除）。 */
+/** 每张卡的值草稿（request_id → 输入内容；随卡清除）。 */
 const drafts = reactive<Record<string, string>>({})
+
+/** 摘卡兜底：卡被 credential-resolved 广播（另一窗口提交/服务端超时）或
+ * 本地超时 pruneExpired 摘除时——不走本地 submit/dismiss 路径，组件侧草稿
+ * 不会自动清理，输入中的凭据明文会驻留内存。watch 卡集合同步删草稿
+ * （与 QuestionCard 同族兜底）。 */
+watch(
+  () => pendingCredentials.map((c) => c.request_id).join('|'),
+  () => {
+    const ids = new Set(pendingCredentials.map((c) => c.request_id))
+    for (const id of Object.keys(drafts)) {
+      if (!ids.has(id)) delete drafts[id]
+    }
+  },
+)
 
 function submit(c: PendingCredential) {
   const value = drafts[c.request_id] ?? ''

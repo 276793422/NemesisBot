@@ -95,7 +95,10 @@ impl FileCheckpointStore {
                     error = %e,
                     "failed to quarantine corrupt checkpoint; removing in place"
                 );
-                let _ = fs::remove_file(cp_path);
+                // 韧性删除（fsutil 删除纪律「删除旧文件失败=残留垃圾」类）：
+                // 裸单发被瞬时句柄挡住 = 损坏检查点永久残留，每次 load 反复
+                // parse 失败+告警；包装内退避重试吸收，耗尽 warn 留痕。
+                let _ = nemesis_utils::fsutil::remove_file_resilient(cp_path);
                 None
             }
         }

@@ -605,9 +605,16 @@ fn append_jsonl(dir: &PathBuf, event: &SecurityAlertEvent) {
     let _ = std::fs::create_dir_all(dir);
     let result = std::fs::OpenOptions::new()
         .create(true)
+        // read 与 append 并申请：append 句柄在 Windows 上无读权限，撕裂尾
+        // 修复的末字节探测会静默失败（BUG-20261126-130 同族）。
+        .read(true)
         .append(true)
         .open(&path)
         .and_then(|mut f| {
+            // 撕裂尾修复：崩溃半行不粘连本条记录（单一真相源
+            // nemesis_utils::file::repair_torn_tail，resilient_writer
+            // BUG-2 同族纪律；本 jsonl 是 #60 态势页的程序化消费面）。
+            let _ = nemesis_utils::file::repair_torn_tail(&mut f);
             let mut line = serde_json::to_string(event).unwrap_or_default();
             line.push('\n');
             std::io::Write::write_all(&mut f, line.as_bytes())

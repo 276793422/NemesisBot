@@ -6,7 +6,8 @@
 //! 驱动器与 agent 三工具同读同写）。本面是**人**的管理面：create/update/
 //! pause/resume/remove——`paused`/`parked` 仅人可置/解（agent 工具面无此
 //! 能力，防自锁），resume 是停车场预算调整后的解除入口（配合 update 改
-//! budget）。
+//! budget——update 的 budget 按**字段合并**：缺席 = 保留现值，显式 0 =
+//! 刻意设不限；create 的 budget 缺席字段 = default 0 = 不限）。
 //!
 //! estop 语义：人控面不在 estop 冻结范围（急停冻结 agent 活动与注入，
 //! 人的管理操作是带外通道）；驱动器/工具侧的冻结在各自入口判定。
@@ -66,7 +67,8 @@ fn resolve_session_key(data: &serde_json::Value) -> Result<String, String> {
     Err("missing session_id (or session_key)".to_string())
 }
 
-/// 预算解析（部分字段可给；0 = 不限惯例）。
+/// 预算解析（create 面：部分字段可给，缺席 = serde default 0 = 不限——
+/// create 的合理缺省，此时还没有「现值」可言）。
 fn parse_budget(data: &serde_json::Value) -> Result<LoopBudget, String> {
     let b = data
         .get("budget")
@@ -76,6 +78,32 @@ fn parse_budget(data: &serde_json::Value) -> Result<LoopBudget, String> {
         return Ok(LoopBudget::default());
     }
     serde_json::from_value(b).map_err(|e| format!("budget schema invalid: {e}"))
+}
+
+/// update 面的部分预算（BUG-20261127-020）：三字段全 Option——字段缺席 =
+/// None = 保留现值，显式 0 = Some(0) = 刻意设为不限。不可用 LoopBudget
+/// 承载：其 `#[serde(default)]` 会把「字段缺席」与「显式 0」都反序列化成
+/// 0，配整体替换语义时部分形态（如 LoopsView widenBudget 只发
+/// max_turns_total）把未提及维度的预算静默清成 0=不限——保险丝静默拆除。
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+struct PartialBudget {
+    max_turns_total: Option<u64>,
+    wall_clock_budget_secs: Option<u64>,
+    max_tokens: Option<u64>,
+}
+
+/// update 面 budget 解析：按字段合并语义。`budget` 整体缺席或显式 null =
+/// 不动预算；显式清零用三字段全 0 表达。
+fn parse_budget_partial(data: &serde_json::Value) -> Result<Option<PartialBudget>, String> {
+    let Some(b) = data.get("budget") else {
+        return Ok(None);
+    };
+    if b.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(b.clone())
+        .map(Some)
+        .map_err(|e| format!("budget schema invalid: {e}"))
 }
 
 /// 摘要视图（list 行）。
@@ -230,11 +258,7 @@ impl ModuleHandler for LoopsHandler {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(String::from);
-                let new_budget = if data.get("budget").is_some() {
-                    Some(parse_budget(&data)?)
-                } else {
-                    None
-                };
+                let new_budget = parse_budget_partial(&data)?;
                 let ts = now_ms();
                 let st = update_loop(&dir, id, |st| {
                     // 存在性由 update_loop 的 load 先裁决（不存在 = Err）；
@@ -246,7 +270,18 @@ impl ModuleHandler for LoopsHandler {
                         st.goal = g.clone();
                     }
                     if let Some(b) = new_budget {
-                        st.budget = b;
+                        // 按字段合并（BUG-20261127-020）：缺席 = 保留现值，
+                        // 显式 0 = 刻意设不限——部分更新不再静默解除未提及
+                        // 维度的预算保险丝。
+                        if let Some(v) = b.max_turns_total {
+                            st.budget.max_turns_total = v;
+                        }
+                        if let Some(v) = b.wall_clock_budget_secs {
+                            st.budget.wall_clock_budget_secs = v;
+                        }
+                        if let Some(v) = b.max_tokens {
+                            st.budget.max_tokens = v;
+                        }
                     }
                     st.updated_at_ms = ts;
                     Ok(true)

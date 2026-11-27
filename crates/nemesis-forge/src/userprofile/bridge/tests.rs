@@ -4,7 +4,8 @@
 use super::*;
 use crate::userprofile::store::{
     HabitEntry, KIND_HABIT, KIND_LESSON, MAX_EVIDENCE, ProfileScope, UserProfile,
-    ingest_external_entry, load_profile, profile_path, save_profile, upsert_habit,
+    ingest_external_entry, load_profile, load_profile_scope, profile_path, save_profile,
+    upsert_habit,
 };
 
 fn habit(content: &str, confidence: f64) -> HabitEntry {
@@ -24,6 +25,7 @@ fn habit(content: &str, confidence: f64) -> HabitEntry {
         kind: KIND_HABIT.into(),
         source: String::new(),
         rule_id: String::new(),
+        legacy_backfilled: false,
     }
 }
 
@@ -275,6 +277,7 @@ fn observation(content: &str, confidence: f64) -> ObservationEntry {
         content: content.into(),
         confidence,
         steps: Vec::new(),
+        scope: String::new(), // 旧形态夹具：confirm 侧回落 handler 参数兜底
         status: OBS_STATUS_PENDING.into(),
         resolved_ts_ms: None,
     }
@@ -399,6 +402,88 @@ fn confirm_observation_rejects_security_boundary_content_loud() {
     let profile = load_profile(ws);
     assert_eq!(profile.habits.len(), 1);
     assert_eq!(profile.habits[0].content, "正常工作偏好");
+}
+
+/// 横扫 2026-11-26 根修回归锁（落库侧）：确认落库路由真相源 = **条目
+/// 自带 scope**（提名时按来源反思钉死）——项目反思提名的观察即便被
+/// handler 以缺省参数（dialogue）确认，也必须落**项目**画像（此前 =
+/// 误落对话画像）。旧条目（scope 空）回落参数兜底；非法 scope 在
+/// resolve 之前 loud 拒（不可逆裁决前验参，BUG-20261125-052 同族纪律）。
+#[test]
+fn confirm_observation_routes_by_entry_scope_entry_authoritative() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    // 三条提名：project 钉死 / dialogue 钉死 / 旧形态无 scope。
+    let mut project_obs = observation("项目协作规范", 0.6);
+    project_obs.scope = "project".into();
+    let mut dialogue_obs = observation("个人风格偏好", 0.6);
+    dialogue_obs.scope = "dialogue".into();
+    let mut bad_obs = observation("非法scope条目", 0.6);
+    bad_obs.scope = "galaxy".into();
+    assert_eq!(
+        append_observations(ws, &[project_obs, dialogue_obs, bad_obs]),
+        3
+    );
+    let pending = read_pending_observations(ws, 10);
+    let pid = pending
+        .iter()
+        .find(|o| o.content == "项目协作规范")
+        .unwrap()
+        .id
+        .clone();
+    let did = pending
+        .iter()
+        .find(|o| o.content == "个人风格偏好")
+        .unwrap()
+        .id
+        .clone();
+    let bid = pending
+        .iter()
+        .find(|o| o.content == "非法scope条目")
+        .unwrap()
+        .id
+        .clone();
+
+    // ① 非法 scope：resolve 之前 loud 拒——条目留 pending 不被消费。
+    assert!(
+        crate::userprofile::surface::confirm_observation(ws, ProfileScope::Dialogue, &bid).is_err(),
+        "非法 scope 必须 resolve 前拒绝"
+    );
+    assert_eq!(read_pending_observations(ws, 10).len(), 3, "拒绝不消费");
+
+    // ② 核心根修：项目条目 + handler 缺省参数（dialogue）→ 落**项目**画像。
+    crate::userprofile::surface::confirm_observation(ws, ProfileScope::Dialogue, &pid).unwrap();
+    let project = load_profile_scope(ws, ProfileScope::Project);
+    assert_eq!(
+        project.habits.len(),
+        1,
+        "项目条目落项目画像（条目 scope 权威）"
+    );
+    assert_eq!(project.habits[0].content, "项目协作规范");
+    let dialogue = load_profile(ws);
+    assert!(
+        dialogue.habits.is_empty(),
+        "对话画像不得收到项目条目（误路由回归）"
+    );
+
+    // ③ dialogue 钉死条目照常落对话画像。
+    crate::userprofile::surface::confirm_observation(ws, ProfileScope::Dialogue, &did).unwrap();
+    let dialogue = load_profile(ws);
+    assert_eq!(dialogue.habits.len(), 1);
+    assert_eq!(dialogue.habits[0].content, "个人风格偏好");
+}
+
+/// 旧队列文件零迁移：scope 空（无键旧条目）→ 确认回落 handler 参数兜底。
+#[test]
+fn confirm_observation_legacy_entry_falls_back_to_param_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    assert_eq!(append_observations(ws, &[observation("旧条目", 0.6)]), 1);
+    let id = read_pending_observations(ws, 10)[0].id.clone();
+    crate::userprofile::surface::confirm_observation(ws, ProfileScope::Dialogue, &id).unwrap();
+    let dialogue = load_profile(ws);
+    assert_eq!(dialogue.habits.len(), 1, "旧条目按参数兜底落对话画像");
+    assert_eq!(dialogue.habits[0].content, "旧条目");
 }
 
 /// observation_stats 三态计数。

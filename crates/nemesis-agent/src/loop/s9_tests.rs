@@ -589,7 +589,7 @@ fn check_mcp_reload_without_manager_returns_early() {
 }
 
 #[tokio::test]
-async fn maybe_update_summary_advances_on_long_history() {
+async fn maybe_update_summary_long_history_entry_chain_no_panic() {
     let _logs = capture_logs();
     let instance = AgentInstance::new(test_config());
     let mut hist = vec![turn("system", "sys prompt")];
@@ -607,9 +607,10 @@ async fn maybe_update_summary_advances_on_long_history() {
         ])),
         test_config(),
     );
-    // 只要不 panic 即覆盖入口判定链；cache 是否推进由阈值决定。
+    // 名字不再承诺 "advances"（BUG-20261127-002）：cache 是否推进由阈值
+    // 决定，非确定性——只锁定「长历史走入口判定链不 panic」。
     agent_loop
-        .maybe_update_summary(&instance, "agent:test/s9d", "web", "c1")
+        .maybe_update_summary(&instance, "agent:test/s9d", "web", "c1", true)
         .await;
 }
 
@@ -1633,7 +1634,7 @@ async fn maybe_update_summary_compaction_stuck_marks_paused() {
     // will_summarize → ineffective → 计数到顶 → warn + paused_stuck 提前
     // return，provider 永不被调。
     agent_loop
-        .maybe_update_summary(&instance, "agent:test/s9stuck", "web", "chat1")
+        .maybe_update_summary(&instance, "agent:test/s9stuck", "web", "chat1", true)
         .await;
     // 名字承诺 marks_paused——此前零断言，计数到顶的
     // warn + paused 闩回归（阈值比错/闩没置）测试照绿。
@@ -2065,8 +2066,9 @@ fn big_history_store(
     std::sync::Arc::new(store)
 }
 
-/// 摘要成功路：主轮答复 → 通知外发（2940-2952）→ summarize 成功 →
-/// cache 写回（2970-2974）→ 会话持久化（3237-3246）。
+/// 摘要成功路（2026-11-27 轮顶压力闸后时序）：轮 1 顶部压缩先行（大历史
+/// 夹具第一轮 LLM 调用前就超阈值）→ 注记外发 → cache 写回 → 主轮答复
+/// （消费队列最后一份）→ 会话持久化。
 #[tokio::test]
 async fn bus_flow_summary_success_notice_and_persist() {
     let _logs = capture_logs();
@@ -2080,12 +2082,13 @@ async fn bus_flow_summary_success_notice_and_persist() {
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
     let mut agent_loop = AgentLoop::new_bus(
         Box::new(MockLlmProvider::new(vec![
+            // 轮顶压力闸：压缩先行——摘要路 3 次调用（2 批 + 1 合并）先消费
+            // 队列前三份；主轮答复拿最后一份 "final ok"（turn 末尾部已落
+            // 阈值之下，不再有第二次压缩调用）。
+            resp("S9 SUMMARY TEXT"),
+            resp("S9 SUMMARY TEXT"),
+            resp("S9 SUMMARY TEXT"),
             resp("final ok"),
-            // 摘要路可能发 1-2 次调用（批次 + 可能的合并）——多备几份同样
-            // 文本的响应，任何一个消费者都拿到合法摘要文本。
-            resp("S9 SUMMARY TEXT"),
-            resp("S9 SUMMARY TEXT"),
-            resp("S9 SUMMARY TEXT"),
         ])),
         test_config(),
         out_tx,
@@ -2178,6 +2181,281 @@ async fn bus_flow_summary_failure_warns_and_keeps_cache_empty() {
     assert!(
         store.get_summary("agent:main:main").is_empty(),
         "failed summarize must not advance the cache"
+    );
+}
+
+/// 计数 provider：轮末停用回归钉（bus_flow_finalize_pressure_reply_not_blocked）
+/// 专用——记录 provider 被调用总次数。轮末点若被还原（finalize 再调摘要器），
+/// 同一夹具调用数 1→2，测试立即红。
+struct CountingProvider {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    responses: std::sync::Mutex<Vec<LlmResponse>>,
+}
+
+impl CountingProvider {
+    fn new(responses: Vec<LlmResponse>) -> Self {
+        Self {
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            responses: std::sync::Mutex::new(responses),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for CountingProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut responses = self.responses.lock().unwrap();
+        if responses.is_empty() {
+            Ok(resp("No more responses"))
+        } else {
+            Ok(responses.remove(0))
+        }
+    }
+}
+
+/// 轮末停用回归钉（2026-11-27 第二批核心承诺）：turn 收尾时尾巴已超阈值
+/// （30k 字符巨型 final 回复 ≈ 7.5k tokens > 触发 6000），finalize **不再
+/// 调用摘要器**——最终回复即时出站、无压缩延迟、无摘要落盘。若有人还原
+/// turn.rs 的轮末调用点：同一夹具下 finalize 会对折叠区 [sys,u1,a1]（含
+/// user、worthwhile 成立）真实发起摘要 → 调用数 1→2，本测试红。
+#[tokio::test]
+async fn bus_flow_finalize_pressure_reply_not_blocked() {
+    let _logs = capture_logs();
+    let ws = tempfile::tempdir().unwrap();
+    let key = "agent:main:main";
+    let inner = crate::session::SessionStore::new_with_storage(ws.path());
+    let _ = inner.get_or_create(key);
+    // 先前交换必须存在：折叠区 [sys,u1,a1] 含 user 才会让「还原后的轮末点」
+    // 真的发摘要（fold 区只有 system 时空转闸会诚实 skip，判别失效）。
+    let turns = [
+        turn("system", "sys prompt"),
+        turn("user", &"a".repeat(5000)),
+        turn("assistant", &"b".repeat(5000)),
+    ];
+    let stored: Vec<crate::session::StoredMessage> = turns
+        .iter()
+        .map(crate::session::StoredMessage::from)
+        .collect();
+    inner.set_history(key, stored);
+    inner.save(key).unwrap();
+    let store = std::sync::Arc::new(inner);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let provider = CountingProvider::new(vec![
+        // 唯一一次调用 = 主轮答复：30k 字符 final 回复落盘后 finalize 处
+        // 尾巴超阈值（窗口 8000 → 触发 6000 = 75%）。
+        resp(format!("{}huge answer done", "z".repeat(30_000)).as_str()),
+    ]);
+    let calls = provider.calls.clone();
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_session_store(store.clone());
+    let cfg_path = ws.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"model_list": [{"model_name": "test-model", "model": "test-model", "context_window": 8000}], "agents": {"defaults": {"compact_keep_recent_tokens": 3000}}}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg_path);
+    in_tx
+        .send(plain_msg("give me a huge answer"))
+        .await
+        .unwrap();
+    drop(in_tx);
+    agent_loop.run_bus_owned(in_rx).await;
+
+    // 注意：bus 泵是 gate+spawn——run_bus_owned 在 in_rx 关闭时即返回，
+    // turn 任务在 current-thread runtime 上靠测试体 await 让路才被轮询。
+    // 必须 await 等帧（同步 try_recv 会让 spawn 的 turn 永远不被调度，
+    // calls/frames 恒空——GAP-1 首版夹具坑，2026-11-27）。
+    let mut outs = wait_for_frames(&mut out_rx, &["huge answer done"]).await;
+    // final 之后给 turn 收尾一个静默窗，排干残余帧再断言调用数/落盘。
+    while let Ok(Some(m)) =
+        tokio::time::timeout(std::time::Duration::from_millis(500), out_rx.recv()).await
+    {
+        outs.push(m.content);
+    }
+
+    // 最终回复在场且全程零压缩徽标/零摘要完成注记
+    // （轮 1 顶低压 no-op + finalize 停用 ⇒ 两端都不压；若轮末点被还原，
+    // finalize 徽标会先于 final 出现在 outs 里）。
+    assert!(
+        outs.iter().any(|c| c.contains("huge answer done")),
+        "final reply must go out (轮末停用：回复不被压缩阻塞), got: {outs:?}"
+    );
+    assert!(
+        outs.iter()
+            .all(|c| !c.contains("正在折叠较早历史为摘要") && !c.contains("已折叠较早历史为摘要")),
+        "轮顶 no-op + finalize 停用：全程零压缩徽标, got: {outs:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "轮末停用：finalize 不得再调 provider（还原 turn.rs 轮末调用点会变 2）"
+    );
+    assert!(
+        store.get_summary(key).is_empty(),
+        "无摘要落盘（压缩从未发生）"
+    );
+}
+
+/// 轮顶边界轴接线回归钉（2026-11-27 第二批）：turns_used==0 + B17 开 →
+/// 轮顶首回合用 soft 位（trigger×2/3）。夹具信号落 [soft, trigger) 区间
+/// （≈7000 ∈ [6000, 9000)）：boundary 开 → 首轮顶压缩发生；不开/低于 soft
+/// 不触发的语义由 compact_signal_tests（b17_boundary_off / b17_below_soft）
+/// 钉住，此处钉 run_loop 接线臂。
+#[tokio::test]
+async fn bus_flow_boundary_axis_soft_band_first_round_top() {
+    let _logs = capture_logs();
+    let ws = tempfile::tempdir().unwrap();
+    let key = "agent:main:main";
+    let inner = crate::session::SessionStore::new_with_storage(ws.path());
+    let _ = inner.get_or_create(key);
+    // sys + 4 交换 × 3500 字符（≈875 tok/条）= 8 条 ≈ 7000 tokens；
+    // 入站消息极小。keep 3000 → covers 落在 u5（user-first 钳制），
+    // 折叠区 [sys,u1,a2,u3,a4] 含 user、4 条 ≤ 10 → 单次摘要调用。
+    let mut turns = vec![turn("system", "sys prompt")];
+    for i in 0..8 {
+        let role = if i % 2 == 0 { "user" } else { "assistant" };
+        turns.push(turn(role, &"w".repeat(3500)));
+    }
+    let stored: Vec<crate::session::StoredMessage> = turns
+        .iter()
+        .map(crate::session::StoredMessage::from)
+        .collect();
+    inner.set_history(key, stored);
+    inner.save(key).unwrap();
+    let store = std::sync::Arc::new(inner);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![
+            resp("S9 SUMMARY TEXT"),
+            resp("final ok"),
+        ])),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_session_store(store.clone());
+    let cfg_path = ws.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"model_list": [{"model_name": "test-model", "model": "test-model", "context_window": 12000}], "agents": {"defaults": {"compact_boundary": true, "compact_keep_recent_tokens": 3000}}}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg_path);
+    in_tx.send(plain_msg("go")).await.unwrap();
+    drop(in_tx);
+    agent_loop.run_bus_owned(in_rx).await;
+
+    let outs = wait_for_frames(&mut out_rx, &["正在折叠较早历史为摘要", "final ok"]).await;
+    assert!(
+        outs.iter().any(|c| c.contains("正在折叠较早历史为摘要")),
+        "边界轴 soft 位必须在轮顶首回合触发（turns_used==0 + compact_boundary）, got: {:?}",
+        outs
+    );
+    assert!(
+        outs.iter().any(|c| c.contains("final ok")),
+        "got: {:?}",
+        outs
+    );
+    assert!(
+        store.get_summary(key).contains("S9 SUMMARY TEXT"),
+        "summary persisted"
+    );
+}
+
+/// 真·turn 中途压缩回归钉（2026-11-27 第一批原始需求）：turn 开始时低压
+/// （轮 1 顶 no-op）→ 轮 1 响应带**两个并行工具调用**，B30 cap 裁剪后各
+/// ≈8k 字符（≈2000 tok）落历史 → 轮 2 顶压力过线（≈7050 > 触发 6000）→
+/// 压缩发生在**同一 turn 的轮与轮之间** → 折叠区含先前交换、当前 user
+/// 留尾（user-first）→ turn 正常收口。
+#[tokio::test]
+async fn bus_flow_midturn_round_top_compression_after_tool_bloat() {
+    let _logs = capture_logs();
+    let ws = tempfile::tempdir().unwrap();
+    let key = "agent:main:main";
+    let inner = crate::session::SessionStore::new_with_storage(ws.path());
+    let _ = inner.get_or_create(key);
+    // 先前交换一个（5000 字符 ≈1250 tok/条 → 先前总计 ≈2500 tok < 触发），
+    // 保证轮 1 顶 no-op；工具载荷进来后才过线。
+    let turns = [
+        turn("system", "sys prompt"),
+        turn("user", &"a".repeat(5000)),
+        turn("assistant", &"b".repeat(5000)),
+    ];
+    let stored: Vec<crate::session::StoredMessage> = turns
+        .iter()
+        .map(crate::session::StoredMessage::from)
+        .collect();
+    inner.set_history(key, stored);
+    inner.save(key).unwrap();
+    let store = std::sync::Arc::new(inner);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![
+            // 轮 1：非 final，带两个并行 s9big 调用（MidResultTool 40k，
+            // B30 cap 8000 → 各裁到 ≈8k 字符落历史）。
+            LlmResponse {
+                tool_calls: vec![s9_call("r1a", "s9big", "{}"), s9_call("r1b", "s9big", "{}")],
+                finished: false,
+                ..resp("reading big files")
+            },
+            // 轮 2 顶压缩：折叠区 [sys,u1,a1] 单次摘要调用。
+            resp("S9 SUMMARY TEXT"),
+            // 轮 2：收口。
+            resp("final ok"),
+        ])),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.register_tool("s9big".to_string(), Box::new(MidResultTool));
+    agent_loop.set_session_store(store.clone());
+    let cfg_path = ws.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"model_list": [{"model_name": "test-model", "model": "test-model", "context_window": 8000}], "agents": {"defaults": {"compact_keep_recent_tokens": 3000}}}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg_path);
+    in_tx.send(plain_msg("go big")).await.unwrap();
+    drop(in_tx);
+    agent_loop.run_bus_owned(in_rx).await;
+
+    let outs = wait_for_frames(&mut out_rx, &["正在折叠较早历史为摘要", "final ok"]).await;
+    assert!(
+        outs.iter().any(|c| c.contains("正在折叠较早历史为摘要")),
+        "压缩必须发生在 turn 中途（轮 2 顶，工具载荷撑破阈值）, got: {:?}",
+        outs
+    );
+    assert!(
+        outs.iter().any(|c| c.contains("final ok")),
+        "中途压缩后 turn 照常收口, got: {:?}",
+        outs
+    );
+    assert!(
+        store.get_summary(key).contains("S9 SUMMARY TEXT"),
+        "summary persisted"
     );
 }
 

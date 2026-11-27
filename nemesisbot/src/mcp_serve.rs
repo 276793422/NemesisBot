@@ -340,7 +340,14 @@ async fn tool_run(asm: Arc<McpServeAssembly>, args: Value) -> ToolCallResult {
 /// （`nemesis_web::handlers:logs::scan_session_logs`），裁剪成紧凑字段。
 async fn tool_sessions_list(asm: Arc<McpServeAssembly>, args: Value) -> ToolCallResult {
     let workspace = asm.workspace.to_string_lossy().to_string();
-    let all = nemesis_web::handlers::logs::scan_session_logs(&workspace);
+    let mut all = nemesis_web::handlers::logs::scan_session_logs(&workspace);
+    // 截断前 recency 重排（BUG-20261126-117）：scan_session_logs 保持
+    // read_dir 天然序（NTFS 字典序 / ext4 哈希序，平台实现细节），直接
+    // take(limit) 打在随机序上 = MCP 客户端拿到「任意 limit 个会话」
+    // 而非「最近 limit 个」（工具声明「same source as the Dashboard
+    // session list」——Dashboard 两面在 BUG-20261116-011 / 168 根修时
+    // 已补收尾重排，本面漏改）。排序真相源与 Dashboard 同一函数。
+    all.sort_by(nemesis_web::handlers::logs::session_recency_cmp);
     let limit = args
         .get("limit")
         .and_then(|v| v.as_u64())

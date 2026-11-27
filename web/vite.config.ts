@@ -24,7 +24,8 @@ export default defineConfig({
     // outDir 在项目根之外（web/ → crates/nemesis-web/static/），Vite 默认不
     // 清空 → 陈旧 hash chunk 逐轮累积，全部被 include_dir! 嵌进 exe（2026-08-24
     // 复检实测累积 ~4MB/167 个文件、实际引用仅 ~33 个）。static/ 内容 100% 由
-    // 本构建产出（三个 rollup 入口 + public/ 拷贝），可安全清空重建。
+    // 本构建产出（rollup 入口 + 字体/favicon 打包资产；public/ 拷贝自
+    // BUG-20261127-005 起迁入 src/assets 由 vite 打包），可安全清空重建。
     emptyOutDir: true,
     // 1200：vendor-echarts（echarts+zrender 固有体积，实测 ~1.0MB）是刻意
     // 的懒加载 chunk（echartsLoader dynamic import，chart 面板首访才拉），

@@ -756,6 +756,12 @@ mod imp {
                 drop(link);
                 let mut stored = 0usize;
                 let mut records: Vec<serde_json::Value> = Vec::with_capacity(events.len());
+                // BUG-20261127-022 批级解码预算：一批 ≤1024 事件逐条 decode
+                // 且 record 累积持有 decoded 值——单次 decode_struct 预算闸
+                // 不约束批级累积（1024×单次上限 = 批级放大面）。累计声明元素
+                // 超批预算即停解码（regs 记录保留 + 诚实注记，下批 poll 重新
+                // 计）；解码尝试被允许即记账（含失败尝试——失败重试不白嫖）。
+                let mut decoded_elems: u64 = 0;
                 for ev in &events {
                     let mut record = serde_json::json!({
                         "source": "hook",
@@ -772,29 +778,37 @@ mod imp {
                     if let Some(ds) = decode_of.get(&ev.id)
                         && ev.regs[0] != 0
                     {
-                        let mut link = session.link().lock().await;
-                        let read = tokio::time::timeout(
-                            CMD_TIMEOUT,
-                            crate::pipe::read_mem(&mut link, ev.regs[0], ds.size),
-                        )
-                        .await;
-                        match read {
-                            Ok(Ok(data)) => match crate::dispatch::decode_struct(&data, ds) {
-                                Ok(value) => {
-                                    record["decoded"] = value;
-                                }
-                                Err(e) => {
+                        let est = crate::dispatch::ds_decode_elems(ds);
+                        if decoded_elems.saturating_add(est) > crate::dispatch::MAX_DECODE_ELEMS {
+                            record["decode_error"] = serde_json::json!(
+                                "本批累计解码元素超预算，跳过解码（regs 已保留）"
+                            );
+                        } else {
+                            decoded_elems += est;
+                            let mut link = session.link().lock().await;
+                            let read = tokio::time::timeout(
+                                CMD_TIMEOUT,
+                                crate::pipe::read_mem(&mut link, ev.regs[0], ds.size),
+                            )
+                            .await;
+                            match read {
+                                Ok(Ok(data)) => match crate::dispatch::decode_struct(&data, ds) {
+                                    Ok(value) => {
+                                        record["decoded"] = value;
+                                    }
+                                    Err(e) => {
+                                        record["decode_error"] =
+                                            serde_json::json!(format!("decode: {e}"));
+                                    }
+                                },
+                                Ok(Err(e)) => {
                                     record["decode_error"] =
-                                        serde_json::json!(format!("decode: {e}"));
+                                        serde_json::json!(format!("read_mem: {e}"));
                                 }
-                            },
-                            Ok(Err(e)) => {
-                                record["decode_error"] =
-                                    serde_json::json!(format!("read_mem: {e}"));
-                            }
-                            Err(_) => {
-                                record["decode_error"] =
-                                    serde_json::json!("read_mem 超时（目标无应答）");
+                                Err(_) => {
+                                    record["decode_error"] =
+                                        serde_json::json!("read_mem 超时（目标无应答）");
+                                }
                             }
                         }
                     }

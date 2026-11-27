@@ -22,6 +22,7 @@ fn habit(content: &str, confidence: f64) -> HabitEntry {
         kind: KIND_HABIT.into(),
         source: String::new(),
         rule_id: String::new(),
+        legacy_backfilled: false,
     }
 }
 
@@ -1285,4 +1286,520 @@ fn manual_save_is_scope_isolated() {
     // 落盘文件名各归各位。
     assert!(ws.join("config").join("user_profile.json").exists());
     assert!(ws.join("config").join("user_profile_project.json").exists());
+}
+
+// ---- 批次〇：项目画像锚点自动回填（2026-11-26 存量迁移）----
+
+/// 对话已锚 + 项目文件缺席 = 补锚（enabled_at 取对话锚点值）+ 创建项目文件。
+#[test]
+fn backfill_project_anchor_takes_dialogue_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let anchor = "2026-10-01T00:00:00Z";
+    save_profile(
+        ws,
+        &UserProfile {
+            enabled_at: Some(anchor.into()),
+            habits: vec![habit("对话侧习惯", 0.8)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ppath = profile_path_scope(ws, ProfileScope::Project);
+    assert!(!ppath.exists(), "前置：项目文件缺席");
+    let backfilled = backfill_project_anchor_locked(ws).unwrap();
+    assert!(backfilled, "首拍补锚");
+    assert!(ppath.exists(), "项目文件随补锚创建");
+    let project = load_profile_scope(ws, ProfileScope::Project);
+    assert_eq!(
+        project.enabled_at.as_deref(),
+        Some(anchor),
+        "锚点取对话锚值"
+    );
+    assert!(project.habits.is_empty(), "补锚创建空画像");
+    // 幂等仅向前：再拍不再动。
+    assert!(!backfill_project_anchor_locked(ws).unwrap(), "已锚 = 不动");
+}
+
+/// 对话也未锚 = 不补（用户从未开启画像，不凭空造锚点）。
+#[test]
+fn backfill_no_dialogue_anchor_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    save_profile(ws, &UserProfile::default()).unwrap();
+    assert!(!backfill_project_anchor_locked(ws).unwrap());
+    assert!(!profile_path_scope(ws, ProfileScope::Project).exists());
+}
+
+/// 项目已锚 = 幂等不动（已有 enabled_at / habits 原样）。
+#[test]
+fn backfill_idempotent_when_already_anchored() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    save_profile(
+        ws,
+        &UserProfile {
+            enabled_at: Some("2026-10-01T00:00:00Z".into()),
+            habits: vec![habit("对话侧习惯", 0.8)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let project_anchor = "2026-09-01T00:00:00Z";
+    let ppath = profile_path_scope(ws, ProfileScope::Project);
+    std::fs::create_dir_all(ppath.parent().unwrap()).unwrap();
+    std::fs::write(
+        &ppath,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "enabled_at": project_anchor,
+            "sweeps_since_reflect": 7,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(!backfill_project_anchor_locked(ws).unwrap(), "已锚 = 不动");
+    let project = load_profile_scope(ws, ProfileScope::Project);
+    assert_eq!(
+        project.enabled_at.as_deref(),
+        Some(project_anchor),
+        "既有锚点不被对话锚点覆盖"
+    );
+    assert_eq!(project.sweeps_since_reflect, 7, "其他字段原样");
+}
+
+/// 项目文件损坏 = 诚实 Err 不回写（写路径纪律；对话文件不受影响）。
+#[test]
+fn backfill_corrupted_project_file_is_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    save_profile(
+        ws,
+        &UserProfile {
+            enabled_at: Some("2026-10-01T00:00:00Z".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ppath = profile_path_scope(ws, ProfileScope::Project);
+    std::fs::create_dir_all(ppath.parent().unwrap()).unwrap();
+    std::fs::write(&ppath, "{corrupt").unwrap();
+    assert!(backfill_project_anchor_locked(ws).is_err(), "损坏 = Err");
+    assert_eq!(
+        std::fs::read_to_string(&ppath).unwrap(),
+        "{corrupt",
+        "Err 路径零回写"
+    );
+}
+
+// ---- 批次二：条目跨 scope 搬移（2026-11-26）----
+
+fn seeded_move_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_path_buf();
+    let mut e = habit("项目协作规范：先对齐再动手", 0.9);
+    e.rule_id = "ritual.plan".into();
+    e.pinned = true;
+    e.source = "manual".into();
+    e.steps = vec!["提出计划".into(), "确认后执行".into()];
+    e.scope = "dialogue".into();
+    save_profile(
+        &ws,
+        &UserProfile {
+            enabled_at: Some("2026-10-01T00:00:00Z".into()),
+            habits: vec![e, habit("无关条目甲", 0.6)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    (dir, ws)
+}
+
+/// 全字段搬运：摘除来源 + 落目标，pinned/rule_id/source/steps 等原样
+/// （manual 五面保护随字段自然保留）；scope 注记字段置空（归属由文件承载）。
+#[test]
+fn move_habit_scope_moves_all_fields() {
+    let (_dir, ws) = seeded_move_workspace();
+    let out = move_habit_scope(&ws, "先对齐再动手", ProfileScope::Project).unwrap();
+    assert!(out.moved);
+    assert_eq!(out.from, "dialogue");
+    assert_eq!(out.to, "project");
+    assert_eq!(out.content, "项目协作规范：先对齐再动手", "回显全文");
+    // 来源摘除、目标在场、全字段原样。
+    let source = load_profile_scope(&ws, ProfileScope::Dialogue);
+    assert_eq!(source.habits.len(), 1, "来源只剩无关条目");
+    assert_eq!(source.habits[0].content, "无关条目甲");
+    let target = load_profile_scope(&ws, ProfileScope::Project);
+    assert_eq!(target.habits.len(), 1);
+    let m = &target.habits[0];
+    assert_eq!(m.content, "项目协作规范：先对齐再动手");
+    assert_eq!(m.rule_id, "ritual.plan", "rule_id 原样");
+    assert!(m.pinned, "pinned 原样（用户意志）");
+    assert_eq!(m.source, "manual", "source 原样（五面保护载体）");
+    assert_eq!(
+        m.steps,
+        vec!["提出计划".to_string(), "确认后执行".to_string()]
+    );
+    assert!(m.scope.is_empty(), "scope 注记置空（文件即归属）");
+}
+
+/// 双份全无 = Err「未找到」。
+#[test]
+fn move_habit_scope_not_found_is_err() {
+    let (_dir, ws) = seeded_move_workspace();
+    let err = move_habit_scope(&ws, "不存在的条目", ProfileScope::Project).unwrap_err();
+    assert!(err.contains("未找到"), "{err}");
+}
+
+/// 目标已持有 = 幂等 moved=false（不产生第二份）。
+#[test]
+fn move_habit_scope_idempotent_when_already_in_target() {
+    let (_dir, ws) = seeded_move_workspace();
+    move_habit_scope(&ws, "先对齐再动手", ProfileScope::Project).unwrap();
+    let out = move_habit_scope(&ws, "先对齐再动手", ProfileScope::Project).unwrap();
+    assert!(!out.moved, "已在目标 = 幂等");
+    assert_eq!(out.to, "project");
+    let target = load_profile_scope(&ws, ProfileScope::Project);
+    assert_eq!(target.habits.len(), 1, "不产生第二份");
+}
+
+/// 幂等回显取命中条目而非 habits[0]（BUG-20261126-139 回归锁）：目标
+/// 画像用**子串**命中（非精确归一相等）且命中条目不在首位时，回显
+/// content 必须是命中条目全文——此前 `unwrap_or(0)` 裸取首位，回显的
+/// 是无关条目（moved=false 语义正确，但 CLI/WSAPI 回显面取错下标）。
+#[test]
+fn move_habit_scope_idempotent_substring_echo_hits_entry_not_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    // 对话侧无命中（避免双份命中 Err）；项目侧 [无关条目, 命中条目]——
+    // 命中条目在下标 1，子串「简洁」partial 命中（非精确相等）。
+    save_profile(
+        ws,
+        &UserProfile {
+            habits: vec![habit("对话侧无关条目", 0.6)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    save_profile_scope(
+        ws,
+        ProfileScope::Project,
+        &UserProfile {
+            habits: vec![habit("无关条目乙", 0.6), habit("保持代码简洁清晰", 0.8)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let out = move_habit_scope(ws, "简洁", ProfileScope::Project).unwrap();
+    assert!(!out.moved, "目标已持有 = 幂等");
+    assert_eq!(
+        out.content, "保持代码简洁清晰",
+        "幂等回显必须是命中条目全文，不是 habits[0]"
+    );
+    // 条目不搬移（幂等，两份画像不变）。
+    assert_eq!(
+        load_profile_scope(ws, ProfileScope::Project).habits.len(),
+        2
+    );
+    assert_eq!(
+        load_profile_scope(ws, ProfileScope::Dialogue).habits.len(),
+        1
+    );
+}
+
+/// 来源子串命中多条 = Err（搬移是单条操作）。
+#[test]
+fn move_habit_scope_ambiguous_substring_is_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    save_profile(
+        ws,
+        &UserProfile {
+            habits: vec![habit("工作流条目甲", 0.8), habit("工作流条目乙", 0.7)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let err = move_habit_scope(ws, "工作流", ProfileScope::Project).unwrap_err();
+    assert!(err.contains("2 条"), "{err}");
+    // 防线在写盘前：来源原样。
+    assert_eq!(
+        load_profile_scope(ws, ProfileScope::Dialogue).habits.len(),
+        2
+    );
+}
+
+/// 两份都命中 = Err 治理重复（不猜搬哪条），零写盘。
+#[test]
+fn move_habit_scope_both_files_hit_is_err() {
+    let (_dir, ws) = seeded_move_workspace();
+    // 项目文件写入同名条目（对话侧已有同子串条目，seeded_move_workspace）。
+    save_profile_locked_scope(
+        &ws,
+        ProfileScope::Project,
+        &UserProfile {
+            enabled_at: Some("2026-10-01T00:00:00Z".into()),
+            habits: vec![habit("项目协作规范：先对齐再动手", 0.7)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let err = move_habit_scope(&ws, "先对齐再动手", ProfileScope::Project).unwrap_err();
+    assert!(err.contains("治理重复"), "{err}");
+    // 零写盘：两份各持一条原样。
+    assert_eq!(
+        load_profile_scope(&ws, ProfileScope::Dialogue).habits.len(),
+        2
+    );
+    assert_eq!(
+        load_profile_scope(&ws, ProfileScope::Project).habits.len(),
+        1
+    );
+}
+
+/// 精确归一命中优先于子串：1 条精确 + 多条子串并存时搬精确那条。
+#[test]
+fn move_habit_scope_exact_beats_substring() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    save_profile(
+        ws,
+        &UserProfile {
+            habits: vec![
+                habit("简洁", 0.8),
+                habit("前缀简洁甲", 0.7),
+                habit("前缀简洁乙", 0.7),
+            ],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let out = move_habit_scope(ws, "简洁", ProfileScope::Project).unwrap();
+    assert!(out.moved);
+    assert_eq!(out.content, "简洁", "精确命中优先");
+    let source = load_profile_scope(ws, ProfileScope::Dialogue);
+    assert_eq!(source.habits.len(), 2, "只搬走精确命中那条");
+    assert!(load_profile_scope(ws, ProfileScope::Project).habits[0].content == "简洁");
+}
+
+/// 空子串 / 纯空白 = Err（会命中全部条目）。
+#[test]
+fn move_habit_scope_empty_substring_rejected() {
+    let (_dir, ws) = seeded_move_workspace();
+    assert!(move_habit_scope(&ws, "", ProfileScope::Project).is_err());
+    assert!(move_habit_scope(&ws, "   ", ProfileScope::Project).is_err());
+}
+
+/// 来源文件损坏 = Err 不回写（写路径纪律：任一损坏整单拒绝）。
+#[test]
+fn move_habit_scope_corrupted_source_is_err_no_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let ppath = profile_path_scope(ws, ProfileScope::Project);
+    std::fs::create_dir_all(ppath.parent().unwrap()).unwrap();
+    std::fs::write(&ppath, "{corrupt").unwrap();
+    save_profile(
+        ws,
+        &UserProfile {
+            habits: vec![habit("对话侧习惯", 0.8)],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // 搬向 project：project 是目标（损坏）——source=dialogue 完好。
+    // 反向搬（project → dialogue）时 project 是来源（损坏）。
+    assert!(
+        move_habit_scope(ws, "对话侧习惯", ProfileScope::Project).is_err(),
+        "目标损坏同样整单拒绝"
+    );
+    assert!(
+        move_habit_scope(ws, "对话侧习惯", ProfileScope::Dialogue).is_err(),
+        "来源损坏拒绝"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&ppath).unwrap(),
+        "{corrupt",
+        "损坏文件零回写"
+    );
+    assert_eq!(
+        load_profile_scope(ws, ProfileScope::Dialogue).habits.len(),
+        1,
+        "对话侧原样"
+    );
+}
+
+// ---- legacy 静态回填 × G8 auto 配额豁免（2026-11-26 BUG 回归锁）----
+
+fn recent_ts() -> String {
+    chrono::Local::now().to_rfc3339()
+}
+
+/// 回归锁核心场景（真实数据复现形态）：盘上 legacy 模板条目（auto=false、
+/// rule_id 空、低置信）+ 4 条高置信真产物 → 加载（回填翻桶+标记）→ 衰减
+/// → prune。修复前：翻桶条目进 auto 桶按置信度排第 4/第 5 被 truncate
+/// 静默删除；修复后：真产物仍截 AUTO_MAX_ENTRIES，legacy 条目随行存活。
+#[test]
+fn legacy_backfill_flip_survives_auto_cap_truncation() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let now = recent_ts();
+    // 盘上形态：legacy 条目 content 与静态模板逐字相等（生产同源取模板
+    // 文本）、auto=false、rule_id 空——徽标修复前的真实存量形态。
+    let template_content = brief_template_entry().content;
+    let mut legacy = habit(template_content.trim(), 0.7);
+    legacy.auto = false;
+    legacy.rule_id = String::new();
+    legacy.hits = 30;
+    legacy.last_seen = now.clone();
+    // 真产物：高置信挖掘产物（rule_id 在场），4 条 > AUTO_MAX_ENTRIES=3。
+    let genuine: Vec<HabitEntry> = [0.9, 0.89, 0.88, 0.87]
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut e = habit(&format!("真产物条目 {i}"), *c);
+            e.auto = true;
+            e.rule_id = format!("stat.genuine{i}");
+            e.last_seen = now.clone();
+            e
+        })
+        .collect();
+    save_profile(
+        ws,
+        &UserProfile {
+            enabled_at: Some(now.clone()),
+            habits: genuine.into_iter().chain(std::iter::once(legacy)).collect(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // sweep 同链：加载（回填翻桶+持久标记）→ 衰减 → prune。
+    let mut p = load_profile(ws);
+    let flipped = p
+        .habits
+        .iter()
+        .find(|h| h.content.trim() == template_content.trim())
+        .expect("legacy 条目在场");
+    assert!(flipped.auto, "回填翻桶（徽标修复保留）");
+    assert!(flipped.legacy_backfilled, "持久标记已置");
+    decay_sweep(&mut p, chrono::Local::now());
+    prune_and_cap_with_max(&mut p, 10);
+
+    assert!(
+        p.habits
+            .iter()
+            .any(|h| h.content.trim() == template_content.trim()),
+        "legacy 翻桶条目必须存活（修复前被静默删除）"
+    );
+    let genuine_kept: Vec<&HabitEntry> = p
+        .habits
+        .iter()
+        .filter(|h| !h.legacy_backfilled && h.auto)
+        .collect();
+    assert_eq!(
+        genuine_kept.len(),
+        AUTO_MAX_ENTRIES,
+        "真产物配额语义不变：仍截 {}",
+        AUTO_MAX_ENTRIES
+    );
+    assert!(
+        !p.habits.iter().any(|h| h.rule_id == "stat.genuine3"),
+        "被截的是最低置信真产物"
+    );
+}
+
+/// 持久标记落盘：豁免理由与翻桶结果（auto=true）同寿——缺它则 sweep #2
+/// 重加载时标记丢失、条目被当真产物照删（首版瞬态修复的实测复发形态）。
+/// serde default：老文件无此键 = false（零迁移）。
+#[test]
+fn legacy_backfilled_flag_persists_through_roundtrip() {
+    let mut e = habit("模板条目", 0.7);
+    e.legacy_backfilled = true;
+    let json = serde_json::to_string(&e).unwrap();
+    assert!(
+        json.contains("legacy_backfilled"),
+        "豁免标记必须落盘（与翻桶同寿）：{json}"
+    );
+    let back: HabitEntry = serde_json::from_str(&json).unwrap();
+    assert!(back.legacy_backfilled, "roundtrip 保留 true");
+    // 老文件形态（无此键）= 缺省 false。
+    let old: HabitEntry =
+        serde_json::from_str(&serde_json::to_string(&habit("老条目", 0.8)).unwrap()).unwrap();
+    assert!(!old.legacy_backfilled, "老文件缺省 false");
+}
+
+/// sweep #2 回归锁（首版修复的复发形态，真实副本实证）：sweep #1 加载
+/// （翻桶+标记）→ 保存（auto=true 与标记同落盘）→ sweep #2 重新加载
+/// → prune——标记必须仍在，条目必须存活。
+#[test]
+fn legacy_backfill_survives_second_sweep_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let template_content = brief_template_entry().content;
+    let mut legacy = habit(template_content.trim(), 0.7);
+    legacy.auto = false;
+    legacy.rule_id = String::new();
+    legacy.last_seen = recent_ts();
+    // 盘上还有真产物挤名额（配额压力真实存在）。
+    let genuine: Vec<HabitEntry> = [0.9, 0.89, 0.88]
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let mut e = habit(&format!("真产物 {i}"), *c);
+            e.auto = true;
+            e.rule_id = format!("stat.g{i}");
+            e.last_seen = recent_ts();
+            e
+        })
+        .collect();
+    save_profile(
+        ws,
+        &UserProfile {
+            habits: genuine.into_iter().chain(std::iter::once(legacy)).collect(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // sweep #1：加载（翻桶+标记）→ prune → 保存。
+    let mut p1 = load_profile(ws);
+    prune_and_cap_with_max(&mut p1, 10);
+    save_profile(ws, &p1).unwrap();
+    assert!(p1.habits.len() >= 4, "sweep#1 豁免生效（全部存活）");
+
+    // sweep #2：重新加载（标记必须从盘上恢复）→ prune。
+    let mut p2 = load_profile(ws);
+    let flipped = p2
+        .habits
+        .iter()
+        .find(|h| h.content.trim() == template_content.trim())
+        .expect("sweep#2 legacy 条目在场");
+    assert!(
+        flipped.legacy_backfilled && flipped.auto,
+        "标记必须持久化恢复（瞬态版在此丢失 → 被当真产物截掉）"
+    );
+    prune_and_cap_with_max(&mut p2, 10);
+    assert!(
+        p2.habits
+            .iter()
+            .any(|h| h.content.trim() == template_content.trim()),
+        "sweep#2 条目必须存活"
+    );
+}
+
+/// 豁免不是免死金牌：被标记条目过期/衰减照常受管辖（expired 被 prune
+/// 剔除；安全违规同由 retain 首行剔除，此处钉过期臂）。
+#[test]
+fn legacy_backfilled_exemption_does_not_defy_decay() {
+    let mut p = UserProfile::default();
+    let mut legacy = habit("用户消息简短直接，回复宜简洁、结论先行", 0.7);
+    legacy.auto = true;
+    legacy.legacy_backfilled = true;
+    legacy.last_seen = "2020-01-01T00:00:00+08:00".into();
+    p.habits.push(legacy);
+    decay_sweep(&mut p, chrono::Local::now());
+    prune_and_cap(&mut p);
+    assert!(
+        p.habits.is_empty(),
+        "过期回填条目照常被清（豁免只作用于 G8 配额截断）"
+    );
 }

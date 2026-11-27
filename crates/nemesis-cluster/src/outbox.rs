@@ -60,8 +60,10 @@ fn chunk_delay_ms() -> u64 {
 const PUSH_BACKOFF_BASE_SECS: u64 = 15;
 /// 退避封顶（秒）——10 分钟。
 const PUSH_BACKOFF_CAP_SECS: u64 = 600;
-/// 死信 age 闸（秒）——7 天，对齐 task_result TTL。
-const DEAD_LETTER_AGE_SECS: i64 = 7 * 24 * 3600;
+/// 死信 age 闸（秒）——7 天，绑定 task_result TTL 单一真相源
+///（[`crate::task_result_store::RESULT_TTL_SECS`]；此前纯注释「对齐」，
+/// 真相源漂移不会红——BUG-20261126-132 收敛）。
+const DEAD_LETTER_AGE_SECS: i64 = crate::task_result_store::RESULT_TTL_SECS;
 /// 死信 attempts 闸——与 age 先到先死。
 const DEAD_LETTER_MAX_ATTEMPTS: u32 = 1000;
 /// 日志降频阈值——attempts 超过此后每 [`PUSH_WARN_EVERY`] 次一条 WARN

@@ -500,3 +500,58 @@ async fn board_query_comments_error_is_loud_not_silent_empty() {
         "错误必须带真实根因: {text}"
     );
 }
+
+/// BUG-20261126-117 回归锁：`sessions_list` 截断必须发生在 recency 序上，
+/// 不是 read_dir 天然序（NTFS 字典序 / ext4 哈希序，平台实现细节）。
+/// 修复前 take(limit) 打在未排序向量上 = MCP 客户端拿到「任意 limit 个
+/// 会话」（工具声明「same source as the Dashboard session list」——
+/// Dashboard 面在 BUG-20261116-011/168 已补 session_recency_cmp 收尾
+/// 重排，本面漏改）。夹具让文件名字典序与 recency 序刻意相反
+/// （aaa 最旧 / zzz 最新——NTFS 下 read_dir 序恰好 = 字典序，修复前
+/// 本测试在 Windows 上稳定红），limit=2 必须返回最新两个。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_list_truncates_by_recency_not_dir_order() {
+    let tmp = temp_home();
+    let asm = assemble(tmp.path()).await.expect("装配应成功");
+    let dir = asm.workspace.join("logs").join("session_logs");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // 文件名（字典序升 = read_dir 序 NTFS）→ lastTime（recency 序）刻意反向。
+    let fixtures = [
+        ("agent_main_session_aaa", "2026-01-01T00:00:00Z"),
+        ("agent_main_session_mmm", "2026-06-01T00:00:00Z"),
+        ("agent_main_session_zzz", "2026-12-01T00:00:00Z"),
+    ];
+    for (stem, ts) in &fixtures {
+        let line = |role: &str, content: &str, t: &str| {
+            serde_json::json!({"role": role, "content": content, "timestamp": t}).to_string()
+        };
+        let body = format!(
+            "{}\n{}\n",
+            line("user", "hi", ts),
+            line("assistant", "reply", ts)
+        );
+        std::fs::write(dir.join(format!("{stem}.jsonl")), body).expect("write jsonl");
+    }
+
+    let result = tool_sessions_list(Arc::new(asm), serde_json::json!({ "limit": 2 })).await;
+    assert!(!result.is_error, "工具不得报错");
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.text.as_deref())
+        .unwrap_or("");
+    let v: serde_json::Value = serde_json::from_str(text).expect("payload 必须是合法 JSON");
+    assert_eq!(v["total"], 3, "目录里有 3 个会话");
+    assert_eq!(v["shown"], 2, "limit=2 截断到 2");
+    let ids: Vec<&str> = v["sessions"]
+        .as_array()
+        .expect("sessions 数组")
+        .iter()
+        .map(|s| s["id"].as_str().expect("id 字段"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["agent_main_session_zzz", "agent_main_session_mmm"],
+        "截断必须保留 recency 最新的两个（zzz/mmm），而非 read_dir 序前两个（aaa/mmm）: {ids:?}"
+    );
+}

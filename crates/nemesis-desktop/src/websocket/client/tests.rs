@@ -53,7 +53,25 @@ fn test_register_handlers() {
             serde_json::json!("pong"),
         ))
     });
-    client.register_notification_handler("event", |_msg| {});
+    let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let called_clone = called.clone();
+    client.register_notification_handler("event", move |_msg| {
+        called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // 注册必须真的可路由：请求分发到注册 handler，通知分发到通知 handler
+    // （BUG-20261127-002：此前只注册不分发，注册动作零验证）。
+    let request = Message::new_request("ping", serde_json::Value::Null);
+    let resp = client
+        .dispatcher()
+        .dispatch(&request)
+        .expect("request dispatch must succeed")
+        .expect("registered handler must produce a response");
+    assert_eq!(resp.result.unwrap(), serde_json::json!("pong"));
+
+    let notification = Message::new_notification("event", serde_json::Value::Null);
+    client.dispatcher().dispatch(&notification).unwrap();
+    assert!(called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[test]
@@ -66,6 +84,15 @@ fn test_set_fallback() {
             serde_json::json!({"fallback": true}),
         ))
     });
+
+    // 未注册方法必须落到 fallback（而非 method-not-found 错误响应）。
+    let request = Message::new_request("no.such.method", serde_json::Value::Null);
+    let resp = client
+        .dispatcher()
+        .dispatch(&request)
+        .expect("request dispatch must succeed")
+        .expect("fallback must produce a response");
+    assert_eq!(resp.result.unwrap(), serde_json::json!({"fallback": true}));
 }
 
 #[test]
@@ -317,19 +344,21 @@ fn test_handle_message_notification_dispatch_error() {
 }
 
 #[test]
-fn test_handle_message_request_handler_returns_none() {
+fn test_handle_message_neither_request_nor_notification_no_panic() {
     let dispatcher = Dispatcher::new();
     let pending = parking_lot::Mutex::new(HashMap::new());
-    let (send_tx, _send_rx) = tokio::sync::mpsc::channel::<String>(64);
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(64);
     let send_tx_opt = Some(send_tx);
 
-    // Register a notification handler for a method, then send it as a request
-    // This will cause dispatch to return Err (message is neither request nor notification from
-    // the dispatcher's perspective of a response)
-    // Actually, let's test the Ok(None) path which is harder to trigger
-    // The Ok(None) path happens for notifications dispatched through the request path
-    // which shouldn't happen normally. Let's skip this edge case.
+    // 名字不再承诺 "request_handler_returns_none"（BUG-20261127-002：该边
+    // 角用例注释自认 skip 后照样留名）。空 JSON 对象既非 request 也非
+    // notification → dispatch Err 被吞掉，锁定真实可观测契约：不 panic 且
+    // 零出站帧。
     WebSocketClient::handle_message("{}", "test", &pending, &dispatcher, &send_tx_opt);
+    assert!(
+        send_rx.try_recv().is_err(),
+        "neither-type message must not produce outbound frames"
+    );
 }
 
 #[test]
@@ -358,14 +387,55 @@ fn test_client_register_multiple_handlers() {
             serde_json::json!("r2"),
         ))
     });
-    client.register_notification_handler("event1", |_| {});
-    client.register_notification_handler("event2", |_| {});
+    let n1 = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let n2 = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (n1c, n2c) = (n1.clone(), n2.clone());
+    client.register_notification_handler("event1", move |_msg| {
+        n1c.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    client.register_notification_handler("event2", move |_msg| {
+        n2c.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
     client.set_fallback(|msg| {
         Ok(Message::new_response(
             msg.id.as_deref().unwrap_or(""),
             serde_json::json!("fallback"),
         ))
     });
+
+    // 双注册互不串线 + 通知各归各位 + fallback 兜底（BUG-20261127-002）。
+    let d = client.dispatcher();
+    for (method, expected) in [("method1", "r1"), ("method2", "r2")] {
+        let resp = d
+            .dispatch(&Message::new_request(method, serde_json::Value::Null))
+            .expect("request dispatch must succeed")
+            .expect("registered handler must produce a response");
+        assert_eq!(
+            resp.result.unwrap(),
+            serde_json::json!(expected),
+            "{method} 响应串线"
+        );
+    }
+    d.dispatch(&Message::new_notification(
+        "event1",
+        serde_json::Value::Null,
+    ))
+    .unwrap();
+    d.dispatch(&Message::new_notification(
+        "event2",
+        serde_json::Value::Null,
+    ))
+    .unwrap();
+    assert!(n1.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(n2.load(std::sync::atomic::Ordering::SeqCst));
+    let resp = d
+        .dispatch(&Message::new_request(
+            "unknown.method",
+            serde_json::Value::Null,
+        ))
+        .expect("request dispatch must succeed")
+        .expect("fallback must produce a response");
+    assert_eq!(resp.result.unwrap(), serde_json::json!("fallback"));
 }
 
 #[test]

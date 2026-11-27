@@ -5399,7 +5399,7 @@ fn test_bug_20261121_067_manual_exec_does_not_masquerade_as_patch_for_retain() {
                 // 第 2 次进入 = 定时触发：等手动执行写回确认（含旧代码的
                 // updated_at_ms 推进落盘）后再返回——把 manual 写回钉在
                 // 执行后 patched_during_exec 读取之前。
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
                 while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -5455,5 +5455,77 @@ fn test_bug_20261121_067_manual_exec_does_not_masquerade_as_patch_for_retain() {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+    svc.stop();
+}
+
+/// BUG-20261127-023 回归锁：手动执行线程（execute_job_detached → 裸
+/// std::thread）必须带 tokio 上下文——on_job 回调里的
+/// `Handle::try_current()`（dreaming sweep fire_dreaming_sweep 的硬前提）
+/// 与 `tokio::spawn`（board-ap 拆解链 spawn_plan_chain）此前在该线程上
+/// 确定性失败/panic（裸线程无 thread-local 运行时上下文）：Dashboard
+/// 「立即运行」对 dreaming job 恒回「无 tokio 运行时上下文」、对 board-ap
+/// job 恒 panic 记 failed。修复 = start() 捕获 Handle，detached 线程入口
+/// enter()。计划触发路径（tokio::spawn tick 循环）本就有上下文，不受影响。
+#[tokio::test]
+async fn test_bug_20261127_023_manual_exec_thread_has_tokio_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job(
+            "manual-probe",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "x",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    // on_job 里探测 tokio 上下文（dreaming fire 的第一道闸）。
+    let probe = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let probe_for_cb = probe.clone();
+    svc.set_on_job(move |_job| {
+        probe_for_cb.store(
+            tokio::runtime::Handle::try_current().is_ok(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        Ok("probed".to_string())
+    });
+    // 服务未 start（无 Handle 捕获）时 detached 线程仍无上下文——修复语义
+    // 是「start() 供给」，不是「凭空供给」。
+    svc.execute_job_detached(&job.id).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if let Some(j) = svc.get_job(&job.id)
+            && j.state.last_run_at_ms.is_some()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !probe.load(std::sync::atomic::Ordering::SeqCst),
+        "start() 之前手动执行线程不应有 tokio 上下文（供给语义钉死）"
+    );
+
+    // start()（gateway 装配链内 = tokio 上下文）之后再手动跑——线程内必须
+    // 探到上下文。
+    svc.start().await.unwrap();
+    svc.execute_job_detached(&job.id).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !probe.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        probe.load(std::sync::atomic::Ordering::SeqCst),
+        "start() 后手动执行线程内 tokio 上下文必须可用（dreaming「立即运行」\
+         与 board-ap 下游 tokio::spawn 的硬前提）"
+    );
     svc.stop();
 }

@@ -40,7 +40,12 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
     endpoint::presets,
 };
+use iroh_relay::{RelayQuicConfig, tls::CaTlsConfig};
+use rustls::client::danger::ServerCertVerifier;
+use rustls::crypto::CryptoProvider;
+use rustls::pki_types::ServerName;
 
+use crate::cert_pin;
 use crate::plugin_log;
 use crate::roaming::{ROAMING_LOG_DEBUG, ROAMING_LOG_INFO, ROAMING_LOG_WARN};
 
@@ -336,6 +341,20 @@ pub struct EndpointConfig {
     /// 打洞成功率与可预测性更高。serde default 兼容旧宿主（无此键 = 0）。
     #[serde(default)]
     pub direct_port: u16,
+    /// QAD 钥匙 B（2026-11-26 打洞通路激活计划）：中继 QUIC 臂端口。
+    /// `0` = 关（缺省，`quic=None`——字节级旧行为：无 QAD、无证书校验路径、
+    /// 打洞结构性缺席）；`>0` = `RelayConfig` 带 `RelayQuicConfig`——QAD 探测
+    /// 进 net_report 协议集（复查⑦措辞修正：iroh 中 relay.quic 唯一消费者是
+    /// QAD 探测，中继数据面恒走 HTTP），端点由此学到自己 UDP socket 的反射
+    /// 地址（打洞候选的唯一来源）。
+    /// serde default 兼容旧宿主（无此键 = 0 = 关）。
+    #[serde(default)]
+    pub relay_quic_port: u16,
+    /// 中继证书指纹 pin（SHA-256 hex，§2.2 方案 A；`relay_quic_port > 0`
+    /// 时必填——QUIC=强制 TLS，自签证书必须配信任锚，缺配 loud 拒绝装配）。
+    /// 空 = 未配置（QUIC 臂关时忽略）。
+    #[serde(default)]
+    pub relay_cert_fp: String,
     /// 保留位（宿主侧 TcpConn 空闲监测语义的镜像声明，插件不消费——空闲闸
     /// 在宿主帧层照常生效；反序列化目标必须存在否则宿主 config 含此键即解析失败）。
     #[allow(dead_code)]
@@ -360,6 +379,51 @@ pub struct EndpointHandle {
     router: parking_lot::Mutex<Option<Router>>,
 }
 
+/// QAD 观测投影（`EndpointHandle::net_snapshot` 产物；status/nodes.list
+/// 观测面消费——QAD 死活、反射地址形态从此可见，2026-11-26 §4.4 补盲）。
+/// 复查⑧：`Serialize`（`qad_v4` rename）即投影 JSON 的单一真相源——
+/// status payload 与宿主桥侧均经 serde 产出，不再手拼。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NetObservation {
+    /// QAD IPv4 往返成功（探测协议集里有 QUIC 臂且中继 QUIC 臂在跑才可能 true）。
+    #[serde(rename = "qad_v4")]
+    pub udp_v4: bool,
+    /// 观测到的全局 IPv4 ip:port（`None` = 尚未学到）。
+    pub observed_v4: Option<String>,
+}
+
+/// 从 relay_url 提取中继身份（复查二轮①：混合验证器 SNI 判别锚）：url
+/// host（DNS 名或 IP 字面量；IPv6 剥方括号——url crate 序列化带括号而
+/// `ServerName` 不收）→ `ServerName`。失败 loud Err（装配拒绝）。
+fn relay_host_from_url(url: &RelayUrl) -> Result<ServerName<'static>, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| format!("relay_url 缺 host（{url}）"))?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    ServerName::try_from(host.to_owned()).map_err(|e| format!("relay host 非法（{host:?}）: {e}"))
+}
+
+/// 端点配置完整性校验（复查②：spawn 前置单点）。热更路径（lib.rs
+/// endpoint_start）必须在**停旧端点之前**调用——配置不合法（relay_url 非法 /
+/// 指纹格式错 / 中继 host 非法）绝不能以「旧端点已死新端点未起」为代价暴露；
+/// spawn 内部的同款校验保留（值构造点，错误消息与这里同源）。
+pub fn validate_endpoint_config(cfg: &EndpointConfig) -> Result<(), String> {
+    let relay_url = cfg.relay_url.trim();
+    if relay_url.is_empty() {
+        return Ok(()); // n0 形态无中继键可校验（钥匙 B 被忽略有 WARN 面）
+    }
+    let url: RelayUrl = relay_url
+        .parse()
+        .map_err(|e| format!("relay_url 非法（{relay_url:?}）: {e}"))?;
+    if cfg.relay_quic_port > 0 {
+        crate::cert_pin::normalize_fingerprint(cfg.relay_cert_fp.trim())
+            .map_err(|e| format!("relay_cert_fp 配置不完整: {e}"))?;
+        // 复查二轮①：SNI 判别锚同样前置（QUIC 臂开的唯一新增装配依赖）。
+        relay_host_from_url(&url)?;
+    }
+    Ok(())
+}
+
 impl EndpointHandle {
     /// 本端 EndpointId（= 公钥；传输身份）。
     pub fn node_id(&self) -> EndpointId {
@@ -374,6 +438,24 @@ impl EndpointHandle {
     /// 本端绑定地址（QUIC socket 实际监听的 IP:port；直连/测试用）。
     pub fn direct_addrs(&self) -> Vec<SocketAddr> {
         self.endpoint.bound_sockets()
+    }
+
+    /// QAD 观测快照（2026-11-26 打洞通路激活计划 §4.4 补盲）：net_report
+    /// watcher 当前值投影为「QAD 是否到账 + 观测到的公网反射地址」。
+    ///
+    /// - `Some(..)` = 报告已产出（`udp_v4` = QAD IPv4 往返成功；`observed_v4`
+    ///   = 观测到的全局 IPv4 ip:port——非本机绑定形态即为反射地址到账）。
+    /// - `None` = 报告尚未产出（刚启动/探测未完成——观测面诚实留空）。
+    ///
+    /// 需要 iroh `unstable-net-report` feature（空 feature 闸，只拦公开
+    /// 访问器）。QAD 关（钥匙 B 缺席）时 udp_v4 恒 false——死活从此可见。
+    pub fn net_snapshot(&self) -> Option<NetObservation> {
+        use iroh::Watcher as _;
+        let report = self.endpoint.net_report().get()?;
+        Some(NetObservation {
+            udp_v4: report.udp_v4,
+            observed_v4: report.global_v4.map(|a| a.to_string()),
+        })
     }
 
     /// 最近一次观测的拨号路径（`"direct"` = 打洞直连，`"relay"` = 经中继
@@ -812,6 +894,9 @@ pub async fn spawn_endpoint(
     seed: &[u8; 32],
     workspace: &std::path::Path,
 ) -> Result<Arc<EndpointHandle>, String> {
+    // 复查②：配置完整性校验先行（单一校验点 `validate_endpoint_config`；
+    // lib.rs 热更路径在停旧端点之前也调同一函数——校验纪律双保险）。
+    validate_endpoint_config(cfg)?;
     // 身份桥接：插件 ed25519 seed → iroh SecretKey（同数学，iroh 端点吃
     // 自家类型）。
     let secret = SecretKey::from_bytes(seed);
@@ -827,13 +912,30 @@ pub async fn spawn_endpoint(
     }
     let relay_url = cfg.relay_url.trim();
     if !relay_url.is_empty() {
+        // QAD 钥匙 B（2026-11-26 打洞通路激活计划 §2.1）：relay_quic_port > 0
+        // = `RelayConfig` 带 `RelayQuicConfig`——QAD 探测进 net_report 协议集
+        // （复查⑦措辞修正：iroh 1.4.1 中 `relay.quic` 的唯一消费者是 QAD/
+        // net_report 探测（reportgen.rs get_quic_port）——**中继数据面恒走
+        // HTTP，与本臂无关**）；0 = 关（quic=None，字节级旧行为）。
+        // QUIC 臂开时证书指纹 pin 必填（方案 A：混合验证器——指纹命中接受/
+        // 未命中标准 webpki；缺配 loud Err 不给无校验 TLS 留口子）。
+        let quic_arm = if cfg.relay_quic_port > 0 {
+            let fp = crate::cert_pin::normalize_fingerprint(cfg.relay_cert_fp.trim())
+                .map_err(|e| format!("relay_cert_fp 配置不完整: {e}"))?;
+            Some((fp, RelayQuicConfig::new(cfg.relay_quic_port)))
+        } else {
+            None
+        };
         // 自建中继回落形态（Minimal 基座 + RelayMode::Custom——照搬宿主
-        // bind_custom_relay；quic=None 显式关客户端 QUIC relay transport，
-        // `From<RelayUrl>` 缺省会带上默认 QUIC 配置——零证书负担走 HTTP）。
+        // bind_custom_relay；quic=None 显式关 QAD 探测——`From<RelayUrl>`
+        // 缺省带默认 QUIC 配置（= 向 7842 发探测），显式 None 保字节级
+        // 旧行为；quic=Some（QAD 钥匙 B 开）= 自签证书经指纹 pin 验证）。
         let url: RelayUrl = relay_url
             .parse()
             .map_err(|e| format!("relay_url 非法（{relay_url:?}）: {e}"))?;
-        let mut relay = RelayConfig::new(url, None);
+        // url.clone()：Arc 活本——复查二轮① armed 臂要在下方从 url 提取
+        // 中继身份（SNI 判别锚），本体留给那个分支。
+        let mut relay = RelayConfig::new(url.clone(), quic_arm.as_ref().map(|(_, q)| q.clone()));
         let token = cfg.relay_token.trim();
         if !token.is_empty() {
             relay = relay.with_auth_token(token);
@@ -842,6 +944,47 @@ pub async fn spawn_endpoint(
         builder = builder
             .relay_mode(RelayMode::Custom(map))
             .preset(presets::Minimal);
+        if let Some((fp, q)) = quic_arm {
+            // 方案 A（复查①修正为混合验证器；复查二轮①加 SNI 判别）：
+            // ca_tls_config custom verifier 是 iroh **全部外部 TLS**（iroh
+            // relays / pkarr / DoH）的唯一验证器——presets::N0 基座带 pkarr
+            // n0 发布/解析，这些 HTTPS 流量同样经此路，故验证器不能 pin-only
+            // 也不能对中继身份放公网根。判定序：指纹命中 = 本中继自签证书
+            // 接受；未命中且 SNI==中继 host = loud 拒绝（指纹是中继身份唯一
+            // 信任锚）；未命中其余 SNI = 标准 webpki 验证（公网根库）——
+            // pkarr/DoH 照常，中继证书轮换后 loud 失败。iroh 原生节点间连接
+            // 走自家公钥认证不经此路，零影响。
+            let relay_host = relay_host_from_url(&url)?;
+            builder = builder.ca_tls_config(CaTlsConfig::custom_server_cert_verifier(Arc::new(
+                move |provider: Arc<CryptoProvider>| {
+                    cert_pin::RelayCertPinVerifier::new(fp, relay_host.clone(), provider)
+                        .map(|v| Arc::new(v) as Arc<dyn ServerCertVerifier>)
+                },
+            )));
+            plugin_log(
+                ROAMING_LOG_INFO,
+                "endpoint",
+                &format!(
+                    "QAD 钥匙 B 开：relay QUIC 臂 port={} 指纹 pin={}…（QUIC=TLS 强制，证书校验=混合验证器：指纹命中接受 / 中继名未命中 loud 拒 / 非中继名落公网根）",
+                    q.port,
+                    hex::encode(&fp[..8])
+                ),
+            );
+        } else if !cfg.relay_cert_fp.trim().is_empty() {
+            plugin_log(
+                ROAMING_LOG_INFO,
+                "endpoint",
+                "relay_cert_fp 已配置但 relay_quic_port=0（QAD 钥匙 B 未开）——指纹忽略",
+            );
+        }
+    } else if cfg.relay_quic_port > 0 || !cfg.relay_cert_fp.trim().is_empty() {
+        // 复查⑤：relay_url 空（n0 公共中继形态）时钥匙 B 键整段不装配——
+        // QAD 依附自建中继（n0 中继的自签证书无从配 pin），诚实 WARN 不静默。
+        plugin_log(
+            ROAMING_LOG_WARN,
+            "endpoint",
+            "relay_quic_port/relay_cert_fp 已配置但 relay_url 为空（n0 公共中继形态）——QAD 依附自建中继，两键被忽略",
+        );
     }
     // accept 侧 ALPN 注册（dial 侧无需预注册）。
     builder = builder.alpns(vec![ROAMING_ALPN.as_bytes().to_vec()]);

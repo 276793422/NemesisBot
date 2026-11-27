@@ -1,5 +1,5 @@
 use super::*;
-use nemesis_ziwei_profile::{DataStructure, FieldDef};
+use nemesis_ziwei_profile::{DataStructure, FieldBase, FieldDef, FieldType};
 
 fn ft(spec: &str) -> FieldType {
     FieldType::parse(spec).unwrap()
@@ -183,6 +183,95 @@ fn decode_revalidates_field_bounds_u64_truth() {
     let buf = vec![0u8; 96];
     let err = decode_struct(&buf, &ds).unwrap_err();
     assert!(err.contains("越界"), "{err}");
+}
+
+// ============================================================
+// BUG-20261127-022 回归锁：decode 声明驱动放大面（字段数×数组长度与
+// 实际数据体量脱钩）。validate/decode 重验只查单字段 end ≤ ds.size
+// （重叠合法、字段数无上限）——N 个重叠 u8[100_000] 是合法 profile，
+// 但解码输出 = N×100k×~32B Value，与实际 data（100KB）完全脱钩；
+// 字段数加大即 OOM 打爆进程（read_struct 每次调用 / scheduler 周期
+// 轮询 / poll_captures 批级累积三个消费面同炸）。元素总量预算闸必须
+// loud 拒绝。
+// ============================================================
+
+#[test]
+fn decode_elem_budget_rejects_declared_amplification() {
+    let mut fields = Vec::new();
+    for i in 0..50u32 {
+        fields.push(FieldDef {
+            offset: 0,
+            name: format!("f{i}"),
+            type_: ft("u8[100000]"),
+            decode: None,
+        });
+    }
+    let ds = DataStructure {
+        name: "Amp".into(),
+        size: 100_000,
+        fields,
+    };
+    // 100KB 真实数据（管道帧帽内）——每个字段单独看都完全在界内
+    let buf = vec![0u8; 100_000];
+    let err = decode_struct(&buf, &ds).unwrap_err();
+    assert!(err.contains("预算"), "{err}");
+}
+
+#[test]
+fn decode_short_data_still_errors_cleanly() {
+    // 数据可支撑量 < 声明元素数：分配按实际数据封顶后，首个越界元素的
+    // Err 语义保持不变——不产部分数据、不产截短数组、不静默成功。
+    let ds = DataStructure {
+        name: "Short".into(),
+        size: 8_000_000,
+        fields: vec![FieldDef {
+            offset: 0,
+            name: "v".into(),
+            type_: ft("u64[1000000]"),
+            decode: None,
+        }],
+    };
+    let buf = vec![0u8; 16];
+    let err = decode_struct(&buf, &ds).unwrap_err();
+    assert!(err.contains("越界"), "{err}");
+}
+
+#[test]
+fn decode_elem_count_helpers() {
+    // 标量/标量数组 = 元素数；文本 = 字符单元数（wchar 2 字节/单元）；
+    // 零长 = 0（不虚耗预算）。
+    assert_eq!(field_elem_count(&ft("u32")), 1);
+    assert_eq!(field_elem_count(&ft("u8[100000]")), 100_000);
+    // 零长数组 parse 层拒绝（n==0 → None）——只能经手编 profile JSON
+    // （serde 反序列化）进入，直接构造钉死 field_elem_count 的 0 形态。
+    assert_eq!(
+        field_elem_count(&FieldType {
+            base: FieldBase::U64,
+            array_len: Some(0)
+        }),
+        0
+    );
+    assert_eq!(field_elem_count(&ft("char[16]")), 16);
+    assert_eq!(field_elem_count(&ft("wchar[32]")), 32);
+    let ds = DataStructure {
+        name: "Sum".into(),
+        size: 200,
+        fields: vec![
+            FieldDef {
+                offset: 0,
+                name: "a".into(),
+                type_: ft("u32"),
+                decode: None,
+            },
+            FieldDef {
+                offset: 4,
+                name: "b".into(),
+                type_: ft("u8[100000]"),
+                decode: None,
+            },
+        ],
+    };
+    assert_eq!(ds_decode_elems(&ds), 100_001);
 }
 
 // ──：call_fn 三态 / hook 事件拉取解析面 ─────────────────────────────

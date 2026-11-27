@@ -34,10 +34,21 @@ fn test_extract_dir() {
 
     assert!(temp.path().join("index.html").exists());
     assert!(temp.path().join("assets").is_dir());
-    assert!(temp.path().join("fonts").is_dir());
 
     // Verify assets contain JS and CSS bundles
     let assets_dir = temp.path().join("assets");
+    // 字体契约（BUG-20261127-005 起）：字体经 vite 打包为 assets/<hash>.woff2
+    // （hash 后缀构建期变化），不再有原样拷贝的顶层 fonts/ 目录。
+    let woff_files: Vec<_> = std::fs::read_dir(&assets_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "woff2")
+                .unwrap_or(false)
+        })
+        .collect();
     let js_files: Vec<_> = std::fs::read_dir(&assets_dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -55,6 +66,10 @@ fn test_extract_dir() {
         .collect();
     assert!(!js_files.is_empty(), "assets/ should contain JS bundles");
     assert!(!css_files.is_empty(), "assets/ should contain CSS bundles");
+    assert!(
+        !woff_files.is_empty(),
+        "assets/ should contain bundled woff2 fonts (BUG-20261127-005 契约)"
+    );
 }
 
 // ============================================================
@@ -102,7 +117,8 @@ fn test_list_embedded_files_contains_known_paths() {
             .any(|f| f == "index.html" || f.contains("index.html"))
     );
     assert!(files.iter().any(|f| f.contains("assets/")));
-    assert!(files.iter().any(|f| f.contains("fonts/")));
+    // 字体自 BUG-20261127-005 起打包为 assets/<hash>.woff2，不再有 fonts/ 目录。
+    assert!(files.iter().any(|f| f.ends_with(".woff2")));
 }
 
 #[cfg(feature = "web-static")]
@@ -224,7 +240,14 @@ fn test_extract_dir_skip_existing_preserves_user_files() {
 #[cfg(feature = "web-static")]
 #[test]
 fn test_embedded_static_has_fonts() {
-    assert!(EMBEDDED_STATIC.contains("fonts"));
+    // 字体契约（BUG-20261127-005 起）：打包资产 assets/<hash>.woff2，
+    // hash 后缀构建期变化，只能按扩展名断言字体在场。
+    // files() 在根上只列顶层不递归（collect_files 同款手动递归），
+    // 这里走 list_embedded_files() 的全量路径列表。
+    assert!(
+        list_embedded_files().iter().any(|f| f.ends_with(".woff2")),
+        "embedded static should contain bundled woff2 fonts"
+    );
 }
 
 #[test]

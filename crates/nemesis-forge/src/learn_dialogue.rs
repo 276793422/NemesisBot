@@ -122,7 +122,10 @@ impl FileLockGuard {
                             age_secs = age,
                             "[learn] learn.lock 陈旧（持锁进程已死亡的残留），接管"
                         );
-                        let _ = std::fs::remove_file(path);
+                        // 韧性删除（fsutil 删除纪律）：AV/索引器瞬时句柄正扫
+                        // lock 文件时单发必败 → attempt 已耗尽误报「对话进行
+                        // 中」；包装内退避重试吸收瞬时窗口，耗尽 warn 留痕。
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(path);
                         continue;
                     }
                     return Err(format!(
@@ -905,6 +908,7 @@ fn route_user_finding(
             kind: crate::userprofile::store::KIND_HABIT.into(),
             source: String::new(), // ingest 强制 source 参数（权威）
             rule_id: String::new(),
+            legacy_backfilled: false,
         };
         // 对话教训（学习自对话会话）→ 对话画像（双 scope 拆分 2026-11-25）。
         match crate::userprofile::store::ingest_external_entry(
@@ -958,6 +962,10 @@ fn push_user_observation(
         content: statement.to_string(),
         confidence: fi.confidence,
         steps: Vec::new(),
+        // learn 通道产自对话会话 → 对话画像（确认落库按此路由）。
+        scope: super::userprofile::store::ProfileScope::Dialogue
+            .slug()
+            .to_string(),
         status: String::new(),
         resolved_ts_ms: None,
     };

@@ -21,6 +21,12 @@
 //   （manual_get 回显 / manual_save {scope, lines} 整体替换保存）/ 下半 =
 //   注入预览（profile.preview 后端 render_section 渲染产物，只读）；
 //   TAB2「习惯条目」= 治理面（统计/观察/条目表）原样保留，默认隐藏。
+// - 手动触发 + 语义分型治理（2026-11-26 批四）：①条目表双 scope 合并
+//   （list 按 scope 拉两份 + _scope 标签 + 「归属」badge 列）；②页头
+//   「立即总结」按钮 = profile.reflect_now（成功三计数 toast / note 空
+//   窗注记 toast）；③搬移按钮 = profile.move_scope {content, to_scope}
+//   （载荷方向断言 + moved=false 幂等 toast）；④veto/forget/pin 载荷带
+//   scope（条目从哪个画像来就操作哪个画像）。
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useToast } from '../../composables/useToast'
@@ -50,6 +56,11 @@ function habit(over: Record<string, unknown> = {}) {
   }
 }
 
+/// 双 scope 合并表夹具（批四）：对话侧条目的 mock 需对 project scope 返回
+/// 空表，行号型断言（habit-row-N / src-dot-N）不受合并影响；需要项目侧
+/// 条目的用例自带完整 mock。
+const EMPTY_PROJ_LIST = { enabled: true, enabled_at: null, ui_telemetry: true, habits: [] }
+
 /// TAB2（习惯条目治理面）挂载：默认 TAB 是「注入内容」，治理面用例先切
 /// 到「习惯条目」tab 再断言（2026-11-25 双 TAB 改版）。
 async function mountOnEntries() {
@@ -63,8 +74,11 @@ async function mountOnEntries() {
 beforeEach(() => {
   requestMock.mockReset()
   useToast().toasts.splice(0)
-  requestMock.mockImplementation(async (_m: string, cmd: string) => {
+  requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
     if (cmd === 'list') {
+      // 双 scope 合并表（批四）：默认夹具只给对话侧条目，项目侧恒空——
+      // 行号型断言（habit-row-N / src-dot-N）不受合并影响。
+      if (data?.scope === 'project') return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [] }
       return {
         enabled: true,
         enabled_at: '2026-10-01T08:00:00+08:00',
@@ -189,6 +203,7 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
     // 重 mock：一条带 steps 的 workflow 挖掘条目 + 一条 quality_bar。
     requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
       if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
         return {
           enabled: true,
           enabled_at: '2026-10-01T08:00:00+08:00',
@@ -242,13 +257,16 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
     w.unmount()
   })
 
-  it('veto/forget/pin 各带 content 载荷', async () => {
+  it('veto/forget/pin 各带 content + scope 载荷（条目归属画像路由）', async () => {
     const w = await mountOnEntries()
     const calls: any[] = []
     requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
       calls.push([cmd, data])
       if (cmd === 'veto' || cmd === 'forget' || cmd === 'pin') return { vetoed: true, forgotten: true, updated: true }
-      if (cmd === 'list') return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      }
       return {}
     })
     await w.find('[data-testid="veto-0"]').trigger('click')
@@ -262,7 +280,9 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
     expect(cmds).toContain('forget')
     expect(cmds).toContain('pin')
     for (const [cmd, data] of calls.filter(([cmd]) => ['veto', 'forget', 'pin'].includes(cmd))) {
-      expect(data).toEqual({ content: '用户偏好简洁回复' })
+      // 批四：载荷带 scope——对话侧条目操作对话画像（此前缺省对话是
+      // 潜在错路由，双 scope 合并表必须显式带方向）。
+      expect(data).toEqual({ content: '用户偏好简洁回复', scope: 'dialogue' })
       expect(cmds.length).toBeGreaterThanOrEqual(3)
     }
     w.unmount()
@@ -284,8 +304,9 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
   })
 
   it('批 D：stats 统计卡渲染读数（含手动桶）；trust 条目落信任画像分组', async () => {
-    requestMock.mockImplementation(async (_m: string, cmd: string) => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
       if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
         return {
           enabled: true,
           enabled_at: '2026-10-01T08:00:00+08:00',
@@ -334,8 +355,11 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
   })
 
   it('批 D：stats 请求失败 → 统计卡隐藏不阻塞条目表', async () => {
-    requestMock.mockImplementation(async (_m: string, cmd: string) => {
-      if (cmd === 'list') return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      }
       if (cmd === 'stats') throw new Error('boom')
       return {}
     })
@@ -365,7 +389,7 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
         return {
           observations: [
             { id: 'obs-1', kind: 'observation', category: 'workflow', content: '边缘结论甲', confidence: 0.6, steps: ['步骤一'], status: 'pending' },
-            { id: 'obs-2', kind: 'observation', category: 'style', content: '边缘结论乙', confidence: 0.55, steps: [], status: 'pending' },
+            { id: 'obs-2', kind: 'observation', category: 'style', content: '边缘结论乙', confidence: 0.55, steps: [], scope: 'project', status: 'pending' },
           ],
           counts: { pending: 2, confirmed: 1, dismissed: 0 },
         }
@@ -380,6 +404,10 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
     expect(w.find('[data-testid="obs-row-1"]').text()).toContain('边缘结论乙')
     expect(w.find('[data-testid="obs-step-0-0"]').text()).toContain('步骤一')
     expect(w.find('[data-testid="stats-observations"]').text()).toContain('已确认 1')
+    // 归属徽标（横扫 2026-11-26 根修：确认落库按条目自带 scope 路由——
+    // 徽标即路由预告）；缺 scope 键 = 旧条目 → 对话兜底。
+    expect(w.find('[data-testid="obs-scope-0"]').text()).toBe('对话')
+    expect(w.find('[data-testid="obs-scope-1"]').text()).toBe('项目')
     // 确认第一条：载荷 {id, approved: true} → 重载后队列变化（此 mock 恒返两条）。
     await w.find('[data-testid="obs-confirm-0"]').trigger('click')
     await flushPromises()
@@ -393,8 +421,11 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
   })
 
   it('接口二：observations 请求失败 → 观察卡不渲染不阻塞；无 pending 不渲染卡', async () => {
-    requestMock.mockImplementation(async (_m: string, cmd: string) => {
-      if (cmd === 'list') return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      }
       if (cmd === 'observations') throw new Error('boom')
       return {}
     })
@@ -405,8 +436,9 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
   })
 
   it('接口二：source=observation 条目落橙点（tooltip 注明反思观察）', async () => {
-    requestMock.mockImplementation(async (_m: string, cmd: string) => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
       if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
         return {
           enabled: true, enabled_at: null, ui_telemetry: true,
           habits: [habit({ source: 'observation', content: '确认后的观察条目' })],
@@ -421,8 +453,9 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
   })
 
   it('批三来源色点：source_kind 字段驱动（蓝=内置触发/绿=AI/灰=模板/橙=观察/紫=外部/青=手动）', async () => {
-    requestMock.mockImplementation(async (_m: string, cmd: string) => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
       if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
         return {
           enabled: true, enabled_at: null, ui_telemetry: true,
           habits: [
@@ -457,8 +490,9 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
   it('来源色点：AI 改写认领条目（auto=false + rule_id）= 蓝点 + tooltip 注明改写', async () => {
     // 内置模板被 AI 原地改写后的形态：rule_id 在场 → 蓝点（内置触发），
     // tooltip 注明「话术已由 AI 原地改写」——UI 上可与纯 AI 自发条目区分。
-    requestMock.mockImplementation(async (_m: string, cmd: string) => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
       if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
         return {
           enabled: true, enabled_at: null, ui_telemetry: true,
           habits: [
@@ -491,6 +525,189 @@ describe('ProfileView（B 线习惯条目治理面，TAB2）', () => {
     // 遗忘 = 删除但可重生。
     expect(w.find('[data-testid="forget-0"]').attributes('title')).toContain('直接删除')
     expect(w.find('[data-testid="forget-0"]').attributes('title')).toContain('重新生成')
+    w.unmount()
+  })
+})
+
+describe('ProfileView（批四：双 scope 合并表 + 立即总结 + 搬移，2026-11-26）', () => {
+  it('双 scope 合并：list 按 scope 拉两份，条目带归属 badge（对话/项目）', async () => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      if (cmd === 'list') {
+        if (data?.scope === 'project') {
+          return {
+            enabled: true, enabled_at: null, ui_telemetry: true,
+            habits: [habit({ content: '项目协作规范：先对齐再动手', category: 'workflow' })],
+          }
+        }
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      }
+      return {}
+    })
+    const w = await mountOnEntries()
+    // 两 scope 条目合并展示（对话在前、项目在后），归属 badge 各自标注。
+    expect(w.find('[data-testid="habit-row-0"]').exists()).toBe(true)
+    expect(w.find('[data-testid="habit-row-1"]').exists()).toBe(true)
+    expect(w.find('[data-testid="scope-badge-0"]').text()).toBe('对话')
+    expect(w.find('[data-testid="scope-badge-1"]').text()).toBe('项目')
+    expect(w.text()).toContain('项目协作规范：先对齐再动手')
+    w.unmount()
+  })
+
+  it('项目条目治理动作带 scope: project（不再错路由到对话画像）', async () => {
+    const calls: any[] = []
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      calls.push([cmd, data])
+      if (cmd === 'veto') return { vetoed: true }
+      if (cmd === 'list') {
+        if (data?.scope === 'project') {
+          return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit({ content: '项目条目甲' })] }
+        }
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [] }
+      }
+      return {}
+    })
+    const w = await mountOnEntries()
+    await w.find('[data-testid="veto-0"]').trigger('click')
+    await flushPromises()
+    expect(calls).toContainEqual(['veto', { content: '项目条目甲', scope: 'project' }])
+    w.unmount()
+  })
+
+  it('搬移：对话条目 → move_scope {content, to_scope: project} + 成功 toast', async () => {
+    const calls: any[] = []
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      calls.push([cmd, data])
+      if (cmd === 'move_scope') return { moved: true, from: 'dialogue', to: 'project', content: '用户偏好简洁回复' }
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      }
+      return {}
+    })
+    const w = await mountOnEntries()
+    // 按钮文案与 title 指向目标画像。
+    expect(w.find('[data-testid="move-0"]').text()).toBe('搬到项目')
+    expect(w.find('[data-testid="move-0"]').attributes('title')).toContain('修正通道')
+    await w.find('[data-testid="move-0"]').trigger('click')
+    await flushPromises()
+    expect(calls).toContainEqual(['move_scope', { content: '用户偏好简洁回复', to_scope: 'project' }])
+    const toast = useToast()
+    expect(toast.toasts.some((t) => t.type === 'success' && t.message.includes('已搬到项目画像'))).toBe(true)
+    w.unmount()
+  })
+
+  it('搬移：项目条目 → to_scope dialogue +「已搬到对话画像」toast', async () => {
+    const calls: any[] = []
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      calls.push([cmd, data])
+      if (cmd === 'move_scope') return { moved: true, from: 'project', to: 'dialogue', content: '项目条目甲' }
+      if (cmd === 'list') {
+        if (data?.scope === 'project') {
+          return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit({ content: '项目条目甲' })] }
+        }
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [] }
+      }
+      return {}
+    })
+    const w = await mountOnEntries()
+    expect(w.find('[data-testid="move-0"]').text()).toBe('搬到对话')
+    await w.find('[data-testid="move-0"]').trigger('click')
+    await flushPromises()
+    expect(calls).toContainEqual(['move_scope', { content: '项目条目甲', to_scope: 'dialogue' }])
+    const toast = useToast()
+    expect(toast.toasts.some((t) => t.type === 'success' && t.message.includes('已搬到对话画像'))).toBe(true)
+    w.unmount()
+  })
+
+  it('搬移幂等：moved=false → 诚实 info toast（目标已持有，未重复搬移）', async () => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      if (cmd === 'move_scope') return { moved: false, from: 'dialogue', to: 'project', content: '用户偏好简洁回复' }
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      }
+      return {}
+    })
+    const w = await mountOnEntries()
+    await w.find('[data-testid="move-0"]').trigger('click')
+    await flushPromises()
+    const toast = useToast()
+    expect(toast.toasts.some((t) => t.type === 'info' && t.message.includes('已持有'))).toBe(true)
+    w.unmount()
+  })
+
+  it('搬移失败：后端 Err → error toast 透传', async () => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      if (cmd === 'move_scope') throw new Error('来源与目标都命中（治理重复）')
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [habit()] }
+      }
+      return {}
+    })
+    const w = await mountOnEntries()
+    await w.find('[data-testid="move-0"]').trigger('click')
+    await flushPromises()
+    const toast = useToast()
+    expect(toast.toasts.some((t) => t.type === 'error' && t.message.includes('治理重复'))).toBe(true)
+    w.unmount()
+  })
+
+  it('立即总结：页头按钮 → reflect_now 调用 + 三计数成功 toast', async () => {
+    const calls: any[] = []
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      calls.push([cmd, data])
+      if (cmd === 'reflect_now') {
+        return { habits: 2, lessons: 1, observations: 3, scopes: {} }
+      }
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [] }
+      }
+      return {}
+    })
+    const w = mount(ProfileView)
+    await flushPromises()
+    expect(w.find('[data-testid="reflect-now-btn"]').exists()).toBe(true)
+    await w.find('[data-testid="reflect-now-btn"]').trigger('click')
+    await flushPromises()
+    expect(calls).toContainEqual(['reflect_now', undefined])
+    const toast = useToast()
+    const ok = toast.toasts.find((t) => t.type === 'success' && t.message.includes('总结完成'))
+    expect(ok?.message).toContain('习惯 2 条')
+    expect(ok?.message).toContain('教训 1 条')
+    expect(ok?.message).toContain('观察 3 条')
+    w.unmount()
+  })
+
+  it('立即总结空窗：note 注记 → info toast（不冒充成功计数）', async () => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      if (cmd === 'reflect_now') return { habits: 0, lessons: 0, observations: 0, note: '无新内容，本次总结为空' }
+      if (cmd === 'list') {
+        if (data?.scope === 'project') return EMPTY_PROJ_LIST
+        return { enabled: true, enabled_at: null, ui_telemetry: true, habits: [] }
+      }
+      return {}
+    })
+    const w = mount(ProfileView)
+    await flushPromises()
+    await w.find('[data-testid="reflect-now-btn"]').trigger('click')
+    await flushPromises()
+    const toast = useToast()
+    expect(toast.toasts.some((t) => t.type === 'info' && t.message.includes('无新内容'))).toBe(true)
+    w.unmount()
+  })
+
+  it('立即总结失败：estop/caller 缺席等后端 Err → error toast 透传；画像未开启时按钮不渲染', async () => {
+    requestMock.mockImplementation(async (_m: string, cmd: string, data: any) => {
+      if (cmd === 'reflect_now') throw new Error('急停已触发：反思暂停（释放急停后再试）')
+      if (cmd === 'list') return { enabled: false, enabled_at: null, ui_telemetry: true, habits: [] }
+      return {}
+    })
+    const w = mount(ProfileView)
+    await flushPromises()
+    expect(w.find('[data-testid="reflect-now-btn"]').exists()).toBe(false)
+    expect(w.find('[data-testid="enable-btn"]').exists()).toBe(true)
     w.unmount()
   })
 })

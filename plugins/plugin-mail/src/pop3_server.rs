@@ -214,7 +214,7 @@ where
                 if authed {
                     // 开放形态重复 PASS / 无 USER 直接 PASS：宽容 +OK。
                     "+OK\r\n".to_string()
-                } else if arg == settings.password {
+                } else if constant_time_eq(&arg, &settings.password) {
                     authed = true;
                     "+OK authenticated\r\n".to_string()
                 } else {
@@ -323,11 +323,18 @@ async fn transaction(snap: &mut [SnapMsg], cmd: &str, arg: &str) -> String {
             };
             let (headers, body) = split_headers_body(&eml);
             let head_lines: Vec<&str> = body.lines().take(k).collect();
+            // 组装完整多行载荷后统一出站点填充（与 RETR 同口径：行首 `.`
+            // 必须双写，客户端剥还原；缺填充时正文行首 `.` 行——尤其单独
+            // `.` 行——会被客户端当响应终止符，提前终结 + 余下字节被当
+            // 命令解析 = 会话失步）。
+            let mut content = String::new();
+            content.push_str(&headers);
+            content.push_str("\r\n\r\n");
+            content.push_str(&head_lines.join("\r\n"));
+            content.push_str("\r\n");
             let mut out = String::from("+OK\r\n");
-            out.push_str(&headers);
-            out.push_str("\r\n\r\n");
-            out.push_str(&head_lines.join("\r\n"));
-            out.push_str("\r\n.\r\n");
+            out.push_str(&dot_stuff(&content));
+            out.push_str(".\r\n");
             out
         }
         "DELE" => {
@@ -436,6 +443,23 @@ fn dot_stuff(eml: &str) -> String {
         }
     }
     out
+}
+
+/// 常数时间字节比较（等长 XOR 折叠——与宿主 `nemesis_utils::verify_token`、
+/// plugin-roaming `constant_time_eq` 同族形态；插件自持依赖，不引
+/// nemesis-utils）。
+///
+/// 消费方 = PASS 密码比对：POP3S 准入允许非回环绑址（公网可达面上的认证
+/// 比对面），普通 `==` 长度前缀短路比较泄露前缀匹配长度——与 BUG-20261126-126
+/// （rendezvous 名册 token）同族的时序侧信道纵深防御口径收口。
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// 头块 / 正文切分。

@@ -1743,8 +1743,9 @@ async fn test_mock_chain_scan_directory_not_ready_skipped() {
 }
 
 #[tokio::test]
-async fn test_chain_start_stop_with_failing_engine_only_warns() {
-    // start()/stop() 对引擎错误只 warn 不 panic —— 覆盖两条 warn 分支。
+async fn test_chain_start_stop_with_failing_engine_no_panic() {
+    // start()/stop() 对引擎错误只 warn 不 panic（warn 本体走 tracing 未断言，
+    // 名字不再承诺 "only_warns"——BUG-20261127-002）——覆盖两条 warn 分支。
     let mut chain = ScanChain::with_defaults();
     chain.add_engine(Box::new(MockEngine {
         ready: true,

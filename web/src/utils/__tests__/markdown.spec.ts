@@ -270,4 +270,223 @@ describe('renderMarkdownHtml linkify（文件路径）', () => {
     expect(html).toContain('和')
     expect(html).toContain('都在')
   })
+
+  it('SVG 内文本不 linkify（HTML-ns anchor 塞进 SVG 不渲染=路径字样凭空消失；保留原文）', () => {
+    const html = renderMarkdownHtml(
+      '<svg><text>见 docs/总结.md 节点</text></svg>',
+    )
+    expect(html).toContain('docs/总结.md')
+    // svg 块内不得出现任何 <a（HTML 命名空间 anchor 在 SVG 里不可见）
+    const svgBlock = html.slice(html.indexOf('<svg'), html.indexOf('</svg>'))
+    expect(svgBlock).not.toContain('<a')
+    // SVG 之外的 HTML 正文 linkify 照常
+    const html2 = renderMarkdownHtml('<svg><text>x</text></svg>\n\n正文 reports/a.md')
+    expect(paths(html2)).toEqual(['reports/a.md'])
+  })
+})
+
+// ---- 锚规范化：markdown 链接语法 [label](path) 与纯文本路径同一真相源 ----
+// 契约：scheme-less 路径 href 收编 file-link（剥 :行号）、http(s) 补
+// target=_blank、页内锚点/mailto 不动、协议相对 // 与裸词解包为纯文本
+// （消灭浏览器导航面）。
+
+describe('renderMarkdownHtml 锚规范化（markdown 链接收编）', () => {
+  const paths = (html: string) =>
+    [...html.matchAll(/data-path="([^"]*)"/g)].map((m) => m[1])
+
+  it('markdown 链接里的相对路径收编为 file-link（label 保留、href 摘除）', () => {
+    const html = renderMarkdownHtml('[归档](.bug_hunter/HUNT/报告.md)')
+    expect(paths(html)).toEqual(['.bug_hunter/HUNT/报告.md'])
+    expect(html).toContain('>归档</a>')
+    expect(html).not.toContain('href=')
+    expect(html).toContain('title="打开文件"')
+  })
+
+  it('href 带 :行号 后缀 → data-path 剥离行号（用户实际案例形态）', () => {
+    const html = renderMarkdownHtml(
+      '[归档](.bug_hunter/HUNT/2026_11_26_320_发布标签全仓验证.md:1)',
+    )
+    expect(paths(html)).toEqual(['.bug_hunter/HUNT/2026_11_26_320_发布标签全仓验证.md'])
+  })
+
+  it('中文路径 href（marked encodeURI 百分号编码）解码后收编', () => {
+    const html = renderMarkdownHtml('[报告](docs/发布标签全仓验证.md)')
+    expect(paths(html)).toEqual(['docs/发布标签全仓验证.md'])
+  })
+
+  it('Windows 盘符路径 href：DOMPurify 上游整体摘除（无导航、label 保留，到不了收编层）', () => {
+    // DOMPurify 的 URI 正则带 /i 旗标，`[^a-z]` 连大写字母一起排除——`C:`
+    // 被当 scheme 拒绝，href 连属性一起消失。契约 = 不产生导航面也不产生
+    // file-link（绝对路径 file-link 只来自纯文本 linkify arm）。
+    const html = renderMarkdownHtml('[打开](C:\\AI\\workspace\\reports\\x.md)')
+    expect(html).not.toContain('href=')
+    expect(paths(html).length).toBe(0)
+    expect(html).toContain('打开')
+  })
+
+  it('非白名单扩展 href（src/x.ts）不成 file-link', () => {
+    const html = renderMarkdownHtml('[代码](src/utils/x.ts)')
+    expect(paths(html).length).toBe(0)
+    expect(html).not.toContain('href=')
+  })
+
+  it('https 链接补 target=_blank + rel noopener（不把 Dashboard 导航走）', () => {
+    const html = renderMarkdownHtml('[官网](https://example.com)')
+    expect(html).toContain('href="https://example.com"')
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('rel="noopener noreferrer"')
+  })
+
+  it('页内锚点不动', () => {
+    const html = renderMarkdownHtml('[跳转](#section-1)')
+    expect(html).toContain('href="#section-1"')
+    expect(html).not.toContain('target="_blank"')
+    expect(paths(html).length).toBe(0)
+  })
+
+  it('mailto: 不动', () => {
+    const html = renderMarkdownHtml('[邮件](mailto:a@b.example)')
+    expect(html).toContain('href="mailto:a@b.example"')
+    expect(html).not.toContain('target="_blank"')
+    expect(paths(html).length).toBe(0)
+  })
+
+  it('协议相对 // 解包为纯文本（导航面消灭、label 保留）', () => {
+    const html = renderMarkdownHtml('[注入](//evil.example/x)')
+    expect(html).not.toContain('<a')
+    expect(html).not.toContain('href=')
+    expect(html).toContain('注入')
+  })
+
+  it('裸词 href（非路径形态）解包为纯文本', () => {
+    const html = renderMarkdownHtml('[foo](bar)')
+    expect(html).not.toContain('<a')
+    expect(html).toContain('foo')
+  })
+
+  it('解包出的路径文本被 linkify 收编（unwrap 与 linkify 两 pass 串联）', () => {
+    const html = renderMarkdownHtml('[docs/总结.md](占位词)')
+    expect(paths(html)).toEqual(['docs/总结.md'])
+  })
+
+  // ---- 广度面：锚规范化对所有锚产生形态一视同仁（marked 各种产出通路）----
+
+  it('尖括号 autolink <https://x> 补 target（不导航走页面）', () => {
+    const html = renderMarkdownHtml('文档见 <https://example.com/a>')
+    expect(html).toContain('href="https://example.com/a"')
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('rel="noopener noreferrer"')
+  })
+
+  it('引用链接（reference link）同样补 target', () => {
+    const html = renderMarkdownHtml('[官网][1]\n\n[1]: https://example.com')
+    expect(html).toContain('href="https://example.com"')
+    expect(html).toContain('target="_blank"')
+  })
+
+  it('raw HTML 锚（非 markdown 语法）同样收编——同一真相源不分语法', () => {
+    const html = renderMarkdownHtml('<a href="docs/x.md">说明</a>')
+    expect(paths(html)).toEqual(['docs/x.md'])
+    expect(html).toContain('>说明</a>')
+    expect(html).not.toContain('href=')
+  })
+
+  it('带 title 的链接收编后 title 覆写为「打开文件」', () => {
+    const html = renderMarkdownHtml('[x](y.md "原标题")')
+    expect(paths(html)).toEqual(['y.md'])
+    expect(html).toContain('title="打开文件"')
+    expect(html).not.toContain('原标题')
+  })
+
+  it('加粗包裹的链接（strong > a.file-link）收编不受层级影响', () => {
+    const html = renderMarkdownHtml('**[归档](x.md)**')
+    expect(paths(html)).toEqual(['x.md'])
+    expect(html).toContain('<strong>')
+  })
+
+  it('列表项里的链接收编', () => {
+    const html = renderMarkdownHtml('- 第一条\n- [报告](reports/a.md)\n- 第三条')
+    expect(paths(html)).toEqual(['reports/a.md'])
+  })
+
+  it('单消息混合形态三臂各归其位（https/path/裸词）', () => {
+    const html = renderMarkdownHtml('[外网](https://a.example) [文件](x.md) [裸](word)')
+    expect(html).toContain('href="https://a.example"')
+    expect(html).toContain('target="_blank"')
+    expect(paths(html)).toEqual(['x.md'])
+    expect(html).not.toContain('href="word"')
+    expect(html.match(/<a /g)?.length).toBe(2)
+  })
+
+  it('breaks:true 聊天语义下收编行为一致', () => {
+    const html = renderMarkdownHtml('完成 [归档](logs/a.log:2)', { breaks: true })
+    expect(paths(html)).toEqual(['logs/a.log'])
+  })
+
+  it('非 ASCII 未知协议 href 解包（DOMPurify 会摘 scheme，label 保留兜底）', () => {
+    const html = renderMarkdownHtml('[应用](myapp://open/x)')
+    expect(html).not.toContain('href=')
+    expect(html).toContain('应用')
+  })
+
+  it('坏编码 href（%zz 非法百分号序列）解包——decode 失败按不可信处理', () => {
+    const html = renderMarkdownHtml('[x](50%zz.md)')
+    expect(html).not.toContain('<a')
+    expect(html).not.toContain('href=')
+    expect(html).toContain('x')
+  })
+
+  it('origin 绝对路径 href（/api/x.md）同样收编——消灭同源导航面（fs.open 诚实兜底）', () => {
+    const html = renderMarkdownHtml('[接口](/api/share/x.md)')
+    expect(paths(html)).toEqual(['/api/share/x.md'])
+    expect(html).not.toContain('href=')
+  })
+
+  it('大写 HTTPS 协议同样补 target（scheme 判定大小写不敏感）', () => {
+    const html = renderMarkdownHtml('[官网](HTTPS://example.com/a)')
+    expect(html).toContain('href="HTTPS://example.com/a"')
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('rel="noopener noreferrer"')
+  })
+
+  it('空标签链接 [](x.md) 收编后回填路径文本（与纯文本 arm 同源，不产生隐形可点区）', () => {
+    const html = renderMarkdownHtml('前文 [](x.md) 后文')
+    expect(paths(html)).toEqual(['x.md'])
+    expect(html).toContain('>x.md</a>')
+    expect(html).toContain('title="打开文件"')
+  })
+
+  // ---- SVG 命名空间（真 Chromium 实证的 TypeError 回归锁）----
+  // querySelectorAll('a[href]') 跨命名空间命中 SVG <a>；SVGElement.className
+  // 是只读 WebIDL 属性，ES module 严格模式下 `a.className = ...` 抛 TypeError
+  // （Chrome: "Cannot set property className of #<SVGElement> which has only a
+  // getter"）——jsdom 不复现抛错，本组测试钉行为契约：SVG anchor 不抛、同收
+  // 编（去 href 消灭导航面 + data-path 就位供事件委托命中）。
+
+  it('SVG anchor scheme-less 路径 href 同样收编且不抛（className 赋值命名空间安全）', () => {
+    const html = renderMarkdownHtml(
+      '<svg><a href="docs/x.md"><text>流程图节点</text></a></svg>',
+    )
+    expect(paths(html)).toEqual(['docs/x.md'])
+    expect(html).not.toContain('href=')
+    expect(html).toContain('class="file-link"')
+    expect(html).toContain('流程图节点')
+  })
+
+  it('SVG anchor https href 补 target 不抛', () => {
+    const html = renderMarkdownHtml(
+      '<svg><a href="https://example.com"><text>外链</text></a></svg>',
+    )
+    expect(html).toContain('href="https://example.com"')
+    expect(html).toContain('target="_blank"')
+    expect(html).not.toContain('file-link')
+  })
+
+  it('SVG anchor 非 linkable href（裸词）解包不抛', () => {
+    const html = renderMarkdownHtml(
+      '<svg><a href="word"><text>标签</text></a></svg>',
+    )
+    expect(html).not.toContain('href=')
+    expect(html).toContain('标签')
+  })
 })

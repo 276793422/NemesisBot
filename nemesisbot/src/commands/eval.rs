@@ -716,7 +716,20 @@ async fn run_phases(
     let shell_exit = wait_with_timeout(shell_hp, fuse).await;
 
     // 6m — monitor events (env-error marker → abort with reason).
-    let events_raw = std::fs::read_to_string(&events_path).unwrap_or_default();
+    // BUG-20261126-118：读取失败绝不能塌缩成空串——原 `unwrap_or_default()`
+    // 形态把「事件文件丢失 / 被 AV 瞬时句柄锁住读失败（Windows 常态）」
+    // 洗白成合法零事件运行：# ERROR / # LIMIT 检查全过、壳退 0 又跳过
+    // # done 收尾证书检查（原形态证书检查只挂在壳异常退出分支），空事件
+    // 流直进 assessor——零规则命中 + 完整性字段正常 → 判 Safe。安全评估
+    // 的读侧数据丢失被洗白成「未发现风险」（A2 读侧变体；V1 五轮修复给
+    // 盒镜像三件套上了 _NEMESIS_UNREADABLE_ 防护，事件文件这条漏网）。
+    // fail-closed：读不出就中止——无法区分数据丢失与零事件时绝不放行。
+    let events_raw = match std::fs::read_to_string(&events_path) {
+        Ok(s) => s,
+        Err(e) => bail!(
+            "monitor events 文件无法读取（{e}）——无法区分数据丢失与零事件运行，评估中止（fail-closed）"
+        ),
+    };
     if let Some(errline) = events_raw.lines().find(|l| l.starts_with("# ERROR")) {
         bail!("environment problem, eval aborted: {errline}");
     }
@@ -727,26 +740,23 @@ async fn run_phases(
             "[eval] WARN: 监控事件文件达上限被截断（普通事件已抑制，deny 事件仍记录）——普通规则的命中计数可能偏低"
         );
     }
-    // F4（2026-08-19）监控壳异常退出降级：`# done` 行是 DLL 正常收尾
-    //（盒空+尾窗+drain 完）才写的——它的存在=事件流完整性证书。
-    // 有它 → 壳虽然异常退出（fuse 到/DLL watchdog ExitProcess(13)/被
-    // 杀）但数据可信：WARN + 继续评估（meta.monitor_shell_exit 会如实
-    // 记录非 0 值，assessor 据此判 Unknown——不丢已收集的证据）。
-    // 无它 → 真异常（事件流中途断），丢报告 bail。
-    if !matches!(shell_exit, Some(0)) {
-        let monitor_finished = events_raw.lines().any(|l| l.starts_with("# done"));
-        if monitor_finished {
-            println!(
-                "[eval] WARN: 监控壳异常退出（{:?}）但事件流已完整收尾（# done 存在）——保留报告继续评估，结论将标记风险未知",
-                shell_exit
-            );
-        } else {
-            bail!(
-                "monitor shell exited abnormally ({:?}) — 事件流不完整（无 # done 收尾标记），\
-                         possible antivirus interference or sandbox fault",
-                shell_exit
-            );
-        }
+    // F4（2026-08-19）监控壳异常退出降级 + BUG-20261126-118 证书无条件化：
+    // `# done` 行是 DLL 正常收尾（盒空+尾窗+drain 完）才写的——它的存在
+    // = 事件流完整性证书。裁决表见 events_stream_verdict：有证书才可能
+    // 继续（壳异常退出时 WARN，meta.monitor_shell_exit 如实记录非 0 值，
+    // assessor 据此判 Unknown——不丢已收集的证据）；无证书一律中止，
+    // 与退出码无关（壳退 0 + 无证书 = DLL 契约「写完证书才
+    // ExitProcess(0)」被违反的写侧失败，原形态放行 = 空事件流判 Safe）。
+    match events_stream_verdict(
+        events_raw.lines().any(|l| l.starts_with("# done")),
+        shell_exit,
+    ) {
+        EventsStreamVerdict::Continue => {}
+        EventsStreamVerdict::ContinueWithUnknownNotice => println!(
+            "[eval] WARN: 监控壳异常退出（{:?}）但事件流已完整收尾（# done 存在）——保留报告继续评估，结论将标记风险未知",
+            shell_exit
+        ),
+        EventsStreamVerdict::Abort(reason) => bail!("{reason}"),
     }
 
     // 6n — pending files + agent report from the box mirror.
@@ -1577,6 +1587,44 @@ fn eval_fuses(observe_secs: u64) -> (String, std::time::Duration) {
         observe_secs.saturating_add(600).to_string(),
         std::time::Duration::from_secs(observe_secs.saturating_add(660)),
     )
+}
+
+/// BUG-20261126-118 事件流完整性裁决表（纯函数，可单测）。
+///
+/// `# done` 行是 DLL 正常收尾（盒空+尾窗+drain 完）才写的——它的存在 =
+/// 事件流完整性证书。DLL 契约是「写完证书才 ExitProcess(0)」
+/// （plugin-eval-monitor lib.rs 收尾序列：w("# done …") 紧跟
+/// ExitProcess(0)，w 的返回值被忽略——写侧失败也照样退 0），所以
+/// 壳退 0 ⟹ 证书必须在盘上；证书缺失即事件流不完整，与退出码无关。
+///
+/// 裁决四格：
+/// - 有证书 + 壳退 0 → 正常继续；
+/// - 有证书 + 壳异常退出 → 降级继续（WARN + 结论标未知，meta 如实记录）；
+/// - 无证书 + 壳退 0 → 中止（写侧失败：盘满/文件锁——原形态放行 =
+///   读侧失败塌缩的空事件流洗白成合法零事件运行，assessor 判 Safe）；
+/// - 无证书 + 壳异常退出 → 中止（事件流中途断，原 F4 行为不变）。
+#[cfg(target_os = "windows")]
+#[derive(Debug, PartialEq)]
+pub(crate) enum EventsStreamVerdict {
+    Continue,
+    ContinueWithUnknownNotice,
+    Abort(String),
+}
+
+#[cfg(target_os = "windows")]
+fn events_stream_verdict(has_done: bool, shell_exit: Option<u32>) -> EventsStreamVerdict {
+    match (has_done, shell_exit) {
+        (true, Some(0)) => EventsStreamVerdict::Continue,
+        (true, _) => EventsStreamVerdict::ContinueWithUnknownNotice,
+        (false, Some(0)) => EventsStreamVerdict::Abort(
+            "monitor shell exited 0 but the events stream has no `# done` completion certificate — DLL contract (write certificate, then ExitProcess(0)) violated (write-side failure: disk full / file lock); stream incomplete, eval aborted"
+                .to_string(),
+        ),
+        (false, exit) => EventsStreamVerdict::Abort(format!(
+            "monitor shell exited abnormally ({exit:?}) — 事件流不完整（无 # done 收尾标记），\
+                         possible antivirus interference or sandbox fault"
+        )),
+    }
 }
 
 #[cfg(target_os = "windows")]

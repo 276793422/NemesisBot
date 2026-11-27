@@ -114,6 +114,22 @@ jobs:
             librsvg2-dev \
             pkg-config
 
+      # BUG-20261121-021 parked 补半（CARGO_BUILD_JOBS:3 已另行落地，此处补
+      # 清盘步）：全 workspace debug 编译 + 测试产物逼近磁盘墙时，runner
+      # agent 写不了自己的日志缓冲即被平台判死（2026-11-20 八连死实录：
+      # 恒 runner-lost + 日志 BlobNotFound，两次死亡时长 54:01 分秒不差；
+      # VM 暴毙 → rust-cache POST 不跑 → 进度永落不了缓存 → rerun 重放
+      # 同一时间线死在同一秒）。清盘回收预装大件（Android SDK ~12G 大头，
+      # 另含 dotnet/JVM 多套/boost/CodeQL）；不影响构建语义，纯平台资源
+      # 操作。清盘后 df -h 留取证基线。
+      - name: Free runner disk (resource wall mitigation)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo "=== disk after cleanup ==="
+          df -h /
+
       - name: Build Vue frontend (include_dir! 前置)
         shell: bash
         run: |
@@ -138,6 +154,8 @@ jobs:
         # 1,386 个 Linux 绿测试会被陪葬）。新增此类测试不挂标记会在本
         # job 红出来——有兜底，不静默。
         run: |
+          echo "=== disk before test build ==="
+          df -h /
           ulimit -n 8192
           cargo test --workspace --no-fail-fast
 

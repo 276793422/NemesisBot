@@ -4093,22 +4093,22 @@ fn roaming_hex_of_extracts_iroh_hex_and_normalizes() {
     assert_eq!(cluster.roaming_hex_of("missing-peer"), None);
 }
 
-/// `roaming_dial_paths`：插件缺席（宿主测试进程不装载 plugin_roaming）→
-/// 空 map（消费面按无观测渲染，诚实降级）。双 feature 形态同语义：
-/// feature-on 走桥 Absent 分支，feature-off 恒空。
+/// `roaming_local_snapshot`（复查⑨合并投影；复查二轮③删除孤儿单投影
+/// helper 及其测试）：插件缺席 → 空 map + None——拨号路径与 QAD 观测同一
+/// 次过桥（Absent 分支），消费面（nodes.list isLocal 行）按无观测渲染，
+/// 不重复过桥。
 #[tokio::test]
-async fn roaming_dial_paths_without_plugin_is_empty() {
+async fn roaming_local_snapshot_without_plugin_is_empty() {
     let cluster = Cluster::new(make_config());
-    assert!(
-        cluster.roaming_dial_paths().await.is_empty(),
-        "插件缺席时空 map"
-    );
+    let (dial_paths, net) = cluster.roaming_local_snapshot().await;
+    assert!(dial_paths.is_empty(), "插件缺席时空 map");
+    assert_eq!(net, None, "插件缺席时 net 无观测");
 }
 
 // QUIC 插件化：端点观测槽真通路测试（bind_direct 双端点 loopback 互连
 // → 观察任务写槽 → 查询面读 direct）已随端点本体迁入 plugin_roaming
 // （插件侧 endpoint/dial path 测试覆盖）；宿主侧查询面语义由上方
-// roaming_hex_of / roaming_dial_paths 两测钉死。
+// roaming_hex_of / roaming_local_snapshot 两测钉死。
 
 #[test]
 fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_semantics() {
@@ -8747,13 +8747,18 @@ fn test_safety_net_huge_llm_timeout_scales() {
     assert_eq!(net, chrono::Duration::hours(96));
 }
 
-/// 全阶梯不变量（数值文字量对应上面各真相源常量；一边改了这里会红）。
+/// 全阶梯不变量。各层绑定真相源常量/函数（provider= nemesis-providers
+/// factory 单一真相源；B 端 = DEFAULT_LLM_TIMEOUT；TTL = RESULT_TTL；
+/// 安全网 = stale_task_safety_net 本体）——真相源任何一层漂移本测试即红
+///（此前三层是裸字面量，注释声称「一边改了这里会红」但并无绑定——
+/// BUG-20261126-132 收敛）。
 #[test]
 fn test_timeout_ladder_ordering() {
-    let provider_single_request_secs: i64 = 600; // openai_compat default_timeout
-    let b_side_llm_timeout_secs: i64 = 2 * 3600; // DEFAULT_LLM_TIMEOUT
+    let provider_single_request_secs: i64 = nemesis_providers::factory::DEFAULT_TIMEOUT_SECS as i64;
+    let b_side_llm_timeout_secs: i64 =
+        crate::rpc::peer_chat_handler::DEFAULT_LLM_TIMEOUT.as_secs() as i64;
     let a_side_safety_net = super::stale_task_safety_net(b_side_llm_timeout_secs as u64);
-    let result_ttl_secs: i64 = 7 * 24 * 3600; // task_result_store TTL
+    let result_ttl = crate::task_result_store::RESULT_TTL;
 
     assert!(
         provider_single_request_secs < b_side_llm_timeout_secs,
@@ -8764,7 +8769,7 @@ fn test_timeout_ladder_ordering() {
         "B-side timeout must expire before A-side safety net"
     );
     assert!(
-        a_side_safety_net < chrono::Duration::seconds(result_ttl_secs),
+        a_side_safety_net < result_ttl,
         "safety net must fire before result store TTL cleanup"
     );
 }

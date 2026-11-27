@@ -389,7 +389,7 @@ impl LifecycleService for ClusterServiceAdapter {
 fn sweep_and_reload_stale_results(
     result_store: &nemesis_cluster::task_result_store::TaskResultStore,
 ) -> (usize, usize) {
-    let swept = result_store.sweep_older_than(chrono::Duration::days(7));
+    let swept = result_store.sweep_older_than(nemesis_cluster::task_result_store::RESULT_TTL);
     if swept > 0 {
         tracing::info!(
             count = swept,

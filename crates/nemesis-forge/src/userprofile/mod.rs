@@ -38,8 +38,64 @@ const LEDGER_CONTEXT_LIMIT: usize = 10;
 /// 负反馈事件回灌条数。
 const EVENT_CONTEXT_LIMIT: usize = 10;
 
-/// 单次 sweep：开关关 = no-op。返回本 tick 处理的用户消息数（诊断用，
-/// 双 scope 之和）。
+/// sweep 选项（批次一，2026-11-26）。
+#[derive(Debug, Clone, Default)]
+pub struct SweepOpts {
+    /// 手动触发（`profile.reflect_now`）：反思门放宽为
+    /// `should_reflect(...) || force`。**空窗判定不放宽**——上次总结以来
+    /// 零新对话时门照关（空跑 LLM 无意义，诚实空结果由调用方注记）。
+    pub force_reflect: bool,
+}
+
+/// 单 scope 一拍的处理计数（批次一：sweep 返回值从 usize 升级，供
+/// `profile.reflect_now` 响应展示）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SweepScopeStats {
+    /// 本拍落库的习惯结论数（AI 结论含改写 + 兜底模板条目）。
+    pub habits: usize,
+    /// 本拍入队教训数（bridge lessons 队列）。
+    pub lessons: usize,
+    /// 本拍入队观察提名数（cap 后实收）。
+    pub observations: usize,
+    /// 本拍处理的新用户消息数（窗内 user 行）。
+    pub user_messages: usize,
+    /// 批次三：被路由到**对侧**画像文件的 AI 结论数（跨文件 upsert）。
+    pub ai_scope_routed: usize,
+    /// 本拍反思 LLM 调用失败的错误文本（None = 反思未失败或门未开）。
+    /// 定时 sweep 只 warn（scope 隔离，下拍重试）；**手动触发**
+    /// （`profile.reflect_now`）据此诚实上抛——用户点按钮要的是反思，
+    /// 模型失败不能伪装成「无新内容，本次总结为空」（横扫 2026-11-26）。
+    pub reflect_error: Option<String>,
+}
+
+/// 双 scope 一拍的总计数。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SweepStats {
+    pub dialogue: SweepScopeStats,
+    pub project: SweepScopeStats,
+}
+
+impl SweepStats {
+    pub fn total_habits(&self) -> usize {
+        self.dialogue.habits + self.project.habits
+    }
+
+    pub fn total_lessons(&self) -> usize {
+        self.dialogue.lessons + self.project.lessons
+    }
+
+    pub fn total_observations(&self) -> usize {
+        self.dialogue.observations + self.project.observations
+    }
+
+    pub fn total_user_messages(&self) -> usize {
+        self.dialogue.user_messages + self.project.user_messages
+    }
+}
+
+/// 单次 sweep：开关关 = no-op。返回本拍双 scope 处理计数（批次一：
+/// usize → [`SweepStats`]，供 `profile.reflect_now` 响应展示；既有调用
+/// 点零行为变化——对话先项目后、scope 隔离失败语义原样）。
 ///
 /// 双 scope 编排（2026-11-25 批二 D4）：对话与项目画像**各自独立**走一遍
 /// 完整 sweep——独立证据窗（各自画像文件的 enabled_at / last_sweep_ms 水
@@ -63,24 +119,42 @@ pub fn sweep_once(
     workspace: &Path,
     rt: &tokio::runtime::Handle,
     caller: Option<&std::sync::Arc<dyn crate::reflector_llm::LLMCaller>>,
-) -> Result<usize, String> {
+) -> Result<SweepStats, String> {
+    sweep_once_opts(cfg_path, workspace, rt, caller, SweepOpts::default())
+}
+
+/// [`sweep_once`] 的 opts 形态（批次一：手动触发经 `force_reflect` 绕过
+/// 反思触发闸；编排层其余语义不变）。
+pub fn sweep_once_opts(
+    cfg_path: &Path,
+    workspace: &Path,
+    rt: &tokio::runtime::Handle,
+    caller: Option<&std::sync::Arc<dyn crate::reflector_llm::LLMCaller>>,
+    opts: SweepOpts,
+) -> Result<SweepStats, String> {
     let cfg = nemesis_config::load_config(cfg_path).map_err(|e| format!("load config: {e}"))?;
     let Some(up_cfg) = cfg.user_profile.as_ref() else {
-        return Ok(0);
+        return Ok(SweepStats::default());
     };
     if !up_cfg.enabled {
-        return Ok(0);
+        return Ok(SweepStats::default());
     }
     // 顺序恒对话先、项目后（对话是既有主路径，行为不变；项目画像未开锚
-    // 时在 sweep_window_start_ms 处自然 no-op）。
-    let mut total = 0usize;
+    // 时经批次〇锚点自动回填链路——对话也未锚才保持 no-op）。
+    let mut stats = SweepStats::default();
     for scope in [store::ProfileScope::Dialogue, store::ProfileScope::Project] {
-        match sweep_scope_once(up_cfg, workspace, rt, caller, scope) {
-            Ok(n) => total += n,
+        match sweep_scope_once(up_cfg, workspace, rt, caller, scope, &opts) {
+            Ok(s) => {
+                if scope == store::ProfileScope::Dialogue {
+                    stats.dialogue = s;
+                } else {
+                    stats.project = s;
+                }
+            }
             Err(e) => tracing::warn!("[UserProfile] {scope:?} sweep failed (scope isolated): {e}"),
         }
     }
-    Ok(total)
+    Ok(stats)
 }
 
 /// 单 scope 的完整 sweep（D4）：独立快照/证据窗/行流/反思门/临界区/水线。
@@ -90,16 +164,39 @@ fn sweep_scope_once(
     rt: &tokio::runtime::Handle,
     caller: Option<&std::sync::Arc<dyn crate::reflector_llm::LLMCaller>>,
     scope: store::ProfileScope,
-) -> Result<usize, String> {
+    opts: &SweepOpts,
+) -> Result<SweepScopeStats, String> {
     // 锁外只读基准（仅用于证据窗/触发判定；写路径见下方短临界区）。
     let snapshot = store::try_load_profile_scope(workspace, scope)?;
     // 增量采集：证据窗 = 滚动 24h（`sweep_window_start_ms`：锚点夹紧 +
     // 水线停机下探）。统计规则的 n≥10 闸需要足够大的样本窗，小时级增量
-    // 批对稀疏用户永远凑不齐。从未开启或锚点损坏 = 不采集（项目画像未
-    // 开锚时在此自然 no-op）。
+    // 批对稀疏用户永远凑不齐。从未开启或锚点损坏 = 不采集；项目 scope
+    // 例外走批次〇锚点自动回填（对话已锚 = 补锚后本拍直接继续采集——
+    // 存量迁移：单 scope 时代 enable 只锚对话文件，项目文件缺席曾被判
+    // 永久 no-op）。
     let collect_started_ms = chrono::Utc::now().timestamp_millis();
-    let Some(window_start) = store::sweep_window_start_ms(&snapshot, collect_started_ms) else {
-        return Ok(0); // 从未开启或锚点损坏 = 不采集
+    let (snapshot, window_start) = match store::sweep_window_start_ms(&snapshot, collect_started_ms)
+    {
+        Some(w) => (snapshot, w),
+        None if scope == store::ProfileScope::Project => {
+            let backfilled = {
+                let _serial = nemesis_config::config_write_lock();
+                store::backfill_project_anchor_locked(workspace)?
+            };
+            if !backfilled {
+                // 对话也未锚 = 用户从未开启画像，不补（尊重）。
+                return Ok(SweepScopeStats::default());
+            }
+            tracing::info!(
+                "[UserProfile] 项目画像锚点自动回填（存量迁移：对话锚点 → 项目文件），本拍继续采集"
+            );
+            let refilled = store::try_load_profile_scope(workspace, scope)?;
+            match store::sweep_window_start_ms(&refilled, collect_started_ms) {
+                Some(w) => (refilled, w),
+                None => return Ok(SweepScopeStats::default()),
+            }
+        }
+        None => return Ok(SweepScopeStats::default()), // 从未开启或锚点损坏 = 不采集
     };
     let rows = collection::collect_dialogue_after_scope(workspace, window_start, scope)?;
     let user_messages: Vec<String> = rows
@@ -189,24 +286,60 @@ fn sweep_scope_once(
     // 分流门（话术 AI 化批二 §4.2）：门开 = 信号卡只进反思 prompt（AI 自
     // 主措辞），兜底模板**本拍不落库**；门关（无 caller / 未到反思触发）
     // = 兜底模板照旧落库。门在挖掘产物消费前定性——杜绝「信号既不落库也
-    // 没进 prompt」的中间态。
+    // 没进 prompt」的中间态。批次一：`opts.force_reflect`（手动触发）放宽
+    // 触发闸——但**空窗判定不放宽**（`!reflect_rows.is_empty()` 仍在 force
+    // 之外：上次总结以来零新对话时门照关，空跑 LLM 无意义）。
     let reflect_gate_open = !reflect_rows.is_empty()
         && caller.is_some()
-        && reflection::should_reflect(
-            snapshot.sweeps_since_reflect,
-            up_cfg.reflect_every_sweeps_or(reflection::REFLECT_EVERY_SWEEPS_DEFAULT),
-            new_user_msgs,
-            up_cfg.reflect_min_new_messages_or(reflection::REFLECT_MIN_NEW_MESSAGES_DEFAULT),
-        );
+        && (opts.force_reflect
+            || reflection::should_reflect(
+                snapshot.sweeps_since_reflect,
+                up_cfg.reflect_every_sweeps_or(reflection::REFLECT_EVERY_SWEEPS_DEFAULT),
+                new_user_msgs,
+                up_cfg.reflect_min_new_messages_or(reflection::REFLECT_MIN_NEW_MESSAGES_DEFAULT),
+            ));
     let mut reflect_done = false;
     let mut reflection_habits = Vec::new();
+    let mut lessons_count = 0usize;
+    let mut observations_count = 0usize;
+    // 反思 LLM 失败留痕（横扫 2026-11-26）：定时 sweep 只 warn（scope 隔离、
+    // 下拍重试）；手动触发（reflect_now）据此诚实上抛，不伪装「无新内容」。
+    let mut reflect_error: Option<String> = None;
+    // 批次三补口（复查 2026-11-26）：对侧回灌条目的 rule_id 同步进有效
+    // id 域（prompt 侧半环的消费侧闭环）——prompt 明示「rule_ids 只能取
+    // 自上文信号与既有条目给出的 id」，而既有条目自批次三起含对侧条目；
+    // 域过滤若不认对侧 id，AI 点名即被当编造走纯 AI 插入，对侧归并分支
+    // 对这类 id 永不可达 = 跨文件重复生成（防重复闭环漏半环）。域取
+    // prompt 构建时快照（口径一致原则同本 scope 快照）；vetoed 不同步
+    // （回灌不含 vetoed，AI 不该点被否决的 id）。对侧读取失败 = 空表
+    // （回灌与域同步降级，只影响本拍跨文件归并，不炸反思）。
+    let mut other_rule_ids: Vec<String> = Vec::new();
     if reflect_gate_open {
         let caller = caller.expect("gate open 已含 caller 在场判定");
         // 既有规则化条目清单（prompt 回灌）：id + 现措辞；vetoed 不回灌
-        // （否决条目不该被 AI 找回来重写）。
+        // （否决条目不该被 AI 找回来重写）。批次三：回灌扩展 = 本 scope ∪
+        // 对侧画像 rule_id 条目——AI 见对侧已有同规则措辞 → 不再重 derive
+        // （防重复闭环的 prompt 侧半环）。对侧文件读取失败 = 降级只用本
+        // scope（跨文件上下文是增强不是硬依赖，不炸本拍反思）。
+        let other_snapshot = match store::try_load_profile_scope(workspace, scope.other()) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    "[UserProfile] 对侧画像读取失败，existing_rules 回灌只用本 scope: {e}"
+                );
+                Default::default()
+            }
+        };
+        other_rule_ids = other_snapshot
+            .habits
+            .iter()
+            .filter(|h| !h.rule_id.is_empty() && h.status != store::STATUS_VETOED)
+            .map(|h| h.rule_id.clone())
+            .collect();
         let existing_rules: Vec<(String, String)> = snapshot
             .habits
             .iter()
+            .chain(other_snapshot.habits.iter())
             .filter(|h| !h.rule_id.is_empty() && h.status != store::STATUS_VETOED)
             .map(|h| (h.rule_id.clone(), h.content.clone()))
             .collect();
@@ -221,6 +354,7 @@ fn sweep_scope_once(
             confidence_threshold,
             &signals,
             &existing_rules,
+            scope,
         ) {
             // 批 A 主语分型路由：habit → 画像 upsert；lesson（助手/LLM
             // 教训）→ bridge 队列落盘（Forge 未来消费，**不丢弃**也不入
@@ -231,6 +365,7 @@ fn sweep_scope_once(
                 let mut admitted_observations: Vec<String> = Vec::new();
                 if !observations.is_empty() {
                     let admitted = bridge::append_observations(workspace, &observations);
+                    observations_count = admitted;
                     admitted_observations = observations
                         .iter()
                         .take(admitted)
@@ -255,9 +390,13 @@ fn sweep_scope_once(
                 if !lessons.is_empty() {
                     bridge::append_lessons(workspace, &lessons);
                 }
+                lessons_count = lessons.len();
                 reflect_done = true;
             }
-            Err(e) => tracing::warn!("[UserProfile] reflect failed: {e}"),
+            Err(e) => {
+                tracing::warn!("[UserProfile] reflect failed: {e}");
+                reflect_error = Some(e);
+            }
         }
     }
 
@@ -270,15 +409,42 @@ fn sweep_scope_once(
     //   结论按 rule_ids 三分（原地改写 / 新插 AI 条目 / 纯 AI）。反思失
     //   败 = 本拍信号丢弃——反思触发计数器不清零，下拍重试（at-least-once
     //   无损；信号证据窗滚动 24h，下拍重扫天然兜住）。
+    // 批次三（语义分型路由，2026-11-26）：门开分支加载**对侧画像**
+    // fresh 副本——AI 结论按 `target_scope` 跨文件落位：
+    //   ① 原地改写（Rewrote）恒留本 scope（既有条目已在文件里，AI 重写
+    //     措辞不改归属——静默迁移是风险面，存量条目归属修正走
+    //     `profile.move_scope` 手动通道）；
+    //   ② NoHit 认领插入与纯 AI 新插按 `target_scope` 落（含跨文件——
+    //     workflow 类信号认领插入是项目习惯的主通道）；对侧已持有同
+    //     rule_id → 落对侧归并（不异地重建——封住「跨文件认领/搬走后
+    //     下拍重复生成」），本 scope 已持有（vetoed/pinned）→ 留本 scope
+    //     归并（既有 NoHit 语义不变）；
+    //   ③ 对侧画像读取失败 = 跨文件路由降级为本 scope-only（位置分型
+    //     兜底语义），不炸本拍已拿到的 AI 结论。
     // 置信度收口闸（复查 2026-11-24）：门关路径的桥接条目统一 ≥阈值才进
     // 画像（结构性防线：挖掘器公式调整低于阈值不会静默入画像）；AI 结论
     // 在解析层已按阈值分档（低于闸落观察队列，不重复收口）。
     let _serial = nemesis_config::config_write_lock();
     let mut profile = store::try_load_profile_scope(workspace, scope)?;
+    let mut other = if reflect_gate_open {
+        match store::try_load_profile_scope(workspace, scope.other()) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::warn!("[UserProfile] 对侧画像读取失败，跨 scope 路由降级为本 scope: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut other_dirty = false;
+    let mut ai_scope_routed = 0usize;
+    let mut habits_landed = 0usize;
     if reflect_gate_open {
-        // 有效 id 域：本拍信号卡 ∪ 画像既有 rule_id（锁外快照 = prompt
-        // 构建时的域，口径一致）。LLM 点名域外 id = 编造，按纯 AI 结论
-        // 处理；同拍已消费的 id 不二次消费（首条生效余者按纯 AI）。
+        // 有效 id 域：本拍信号卡 ∪ 画像既有 rule_id ∪ 对侧回灌 rule_id
+        // （批次三补口，2026-11-26——锁外快照 = prompt 构建时的域，口径
+        // 一致）。LLM 点名域外 id = 编造，按纯 AI 结论处理；同拍已消费
+        // 的 id 不二次消费（首条生效余者按纯 AI）。
         let valid_ids: std::collections::HashSet<&str> = signals
             .iter()
             .map(|c| c.rule_id.as_str())
@@ -289,6 +455,7 @@ fn sweep_scope_once(
                     .filter(|h| !h.rule_id.is_empty())
                     .map(|h| h.rule_id.as_str()),
             )
+            .chain(other_rule_ids.iter().map(|s| s.as_str()))
             .collect();
         let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
         for rh in reflection_habits {
@@ -299,20 +466,62 @@ fn sweep_scope_once(
                 .cloned()
                 .collect();
             if ids.is_empty() {
-                // 纯 AI 结论（无点名 / 点名全部无效或同拍已消费）。
-                store::upsert_habit(&mut profile, rh.entry);
+                // 纯 AI 结论（无点名 / 点名全部无效或同拍已消费）：按
+                // target_scope 落（批次三语义分型，含跨文件）；对侧画像
+                // 缺席（读取失败）= 降级落本 scope（位置兜底）。
+                if rh.target_scope != scope {
+                    match other.as_mut() {
+                        Some(o) => {
+                            store::upsert_habit(o, rh.entry);
+                            other_dirty = true;
+                            ai_scope_routed += 1;
+                        }
+                        None => store::upsert_habit(&mut profile, rh.entry),
+                    }
+                } else {
+                    store::upsert_habit(&mut profile, rh.entry);
+                }
+                habits_landed += 1;
                 continue;
             }
             match store::apply_reflected_rewrite(&mut profile, rh.entry.clone(), &ids, &now) {
-                store::RewriteOutcome::Rewrote(done) => claimed.extend(done),
+                store::RewriteOutcome::Rewrote(done) => {
+                    // 原地改写恒留本 scope（批次三路由规则①）。
+                    claimed.extend(done);
+                    habits_landed += 1;
+                }
                 store::RewriteOutcome::NoHit => {
-                    // 点名 id 无可改写目标 → 新插 AI 条目（rule_id = 首个
-                    // 点名 id 认领归并位，后续同 id 信号并进来）；全部
-                    // 点名 id 认领。
+                    // 点名 id 无本 scope 可改写目标 → 认领插入（全新条
+                    // 目）。落位裁决（批次三路由规则② + 防重复闭环）：
+                    // 本 scope 已持有该 id（vetoed/pinned 持有者不算
+                    // NoHit 例外）→ 留本 scope 归并（既有语义不变）；
+                    // 对侧已持有 → 落对侧归并（不异地重建同 id 条目）；
+                    // 两者皆无 → 按 target_scope 落（含跨文件）。
+                    let held_here = profile.habits.iter().any(|h| h.rule_id == ids[0]);
+                    let held_other = other
+                        .as_ref()
+                        .is_some_and(|o| o.habits.iter().any(|h| h.rule_id == ids[0]));
+                    let land_other = if held_here {
+                        false
+                    } else {
+                        held_other || rh.target_scope != scope
+                    };
                     let mut e = rh.entry;
                     e.rule_id = ids[0].clone();
-                    store::upsert_habit(&mut profile, e);
+                    if land_other {
+                        match other.as_mut() {
+                            Some(o) => {
+                                store::upsert_habit(o, e);
+                                other_dirty = true;
+                                ai_scope_routed += 1;
+                            }
+                            None => store::upsert_habit(&mut profile, e),
+                        }
+                    } else {
+                        store::upsert_habit(&mut profile, e);
+                    }
                     claimed.extend(ids);
+                    habits_landed += 1;
                 }
                 store::RewriteOutcome::Rejected => {
                     // 安全硬边界：不删不改不插（被吞条目原样保留）。
@@ -326,8 +535,16 @@ fn sweep_scope_once(
             .map(|c| mining::signal_to_entry(c, &now))
             .collect();
         entries.retain(|c| c.confidence >= confidence_threshold);
+        habits_landed = entries.len();
         for c in entries {
             store::upsert_habit(&mut profile, c);
+        }
+    }
+    if other_dirty {
+        // 先对侧后本侧（落盘顺序）：中途失败最坏 = 同条目两边重复
+        // （下拍重扫兜住），绝不丢结论。
+        if let Some(o) = other.as_ref() {
+            store::save_profile_locked_scope(workspace, scope.other(), o)?;
         }
     }
     store::decay_sweep_with_days(
@@ -347,7 +564,14 @@ fn sweep_scope_once(
     }
     store::save_profile_locked_scope(workspace, scope, &profile)?;
 
-    Ok(user_messages.len())
+    Ok(SweepScopeStats {
+        habits: habits_landed,
+        lessons: lessons_count,
+        observations: observations_count,
+        user_messages: user_messages.len(),
+        ai_scope_routed,
+        reflect_error,
+    })
 }
 
 #[cfg(test)]

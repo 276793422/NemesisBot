@@ -2500,3 +2500,71 @@ fn eval_fuses_saturates_on_huge_observe_secs() {
     let (env_s, _) = eval_fuses(u64::MAX - 599);
     assert_eq!(env_s, "18446744073709551615");
 }
+
+// ---------------------------------------------------------------------------
+// events_stream_verdict —— 事件流完整性裁决表（BUG-20261126-118 回归钉：
+// 原形态 # done 收尾证书检查只挂在壳异常退出分支，壳退 0 + 无证书放行 =
+// 读侧失败塌缩的空事件流洗白成合法零事件运行，assessor 判 Safe）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verdict_done_and_clean_exit_continues() {
+    assert_eq!(
+        events_stream_verdict(true, Some(0)),
+        EventsStreamVerdict::Continue,
+        "有证书 + 壳退 0 = 正常路径"
+    );
+}
+
+#[test]
+fn verdict_done_with_abnormal_exit_degrades_with_notice() {
+    // 原形态 F4 降级语义保持：证书在 → 数据可信，壳异常退出只降级。
+    assert_eq!(
+        events_stream_verdict(true, Some(13)),
+        EventsStreamVerdict::ContinueWithUnknownNotice,
+        "watchdog ExitProcess(13) 但证书在 → 降级继续"
+    );
+    assert_eq!(
+        events_stream_verdict(true, None),
+        EventsStreamVerdict::ContinueWithUnknownNotice,
+        "fuse 杀掉（无退出码）但证书在 → 降级继续"
+    );
+}
+
+#[test]
+fn verdict_missing_cert_with_clean_exit_aborts() {
+    // BUG-20261126-118 核心回归格：原形态该组合被放行（跳过证书检查），
+    // 空事件流直进 assessor 判 Safe——捏造安全结论。
+    match events_stream_verdict(false, Some(0)) {
+        EventsStreamVerdict::Abort(reason) => {
+            assert!(
+                reason.contains("certificate"),
+                "中止理由必须点名收尾证书缺失: {reason}"
+            );
+            assert!(
+                reason.contains("exited 0"),
+                "中止理由必须带壳退出码现场: {reason}"
+            );
+        }
+        other => panic!("壳退 0 + 无证书必须 Abort，得到 {other:?}"),
+    }
+}
+
+#[test]
+fn verdict_missing_cert_with_abnormal_exit_aborts() {
+    // 原形态 bail 行为保持（消息字节保留）。
+    match events_stream_verdict(false, Some(13)) {
+        EventsStreamVerdict::Abort(reason) => {
+            assert!(
+                reason.contains("abnormally"),
+                "异常退出 + 无证书沿用原 F4 bail 文案: {reason}"
+            );
+            assert!(reason.contains("Some(13)"), "退出码现场: {reason}");
+        }
+        other => panic!("异常退出 + 无证书必须 Abort，得到 {other:?}"),
+    }
+    assert!(matches!(
+        events_stream_verdict(false, None),
+        EventsStreamVerdict::Abort(_)
+    ));
+}

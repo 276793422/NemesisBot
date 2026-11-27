@@ -622,6 +622,54 @@ where
     ws_connect_bounded_with_timeout(target, WS_HANDSHAKE_TIMEOUT).await
 }
 
+/// [`ws_message_or_stop`] 的返回形态：区分「stop 置位」与「流侧产出」
+/// ——两者的 None 不可合并（流结束必须照旧走重连臂，误并成 stop
+/// 形态 = 服务器关连接后通道不再重连）。
+#[allow(dead_code)] // 同房规：默认构建形态无消费通道（slack/discord feature-gated）
+#[derive(Debug, PartialEq)]
+pub(crate) enum WsWait<M> {
+    /// stop() 已置位：退出内层循环且**不重连**（外层 running 检查兜底）。
+    Stopped,
+    /// 流侧一帧（裸 `StreamExt::next()` 的原始返回 `Option<S::Item>`：
+    /// Some(Ok)/Some(Err)/None 三形态，错误与流结束语义完全归消费方
+    /// ——与旧 `ws_rx.next().await` 分支一致）。
+    Item(M),
+}
+
+/// 内层 WS 读循环的 stop() 即时生效原语（BUG-20261127-018；200ms 粒度
+/// 轮询家族——nostr/mattermost 各自 inline 的同款语义收敛为单一实现）。
+///
+/// 健康长连接上 `ws_rx.next()` 可无限挂起（无消息即挂住），纯旗标检查
+/// 只在重连决策点执行——stop() 置位后旧会话继续收发直到连接自然断开
+/// （禁用通道/关停后入站消息继续喂 agent；随后的 start() 再起第二条
+/// 会话 → 双会话重复入站、旧会话重连循环永久化）。此原语让消息等待
+/// 与 running 轮询并发：stop 置位后至多一个 200ms tick 返回 Stopped。
+#[allow(dead_code)] // 同房规：默认构建形态无消费通道（slack/discord feature-gated）
+pub(crate) async fn ws_message_or_stop<S>(
+    ws_rx: &mut S,
+    running: &parking_lot::RwLock<bool>,
+) -> WsWait<Option<S::Item>>
+where
+    S: futures::Stream + Unpin,
+{
+    use futures::StreamExt;
+
+    /// 轮询粒度：stop() 置位到内层循环退出的最大延迟。对齐 nostr/
+    /// mattermost 已有 inline 轮询的 200ms。
+    const STOP_POLL_TICK: std::time::Duration = std::time::Duration::from_millis(200);
+
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(STOP_POLL_TICK) => {
+                if !*running.read() {
+                    return WsWait::Stopped;
+                }
+            }
+            item = ws_rx.next() => return WsWait::Item(item),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 通道事件幂等集（单一真相源）
 // ---------------------------------------------------------------------------

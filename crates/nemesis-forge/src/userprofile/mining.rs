@@ -527,6 +527,23 @@ pub struct UsageRow {
     pub ok: bool,
 }
 
+/// epoch ms → **本地**日历日标签（`%Y-%m-%d`）。跨天阈值闸
+/// （[`ANTECEDENT_MIN_DAYS`] / `ROUTE_MIN_DAYS` / `RETRY_MIN_DAYS`）的日键
+/// 单一真相源：必须走 `Local` 墙钟——从 epoch 直取 UTC 日期会把非 UTC
+/// 用户的日界平移时区差（BUG-20261110-045 同族）：单个本地上午跨 UTC
+/// 日界被拆成两个「天」（假触发跨天阈值），固定早间用户则永远凑不满
+/// MIN_DAYS（漏报）。全仓 `from_timestamp→format` 家族其余位点均带
+/// `with_timezone(&Local)`，本文件三处历史漏网（BUG-20261126-131）。
+pub(crate) fn local_day_label(ts_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ts_ms)
+        .map(|d| {
+            d.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
 /// 遥测行时间窗（诊断后 N 分钟内的集群/看板操作算一次前因 occurrence）。
 const ANTECEDENT_WINDOW_MS: i64 = 60 * 60 * 1000;
 /// 前因模式成立的去重日期数下限（≥3 天 = 跨日稳定行为）。
@@ -586,9 +603,7 @@ pub(crate) fn antecedent_candidates(rows: &[UsageRow]) -> Vec<SignalCard> {
         }
         if let Some(t0) = pending_diag {
             if r.ts_ms - t0 <= ANTECEDENT_WINDOW_MS {
-                let date = chrono::DateTime::from_timestamp_millis(r.ts_ms)
-                    .map(|d| d.format("%Y-%m-%d").to_string())
-                    .unwrap_or_default();
+                let date = local_day_label(r.ts_ms);
                 if !date.is_empty() && !dates.contains(&date) {
                     dates.push(date);
                 }
@@ -640,9 +655,7 @@ pub(crate) fn route_chain_candidates(rows: &[UsageRow]) -> Vec<SignalCard> {
         if r.module != "route" || r.cmd.is_empty() {
             continue;
         }
-        let day = chrono::DateTime::from_timestamp_millis(r.ts_ms)
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_default();
+        let day = local_day_label(r.ts_ms);
         match days.last_mut() {
             Some((d, _)) if *d == day => {}
             _ => days.push((day, Vec::new())),
@@ -1196,9 +1209,7 @@ pub(crate) fn retry_candidates(rows: &[UsageRow]) -> Vec<SignalCard> {
                 break;
             }
             if later.module == r.module && later.cmd == r.cmd && later.ok {
-                let date = chrono::DateTime::from_timestamp_millis(r.ts_ms)
-                    .map(|d| d.format("%Y-%m-%d").to_string())
-                    .unwrap_or_default();
+                let date = local_day_label(r.ts_ms);
                 if !date.is_empty() && !dates.contains(&date) {
                     dates.push(date);
                 }

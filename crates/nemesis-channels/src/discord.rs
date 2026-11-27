@@ -477,7 +477,22 @@ impl DiscordChannel {
 
                 // Inner message loop
                 let should_reconnect = 'inner: loop {
-                    let msg = match ws_rx.next().await {
+                    // BUG-20261127-018：stop() 即时生效——健康长连接上
+                    // ws_rx.next() 可无限挂起，纯旗标检查只在重连决策点
+                    // （should_reconnect break 后），stop() 置位后旧会话
+                    // 继续收发直到连接自然断开（禁用通道后入站消息继续
+                    // 喂 agent；随后 start() 再起第二条会话 → 双会话重复
+                    // 入站）。200ms 粒度轮询家族原语（nostr/mattermost
+                    // 同款语义，base.rs 单一实现）。
+                    let msg = match crate::base::ws_message_or_stop(&mut ws_rx, &running).await {
+                        // stop() 置位：不重连，外层 `!should_reconnect ||
+                        // !*running` 即退（重连决策点不再执行）。
+                        // 流结束/错误是 Item(None/Err)，照旧走下方重连臂。
+                        crate::base::WsWait::Stopped => break 'inner false,
+                        crate::base::WsWait::Item(item) => item,
+                    };
+                    // 解包 Option<Result<..>> → Message（原第一级 match 臂不变）
+                    let msg = match msg {
                         Some(Ok(m)) => m,
                         Some(Err(e)) => {
                             warn!("[DiscordChannel] WebSocket error: {e}");

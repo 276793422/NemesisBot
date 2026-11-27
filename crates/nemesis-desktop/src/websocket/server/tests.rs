@@ -65,13 +65,35 @@ fn test_server_register_handler() {
             serde_json::json!("pong"),
         ))
     });
+
+    // 注册必须真的可路由（server 级 dispatcher 分发到位，BUG-20261127-002）。
+    let request = Message::new_request("ping", serde_json::Value::Null);
+    let resp = server
+        .dispatcher()
+        .dispatch(&request)
+        .expect("request dispatch must succeed")
+        .expect("registered handler must produce a response");
+    assert_eq!(resp.result.unwrap(), serde_json::json!("pong"));
 }
 
 #[test]
 fn test_server_register_notification_handler() {
     let key_gen = Arc::new(KeyGenerator::new());
     let server = WebSocketServer::new(key_gen);
-    server.register_notification_handler("event", |_msg| {});
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let called_clone = called.clone();
+    server.register_notification_handler("event", move |_msg| {
+        called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // 注册必须真的可路由（BUG-20261127-002：此前空 handler 只注册零验证）。
+    let notification = Message::new_notification("event", serde_json::Value::Null);
+    let out = server
+        .dispatcher()
+        .dispatch(&notification)
+        .expect("notification dispatch must succeed");
+    assert!(out.is_none(), "notification dispatch must return None");
+    assert!(called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[test]
@@ -319,7 +341,15 @@ fn test_server_register_handler_and_use() {
             serde_json::json!({"result": "ok"}),
         ))
     });
-    // Verify it was registered (no panic)
+    // 名字承诺的 "and_use" 落地：注册后真实分发并断言响应（BUG-20261127-002：
+    // 此前只注册，名字里的 use 从未发生）。
+    let request = Message::new_request("test.method", serde_json::Value::Null);
+    let resp = server
+        .dispatcher()
+        .dispatch(&request)
+        .expect("request dispatch must succeed")
+        .expect("registered handler must produce a response");
+    assert_eq!(resp.result.unwrap(), serde_json::json!({"result": "ok"}));
 }
 
 #[test]
@@ -331,6 +361,12 @@ fn test_server_notification_handler() {
     server.register_notification_handler("event", move |_msg| {
         called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
     });
+
+    // 预备的 called 旗标接上真实分发（BUG-20261127-002：此前旗标从未被
+    // 读取=死脚手架，通知分发路径零验证）。
+    let notification = Message::new_notification("event", serde_json::Value::Null);
+    server.dispatcher().dispatch(&notification).unwrap();
+    assert!(called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[tokio::test]

@@ -1001,6 +1001,102 @@ fn test_announce_carries_relay_qualified_overlay_address() {
     }
 }
 
+// --BUG-20261126-138：空地址守卫口径（合并载荷，非 LAN-only）--
+
+/// BUG-20261126-138 回归 callbacks：`all_local_ips()` 返回空（纯跨网拓扑：
+/// LAN IPv4 枚举缺口——Linux 容器仅 loopback / 纯 IPv6 主机 / 断网机
+/// fallback 也空），但 `roaming_overlay_addresses()` 有值（iroh 自建中继
+/// 完整拨号地址）。旧行为：`send_announce_with` 守卫只看 all_local_ips
+/// → 整拍不发（广播连同定向单播一起拦），接收端 recv 超时。
+struct OverlayOnlyCallbacks(Vec<String>);
+
+impl ClusterCallbacks for OverlayOnlyCallbacks {
+    fn node_id(&self) -> String {
+        "overlay-only".into()
+    }
+    fn name(&self) -> String {
+        "overlay-only".into()
+    }
+    fn address(&self) -> String {
+        "iroh:placeholder@http://relay.example.com:3340".into()
+    }
+    fn rpc_port(&self) -> u16 {
+        21949
+    }
+    fn all_local_ips(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn role(&self) -> String {
+        "worker".into()
+    }
+    fn category(&self) -> String {
+        "testing".into()
+    }
+    fn tags(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn handle_discovered_node(
+        &self,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: u16,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: &[String],
+        _: &str,
+    ) -> bool {
+        false
+    }
+    fn handle_node_offline(&self, _: &str, _: &str) {}
+    fn sync_to_disk(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn peer_udp_endpoints(&self) -> Vec<String> {
+        self.0.clone()
+    }
+    fn roaming_overlay_addresses(&self) -> Vec<String> {
+        vec![format!(
+            "iroh:{}@http://relay.example.com:3340",
+            crate::roaming::random_valid_iroh_hex()
+        )]
+    }
+}
+
+/// BUG-20261126-138 回归锁：LAN IP 空 + iroh 自建中继地址有值（纯跨网
+/// 拓扑）→ send_announce_with 的空地址守卫用**合并后载荷地址**口径，
+/// 定向单播照常送达（接收端收到 announce 且 addresses 含 iroh 完整形态）。
+/// 旧行为（守卫只看 all_local_ips）= 整拍不发 → recv_from 3s 超时 panic。
+/// 全空形态（LAN IP 与 overlay 皆空）的早退语义由
+/// `test_send_announce_empty_ips_and_encrypted_broadcast` 继续钉住。
+#[test]
+fn test_send_announce_overlay_only_topology_still_unicasts() {
+    let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    rx.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let rx_port = rx.local_addr().unwrap().port();
+
+    let cb = OverlayOnlyCallbacks(vec![format!("127.0.0.1:{}", rx_port)]);
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    sock.set_broadcast(true).unwrap();
+    send_announce_with(&sock, 11949, None, &cb);
+
+    let mut buf = [0u8; 4096];
+    let (n, _) = rx.recv_from(&mut buf).unwrap();
+    let msg = DiscoveryMessage::from_bytes(&buf[..n]).unwrap();
+    assert_eq!(msg.node_id, "overlay-only");
+    assert!(
+        msg.addresses
+            .iter()
+            .any(|a| a.starts_with("iroh:") && a.contains('@')),
+        "overlay 完整拨号地址必须在 announce 载荷内: {:?}",
+        msg.addresses
+    );
+}
+
 /// 回归锁（BUG-20261109-002 缺陷 B/C 同根）：drift_secs 单一真相源在
 /// 对端 timestamp 极值域（wire serde 直解无界 i64）无溢出——裸
 /// `(a - b).abs()` 的两个翻车面：`MIN - MAX` 减法溢出、`(-diff).abs()`

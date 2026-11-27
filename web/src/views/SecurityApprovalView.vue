@@ -55,6 +55,9 @@ async function onAutoApproveToggle(ev: Event) {
 // pattern 拒）——闸拒绝的后端错误原样 toast，不加前端预判（单一裁决点）。
 const approvalRules = ref<any[]>([])
 const arForm = ref({ op: '', pattern: '' })
+// 函数内 busy 闸配套（BUG-20261127-014 同族横向排查补修）：此前 addApprovalRule
+// 无任何在飞闸，Enter 直调连按并发双发 approvals.add（重复规则条目）。
+const arAdding = ref(false)
 const AR_OP_SUGGESTIONS = [
   'process_exec',
   'process_spawn',
@@ -78,12 +81,16 @@ async function loadApprovalRules() {
 }
 
 async function addApprovalRule() {
+  // 函数内 busy 闸（BUG-20261127-014 同族横向排查补修）：输入框 @keyup.enter
+  // 直调绕过按钮 :disabled——在飞时连按 Enter 并发双发请求。
+  if (arAdding.value) return
   const op = arForm.value.op.trim()
   const pattern = arForm.value.pattern.trim()
   if (!op || !pattern) {
     toast.error('op 与 pattern 均必填')
     return
   }
+  arAdding.value = true
   try {
     const r = await request('security', 'approvals.add', { op, pattern, action: 'allow' })
     toast.success(`规则已添加（${r?.pattern || pattern}）`)
@@ -91,6 +98,8 @@ async function addApprovalRule() {
     await loadApprovalRules()
   } catch (e: any) {
     toast.error('添加失败: ' + e)
+  } finally {
+    arAdding.value = false
   }
 }
 

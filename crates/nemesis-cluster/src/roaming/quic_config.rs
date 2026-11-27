@@ -36,6 +36,18 @@ pub struct QuicClientConfig {
     /// UDP 端口——NAT/防火墙/云安全组可显式放行该 UDP 端口，提升打洞
     /// 成功率与可预测性。经 endpoint_start 透传插件端点构造（bind_addr）。
     pub direct_port: u16,
+    /// QAD 钥匙 B（2026-11-26 打洞通路激活计划）：中继 QUIC 臂端口。
+    /// `0` = 关（缺省，客户端 quic=None 字节级旧行为：无 QAD 探测、打洞
+    /// 结构性缺席）；`>0` = 客户端带 RelayQuicConfig，QAD 探测进 net_report
+    /// 协议集，端点由此学到自己 UDP socket 的反射地址（打洞候选唯一来源）。
+    /// 中继数据面恒走 HTTP（复查⑦措辞修正：relay.quic 的唯一消费面 =
+    /// QAD 探测，不存在「QUIC relay transport」）。双钥匙设计：服务端
+    /// tls=selfsigned（钥匙 A）缺席时仅 QAD 探测无害失败，数据面照常。
+    pub relay_quic_port: u16,
+    /// 中继证书指纹 pin（SHA-256 hex；`relay_quic_port > 0` 时必填——QUIC
+    /// 强制 TLS，自签证书必须配信任锚。插件端以自定义 ServerCertVerifier
+    /// 现场比对完整证书 DER；宿主侧配置完整性预检 loud 拒半配状态）。
+    pub relay_cert_fp: String,
 }
 
 /// config.quic.json 解析产物（服务端 `relay` 段 + 客户端 `client` 段）。
@@ -80,6 +92,13 @@ pub(crate) fn parse_quic_value(cfg: Option<&serde_json::Value>) -> QuicConfig {
             .and_then(|v| v.as_u64())
             .and_then(|p| u16::try_from(p).ok())
             .unwrap_or(0);
+        // relay_quic_port：解析同 direct_port（0 = 关缺省）。
+        out.client.relay_quic_port = client
+            .get("relay_quic_port")
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(0);
+        out.client.relay_cert_fp = str_field(client.get("relay_cert_fp"));
     }
     out
 }

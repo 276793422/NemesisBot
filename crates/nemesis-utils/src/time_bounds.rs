@@ -19,5 +19,18 @@
 /// Upper bound for age/retention day inputs (100 years).
 pub const MAX_AGE_DAYS: i64 = 36_500;
 
+/// Upper bound for age/retention second inputs (100 years in seconds).
+///
+/// Same two failure shapes as [`MAX_AGE_DAYS`] but for second-granularity
+/// TTLs reaching `chrono::Duration::seconds` (e.g. `projects.orphan_ttl_secs`,
+/// BUG-20261127-021): ① `u64 as i64` wraps ≥2^63 to a NEGATIVE TTL →
+/// `age >= ttl` comparison turns always-true → every stale entry ages out
+/// instantly (semantics inverted: "never" intent becomes "drop all now");
+/// ② positive values beyond chrono's millisecond-i64 range (~9.2e15 s)
+/// panic inside `Duration::seconds`. The clamp is the identity for all
+/// sane values and maps absurd magnitudes to 100 years (≈ "never"), which
+/// preserves the user's keep-forever intent instead of inverting it.
+pub const MAX_AGE_SECS: i64 = MAX_AGE_DAYS * 86_400;
+
 #[cfg(test)]
 mod tests;

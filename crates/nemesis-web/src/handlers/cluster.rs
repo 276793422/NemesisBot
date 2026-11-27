@@ -520,6 +520,23 @@ async fn roaming_status_payload(
         None => (false, 0, 0),
     };
     let active = cluster_active.unwrap_or(false);
+    // 本端 QAD 观测（2026-11-26 打洞通路激活计划 §4.4 补盲）：端点
+    // net_report 快照投影——qad_v4=false / observed_v4=null = QAD 未到账
+    // （钥匙 B 关 / 服务端 QUIC 臂缺 / 报告未产出）；桥缺席 = null。
+    // 复查⑧：序列化单一真相源 = NetObservation 的 Serialize（插件侧同构
+    // 投影），宿主经 plugin_bridge::net_projection 出口，不再手拼 json!。
+    let roaming_net_owned = match plugin_bridge::status_snapshot().await {
+        BridgeOutcome::Ok(s) => s.net,
+        // 复查二轮④：桥失败不再静默吞（同函数 get_iroh_id 兄弟同款 debug
+        // 日志——故障形态与「无观测」可区分）；Absent = 插件缺席（结构缺
+        // 席非故障，静默降级 null）。
+        BridgeOutcome::Failed(e) => {
+            tracing::debug!("[roaming] net 快照读取失败（状态面降级 null）: {e}");
+            None
+        }
+        BridgeOutcome::Absent => None,
+    };
+    let net = plugin_bridge::net_projection(roaming_net_owned.as_ref());
     Ok(Some(serde_json::json!({
         "available": true,
         "enabled": enabled,
@@ -533,6 +550,7 @@ async fn roaming_status_payload(
             "revoked": revoked_n,
         },
         "rendezvous": rendezvous,
+        "net": net,
     })))
 }
 
@@ -1035,9 +1053,10 @@ impl ClusterHandler {
             Err(_) => std::collections::HashMap::new(),
         };
 
-        // 漫游拨号路径观测批量预查（QUIC 插件化：观测槽在插件，一次 FFI
+        // 漫游本端快照批量预查（QUIC 插件化：观测槽在插件，一次 FFI
         // 往返取全量快照；逐节点经 roaming_hex_of 映射，非漫游节点 = null）。
-        let dial_paths = cluster.roaming_dial_paths().await;
+        // 复查⑨：拨号路径 + 本端 QAD 观测合并单次往返（此前两方法各过一遍桥）。
+        let (dial_paths, roaming_net) = cluster.roaming_local_snapshot().await;
 
         let result: Vec<serde_json::Value> = nodes
             .iter()
@@ -1054,6 +1073,16 @@ impl ClusterHandler {
                 let roaming_path = cluster
                     .roaming_hex_of(&n.base.id)
                     .and_then(|hex| dial_paths.get(&hex).cloned());
+
+                // 本端 QAD 观测（2026-11-26 §4.4 补盲；只挂 isLocal 行——
+                // 观测是本端 socket 的反射地址，不是对端属性）。复查⑧：
+                // 序列化单一真相源 = NetObservation Serialize，经
+                // plugin_bridge::net_projection 出口，不再手拼 json!。
+                let net_json = if n.base.id == local_node_id {
+                    nemesis_cluster::roaming::plugin_bridge::net_projection(roaming_net.as_ref())
+                } else {
+                    serde_json::Value::Null
+                };
 
                 serde_json::json!({
                     "id": n.base.id,
@@ -1080,6 +1109,7 @@ impl ClusterHandler {
                     "uptime": uptime,
                     "isLocal": n.base.id == local_node_id,
                     "roamingPath": roaming_path,
+                    "net": net_json,
                 })
             })
             .collect();
