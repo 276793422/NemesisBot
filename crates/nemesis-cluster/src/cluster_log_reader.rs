@@ -467,7 +467,19 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
         ),
         "task_assigned" => (
             "task_start",
-            format!("任务分配 {} → {}", short_id(task_id), node_id),
+            format!(
+                "任务分配 {} → {}",
+                short_id(task_id),
+                // BUG-20261127-027：被分配节点装在 action 字段（写端
+                // logger::log_task 单一契约，aggregate_node_stats 同源读取；
+                // 此前读 node_id 恒空——ActivityFeed「任务分配 xxx → 」
+                // 节点名消失）。node_id 仅兜底非契约形态。
+                entry
+                    .data
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(node_id),
+            ),
         ),
         "task_exec_start" => ("task_start", format!("任务开始执行 {}", short_id(task_id),)),
         "task_exec_resume" => ("task_start", format!("任务恢复执行 {}", short_id(task_id))),

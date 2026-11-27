@@ -506,7 +506,7 @@ fn test_format_event_ts_fallbacks_and_remaining_arms() {
     let log_content = r#"{"event":"node_offline","ts":"2024-01-01 10:00:00.123456","node_id":"n1","peer_addr":"10.0.0.9:9000"}
 {"event":"node_offline","ts":"short","node_id":"n2"}
 {"event":"node_removed","ts":"2024-01-01T10:01:00+00:00","node_id":"n3"}
-{"event":"task_assigned","ts":"2024-01-01T10:02:00+00:00","task_id":"task-1","node_id":"n4"}
+{"event":"task_assigned","ts":"2024-01-01T10:02:00+00:00","task_id":"task-1","action":"n4"}
 {"event":"task_exec_done","ts":"2024-01-01T10:03:00+00:00","task_id":"task-1","action":"peer_chat"}
 {"event":"task_failed","ts":"2024-01-01T10:04:00+00:00","task_id":"task-1","action":"peer_chat"}
 {"event":"task_timeout","ts":"2024-01-01T10:05:00+00:00","task_id":"task-1","action":"peer_chat"}
@@ -537,6 +537,10 @@ fn test_format_event_ts_fallbacks_and_remaining_arms() {
     assert!(messages.iter().any(|m| m.contains("10.0.0.9:9000")));
     assert!(messages.contains(&&"节点离线 n2".to_string()));
     assert!(messages.contains(&&"节点移除 n3".to_string()));
+    // BUG-20261127-027 回归锁：fixture 必须用写端契约形态（action=承接
+    // 节点名，logger::log_task 生产行只带 task_id+action 两字段）——
+    // 此前夹具用生产从不出现的合成 node_id 字段，生产行渲染
+    // 「任务分配 xxx → 」节点名恒空而测试假绿。
     assert!(messages.contains(&&"任务分配 task-1 → n4".to_string()));
     assert!(messages.contains(&&"任务完成 task-1 (peer_chat)".to_string()));
     assert!(messages.contains(&&"任务失败 task-1 (peer_chat)".to_string()));
