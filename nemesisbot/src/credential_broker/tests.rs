@@ -120,42 +120,50 @@ fn stored_full_chain_value_lands_in_vault() {
 
 #[test]
 fn requested_event_carries_metadata_only() {
-    let dir = tempfile::tempdir().unwrap();
-    let (broker, mut rx) = make_broker(&dir);
+    // BUG-20261128-008：此前无 vault fixture 无口令包裹——Linux argon2id
+    // 平台 respond→persist 走 create_fresh，缺 NEMESISBOT_VAULT_PASSPHRASE
+    // = 诚实拒绝（恒 Err）→ 重试环 10s 耗尽 → 整窗假超时 Denied。Windows
+    // dpapi 无口令即可建库 = 平台分叉假红。与兄弟测试同形态对齐
+    // （with_passphrase + create_fixture；env 纪律见文件头注）。
+    with_passphrase(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let (broker, mut rx) = make_broker(&dir);
+        create_fixture(&dir);
 
-    let responder = broker.clone();
-    // BUG-20261128-003：同兄弟测试——重试环兜住「响应先于请求注册」的
-    // 扑空（扑空值被 let _ = 吞掉 = 必假超时）。
-    std::thread::spawn(move || {
-        for _ in 0..200 {
-            std::thread::sleep(Duration::from_millis(50));
-            if responder.respond("cred-evt", SECRET).is_ok() {
-                return;
+        let responder = broker.clone();
+        // BUG-20261128-003：同兄弟测试——重试环兜住「响应先于请求注册」的
+        // 扑空（扑空值被 let _ = 吞掉 = 必假超时）。
+        std::thread::spawn(move || {
+            for _ in 0..200 {
+                std::thread::sleep(Duration::from_millis(50));
+                if responder.respond("cred-evt", SECRET).is_ok() {
+                    return;
+                }
             }
-        }
-    });
-    // BUG-20261128-006：窗口 5→30——超时扫卡臂把耗尽窗口的请求结算成
-    // Denied（169-176 行），CI 4 核高载（分片 ~11 二进制 × 多测试线程）
-    // 下 responder 线程调度/persist 任何一环慢过 5s 即假红。契约是
-    // 「事件如实携带所请求 metadata」，对任意窗口值成立；30s 吞掉负载
-    // 尖峰，正常路径 ~100ms 收敛不受影响。
-    let outcome = broker.request_credential(&request("cred-evt", 30)).unwrap();
-    assert_eq!(outcome, CredentialOutcome::Stored);
+        });
+        // BUG-20261128-006：窗口 5→30——超时扫卡臂把耗尽窗口的请求结算成
+        // Denied（169-176 行），CI 4 核高载（分片 ~11 二进制 × 多测试线程）
+        // 下 responder 线程调度/persist 任何一环慢过 5s 即假红。契约是
+        // 「事件如实携带所请求 metadata」，对任意窗口值成立；30s 吞掉负载
+        // 尖峰，正常路径 ~100ms 收敛不受影响。
+        let outcome = broker.request_credential(&request("cred-evt", 30)).unwrap();
+        assert_eq!(outcome, CredentialOutcome::Stored);
 
-    let ev = rx.try_recv().unwrap();
-    let payload = serde_json::to_value(&ev).unwrap();
-    let inner = payload.get("data").unwrap();
-    assert!(
-        inner.get("value").is_none() && inner.get("secret").is_none(),
-        "事件载荷不得携带值字段: {inner}"
-    );
-    assert_eq!(inner["request_id"], "cred-evt");
-    assert_eq!(inner["key_name"], "connector/test-conn/api_key");
-    assert_eq!(inner["timeout_secs"], 30);
-    // 了结事件随后到达且无值。
-    let ev2 = rx.try_recv().unwrap();
-    let p2 = serde_json::to_value(&ev2).unwrap();
-    assert_eq!(p2["data"]["decision"], "stored");
+        let ev = rx.try_recv().unwrap();
+        let payload = serde_json::to_value(&ev).unwrap();
+        let inner = payload.get("data").unwrap();
+        assert!(
+            inner.get("value").is_none() && inner.get("secret").is_none(),
+            "事件载荷不得携带值字段: {inner}"
+        );
+        assert_eq!(inner["request_id"], "cred-evt");
+        assert_eq!(inner["key_name"], "connector/test-conn/api_key");
+        assert_eq!(inner["timeout_secs"], 30);
+        // 了结事件随后到达且无值。
+        let ev2 = rx.try_recv().unwrap();
+        let p2 = serde_json::to_value(&ev2).unwrap();
+        assert_eq!(p2["data"]["decision"], "stored");
+    });
 }
 
 // ---------------------------------------------------------------------------
