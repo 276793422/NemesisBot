@@ -200,6 +200,14 @@ pub struct CronService {
     /// scheduling. Jobs created AFTER startup are unaffected (armed latches
     /// for the process lifetime; only `new()` re-arms the gate).
     pending_arm: Arc<Mutex<bool>>,
+    /// 手动执行线程的 tokio 上下文供给（BUG-20261127-023）：
+    /// `execute_job_detached` 在裸 `std::thread` 上调 on_job——裸线程无
+    /// thread-local 运行时上下文，回调里的 `Handle::try_current()`（dreaming
+    /// sweep fire_dreaming_sweep）与 `tokio::spawn`（board-ap 拆解链
+    /// spawn_plan_chain）此前确定性失败/panic，Dashboard「立即运行」恒败。
+    /// `start()` 必在 tokio 运行时内被调用（gateway 装配链），此处捕获
+    /// Handle；detached 线程入口 enter()。未 start = None = 维持旧行为。
+    exec_runtime: Arc<Mutex<Option<tokio::runtime::Handle>>>,
     /// 测试钩子（仅 test 构建）：下一次落盘强制失败（一次性）——
     /// 并发交错红证用。
     #[cfg(test)]
@@ -324,6 +332,7 @@ impl CronService {
             on_job: Arc::new(Mutex::new(None)),
             load_poisoned: Arc::new(Mutex::new(false)),
             pending_arm: Arc::new(Mutex::new(true)),
+            exec_runtime: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             persist_fail_next: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -375,6 +384,10 @@ impl CronService {
         self.save_store()?;
 
         *running = true;
+        // BUG-20261127-023：捕获当前 tokio 运行时，供手动执行线程 enter()。
+        // start() 由 gateway 装配链（async 上下文）调用——此处的
+        // Handle::current() 恒可用；重复 start（已 running 早退）不会走到这里。
+        *self.exec_runtime.lock() = Some(tokio::runtime::Handle::current());
         let running_flag = self.running.clone();
         let store = self.store.clone();
         let on_job = self.on_job.clone();
@@ -603,6 +616,10 @@ impl CronService {
     pub fn stop(&self) {
         info!("[Cron] Stopping cron service");
         *self.running.lock() = false;
+        // 同步清空手动执行线程的 tokio 上下文供给（stop 后 spawn 已关停
+        // 运行时的任务会 panic；清空让后续手动执行回落到无上下文的旧行为——
+        // try_current Err 的诚实报错形态）。
+        *self.exec_runtime.lock() = None;
         if let Some(h) = self.stop_handle.lock().take() {
             h.abort();
         }
@@ -1350,6 +1367,7 @@ impl CronService {
         let poisoned = Arc::clone(&self.load_poisoned);
         let store_path = self.store_path.clone();
         let job_id = job_id.to_string();
+        let exec_runtime = Arc::clone(&self.exec_runtime);
         // 线程名截断必须走 char 边界：store 文件是用户可编辑持久化面（legacy
         // 迁移机制的存在即证明手编 store 在野外存在），非 hex 的合法 UTF-8 id
         // （如含 CJK）若按字节切片 `&id[..len.min(8)]` 会切在多字节 char 中间
@@ -1361,6 +1379,15 @@ impl CronService {
                 job_id.chars().take(8).collect::<String>()
             ))
             .spawn(move || {
+                // BUG-20261127-023：进入 start() 捕获的 tokio 上下文——裸
+                // std::thread 无 thread-local 运行时上下文，on_job 回调里的
+                // `Handle::try_current()`（dreaming sweep「立即运行」此前恒
+                // Err「无 tokio 运行时上下文」）与 `tokio::spawn`（board-ap
+                // 拆解链 spawn_plan_chain 此前 panic 记 failed）在本线程上
+                // 确定性失败。未 start = None = 不 enter（维持旧行为）；
+                // enter() 可多线程并发、守卫随线程闭包结束撤销。
+                let rt_handle = exec_runtime.lock().clone();
+                let _rt_ctx = rt_handle.as_ref().map(|h| h.enter());
                 run_job_execution(
                     &store,
                     &on_job,
