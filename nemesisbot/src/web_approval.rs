@@ -766,13 +766,12 @@ impl WebApprovalManager {
             wait()
         };
 
-        // 无论结果如何都清 pending（超时/断开后迟到的 respond 诚实报 unknown）。
-        if let Ok(mut map) = self.pending.lock() {
-            map.remove(request_id);
-        }
-
         match result {
             Ok(verdict) => {
+                // 清 pending（幂等：live 路径 respond 已摘除）。
+                if let Ok(mut map) = self.pending.lock() {
+                    map.remove(request_id);
+                }
                 tracing::info!(
                     "[WebApproval] request {} {}: {}",
                     request_id,
@@ -803,6 +802,21 @@ impl WebApprovalManager {
                         "timeout",
                     )
                 });
+                // 出册放在 Expired 记账**之后**（BUG-20261127-025）：旧序
+                // 「先出册后记账」在 [出册→记账] 间隙放进迟到的 respond——
+                // map.remove 落 None → 误走 stale 补裁路径 → 台账竞速赢了就
+                // 触发「网关已重启」虚假叙事（decided_by=web-user-stale、
+                // warn 谎称 restart、向会话注入虚假系统消息）。先落 Expired
+                // 后，窗口内到达的 respond 走 live 路径（条目在场）与超时臂
+                // 竞速台账先到先得；Expired 落账后才到的 respond 在 stale
+                // 路径 find_pending 落空，诚实「已处理过」——两种到达都无
+                // 虚假叙事。（estop/orphan 清理路径的 drain→journal 窗口
+                // 同族残留，封死需持 pending 锁跨台账 IO，与「锁外执行——
+                // 台账写不阻塞其他回执」的刻意设计冲突——已知边界不修，
+                // 见 BUG_FIX 文档。）
+                if let Ok(mut map) = self.pending.lock() {
+                    map.remove(request_id);
+                }
                 match expired_record {
                     Some(Ok(false)) => {
                         // respond 赢了裁决竞争（先到先得）。它此刻大概率已

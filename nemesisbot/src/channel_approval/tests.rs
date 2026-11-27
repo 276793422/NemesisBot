@@ -920,6 +920,175 @@ mod journal {
         let e = mgr.journal().unwrap().entry("req-other-uuid-1").unwrap();
         assert_eq!(e.status, nemesis_types::approval_journal::status::PENDING);
     }
+
+    /// 只闸 decided_by="timeout" 的记账（超时臂的 Expired 落账）；回执侧
+    /// 的 `im:{sender}` 直通。底层真 SQLite——条件更新语义不被 mock 掉。
+    struct TimeoutGateJournal {
+        inner: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
+        gate: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        in_gate: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TimeoutGateJournal {
+        fn new(
+            inner: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
+        ) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                inner,
+                gate: std::sync::Arc::new((
+                    std::sync::Mutex::new(false),
+                    std::sync::Condvar::new(),
+                )),
+                in_gate: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+
+        fn open_gate(&self) {
+            let (m, cv) = &*self.gate;
+            let mut open = m.lock().unwrap();
+            *open = true;
+            cv.notify_all();
+        }
+
+        fn wait_in_gate(&self) {
+            for _ in 0..500 {
+                if self.in_gate.load(std::sync::atomic::Ordering::SeqCst) >= 1 {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("timeout record never entered the gate");
+        }
+
+        fn park(&self) {
+            let (m, cv) = &*self.gate;
+            let mut open = m.lock().unwrap();
+            self.in_gate
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            while !*open {
+                open = cv.wait(open).unwrap();
+            }
+            self.in_gate
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl nemesis_types::approval_journal::ApprovalJournal for TimeoutGateJournal {
+        fn record_pending(
+            &self,
+            entry: &nemesis_types::approval_journal::ApprovalJournalEntry,
+        ) -> Result<(), String> {
+            self.inner.record_pending(entry)
+        }
+        fn record_decision(
+            &self,
+            id: &str,
+            decision: nemesis_types::approval_journal::ApprovalDecision,
+            note: Option<&str>,
+            decided_by: &str,
+        ) -> Result<bool, String> {
+            if decided_by == "timeout" {
+                self.park();
+            }
+            self.inner.record_decision(id, decision, note, decided_by)
+        }
+        fn entry(
+            &self,
+            id: &str,
+        ) -> Result<nemesis_types::approval_journal::ApprovalJournalEntry, String> {
+            self.inner.entry(id)
+        }
+        fn pending_entries(&self) -> Vec<nemesis_types::approval_journal::ApprovalJournalEntry> {
+            self.inner.pending_entries()
+        }
+        fn find_pending(
+            &self,
+            id_or_short: &str,
+        ) -> Option<nemesis_types::approval_journal::ApprovalJournalEntry> {
+            self.inner.find_pending(id_or_short)
+        }
+    }
+
+    /// BUG-20261127-025 回归（channel 同族，web 管理器同款重排）：超时臂
+    /// 旧序「先出册后记账」在 [出册→记账] 间隙放进迟到的 IM 回执——watcher
+    /// map.get 落 None → 误走 respond_stale_im →「重启前请求，原操作已失效」
+    /// 虚假回执、批准不执行。修复 = 先记 Expired 后出册：闸住 timeout 记账
+    /// 制造窗口，窗口内回执必须走 live 路径（map 条目在场）赢台账竞速，
+    /// 裁决真实生效（宽限收回），回执话术是「操作继续」而非「重启前请求」。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn late_reply_in_timeout_record_window_stays_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite = journal_at(&dir.path().join("tasks.db"));
+        let gated = TimeoutGateJournal::new(sqlite.clone());
+
+        let bus = Arc::new(MessageBus::new());
+        let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
+        mgr.set_journal(gated.clone());
+        mgr.spawn_watcher();
+        let mut out_rx = bus.subscribe_outbound();
+
+        // ask 线程（1s 超时；独立线程，不依赖 block_in_place 调度）。
+        let (vtx, vrx) = std::sync::mpsc::channel();
+        let m2 = mgr.clone();
+        let ctx = CTX_IM();
+        std::thread::spawn(move || {
+            let r = m2.request_approval_sync_ctx(
+                "req-window-im-0001",
+                "file_write",
+                "/tmp/x",
+                "HIGH",
+                "window",
+                1,
+                &ctx,
+            );
+            let _ = vtx.send(r);
+        });
+
+        // 收卡片拿短编号。
+        let card = next_outbound(&mut out_rx).await;
+        let short_id = card
+            .content
+            .lines()
+            .find_map(|l| l.strip_prefix("编号: ").map(str::trim))
+            .expect("card carries 编号 line")
+            .to_string();
+
+        // 1s 超时到期 → 超时臂卡进 Expired 记账闸（修复后此刻尚未出册）。
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        gated.wait_in_gate();
+
+        // 窗口内迟到的 IM 回执：watcher 必须走 live 路径（map 条目在场），
+        // 台账竞速赢（timeout 记账仍在闸内、SQL 写未发生）→ 裁决送达。
+        bus.publish_inbound(inbound(
+            "telegram",
+            "chat-9",
+            &format!("/approve {short_id}"),
+        ));
+
+        // 等 live 回执出现（= watcher 已完成台账记账与裁决送达）再放行，
+        // 保证「回执先记、超时后记」的确定次序。
+        let ack = next_outbound(&mut out_rx).await;
+        assert!(
+            ack.content.contains("已批准") && ack.content.contains("操作继续"),
+            "live ack expected, got: {}",
+            ack.content
+        );
+
+        // 放行超时臂记账 → 条件更新败方（Ok(false)）→ 宽限收回在途裁决。
+        gated.open_gate();
+        let v = vrx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        assert!(v.approved, "迟到的真实批准必须生效，得到: {v:?}");
+
+        // 台账终态：live 用户裁决（im:user-1），不是 stale 补裁叙事。
+        let e = sqlite.entry("req-window-im-0001").unwrap();
+        assert_eq!(e.status, nemesis_types::approval_journal::status::APPROVED);
+        assert_eq!(e.decided_by.as_deref(), Some("im:user-1"));
+        assert!(
+            !ack.content.contains("重启前请求"),
+            "stale narrative must not appear: {}",
+            ack.content
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

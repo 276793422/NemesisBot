@@ -1140,6 +1140,53 @@ fn timeout_honors_raced_respond_and_recovers_verdict() {
     assert_eq!(e.decided_by.as_deref(), Some("web-user"));
 }
 
+/// BUG-20261127-025 回归：超时臂旧序「先出册后记账」在 [出册→记账] 间隙
+/// 放进迟到的 respond——map.remove 落 None → 误走 stale 补裁路径 → 台账
+/// 竞速赢了就触发「网关已重启」虚假叙事（decided_by=web-user-stale、
+/// warn 谎称 restart、批准不执行）。修复 = 先记 Expired 后出册：闸住
+/// timeout 记账制造窗口，窗口内 respond 必须走 live 路径（map 条目在场）
+/// 赢台账竞速、裁决真实生效（宽限收回），decided_by=web-user。
+#[test]
+fn late_respond_in_timeout_record_window_stays_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let sqlite = journal_at(&dir.path().join("tasks.db"));
+    let gated = GateJournal::new(sqlite.clone());
+    // 只闸超时臂的 Expired 记账；web-user（respond 的 live 记账）直通。
+    gated.add_gate("timeout");
+
+    let mgr = std::sync::Arc::new(WebApprovalManager::new(None, None, None));
+    mgr.set_journal(gated.clone());
+
+    let result_rx = request_async(mgr.clone(), "req-window", 1);
+    wait_pending(&mgr, 1);
+
+    // 1s 超时到期 → 超时臂卡进 Expired 记账闸（修复后此刻尚未出册）。
+    std::thread::sleep(Duration::from_millis(1300));
+    gated.wait_in_gate(1);
+
+    // 窗口内迟到的 respond（同步调用：完成 live 记账后才继续，确定性时序）
+    // ——必须走 live 路径（map.remove 拿到 Some），不是 stale 补裁。
+    assert!(
+        mgr.respond("req-window", true, false, None).unwrap(),
+        "窗口内 respond 必须成功（live 路径）"
+    );
+
+    // 放行超时臂记账 → 条件更新败方（Ok(false)）→ 宽限收回在途裁决。
+    gated.open_gate("timeout");
+    let v = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert!(v.approved, "迟到的真实批准必须生效，得到: {v:?}");
+
+    // 台账终态：真实用户裁决（approved / web-user），不是 stale 补裁
+    // （旧代码此处 = EXPIRED 前 respond_stale 抢注 web-user-stale，
+    // 且 verdict 为宽限落空的拒绝）。
+    let e = sqlite.entry("req-window").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::APPROVED);
+    assert_eq!(e.decided_by.as_deref(), Some("web-user"));
+}
+
 /// 可用性立场：台账写失败（Err）时裁决照常送达（审批可用性不绑
 /// tasks.db），审计缺失 loud 留痕——响应仍成功。
 struct ErrJournal;

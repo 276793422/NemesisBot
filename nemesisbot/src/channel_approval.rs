@@ -554,18 +554,18 @@ impl ApprovalManager for ChannelApprovalManager {
             wait()
         };
 
-        if let Ok(mut map) = self.pending.lock()
-            && let Some(entry) = map.remove(&id)
-        {
-            tracing::debug!(
-                "[ChannelApproval] entry {} removed after wait (waited {:?})",
-                id,
-                entry.created_at.elapsed()
-            );
-        }
-
         match result {
             Ok(verdict) => {
+                // 清 pending（幂等：watcher live 路径已摘除）。
+                if let Ok(mut map) = self.pending.lock()
+                    && let Some(entry) = map.remove(&id)
+                {
+                    tracing::debug!(
+                        "[ChannelApproval] entry {} removed after wait (waited {:?})",
+                        id,
+                        entry.created_at.elapsed()
+                    );
+                }
                 tracing::info!(
                     "[ChannelApproval] request {} ({}): {}",
                     id,
@@ -596,6 +596,25 @@ impl ApprovalManager for ChannelApprovalManager {
                         "timeout",
                     )
                 });
+                // 出册放在 Expired 记账**之后**（BUG-20261127-025，web 管理器
+                // 同款重排）：旧序「先出册后记账」在 [出册→记账] 间隙放进迟到
+                // 的 IM 回执——watcher map.get 落 None → 误走 respond_stale_im
+                // → 台账竞速赢了就产出「重启前请求，原操作已失效」的虚假回执
+                // （操作明明能在宽限内生效却被记账性补裁吞掉）。先落 Expired
+                // 后，窗口内到达的回执走 live 路径（条目在场）与超时臂竞速
+                // 台账先到先得；Expired 落账后才到的回执在 stale 路径
+                // find_pending 落空，诚实「未找到或已处理」。（estop/cancel
+                // 清理路径的 drain→journal 窗口同族残留，封死需持 pending 锁
+                // 跨台账 IO，与「锁外执行」设计冲突——已知边界不修。）
+                if let Ok(mut map) = self.pending.lock()
+                    && let Some(entry) = map.remove(&id)
+                {
+                    tracing::debug!(
+                        "[ChannelApproval] entry {} removed after expired record (waited {:?})",
+                        id,
+                        entry.created_at.elapsed()
+                    );
+                }
                 match expired_record {
                     Some(Ok(false)) => {
                         // 回执赢了竞争：此刻大概率已 tx.send（记账后微秒级）
