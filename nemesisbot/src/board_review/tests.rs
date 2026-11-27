@@ -4589,16 +4589,18 @@ fn artifacts_evidence_walk_not_amputated_by_listing_cap() {
 
     let out = super::render_project_artifacts_evidence(&root);
     // 节选候选池不受清单展示上限影响：路径序最末、mtime 最新的文件必须有节选。
+    // 现场截断走 floor_char_boundary（BUG-20261127-042）：out 含中文标题，
+    // 裸 `&out[..out.len().min(400)]` 断言失败时在多字节字符中间 panic 吞现场。
     assert!(
         out.contains("LATE_TEST_MARKER"),
         "路径序靠后的最新文件必须进节选池: {}",
-        &out[..out.len().min(400)]
+        &out[..nemesis_types::utils::floor_char_boundary(&out, 400)]
     );
     // 全树 251 个文件：清单展示上限内不截断（400 > 251），总数如实。
     assert!(
         out.contains("共 251 个文件："),
         "{out_first}",
-        out_first = &out[..out.len().min(400)]
+        out_first = &out[..nemesis_types::utils::floor_char_boundary(&out, 400)]
     );
     let _ = std::fs::remove_dir_all(&root);
 }

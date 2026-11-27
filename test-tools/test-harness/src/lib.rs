@@ -695,6 +695,8 @@ pub fn http_client() -> reqwest::Client {
 }
 
 /// 预览截断的字节安全版：把 `n` 回退到 `s` 内最近的 char boundary。
+/// pub：家族共享（str-slice-multibyte-panic 家族纪律，agent-bench 等
+/// test-tools 失败现场截断同源复用，不各抄本地副本）。
 ///
 /// BUG-20261105-029：[`http_get_json`] 的错误预览曾用裸
 /// `&body[..len.min(200)]`——中文错误体（gateway 错误消息经 serde_json
@@ -702,7 +704,7 @@ pub fn http_client() -> reqwest::Client {
 /// 报告」变成「测试工具崩溃」（str-slice-multibyte-panic 家族，
 /// BUG-20261029-185 同款写法在测试基建的漏网点；ws-send/ws-api-send
 /// 同款修复先例）。
-fn floor_char_boundary(s: &str, mut n: usize) -> usize {
+pub fn floor_char_boundary(s: &str, mut n: usize) -> usize {
     if n >= s.len() {
         return s.len();
     }

@@ -9993,7 +9993,9 @@ async fn test_b30_mcp_named_tool_result_backfill_is_bounded() {
     assert!(
         model_face.contains("结果过长已截断：mcp_echo"),
         "marker 必须带真实工具名 mcp_echo：{}",
-        &model_face[..n.min(200)]
+        // 字节索引安全版（BUG-20261127-042）：旧 `&model_face[..n.min(200)]`
+        // 把 chars 计数当字节索引用——含中文时切点落在多字节字符中间 panic。
+        &model_face[..nemesis_types::utils::floor_char_boundary(&model_face, 200)]
     );
 }
 

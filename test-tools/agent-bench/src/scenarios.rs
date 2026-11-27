@@ -2816,18 +2816,18 @@ async fn plugin_bootstrap_one_round(ws: &TestWorkspace) -> Result<(u64, String)>
             anyhow::ensure!(
                 chain_s.contains("plugin_bootstrap"),
                 "审计链缺 plugin_bootstrap 记录（proposed/installed 未入链）: {}",
-                &chain_s[..chain_s.len().min(600)]
+                &chain_s[..floor_char_boundary(&chain_s, 600)]
             );
             anyhow::ensure!(
                 chain_s.contains("textstat"),
                 "审计链 plugin_bootstrap 记录缺 textstat 目标: {}",
-                &chain_s[..chain_s.len().min(600)]
+                &chain_s[..floor_char_boundary(&chain_s, 600)]
             );
             // installed 决策在案（不止 proposed——漏斗走完的留痕）。
             anyhow::ensure!(
                 chain_s.contains("installed"),
                 "审计链缺 installed 决策记录: {}",
-                &chain_s[..chain_s.len().min(600)]
+                &chain_s[..floor_char_boundary(&chain_s, 600)]
             );
             let _ = api.close(None).await;
         }

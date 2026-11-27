@@ -686,7 +686,7 @@ async fn main() -> Result<()> {
         bail!(
             "onboard default 失败: exit={} stderr={}",
             onboard.exit_code,
-            &onboard.stderr[..onboard.stderr.len().min(400)]
+            &onboard.stderr[..floor_char_boundary(&onboard.stderr, 400)]
         );
     }
 

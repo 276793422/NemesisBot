@@ -88,8 +88,10 @@ fn task_prompt_carries_marker_scenarios_and_contract() {
             nemesis_cluster::PLAYTEST_PROMPT_MARKER,
             issue.number
         )),
+        // 现场截断走 floor_char_boundary（BUG-20261127-042）：prompt 含中文
+        // 任务标题，裸 `&prompt[..80.min(len)]` 断言失败时多字节中间 panic。
         "marker head 失守：{}",
-        &prompt[..80.min(prompt.len())]
+        &prompt[..nemesis_types::utils::floor_char_boundary(&prompt, 80)]
     );
     assert!(prompt.contains("S1"), "场景清单缺失");
     assert!(prompt.contains("开局"));
