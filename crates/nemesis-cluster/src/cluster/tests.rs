@@ -6015,6 +6015,70 @@ fn test_merge_real_node_info_upgrades_placeholder_by_address() {
 }
 
 #[test]
+fn test_merge_real_node_info_strict_match_wont_swallow_same_host_other_port_placeholder() {
+    // 回归锁（宽松 addr_matches 害处，同 addr_eq 根修注释的 cluster-uat
+    // 历史 bug 族）：同 host 异 port 双占位（单机多实例常态
+    // 127.0.0.1:15721 / 127.0.0.1:15731），占位地址池恒 host-only（静态
+    // loader 装载 `vec![host]` 形态）。旧宽松语义（registry::find_by_address
+    // 底层 addr_matches：一边无端口 = 通配）下 host-only 候选对任何同
+    // host needle 恒匹配——遍历序在前的 aaa-node（另一实例 15731）先被
+    // 命中吞并、peers.toml 静态条目被升级改写，正确占位 zzz-node 永不
+    // 归一。严格 addr_eq（与 UDP announce 漏斗同语义）只精确匹配
+    // zzz-node（base.address 相等），aaa-node 保持原状。
+    // 占位命名刻意让「错误实例」aaa- 排在遍历序（name,id 排序）前列：
+    // 突变回宽松语义时本测试确定性红（否则依赖 HashMap 随机序不稳定）。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let cluster = Cluster::with_workspace(make_config(), workspace);
+
+    for (pid, addr) in [
+        ("aaa-node", "127.0.0.1:15731"), // 错误实例：同 host 异 port，排遍历序前
+        ("zzz-node", "127.0.0.1:15721"), // 正确实例：待归一的占位
+    ] {
+        cluster.register_node(ExtendedNodeInfo {
+            base: nemesis_types::cluster::NodeInfo {
+                id: pid.into(),
+                name: pid.into(),
+                role: nemesis_types::cluster::NodeRole::Worker,
+                address: addr.into(),
+                category: "general".into(),
+                last_seen: String::new(),
+            },
+            status: NodeStatus::Offline,
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            // 静态 loader 形态：地址池 host-only。
+            addresses: vec!["127.0.0.1".into()],
+            professions: Vec::new(),
+            tier: None,
+            agents: Vec::new(),
+            runtime_backend: None,
+            node_type: String::new(),
+            build: String::new(),
+            security_level: None,
+        });
+        cluster.mark_peer_static(pid);
+    }
+
+    // 真实节点 X（127.0.0.1:15721 实例）经 web nodes.refresh 身份合入。
+    let canonical =
+        cluster.merge_real_node_info(&make_real_node_info("real-x", "Real X", "127.0.0.1:15721"));
+    assert_eq!(canonical, "real-x");
+    // zzz-node（精确匹配）被升级吞并。
+    assert!(
+        cluster.get_peer("zzz-node").is_none(),
+        "15721 精确匹配占位应被升级吞并"
+    );
+    assert!(cluster.get_peer("real-x").is_some());
+    // aaa-node（同 host 异 port）必须保持原状——宽松语义下它排遍历序
+    // 前列、host-only 地址池恒匹配，会先被吞（误升级成 real-x）。
+    let b = cluster
+        .get_peer("aaa-node")
+        .expect("aaa-node 不得被吞并（宽松 addr_matches 会按遍历序先命中它）");
+    assert_eq!(b.base.address, "127.0.0.1:15731", "aaa-node 地址不得被改写");
+}
+
+#[test]
 fn test_merge_real_node_info_persists_to_peers_toml() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();

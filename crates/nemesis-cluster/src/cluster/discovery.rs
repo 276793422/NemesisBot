@@ -1056,41 +1056,47 @@ impl Cluster {
         // （静态 / id==name / 空 name）——运行时学来的真实远端条目不得被
         // 地址吞并（同机同 rpc_port / 共享 NAT 出口拓扑防 flapping）。
         let local_node_id = self.node_id.clone();
-        let placeholder_id = self
-            .registry
-            .find_by_address(&info.address)
-            .filter(|p| {
-                (self.registry.is_peer_static(&p.base.id)
-                    || p.base.id == p.base.name
-                    || p.base.name.is_empty())
-                    && p.base.id != local_node_id
-            })
-            .map(|p| p.base.id.clone())
-            .or_else(|| {
-                info.addresses
-                    .iter()
-                    .filter_map(|a| {
-                        let candidate = if a.contains(':') {
-                            a.clone()
-                        } else {
-                            let port = info.address.rsplit_once(':').map(|(_, p)| p.to_string());
-                            match port {
-                                Some(p) => format!("{}:{}", a, p),
-                                None => a.clone(),
-                            }
-                        };
-                        self.registry
-                            .find_by_address(&candidate)
-                            .filter(|p| {
-                                (self.registry.is_peer_static(&p.base.id)
-                                    || p.base.id == p.base.name
-                                    || p.base.name.is_empty())
-                                    && p.base.id != local_node_id
-                            })
-                            .map(|p| p.base.id.clone())
-                    })
-                    .next()
-            });
+        // 占位匹配用严格 addr_eq（cluster-uat 历史 bug 根修同纪律），不用
+        // registry::find_by_address：后者底层 addr_matches 是宽松端口语义
+        // （一边无端口 = 通配，doc 自述 bare hostnames 比较 host only），
+        // 而静态 loader 装载的占位条目地址池恒 host-only（cluster_init.rs
+        // 装载 `vec![host]`）——同 host 异 port 双占位（单机多实例常态）
+        // 下 host-only 候选对任何同 host needle 恒匹配，HashMap 迭代序
+        // 决定吞谁：operator 配置的另一实例条目被升级改写、peers.toml
+        // 静态配置丢失，正确占位可能永不归一。UDP announce 漏斗
+        // （handle_discovered_node_impl）已用 addr_eq，本漏斗对齐同语义；
+        // list_peers 返回确定性排序（name,id），遍历序不再是 HashMap 随机序。
+        let placeholder_match = |candidate: &str| -> Option<String> {
+            self.registry
+                .list_peers()
+                .into_iter()
+                .find(|p| {
+                    p.base.id != local_node_id
+                        && (self.registry.is_peer_static(&p.base.id)
+                            || p.base.id == p.base.name
+                            || p.base.name.is_empty())
+                        && (addr_eq(&p.base.address, candidate)
+                            || p.addresses.iter().any(|a| addr_eq(a, candidate)))
+                })
+                .map(|p| p.base.id.clone())
+        };
+        let placeholder_id = placeholder_match(&info.address).or_else(|| {
+            info.addresses
+                .iter()
+                .filter_map(|a| {
+                    let candidate = if a.contains(':') {
+                        a.clone()
+                    } else {
+                        let port = info.address.rsplit_once(':').map(|(_, p)| p.to_string());
+                        match port {
+                            Some(p) => format!("{}:{}", a, p),
+                            None => a.clone(),
+                        }
+                    };
+                    placeholder_match(&candidate)
+                })
+                .next()
+        });
 
         let node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
