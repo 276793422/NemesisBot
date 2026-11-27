@@ -1220,7 +1220,17 @@ impl SecurityPlugin {
                 // 路径 token 与脚本本体都拦不住；BUG-20261029-171/20261102-310
                 // 同族漂移在扫描面第三次复发）。old_text 类比：无「待删除键」
                 // 在此不适用——script 是唯一待执行载荷。
-                for content_key in &["content", "data", "body", "html", "new_text", "script"] {
+                // BUG-20261127-044：command 在列——exec 族（shell.rs/
+                // async_shell.rs schema required 键都是 command）与 cron/
+                // background_start 的待执行载荷是顶层 command 键，缺键 = 命令
+                // 本体完全绕过病毒扫描（run_script 的 script 拦得住、exec 的
+                // command 拦不住）；零路径 token 的内联载荷形态连
+                // extract_paths 路径臂都不进。cron 臂先例：scan_tool_invocation
+                // 的 cron 分支本来就内容扫 command。pre-exec 启发式扫描
+                // （本文件上方）只强制审批不拦，不构成替代。
+                for content_key in &[
+                    "content", "data", "body", "html", "new_text", "script", "command",
+                ] {
                     if let Some(content) = args.get(*content_key).and_then(|v| v.as_str())
                         && !content.is_empty()
                     {

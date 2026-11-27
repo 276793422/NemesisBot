@@ -2928,6 +2928,36 @@ async fn test_scan_tool_invocation_blocks_each_tool_arm() {
     assert!(e.is_none());
 }
 
+// BUG-20261127-044 红证：exec 族载荷键是 command（shell.rs/async_shell.rs
+// schema required 键），exec 臂旧守卫 `!file_path.is_empty()` 读顶层
+// path/save_path（exec 族 schema 不存在这两个键）——对真实载荷恒死代码，
+// command 本体内容零扫描。无 path 键时修复前落 `_ => {}` 放行。
+#[tokio::test]
+async fn test_scan_tool_invocation_exec_command_content_blocked() {
+    // exec：command 内容感染。
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(S3MockEngine { infected: true }));
+    chain.set_enabled(true);
+    let (a, e) = chain
+        .scan_tool_invocation("exec", &serde_json::json!({"command": "echo evil && run"}))
+        .await;
+    assert!(!a);
+    assert!(e.as_deref().unwrap_or("").contains("command"), "{e:?}");
+
+    // background_start / mcp_discover / process_exec：同族臂（extract_paths
+    // 已覆盖 7 工具，本函数此前只有 4）。
+    for tool in ["background_start", "mcp_discover", "process_exec"] {
+        let mut chain = ScanChain::with_defaults();
+        chain.add_engine(Box::new(S3MockEngine { infected: true }));
+        chain.set_enabled(true);
+        let (a, e) = chain
+            .scan_tool_invocation(tool, &serde_json::json!({"command": "echo evil"}))
+            .await;
+        assert!(!a, "{tool} 必须拦");
+        assert!(e.as_deref().unwrap_or("").contains("command"), "{e:?}");
+    }
+}
+
 #[tokio::test]
 async fn test_load_from_full_config_skips_pending_engine() {
     // install_status != "installed" → 引擎被跳过

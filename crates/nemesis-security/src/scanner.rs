@@ -1840,16 +1840,40 @@ impl ScanChain {
                     );
                 }
             }
-            "exec" | "execute_command" | "shell" | "exec_async" if !file_path.is_empty() => {
-                let result = self.scan_file(Path::new(file_path)).await;
-                if result.blocked {
-                    return (
-                        false,
-                        Some(format!(
-                            "virus detected by {}: {} (virus: {})",
-                            result.engine, file_path, result.virus
-                        )),
-                    );
+            // BUG-20261127-044：exec 族载荷键是 command（shell.rs/async_shell.rs
+            // schema required 键）——旧守卫 `!file_path.is_empty()` 读顶层
+            // path/save_path（exec 族 schema 不存在），对真实载荷恒死代码，
+            // command 本体零扫描。与 cron 臂同构：内容扫 command 本体；工具
+            // 清单对齐 extract_paths_from_args（BUG-20261107-009 纪律：白名单
+            // 式 match 表同步补臂）。path/save_path 文件臂保留（既有测试夹具
+            // 与潜在调用方可能显式带 path 指向已落盘可执行文件）。
+            "exec" | "execute_command" | "shell" | "exec_async" | "process_exec"
+            | "background_start" | "mcp_discover" => {
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str())
+                    && !cmd.is_empty()
+                {
+                    let result = self.scan_content(cmd.as_bytes()).await;
+                    if result.blocked {
+                        return (
+                            false,
+                            Some(format!(
+                                "virus detected by {}: command (virus: {})",
+                                result.engine, result.virus
+                            )),
+                        );
+                    }
+                }
+                if !file_path.is_empty() {
+                    let result = self.scan_file(Path::new(file_path)).await;
+                    if result.blocked {
+                        return (
+                            false,
+                            Some(format!(
+                                "virus detected by {}: {} (virus: {})",
+                                result.engine, file_path, result.virus
+                            )),
+                        );
+                    }
                 }
             }
             "web_fetch" => {

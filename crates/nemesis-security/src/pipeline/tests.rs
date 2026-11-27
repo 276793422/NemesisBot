@@ -1762,6 +1762,32 @@ async fn test_plugin_execute_layer7_scans_background_start_command() {
     assert!(e.summary.contains("/tmp/implant.exe"), "{}", e.summary);
 }
 
+// BUG-20261127-044 红证：exec 族待执行载荷是顶层 command 键
+// （shell.rs/async_shell.rs schema required 键）——Layer 7 内容键循环此前
+// 不含 command = 命令本体完全绕过病毒扫描（run_script 的 script 拦得住、
+// exec 的 command 拦不住）。零路径 token 形态（内联载荷）连 extract_paths
+// 路径臂都不进：content-only 引擎隔离内容臂（file 臂恒干净），修复前
+// 全链零扫描放行，命中必来自 command 键内容扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_blocks_infected_exec_command() {
+    let plugin = make_plugin();
+    install_content_only_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "exec".to_string(),
+        args: serde_json::json!({"command": "echo X5O!P%@AP[EICAR]"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("virus scanner"), "{}", e.summary);
+    assert!(e.summary.contains("command"), "{}", e.summary);
+}
+
 // BUG-20261107-009 红证④：mcp_discover stdio 臂（LLM 可控 command spawn，
 // BUG-20261102-296 投影 process_exec 过管线——投影只写 metadata，管线
 // 看到的 tool_name 仍是 mcp_discover）此前 extract_paths 无臂 = MCP
