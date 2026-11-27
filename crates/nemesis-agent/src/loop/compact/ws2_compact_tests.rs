@@ -253,7 +253,7 @@ async fn p5_zero_budget_falls_back_to_count_semantics() {
     }
     // history = [sys, 6u, 6a] = 13；旧语义边界 = 13 - 6 = 7。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     let cache = instance.get_summary_cache().expect("cache should be set");
@@ -305,17 +305,22 @@ async fn p5_maybe_update_summary_token_budget_tail() {
         instance.add_assistant_message(&"x".repeat(125), Vec::new(), None);
     }
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     let cache = instance.get_summary_cache().expect("cache should be set");
     let history = instance.get_history();
+    // 预算 60 < 两条 50tok → raw = 8（只装 a8）；user-first 钳制回退到
+    // 最近 user（7）：尾巴保留最后一组问答 [u7, a8]。
     assert_eq!(
         cache.covers_up_to,
-        history.len() - 1,
-        "预算 60 < 两条 50tok：尾巴只保留最后一条"
+        history.len() - 2,
+        "预算 60 只装最后一条，user-first 钳制再回退一条：尾巴保留最后一组问答"
     );
-    assert_ne!(history[cache.covers_up_to].role, "tool", "无孤儿 tool 结果");
+    assert_eq!(
+        history[cache.covers_up_to].role, "user",
+        "user-first：尾首必为 user（assistant 开头 = anthropic 400 形态）"
+    );
     assert_eq!(cache.text, "SUMMARY");
     let _ = std::fs::remove_file(&cfg_path);
 }

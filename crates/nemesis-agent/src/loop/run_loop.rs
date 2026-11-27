@@ -293,6 +293,35 @@ impl AgentLoop {
                 break;
             }
 
+            // 轮顶压力闸（2026-11-27，turn 中途自动压缩；同日第二批起为
+            // **唯一**压缩点）：与 turn 末同一条 maybe_update_summary 路径
+            // ——自量压力（B2 混合信号）、自带全套守卫（tool-safe 边界/
+            // 推进闸/空转前缀闸/stuck 闩/policy 槽），低压 = 纯计算 no-op
+            // 零事件。压缩期间走既有 compaction_start 徽章 + 完成注记，UI
+            // 零新增。estop/cancel 已由上方器官 1 顶检兜住；此处再查一次
+            // 取消（器官间隙窗口），已取消不花几分钟压一个将死的 turn。
+            // 压缩失败/无进展 = 诚实早退，turn 照常继续（撞 overflow 仍有
+            // 下方应急链兜底，fail-open 叠加）。
+            //
+            // 轴规则（2026-11-27 第二批，轮末点停用后承接全部触发职责）：
+            // turns_used == 0（turn 尚无完成轮）+ compact_boundary 开 =
+            // 任务边界轴（B17 soft 位——「边界压缩」从 turn N 尾挪到
+            // turn N+1 头，仍是任务边界、仍带余量，最终回复不再被压缩
+            // 卡住）；其余恒标准触发位（中途压缩 =「别撞墙」到点即压）。
+            // steer 豁免轮不计 turns_used——首个有效轮之前恒属边界，语义
+            // 自洽（豁免轮本就是无进展重试，没开始真活）。
+            if !context.session_key.is_empty() && !cancel_token.is_cancelled() {
+                let at_boundary = st.turns_used == 0 && self.current_compact_boundary();
+                self.maybe_update_summary(
+                    instance,
+                    &context.session_key,
+                    &context.channel,
+                    &context.chat_id,
+                    at_boundary,
+                )
+                .await;
+            }
+
             // 器官 2（§4.2）：inbox claim → @file 展开 → URL 媒体预取 →
             // 附加链 → chat_log 落行。
             self.claim_steer_messages(instance, context, &mut st).await;

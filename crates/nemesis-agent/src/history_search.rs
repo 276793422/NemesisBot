@@ -165,7 +165,9 @@ fn looks_like_sqlite_db(path: &std::path::Path) -> bool {
 ///    形态（journal 残留 + 磁盘故障）走这条臂。
 /// 2. 头嗅探非法（垃圾字节/空壳）= 库体损坏实锤 → 全量重建。
 /// 3. 头合法但侧车清理后仍打不开 = 页级损坏（头在体坏）→ 也走全量重建。
-///    Windows 上若被占用，删除会失败 → 诚实 Err（不硬删）；POSIX 上走到
+///    Windows 上若被占用，删除经 `fsutil::remove_file_retry` 有界退避重试
+///    （瞬时句柄——Defender/索引器——在窗口内释放即恢复成功），仍占用 =
+///    耗尽后诚实 Err（不硬删）；POSIX 上走到
 ///    这里已排除 BUSY（无活锁信号），对端即便持句柄其连接也在同报错误
 ///    ——孤儿化不毁它任何未完成事务。
 ///
@@ -179,7 +181,7 @@ fn recover_and_open(open_err: &rusqlite::Error) -> Result<(Connection, bool), St
         let mut sidecars = 0usize;
         for suffix in ["-journal", "-wal", "-shm"] {
             let p = PathBuf::from(format!("{}{}", path.display(), suffix));
-            match std::fs::remove_file(&p) {
+            match nemesis_utils::fsutil::remove_file_retry(&p) {
                 Ok(()) => sidecars += 1,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
@@ -207,7 +209,7 @@ fn recover_and_open(open_err: &rusqlite::Error) -> Result<(Connection, bool), St
         } else {
             PathBuf::from(format!("{}{}", path.display(), suffix))
         };
-        match std::fs::remove_file(&p) {
+        match nemesis_utils::fsutil::remove_file_retry(&p) {
             Ok(()) => removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
