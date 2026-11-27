@@ -1482,11 +1482,15 @@ async fn command_probe_cwd_anchor_child_cwd_is_anchored_dir() {
 async fn command_probe_cwd_anchor_child_cwd_is_anchored_dir() {
     let dir = tempfile::tempdir().unwrap();
     let marker = "probe_cwd_anchor_marker.txt";
-    // `test -f <marker>` 在子进程 cwd（= 锚定目录）内检查文件存在性——
-    // 先用同 cwd 探测写入，再用同 cwd 探测断言（两步都锚定才 up）。
-    let (up, detail) =
-        command_probe(&format!("sh -c 'pwd > {marker}'"), 10, Some(dir.path())).await;
-    assert!(up, "pwd 恒 0 必须 up，detail: {detail}");
+    // command_probe 契约（manager.rs）：按空白切 program+args，不经 shell
+    // （引号/重定向形态不支持）。`sh -c '...'` 拆分后引号不闭合 → sh 语法
+    // 错误退出码 2，属测试自身的契约违例。`touch`/`test -f` 均无引号无
+    // 重定向、split 安全：touch 在子进程 cwd 落文件，落点必须在锚定目录。
+    let (up, detail) = command_probe(&format!("touch {marker}"), 10, Some(dir.path())).await;
+    assert!(up, "touch 恒 0 必须 up，detail: {detail}");
+    tokio::fs::metadata(dir.path().join(marker))
+        .await
+        .expect("marker 必须落在锚定目录（cwd 锚定生效）");
     let (up, detail) = command_probe(&format!("test -f {marker}"), 10, Some(dir.path())).await;
     assert!(
         up,
@@ -1518,13 +1522,15 @@ async fn command_probe_cwd_none_inherits_parent_process_cwd() {
 #[tokio::test]
 async fn command_probe_cwd_none_inherits_parent_process_cwd() {
     let marker = format!("probe_cwd_none_marker_{}.txt", std::process::id());
-    let (up, detail) = command_probe(&format!("sh -c 'pwd > {marker}'"), 10, None).await;
-    assert!(up, "detail: {detail}");
+    // 同上：契约按空白切、不经 shell，引号/重定向形态不支持。touch 无引号
+    // 无重定向、split 安全：None 时子进程 cwd = 父进程 cwd，故 marker 必须
+    // 落在父进程 cwd（落点即证明，无需回显内容）。
+    let (up, detail) = command_probe(&format!("touch {marker}"), 10, None).await;
+    assert!(up, "touch 恒 0 必须 up，detail: {detail}");
     let parent_cwd = std::env::current_dir().unwrap();
-    let printed = tokio::fs::read_to_string(parent_cwd.join(&marker))
+    tokio::fs::metadata(parent_cwd.join(&marker))
         .await
         .expect("None = 旧行为：marker 必须落在父进程 cwd");
-    assert_eq!(printed.trim(), parent_cwd.to_str().unwrap());
     let _ = std::fs::remove_file(parent_cwd.join(&marker));
 }
 
