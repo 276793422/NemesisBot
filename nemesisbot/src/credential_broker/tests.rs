@@ -98,7 +98,7 @@ fn stored_full_chain_value_lands_in_vault() {
             }
             panic!("respond 重试环耗尽：请求卡 10s 内未出现");
         });
-        let outcome = broker.request_credential(&request("cred-1", 5)).unwrap();
+        let outcome = broker.request_credential(&request("cred-1", 30)).unwrap();
         let receipt = t.join().unwrap();
         assert_eq!(outcome, CredentialOutcome::Stored);
         assert_eq!(receipt["stored"], serde_json::json!(true));
@@ -134,7 +134,12 @@ fn requested_event_carries_metadata_only() {
             }
         }
     });
-    let outcome = broker.request_credential(&request("cred-evt", 5)).unwrap();
+    // BUG-20261128-006：窗口 5→30——超时扫卡臂把耗尽窗口的请求结算成
+    // Denied（169-176 行），CI 4 核高载（分片 ~11 二进制 × 多测试线程）
+    // 下 responder 线程调度/persist 任何一环慢过 5s 即假红。契约是
+    // 「事件如实携带所请求 metadata」，对任意窗口值成立；30s 吞掉负载
+    // 尖峰，正常路径 ~100ms 收敛不受影响。
+    let outcome = broker.request_credential(&request("cred-evt", 30)).unwrap();
     assert_eq!(outcome, CredentialOutcome::Stored);
 
     let ev = rx.try_recv().unwrap();
@@ -146,7 +151,7 @@ fn requested_event_carries_metadata_only() {
     );
     assert_eq!(inner["request_id"], "cred-evt");
     assert_eq!(inner["key_name"], "connector/test-conn/api_key");
-    assert_eq!(inner["timeout_secs"], 5);
+    assert_eq!(inner["timeout_secs"], 30);
     // 了结事件随后到达且无值。
     let ev2 = rx.try_recv().unwrap();
     let p2 = serde_json::to_value(&ev2).unwrap();
