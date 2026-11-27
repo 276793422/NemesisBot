@@ -376,6 +376,14 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
 // ---------------------------------------------------------------------------
 
 pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
+    // 范围互斥守卫（BUG-20261128-005）：两个 flag 同时给出时，下方两个
+    // 线性否定闸互彼此否定 → 双面全空 → "Nothing to migrate." + 成功退码
+    // 0，用户误以为迁移已完成。crate 契约（run_full_migration）明写该组
+    // 合互斥报错，活 CLI 路径同守卫（对齐 autopilot --live/--shadow 先例）。
+    if options.config_only && options.workspace_only {
+        anyhow::bail!("--config-only 与 --workspace-only 互斥，一次只能选一个迁移范围");
+    }
+
     let nemesis_home = resolve_nemesis_home(&options.nemesisbot_home, local);
 
     // Step 1: Detect OpenClaw installation.

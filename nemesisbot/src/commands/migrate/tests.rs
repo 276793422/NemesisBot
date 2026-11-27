@@ -483,6 +483,26 @@ fn test_nemesis_home_override() {
     assert_eq!(nemesis_home, PathBuf::from("/custom/path"));
 }
 
+/// BUG-20261128-005 红证：`--config-only` 与 `--workspace-only` 同时给出
+/// 时旧实现静默 no-op（两个闸互彼此否定 → "Nothing to migrate." + 退码
+/// 0，用户误以为迁移已完成）。crate 契约（run_full_migration）明写该组
+/// 合互斥报错，活 CLI 路径必须同守卫（对齐 autopilot --live/--shadow
+/// 互斥先例）。
+#[test]
+fn test_run_rejects_config_only_with_workspace_only() {
+    let opts = MigrateOptions {
+        dry_run: false,
+        config_only: true,
+        workspace_only: true,
+        force: true,
+        openclaw_home: None,
+        refresh: false,
+        nemesisbot_home: None,
+    };
+    let err = run(opts, true).unwrap_err();
+    assert!(err.to_string().contains("互斥"), "{err}");
+}
+
 #[test]
 fn test_backup_file_preserves_content() {
     let tmp = TempDir::new().unwrap();
