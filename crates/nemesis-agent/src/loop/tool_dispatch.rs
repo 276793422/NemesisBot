@@ -1387,8 +1387,17 @@ impl AgentLoop {
                 if matches!(
                     tool_call.name.as_str(),
                     "exec" | "exec_async" | "background_start"
-                ) && let Some(outcome) = security.pre_exec_script_scan(&tool_call.arguments)
-                {
+                ) && let Some(outcome) = {
+                    // BUG-20261127-040：缺省 base 必须与 execute 端同源——
+                    // exec 族 args 无 cwd/working_dir 时工具锚 workspace root
+                    // （ExecTool 等 `.unwrap_or(&self.workspace)`），扫描面
+                    // 旧回退进程 CWD（gateway CWD ≠ 工作区）→ 相对路径脚本
+                    // 全部 skipped「不可访问」= 磁盘脚本内容扫描整层漏扫。
+                    let default_base = self.workspace_root.read().clone().unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
+                    security.pre_exec_script_scan(&tool_call.arguments, &default_base)
+                } {
                     if outcome.has_literals() {
                         warn!(
                             "[AgentLoop] Script scan blocked {}: {}",

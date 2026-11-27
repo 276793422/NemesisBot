@@ -1485,9 +1485,19 @@ impl SecurityPlugin {
     /// 补上该盲区（详见 `shell_bleed` 模块头）。`args_json` = 工具调用完整
     /// 参数（取 `command` 与基目录字段：`cwd`，exec_async 用
     /// `working_dir`，后者作缺位回退）；无 command = `None`。
+    ///
+    /// `default_base` = 执行端缺省工作目录（BUG-20261127-040）：exec 族
+    /// 工具 execute 端 args 无 `cwd`/`working_dir` 时锚 **workspace root**
+    /// （`ExecTool`/`ExecAsyncTool`/`BackgroundStartTool` 三处
+    /// `.unwrap_or(&self.workspace)` 同源），调用方（tool_dispatch）必须传
+    /// 同一落点——旧实现缺位回退**进程 CWD**，gateway CWD ≠ 工作区 →
+    /// 相对路径脚本 metadata 在 CWD 下找不到 → skipped「不可访问」→ 内容
+    /// 零扫描，而脚本实际在 workspace 下执行（扫描面与执行面不同源的
+    /// 系统性漏扫）。不再内置 CWD 回退。
     pub fn pre_exec_script_scan(
         &self,
         args_json: &str,
+        default_base: &std::path::Path,
     ) -> Option<crate::shell_bleed::ScriptScanOutcome> {
         let args: serde_json::Value = serde_json::from_str(args_json).ok()?;
         let command = args.get("command")?.as_str()?;
@@ -1496,9 +1506,7 @@ impl SecurityPlugin {
             .or_else(|| args.get("working_dir"))
             .and_then(|c| c.as_str())
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
+            .unwrap_or_else(|| default_base.to_path_buf());
         Some(crate::shell_bleed::scan_scripts_for_exec(
             command,
             &base,

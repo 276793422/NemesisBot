@@ -218,7 +218,7 @@ fn plugin_entry_scans_args_json_with_cwd() {
     .to_string();
 
     let outcome = plugin
-        .pre_exec_script_scan(&args)
+        .pre_exec_script_scan(&args, Path::new("."))
         .expect("有 command 就应有产出");
     assert!(
         outcome.has_literals(),
@@ -226,7 +226,36 @@ fn plugin_entry_scans_args_json_with_cwd() {
     );
 
     // 无 command 字段 = None（非 exec 形态调用不入扫描）。
-    assert!(plugin.pre_exec_script_scan("{}").is_none());
+    assert!(plugin.pre_exec_script_scan("{}", Path::new(".")).is_none());
+}
+
+#[test]
+fn plugin_entry_default_base_is_caller_supplied_workspace() {
+    // BUG-20261127-040 回归锁：args 无 cwd/working_dir 时 base 必须取
+    // 调用方传入的执行端缺省（workspace root），不得回退进程 CWD——
+    // 旧行为 gateway CWD ≠ 工作区 → 相对路径脚本 skipped「不可访问」，
+    // 内容扫描对生产常态调用（模型不传 cwd）整层失效。
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        credential_enabled: true,
+        dlp_enabled: true,
+        ..Default::default()
+    });
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let name = write_script(dir.path(), "ws.sh", &format!("echo \"{AWS_KEY}\"\n"));
+    let args = serde_json::json!({ "command": format!("bash {name}") }).to_string();
+
+    let outcome = plugin
+        .pre_exec_script_scan(&args, dir.path())
+        .expect("有 command 就应有产出");
+    assert!(
+        outcome.has_literals(),
+        "缺省 base=workspace 必须命中：{outcome:?}"
+    );
+    assert!(
+        !outcome.skipped.iter().any(|s| s.contains(&name)),
+        "脚本不得因 base 缺省错位落入 skipped：{:?}",
+        outcome.skipped
+    );
 }
 
 #[test]
@@ -247,7 +276,7 @@ fn plugin_entry_working_dir_fallback_for_exec_async() {
     .to_string();
 
     let outcome = plugin
-        .pre_exec_script_scan(&args)
+        .pre_exec_script_scan(&args, Path::new("."))
         .expect("exec_async 形态应有产出");
     assert!(
         outcome.has_literals(),
