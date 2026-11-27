@@ -1536,21 +1536,22 @@ pub(crate) async fn run_runtime(
                     return 0; // 停机窗口：pending 落盘保留，sweeper 下轮重试
                 };
                 let msgs = nemesis_agent::chat_log::take_session_pending(session_key);
-                let mut delivered = 0usize;
-                for (i, m) in msgs.iter().enumerate() {
-                    if loop_arc.inject_inbound(m.clone()) {
-                        delivered += 1;
-                    } else {
-                        // 通道满/关闭（停机窗口）：余量写回 pending（不丢
-                        // 失），已投数返回——sweeper 下轮重试。
-                        for back in &msgs[i..] {
-                            if let Err(e) =
-                                nemesis_agent::chat_log::append_session_pending(session_key, back)
-                            {
-                                warn!("[sessions] snooze 重放余量写回失败（诚实降级）: {e}");
-                            }
+                // BUG-20261127-030：前缀投递统一走 inject_in_prefix_order
+                //（遇败即断）——写回余量 msgs[delivered..] 与 A3 两臂同源
+                // 同语义（原 inline 循环 break 语义等价，收编单一真相源）。
+                let delivered =
+                    nemesis_web::handlers::sessions::inject_in_prefix_order(&msgs, |m| {
+                        loop_arc.inject_inbound(m.clone())
+                    });
+                if delivered < msgs.len() {
+                    // 通道满/关闭（停机窗口）：余量写回 pending（不丢
+                    // 失），已投数返回——sweeper 下轮重试。
+                    for back in &msgs[delivered..] {
+                        if let Err(e) =
+                            nemesis_agent::chat_log::append_session_pending(session_key, back)
+                        {
+                            warn!("[sessions] snooze 重放余量写回失败（诚实降级）: {e}");
                         }
-                        break;
                     }
                 }
                 delivered
@@ -1585,9 +1586,13 @@ pub(crate) async fn run_runtime(
                 let Some(loop_arc) = loop_arc else {
                     return 0; // 停机窗口：sweeper 写回侧车，下轮重试
                 };
-                msgs.into_iter()
-                    .filter(|m| loop_arc.inject_inbound(m.clone()))
-                    .count()
+                // BUG-20261127-030：filter-continue 返回「成功条数」非前缀
+                // 长度——部分失败窗口（首条撞满、并发消费腾位后续成功）会
+                // 丢首条 + 重复后续（sweeper 按前缀切片写回余量）。统一走
+                // 前缀投递内核（遇败即断，余量下轮重试）。
+                nemesis_web::handlers::sessions::inject_in_prefix_order(&msgs, |m| {
+                    loop_arc.inject_inbound(m.clone())
+                })
             },
         )));
         info!("[Gateway] A3 persisted replay hook armed (iqueue + notices hydrate)");

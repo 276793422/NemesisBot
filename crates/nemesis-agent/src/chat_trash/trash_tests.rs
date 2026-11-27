@@ -950,3 +950,62 @@ fn restore_resume_keeps_inflight_boundary_half_moved() {
     );
     assert!(!t.entry_dir(&entry).exists(), "条目清掉");
 }
+
+/// BUG-20261127-031 回归锁：trash 移动顺序 = 次要件（boundary/meta/todo）
+/// 在前、jsonl（对话主体）最后。meta 被持久句柄锁卡死（share_mode(1) 模拟
+/// AV/索引器抓高频写的 meta）时 Err 上浮，但 jsonl 必须未动——会话仍可见、
+/// 重试收敛；旧顺序（jsonl 先移）同一失败形态 = 对话主体已离开
+/// session_logs，调用方拿到不可行动的误报（sessions.list 永无重试路径），
+/// 且删除级联被跳过后 cron 按排程复活空会话僵尸。Windows 形态（share_mode
+/// 锁；Linux 编译期消失）。续作断言：解锁后重试成功 = 最终一致。
+#[cfg(windows)]
+#[test]
+fn trash_meta_locked_err_keeps_jsonl_in_session_logs() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let t = TempTrash::new("meta-locked");
+    let key = make_session(&t, "lockmeta", "锁meta会话", &["问1", "问2"]);
+    put_boundary(&t, &key, "turn_end");
+    put_todo(
+        &t,
+        &key,
+        &[serde_json::json!({"content": "t1", "status": "pending"})],
+    );
+
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // 拒 WRITE|DELETE → rename（需 DELETE 权）穿满重试窗口
+        .open(t.loc.meta_path(&key))
+        .unwrap();
+
+    let err = trash_chat_log_in(&t.loc, &key, "single").unwrap_err();
+    assert!(
+        t.loc.log_path(&key).exists(),
+        "jsonl 必须未动（会话可见可重试）: err={err}"
+    );
+    assert!(
+        t.loc.meta_path(&key).exists(),
+        "锁着的 meta 未移走: err={err}"
+    );
+    assert!(
+        !t.loc.boundary_path(&key).exists(),
+        "次要件先行：boundary 已在 meta 失败前移入条目"
+    );
+    drop(lock);
+
+    // 解锁后重试 = 可重试收敛（最终一致）：jsonl 移走、条目清单落位。
+    let entry2 = trash_chat_log_in(&t.loc, &key, "single")
+        .expect("重试须成功")
+        .expect("四件套在场的会话须产出条目");
+    assert!(
+        t.entry_dir(&entry2).join("chat.jsonl").is_file(),
+        "重试后 jsonl 入条目"
+    );
+    assert!(
+        t.entry_dir(&entry2).join("trash.json").is_file(),
+        "重试后清单落位"
+    );
+    assert!(
+        !t.loc.log_path(&key).exists(),
+        "重试后 jsonl 离开 session_logs"
+    );
+}

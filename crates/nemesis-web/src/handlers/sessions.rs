@@ -1086,9 +1086,14 @@ impl ModuleHandler for SessionsHandler {
 /// BUG①（2026-11-05）：删除/清空链路的 live todo 清扫（回收站四件套之外
 /// 的直删路径：hard 删除、clear 清空）。文件缺席 = no-op；路径走
 /// nemesis-path 单一真相源（与 TodoWriteTool 写路径、回收站寻址同源）。
-/// 删除失败 = Err 上浮（与 chat_log 同严格级——删不干净报出来，不静默
-/// 留孤儿）；remove_file_retry 带 Windows 瞬时句柄重试，spawn_blocking
-/// 包裹防阻塞 tokio worker（trash_chat_log 同款纪律）。
+/// remove_file_retry 带 Windows 瞬时句柄重试，spawn_blocking 包裹防阻塞
+/// tokio worker（trash_chat_log 同款纪律）。
+/// BUG-20261127-029：函数保留 Err 契约（删不干净诚实报出，不静默），
+/// 但 delete/clear 两个调用点降级 warn 消费——调用点位于数据不可逆线
+/// 之后（delete = store+jsonl 已删；clear = jsonl 已截空），上浮只会
+/// 误报失败 + 跳过防僵尸级联，且硬删失败后会话已从 sessions.list 消失
+/// （list 扫 jsonl）永无重试路径；孤儿 todo 文件由 TodoWriteTool 同路径
+/// 覆写自愈，属装饰性残留。
 async fn remove_live_todo(workspace: &str, session_key: &str) -> Result<(), String> {
     let todo =
         nemesis_path::session_todo_file_in_workspace(std::path::Path::new(workspace), session_key);
@@ -1177,7 +1182,16 @@ async fn delete_session_body(
     // 文件也要一并删——四件套接管只覆盖软删链路。软删（!hard）的 todo 由
     // trash_chat_log 四件套化 rename 进条目，无需此处动作。
     if hard && let Some(ws) = ctx.workspace.as_deref() {
-        remove_live_todo(ws, session_key).await?;
+        // BUG-20261127-029：此点已过不可逆线（store + jsonl 已删），Err
+        // 上浮 = ① UI 误报「删除失败」但会话已从 sessions.list 消失（list
+        // 扫 jsonl）——永无重试路径；② 下方防僵尸级联（SessionEnd/cron/
+        // autopilot/项目归属/绑定）全部跳过——cron job 保持 enabled 指向
+        // 已删会话，按排程复活空 jsonl 僵尸（下方级联注释正是为此而写，
+        // 不许被装饰性清理阻断）。孤儿 todo 文件由 TodoWriteTool 同路径
+        // 覆写自愈，warn 留痕即可。
+        if let Err(e) = remove_live_todo(ws, session_key).await {
+            tracing::warn!("[sessions] hard delete: todo 清理失败（孤儿残留不阻断级联）: {e}");
+        }
     }
     if !hard {
         // 移入回收站（guard 作用域外——trash 不持 store 锁）。三件套全
@@ -1307,7 +1321,12 @@ async fn clear_session_body(ctx: &RequestContext, session_key: &str) -> Result<(
     // BUG①（2026-11-05）：清空 = 全新会话语义，todo 清单一并清（不参与
     // self-heal 重建，位置在 clear_chat_log 后保持「文件先动」惯例）。
     if let Some(ws) = ctx.workspace.as_deref() {
-        remove_live_todo(ws, session_key).await?;
+        // BUG-20261127-029 同族：clear_chat_log 已先截空（数据已清），
+        // todo 失败上浮只会跳过 store clear + autopilot 级联（空会话继承
+        // 零上下文 = 绑定无意义）——降级 warn，与硬删臂同纪律。
+        if let Err(e) = remove_live_todo(ws, session_key).await {
+            tracing::warn!("[sessions] clear: todo 清理失败（孤儿残留不阻断级联）: {e}");
+        }
     }
     let guard = ctx.state.agent_loop.read();
     if let Some(al) = guard.as_ref()
@@ -1488,9 +1507,10 @@ pub(crate) fn drain_orphan_pending() {
 //    滞留补投——snooze pending 之上补齐其余两个持有区，进程重启零丢失 ——
 
 /// A3 重放 hook 签名：按会话键注入一批已 hydrate 的 InboundMessage（指令
-/// 条目 / 通告条目由调用方分别构造为正确 class），返回成功注入条数。
-/// loop 缺席（停机窗口/未装配）= 0——调用方把余量写回侧车（restore_*），
-/// sweeper 下轮重试（与 [`SnoozeReplayHook`] 同纪律：不丢，等恢复）。
+/// 条目 / 通告条目由调用方分别构造为正确 class），返回**按序注入的前缀
+/// 长度**——遇败即断（见 [`inject_in_prefix_order`]），调用方把
+/// `msgs[delivered..]` 写回侧车（restore_*），sweeper 下轮重试（与
+/// [`SnoozeReplayHook`] 同纪律：不丢，等恢复）。
 pub type PersistedReplayHook = std::sync::Arc<
     dyn Fn(&str, Vec<nemesis_types::channel::InboundMessage>) -> usize + Send + Sync,
 >;
@@ -1521,6 +1541,29 @@ fn replay_persisted_for(
         Some(h) => h(session_key, msgs),
         None => 0,
     }
+}
+
+/// A3 前缀投递内核：按序逐条注入，**遇败即断**，返回前缀长度。sweeper
+/// 把 `msgs[delivered..]` 写回侧车（[`drain_orphan_instruction_queues`] /
+/// [`drain_orphan_notice_stashes`] 尾部切片）——delivered 必须是前缀长度，
+/// 不能是「成功条数」：注入目标通道满/关闭时首条失败、并发消费腾出槽位
+/// 后续条目可能成功，filter-continue 形态返回的非前缀计数会让首条既未
+/// 注入也未写回（丢失）、后续条目已注入又写回（下轮重复）——至少一次
+/// 语义（取「不丢」为优先不变量）两头破。BUG-20261127-030。
+/// pub：gateway 侧两个 hook 闭包（runtime.rs）与测试同源消费。
+pub fn inject_in_prefix_order(
+    msgs: &[nemesis_types::channel::InboundMessage],
+    mut inject: impl FnMut(&nemesis_types::channel::InboundMessage) -> bool,
+) -> usize {
+    let mut delivered = 0usize;
+    for m in msgs {
+        if inject(m) {
+            delivered += 1;
+        } else {
+            break;
+        }
+    }
+    delivered
 }
 
 /// A3 滞留补投内核（sweeper 每轮对一族侧车跑一遍）：会话已删 = take 后

@@ -14,8 +14,8 @@
 //! 结束复位（对前序 panic 残留鲁棒：每个需要特定 hook 形态的测试自设）。
 
 use super::sessions::{
-    SessionsHandler, drain_orphan_pending, replay_pending_for, set_snooze_replay_hook,
-    wake_due_sessions,
+    SessionsHandler, drain_orphan_pending, inject_in_prefix_order, replay_pending_for,
+    set_snooze_replay_hook, wake_due_sessions,
 };
 use crate::api_handlers::AppState;
 use crate::events::EventHub;
@@ -646,4 +646,53 @@ async fn l22_list_projects_pending_count() {
 
     nemesis_agent::chat_log::delete_chat_log(&clean_key);
     nemesis_agent::chat_log::delete_chat_log(&queued_key);
+}
+
+// —— BUG-20261127-030：前缀投递内核契约（delivered = 前缀长度，遇败即断）
+// —— sweeper 余量写回按 msgs[delivered..] 前缀切片消费；filter-continue
+// 形态返回「成功条数」会在部分失败窗口丢首条 + 重复后续。突然变（break →
+// continue）时 fail_first / fail_mid 两则确定性红。
+
+#[test]
+fn prefix_inject_all_ok_consumes_all() {
+    let msgs = [queued_msg("a"), queued_msg("b"), queued_msg("c")];
+    let mut attempts = 0usize;
+    let d = inject_in_prefix_order(&msgs, |_m| {
+        attempts += 1;
+        true
+    });
+    assert_eq!(d, 3);
+    assert_eq!(attempts, 3);
+}
+
+#[test]
+fn prefix_inject_fail_first_stops_immediately() {
+    let msgs = [queued_msg("a"), queued_msg("b"), queued_msg("c")];
+    let mut attempts = 0usize;
+    let d = inject_in_prefix_order(&msgs, |_m| {
+        attempts += 1;
+        false
+    });
+    assert_eq!(d, 0, "首条失败 = 前缀 0");
+    assert_eq!(
+        attempts, 1,
+        "遇败即断：后续条目不得尝试（filter-continue 突变此处红）"
+    );
+}
+
+#[test]
+fn prefix_inject_fail_mid_returns_prefix() {
+    let msgs = [
+        queued_msg("a"),
+        queued_msg("b"),
+        queued_msg("c"),
+        queued_msg("d"),
+    ];
+    let mut attempts = 0usize;
+    let d = inject_in_prefix_order(&msgs, |_m| {
+        attempts += 1;
+        attempts <= 2
+    });
+    assert_eq!(d, 2, "delivered = 前缀长度（前 2 条成功）");
+    assert_eq!(attempts, 3, "第 3 条失败即断，第 4 条不得尝试");
 }

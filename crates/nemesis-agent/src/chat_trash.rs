@@ -356,14 +356,24 @@ pub fn trash_chat_log_in(
         }
     };
 
+    // BUG-20261127-031：移动顺序 = 次要件（boundary/meta/todo）在前、jsonl
+    //（对话主体）最后。不可逆线是「jsonl 离开 session_logs」——此后
+    // sessions.list 扫不到该会话，move_file_retry 的 Err 上浮就成了调用方
+    // 无重试路径的误报（会话看似报错实际已收走）。次要件任一失败时 jsonl
+    // 未动 → 会话仍可见 → 重试收敛（错误诚实、状态可重试）；jsonl 移动
+    // 成功之后只剩 trash.json 清单写入（失败有孤儿条目兜底臂：
+    // derive_from_entry_name 反推列出 + restore 接受无清单条目）。残余边界：
+    // 次要件成功 + jsonl 失败重试 → entry 内留次要件副本 + src 留 jsonl，
+    // 重试成功后最终一致；restore 对两态均可用（冲突检测按目标位逐一核实）。
     let mut bytes = 0u64;
     for (from, to) in [
-        (&src_jsonl, entry.join("chat.jsonl")),
         (&src_boundary, entry.join("boundary.jsonl")),
         (&src_meta, entry.join("meta.json")),
         // todo 副本（2026-11-05 四件套化）：move_file_retry 对缺席源自动
         // Ok 跳过——旧会话没有 todo 文件时本成员无副作用。
         (&src_todo, entry.join("todo.json")),
+        // jsonl 最后（BUG-20261127-031）：不可逆线放最后，见上方顺序注释。
+        (&src_jsonl, entry.join("chat.jsonl")),
     ] {
         if from.exists() {
             bytes += std::fs::metadata(from).map(|m| m.len()).unwrap_or(0);

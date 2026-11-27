@@ -40,6 +40,16 @@ fn isolate(home: &Path) -> HomeGuard {
 }
 
 fn make_ctx(home: &Path) -> RequestContext {
+    make_ctx_inner(home, None)
+}
+
+/// BUG-20261127-029 回归夹具：cron 装配 ctx（store 落 tempdir；service
+/// DISARMED 不派生线程，enable_job/list_jobs/add_job_ext 纯同步）。
+fn make_ctx_with_cron(home: &Path, cron_store: &str) -> RequestContext {
+    make_ctx_inner(home, Some(cron_store.to_string()))
+}
+
+fn make_ctx_inner(home: &Path, cron_store: Option<String>) -> RequestContext {
     let ws = home.join("workspace").to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
@@ -85,7 +95,8 @@ fn make_ctx(home: &Path) -> RequestContext {
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
-        cron: None,
+        cron: cron_store
+            .map(|p| Arc::new(std::sync::Mutex::new(nemesis_cron::CronService::new(&p)))),
         board: None,
     });
     RequestContext {
@@ -531,4 +542,99 @@ async fn trash_restore_rehydrates_allow_all_from_sidecar() {
     // 清场。
     crate::handlers::security::set_session_allow_all_for_test(None);
     nemesis_agent::chat_log::delete_chat_log(&key);
+}
+
+// —— BUG-20261127-029：todo 清理失败不得阻断删除/清空主链与防僵尸级联 ——
+
+/// 硬删臂：todo 路径做成目录（remove_file 恒败，模拟持久句柄锁穿过重试
+/// 窗口）→ 修复前 `?` 上浮 = Err 误报 + cron/autopilot/绑定级联全部跳过
+/// （会话已不可见永无重试 → cron job 保持 enabled 定时复活僵尸）。修复后
+/// 降级 warn：命令 Ok + 防僵尸级联实跑（指向已删会话的 enabled job 被停用）。
+#[tokio::test]
+async fn delete_hard_todo_blocked_still_ok_and_disables_cron() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    let _g = isolate(&home);
+    let cron_store = home.join("cron_store.json");
+    let ctx = make_ctx_with_cron(&home, &cron_store.to_string_lossy());
+    let sid = "todoblock1";
+    let key = seed(&home, sid, "硬删对象");
+    let todo = nemesis_path::session_todo_file_in_workspace(
+        std::path::Path::new(ctx.workspace.as_deref().unwrap()),
+        &key,
+    );
+    std::fs::create_dir_all(&todo).unwrap();
+    let job = ctx
+        .state
+        .cron
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .add_job_ext(
+            "todo-block-cron",
+            nemesis_cron::CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60_000),
+                expr: None,
+                tz: None,
+            },
+            "继续任务",
+            true,
+            None,
+            None,
+            Some(&key),
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(job.enabled, "夹具前置：cron job 已启用");
+
+    let out = run(
+        &ctx,
+        "delete",
+        Some(serde_json::json!({ "session_id": sid, "hard": true })),
+    )
+    .await
+    .expect("todo 清理失败必须降级 warn 不上浮（硬删已过不可逆线）")
+    .unwrap();
+    assert_eq!(out["deleted"], serde_json::json!(sid));
+
+    // 防僵尸级联实跑：指向已删会话的 job 被停用（不再按排程复活）。
+    let jobs = ctx
+        .state
+        .cron
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .list_jobs(true);
+    let found = jobs.iter().find(|j| j.id == job.id).unwrap();
+    assert!(!found.enabled, "防僵尸级联必须跑：cron job 须被停用");
+}
+
+/// clear 臂同族：clear_chat_log 已先截空（数据已清），todo 失败上浮只会
+/// 跳过 store clear + autopilot 级联——降级 warn，clear 主链 Ok 完成。
+#[tokio::test]
+async fn clear_todo_blocked_still_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    let _g = isolate(&home);
+    let ctx = make_ctx(&home);
+    let sid = "todoblock2";
+    let key = seed(&home, sid, "清空对象");
+    let todo = nemesis_path::session_todo_file_in_workspace(
+        std::path::Path::new(ctx.workspace.as_deref().unwrap()),
+        &key,
+    );
+    std::fs::create_dir_all(&todo).unwrap();
+
+    run(
+        &ctx,
+        "clear",
+        Some(serde_json::json!({ "session_id": sid })),
+    )
+    .await
+    .expect("todo 清理失败必须降级 warn 不上浮（clear 已过不可逆线）");
 }
