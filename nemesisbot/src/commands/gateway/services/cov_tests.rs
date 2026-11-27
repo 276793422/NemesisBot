@@ -824,7 +824,7 @@ async fn w6_boot_master_cluster_arms_board_review_hooks() {
 //    resolve_model_config Err → warn + ProviderResolution::default() 降级
 //    启动（双击直启「未配置模型」目标行为，不硬退）；
 // ② 执行世界 Ok(Some) 臂（ctx.rs 375-377）：executor.enabled=true。
-//    本 home 无 Sandboxie runtime（Start.exe 缺）→ build_executor_channel
+//    本 home 无 Sandboxie runtime（Start.exe 缺）→ build_executor_channel_with_extra_roots
 //    落 stdio 车道（Layer 1），零引擎/UAC 触碰；
 // ③ workflow 定义装载 n>0（ctx.rs 396-400）+ cron 触发器注册 n>0（413-419）：
 //    definitions/ 先种 1 份合法 YAML（cron 触发）+ 1 份截断 JSON（解析

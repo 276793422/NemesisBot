@@ -28,6 +28,34 @@ fn read_allow_network(paths: &SandboxPaths) -> bool {
     crate::backend::read_executor_allow_network(&paths.home)
 }
 
+/// 装配期幂等 upsert 全局盒（`[NemesisBox]`）段——第四轮横扫 2026-11-27。
+///
+/// 为什么在装配期 upsert 而不是只靠 `sandbox start` 烙写穿透线：selfbuilt
+/// agent 的 **per-call** 通道也跑全局盒，其知识库根是 **agent 级**配置
+/// （`agents/<id>/home/config/config.knowledge.json`）——只有通道装配点
+/// （`exec_world::build_executor_channel_with_extra_roots` 盒臂）同时知道
+/// 「全局盒 + 本实体形态的知识库根」两个事实。幂等 + 与 `write_sandboxie_ini`
+/// 共用 [`ini::global_box_directives`] 单一构建器（段内容逐字节同源；
+/// `allow_network` 同源读 `executor.allow_network`）——网关每次装配重写等值
+/// 段自愈漂移，空写穿透清单 = 段回落 start 形态（知识库关闭后下一轮装配
+/// 即摘线）。
+///
+/// Sandboxie 对 ini 变更热感知（SbieSvc 监听改写、新 spawn 读现行配置）——
+/// upsert 后的首次 per-call spawn 即生效。段 RMW 走 `upsert_box_section`
+/// （逐字保留其余段 + INI_WRITE_LOCK 串行）。
+pub fn upsert_global_box_section(
+    paths: &SandboxPaths,
+    open_write_through: &[std::path::PathBuf],
+) -> Result<()> {
+    let directives = ini::global_box_directives(
+        crate::DEFAULT_BOX_NAME,
+        &paths.box_root,
+        read_allow_network(paths),
+        open_write_through,
+    );
+    ini::upsert_box_section(&paths.ini_path, crate::DEFAULT_BOX_NAME, &directives)
+}
+
 /// Poll `service_state(name)` until it reaches `target` or `timeout` elapses.
 pub fn wait_for_state(name: &str, target: ServiceState, timeout: Duration) -> ServiceState {
     let deadline = std::time::Instant::now() + timeout;
@@ -83,7 +111,11 @@ pub async fn install(paths: &SandboxPaths) -> Result<()> {
 /// Activate the Sandboxie engine: install the driver + service, redirect IniPath,
 /// write Sandboxie.ini, and start SbieSvc. Requires the files acquired first
 /// ([`install`]). Must be called elevated (kernel driver install → UAC).
-pub fn start(paths: &SandboxPaths) -> Result<()> {
+///
+/// `open_write_through`（第四轮横扫 2026-11-27）：调用方按实体形态派生的写
+/// 穿透树（知识库配对双根——bot 侧 `knowledge_fence_roots` 单一真相源），
+/// 经 [`ini::global_box_directives`] 进 `[NemesisBox]` 段。空切片 = 旧行为。
+pub fn start(paths: &SandboxPaths, open_write_through: &[std::path::PathBuf]) -> Result<()> {
     paths
         .verify_runtime()
         .context("runtime files missing — run `nemesisbot sandbox install` first")?;
@@ -106,6 +138,7 @@ pub fn start(paths: &SandboxPaths) -> Result<()> {
         crate::DEFAULT_BOX_NAME,
         &paths.box_root,
         read_allow_network(paths),
+        open_write_through,
     )
     .context("write Sandboxie.ini")?;
 
@@ -208,7 +241,13 @@ pub fn stop_service(paths: &SandboxPaths) -> Result<()> {
 ///   - (re)writes IniPath, service-key DWORDs, Sandboxie.ini;
 ///   - starts the service.
 ///     Must be called elevated (kernel driver install → UAC).
-pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
+///
+/// `open_write_through` 语义同 [`start`]（知识库配对双根写穿透，空切片 =
+/// 旧行为）。
+pub fn ensure_installed(
+    paths: &SandboxPaths,
+    open_write_through: &[std::path::PathBuf],
+) -> Result<()> {
     paths
         .verify_runtime()
         .context("runtime files missing — run `nemesisbot sandbox install` first")?;
@@ -243,6 +282,7 @@ pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
         crate::DEFAULT_BOX_NAME,
         &paths.box_root,
         read_allow_network(paths),
+        open_write_through,
     )?;
 
     // Start the service (no-op if already running) + wait for RUNNING.

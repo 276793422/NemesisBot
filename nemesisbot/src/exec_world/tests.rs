@@ -8,7 +8,7 @@
 
 #[cfg(all(feature = "sandbox", windows))]
 mod strict_channel_refusal {
-    use crate::exec_world::build_executor_channel;
+    use crate::exec_world::build_executor_channel_with_extra_roots;
 
     #[tokio::test]
     async fn strict_refuses_when_sandboxie_not_ready_at_construction() {
@@ -24,9 +24,16 @@ mod strict_channel_refusal {
             .expect("load config store");
         let handle = store.handle();
 
-        let channel = build_executor_channel(dir.path(), dir.path(), handle)
-            .expect("build_executor_channel")
-            .expect("enabled=true → Some(channel)");
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            handle,
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build_executor_channel_with_extra_roots")
+        .expect("enabled=true → Some(channel)");
 
         let ctx = nemesis_agent::context::RequestContext::new("test", "chat", "user", "sess");
         let err = channel
@@ -59,9 +66,16 @@ mod strict_channel_refusal {
             .expect("load config store");
         let handle = store.handle();
 
-        let channel = build_executor_channel(dir.path(), dir.path(), handle)
-            .expect("build_executor_channel")
-            .expect("enabled=true → Some(channel)");
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            handle,
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build_executor_channel_with_extra_roots")
+        .expect("enabled=true → Some(channel)");
 
         let gate = channel
             .strict_gate
@@ -77,7 +91,7 @@ mod strict_channel_refusal {
 /// 法注入失败），语义由降级链代码路径 + 真进程验收覆盖。
 #[cfg(all(feature = "sandbox", windows))]
 mod dacl_hook_wiring {
-    use crate::exec_world::build_executor_channel;
+    use crate::exec_world::build_executor_channel_with_extra_roots;
 
     fn seed(config: &str) -> (tempfile::TempDir, nemesis_config::ConfigHandle) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -90,9 +104,16 @@ mod dacl_hook_wiring {
     fn channel_of(
         (dir, handle): &(tempfile::TempDir, nemesis_config::ConfigHandle),
     ) -> std::sync::Arc<nemesis_agent::ExecutorChannel> {
-        build_executor_channel(dir.path(), dir.path(), handle.clone())
-            .expect("build_executor_channel")
-            .expect("enabled=true → Some(channel)")
+        build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            handle.clone(),
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build_executor_channel_with_extra_roots")
+        .expect("enabled=true → Some(channel)")
     }
 
     #[test]
@@ -140,9 +161,16 @@ mod dacl_hook_wiring {
         .expect("seed config.json");
         let store =
             nemesis_config::ConfigStore::load(&dir.path().join("config.json")).expect("load store");
-        let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
-            .expect("build")
-            .expect("some");
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            store.handle(),
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build")
+        .expect("some");
         let hook = channel.dacl_spawn.as_ref().expect("hook attached");
         assert!(matches!(hook(), Ok(None)), "初始关 → None");
 
@@ -193,7 +221,9 @@ mod world_descriptors {
             dir.path(),
             vec![dir.path().join("w")],
             vec![dir.path().join("s")],
+            Vec::new(),
             handle,
+            None,
         )
         .expect("build")
         .expect("enabled=true → Some(world)");
@@ -237,7 +267,9 @@ mod world_descriptors {
             dir.path(),
             vec![dir.path().join("w")],
             vec![],
+            Vec::new(),
             handle,
+            None,
         )
         .expect("build");
         assert!(world.is_none(), "Layer 0: disabled → no world");
@@ -249,20 +281,22 @@ mod world_descriptors {
             dir2.path(),
             vec![dir2.path().join("w")],
             vec![],
+            Vec::new(),
             handle2,
+            None,
         )
         .expect("build");
         assert!(world2.is_none(), "no executor section → no world");
     }
 }
 
-/// 直接对 `build_executor_channel` 的 Layer 0 / live probe 断言（不经过
+/// 直接对 `build_executor_channel_with_extra_roots` 的 Layer 0 / live probe 断言（不经过
 /// `build_workflow_world` 包装）。probe 闭包持有的是 live ConfigStore 句柄
 /// ——`store.update` 翻转后**同一通道**的 probe/gate 读数必须立刻变化，
 /// 这是「dashboard 停/起沙盒不重启生效」的机制保证。
 #[cfg(all(feature = "sandbox", windows))]
 mod layer0_and_live_probe {
-    use crate::exec_world::build_executor_channel;
+    use crate::exec_world::build_executor_channel_with_extra_roots;
 
     fn seed(config: &str) -> (tempfile::TempDir, nemesis_config::ConfigStore) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -275,16 +309,30 @@ mod layer0_and_live_probe {
     #[test]
     fn layer0_disabled_yields_none_channel() {
         let (dir, store) = seed(r#"{ "executor": { "enabled": false, "sandbox": true } }"#);
-        let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
-            .expect("build must not error on disabled config");
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            store.handle(),
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build must not error on disabled config");
         assert!(channel.is_none(), "enabled=false → Layer 0, no channel");
     }
 
     #[test]
     fn layer0_absent_executor_section_yields_none_channel() {
         let (dir, store) = seed("{}");
-        let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
-            .expect("build must not error on missing executor section");
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            store.handle(),
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build must not error on missing executor section");
         assert!(channel.is_none(), "no executor section → Layer 0");
     }
 
@@ -293,9 +341,16 @@ mod layer0_and_live_probe {
         // 构造时 sandbox=false → probe 读 false；store.update 翻 true 后同一
         // 通道的 probe 必须读 true（ConfigStore 内存读，不落盘轮询）。
         let (dir, store) = seed(r#"{ "executor": { "enabled": true, "sandbox": false } }"#);
-        let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
-            .expect("build")
-            .expect("enabled=true → Some");
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            store.handle(),
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build")
+        .expect("enabled=true → Some");
         assert!(!(channel.sandbox_probe)(), "sandbox=false at construction");
 
         store
@@ -336,9 +391,16 @@ mod layer0_and_live_probe {
         // 秒过；live 翻 strict=true 后同一闸门必须拒绝（构造结果未挂盒）。
         let (dir, store) =
             seed(r#"{ "executor": { "enabled": true, "sandbox": true, "strict": false } }"#);
-        let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
-            .expect("build")
-            .expect("enabled=true → Some");
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            store.handle(),
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("build")
+        .expect("enabled=true → Some");
         let gate = channel.strict_gate.as_ref().expect("gate attached");
         gate().expect("strict=false → gate passes");
 
@@ -362,7 +424,7 @@ mod layer0_and_live_probe {
 
 #[cfg(all(feature = "sandbox", windows))]
 mod w5r2 {
-    use crate::exec_world::build_executor_channel;
+    use crate::exec_world::build_executor_channel_with_extra_roots;
     use crate::tests::EnvHomeGuard;
 
     async fn build_with_home_strict(strict: bool) {
@@ -376,11 +438,18 @@ mod w5r2 {
         )
         .expect("seed home config.json");
 
-        let channel = build_executor_channel(dir.path(), dir.path(), {
-            let store = nemesis_config::ConfigStore::load(&dir.path().join("config.json"))
-                .expect("load config store");
-            store.handle()
-        })
+        let channel = build_executor_channel_with_extra_roots(
+            dir.path(),
+            dir.path(),
+            {
+                let store = nemesis_config::ConfigStore::load(&dir.path().join("config.json"))
+                    .expect("load config store");
+                store.handle()
+            },
+            Vec::new(),
+            true,
+            None,
+        )
         .expect("build_executor_channel")
         .expect("enabled=true → Some(channel)");
         let _ = channel; // stdio 回退装配成功即达靶（warn 尾注两形态）。

@@ -14,7 +14,7 @@ fn write_sandboxie_ini_emits_allow_network_directive() {
     let box_root = dir.path().join("box").join("NemesisBox");
 
     // allow_network=true → AllowNetworkAccess=y (and NOT =n)
-    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, true).expect("write ini (true)");
+    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, true, &[]).expect("write ini (true)");
     let content = std::fs::read_to_string(&ini_path).expect("read ini");
     assert!(
         content.contains("AllowNetworkAccess=y"),
@@ -26,7 +26,7 @@ fn write_sandboxie_ini_emits_allow_network_directive() {
     );
 
     // allow_network=false → AllowNetworkAccess=n
-    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, false).expect("write ini (false)");
+    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, false, &[]).expect("write ini (false)");
     let content = std::fs::read_to_string(&ini_path).expect("read ini");
     assert!(
         content.contains("AllowNetworkAccess=n"),
@@ -45,7 +45,7 @@ fn write_ini_logs_and_pins_security_directives() {
     let tmp = tempfile::tempdir().unwrap();
     let ini = tmp.path().join("Sandboxie.ini");
     let box_root = tmp.path().join("box").join("NemesisBox");
-    write_sandboxie_ini(&ini, "NemesisBox", &box_root, false).unwrap();
+    write_sandboxie_ini(&ini, "NemesisBox", &box_root, false, &[]).unwrap();
     let text = std::fs::read_to_string(&ini).unwrap();
     // 安全命门行逐条钉死（改任何一行都会被这条测试抓住）
     assert!(text.contains("[NemesisBox]"));
@@ -59,7 +59,7 @@ fn write_ini_logs_and_pins_security_directives() {
     );
     assert!(text.contains(&format!(r"FileRootPath=\??\{}", box_root.display())));
     // 幂等重写（allow_network 翻转）
-    write_sandboxie_ini(&ini, "NemesisBox", &box_root, true).unwrap();
+    write_sandboxie_ini(&ini, "NemesisBox", &box_root, true, &[]).unwrap();
     assert!(
         std::fs::read_to_string(&ini)
             .unwrap()
@@ -121,7 +121,7 @@ fn agent_box_directives_pin() {
     let dir = tempfile::tempdir().unwrap();
     let box_root = dir.path().join("box").join("NemesisAgent_x");
     let home = dir.path().join("agents").join("x").join("home");
-    let d = agent_box_directives("x", &box_root, &home, false);
+    let d = agent_box_directives("x", &box_root, &home, false, &[]);
 
     assert_eq!(d[0], ("Enabled".into(), "y".into()));
     assert_eq!(d[1], ("AllowNetworkAccess".into(), "n".into()));
@@ -159,7 +159,7 @@ fn agent_box_directives_pin() {
     assert_eq!(d.len(), 7, "指令集有增减必须先改这条钉死测试");
 
     // allow_network=true 翻转
-    let d = agent_box_directives("x", &box_root, &home, true);
+    let d = agent_box_directives("x", &box_root, &home, true, &[]);
     assert_eq!(d[1], ("AllowNetworkAccess".into(), "y".into()));
 }
 
@@ -216,7 +216,7 @@ fn upsert_agent_box_section_end_to_end_idempotent() {
     let box_root = dir.path().join("box").join("NemesisAgent_w1");
     let home = dir.path().join("agents").join("w1").join("home");
 
-    upsert_agent_box_section(&ini, "w1", &box_root, &home, false).unwrap();
+    upsert_agent_box_section(&ini, "w1", &box_root, &home, false, &[]).unwrap();
     let text = std::fs::read_to_string(&ini).unwrap();
     assert!(text.contains("[NemesisAgent_w1]"));
     assert!(text.contains(r"OpenPipePath=\Device\NamedPipe\NemesisAgent_w1_*"));
@@ -224,7 +224,7 @@ fn upsert_agent_box_section_end_to_end_idempotent() {
     assert!(text.contains(&format!(r"{}\browser-profile\*", home.display())));
 
     // 幂等：重复 upsert 不产生重复节
-    upsert_agent_box_section(&ini, "w1", &box_root, &home, true).unwrap();
+    upsert_agent_box_section(&ini, "w1", &box_root, &home, true, &[]).unwrap();
     let text = std::fs::read_to_string(&ini).unwrap();
     assert_eq!(text.matches("[NemesisAgent_w1]").count(), 1);
     assert!(text.contains("AllowNetworkAccess=y"), "翻转生效");
@@ -238,11 +238,11 @@ fn write_full_ini_wipes_agent_sections_upsert_heals() {
     let dir = tempfile::tempdir().unwrap();
     let ini = dir.path().join("Sandboxie.ini");
     let box_root = dir.path().join("box").join("NemesisBox");
-    write_sandboxie_ini(&ini, "NemesisBox", &box_root, false).unwrap();
+    write_sandboxie_ini(&ini, "NemesisBox", &box_root, false, &[]).unwrap();
 
     let agent_root = dir.path().join("box").join("NemesisAgent_w1");
     let agent_home = dir.path().join("agents").join("w1").join("home");
-    upsert_agent_box_section(&ini, "w1", &agent_root, &agent_home, false).unwrap();
+    upsert_agent_box_section(&ini, "w1", &agent_root, &agent_home, false, &[]).unwrap();
     assert!(
         std::fs::read_to_string(&ini)
             .unwrap()
@@ -250,7 +250,7 @@ fn write_full_ini_wipes_agent_sections_upsert_heals() {
     );
 
     // install/start 路径：整文件重写 NemesisBox → agent 节被抹掉
-    write_sandboxie_ini(&ini, "NemesisBox", &box_root, false).unwrap();
+    write_sandboxie_ini(&ini, "NemesisBox", &box_root, false, &[]).unwrap();
     let text = std::fs::read_to_string(&ini).unwrap();
     assert!(
         !text.contains("[NemesisAgent_w1]"),
@@ -258,8 +258,163 @@ fn write_full_ini_wipes_agent_sections_upsert_heals() {
     );
 
     // spawn 侧自愈：一次 upsert 恢复，NemesisBox 主节不受影响
-    upsert_agent_box_section(&ini, "w1", &agent_root, &agent_home, false).unwrap();
+    upsert_agent_box_section(&ini, "w1", &agent_root, &agent_home, false, &[]).unwrap();
     let text = std::fs::read_to_string(&ini).unwrap();
     assert!(text.contains("[NemesisAgent_w1]"));
     assert!(text.contains("[NemesisBox]"));
+}
+
+// ---------------------------------------------------------------------------
+// 第四轮横扫（2026-11-27）：知识库配对双根写穿透。镜像写是「写盘即生效」
+// 承诺本体，盒虚拟化困住即静默丢失且 `sandbox pending/commit`（工作区子树
+// 口径）救不回——全局盒与 per-agent 盒的指令集都必须支持调用方按实体形态
+// 追加写穿透树。空切片 = 旧行为逐字节不变。
+// ---------------------------------------------------------------------------
+
+/// `global_box_directives`：基线 5 指令 + 写穿透行追加（顺序=调用顺序）；
+/// 空清单 = 基线 5 条（无任何 OpenFilePath 行 = 旧行为）。
+#[test]
+fn global_box_directives_write_through_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let box_root = dir.path().join("box").join("NemesisBox");
+    let mirror = dir.path().join("mirror");
+    let info = dir.path().join("info");
+
+    let d = global_box_directives(
+        "NemesisBox",
+        &box_root,
+        false,
+        &[mirror.clone(), info.clone()],
+    );
+    assert_eq!(d.len(), 7, "基线 5 + 写穿透 2");
+    assert_eq!(d[0], ("Enabled".into(), "y".into()));
+    assert_eq!(
+        d[4],
+        (
+            "FileRootPath".into(),
+            format!(r"\??\{}", box_root.display())
+        )
+    );
+    assert_eq!(
+        d[5],
+        ("OpenFilePath".into(), format!(r"{}\*", mirror.display()))
+    );
+    assert_eq!(
+        d[6],
+        ("OpenFilePath".into(), format!(r"{}\*", info.display()))
+    );
+
+    // 空清单 = 旧行为：基线 5 条、零 OpenFilePath
+    let d = global_box_directives("NemesisBox", &box_root, false, &[]);
+    assert_eq!(d.len(), 5, "空清单=基线 5 指令（旧行为）");
+    assert!(d.iter().all(|(k, _)| k != "OpenFilePath"));
+}
+
+/// `write_sandboxie_ini` 落盘形态：带清单 = 写穿透行进 `[NemesisBox]` 段；
+/// 摘掉写穿透行后与空清单输出**逐字节一致**（空切片=旧行为不变的可执行
+/// 证明；全局盒基线本就无 OpenFilePath 行，摘除即还原）。
+#[test]
+fn write_sandboxie_ini_write_through_and_empty_slice_byte_compatible() {
+    let dir = tempfile::tempdir().unwrap();
+    let box_root = dir.path().join("box").join("NemesisBox");
+    let mirror = dir.path().join("mirror");
+    let info = dir.path().join("info");
+    let ini_a = dir.path().join("a.ini");
+    let ini_b = dir.path().join("b.ini");
+
+    write_sandboxie_ini(
+        &ini_a,
+        "NemesisBox",
+        &box_root,
+        false,
+        &[mirror.clone(), info.clone()],
+    )
+    .unwrap();
+    write_sandboxie_ini(&ini_b, "NemesisBox", &box_root, false, &[]).unwrap();
+
+    let a = std::fs::read_to_string(&ini_a).unwrap();
+    let b = std::fs::read_to_string(&ini_b).unwrap();
+    // 空清单版：零写穿透行（旧行为逐字节保留——既有安全行钉死测试全覆盖）
+    assert!(
+        b.lines().all(|l| !l.starts_with("OpenFilePath=")),
+        "空清单必须零写穿透行: {b}"
+    );
+    // 带清单版：两行 OpenFilePath 在段尾；摘除后与空清单版逐字节一致
+    assert!(a.contains(&format!(r"OpenFilePath={}\*", mirror.display())));
+    assert!(a.contains(&format!(r"OpenFilePath={}\*", info.display())));
+    let stripped = a
+        .lines()
+        .filter(|l| !l.starts_with("OpenFilePath="))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        stripped,
+        b.trim_end(),
+        "摘除写穿透行后必须与空清单输出逐字节一致（空切片=旧行为不变）"
+    );
+}
+
+/// `agent_box_directives` 带额外写穿透清单：基线 7 + 清单行追加段尾；
+/// 空清单 = 基线 7（与既有钉死测试的长度断言一致）。
+#[test]
+fn agent_box_directives_write_through_appends_extra_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let box_root = dir.path().join("box").join("NemesisAgent_x");
+    let home = dir.path().join("agents").join("x").join("home");
+    let mirror = dir.path().join("mirror");
+
+    let d = agent_box_directives("x", &box_root, &home, false, std::slice::from_ref(&mirror));
+    assert_eq!(d.len(), 8, "基线 7 + 写穿透 1");
+    assert_eq!(
+        d[7],
+        ("OpenFilePath".into(), format!(r"{}\*", mirror.display()))
+    );
+    assert_eq!(
+        agent_box_directives("x", &box_root, &home, false, &[]).len(),
+        7,
+        "空清单=基线 7（旧行为）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 第十轮横扫（2026-11-27）：写穿透根控制字符过滤——ini 是**行格式**，根含
+// LF/CR 即 Sandboxie 指令注入槽（根字符串 `D:\kb\nOpenFilePath=C:` 断行后
+// 产生 `OpenFilePath=C:\*` 全盘写穿透行）。Dashboard 保存面 validate 已
+// loud 拒绝（nemesis-config），手改文件绕过校验（读盘面 fail-closed 不跑
+// validate）由本 sink 过滤兜底：坏根跳行 + WARN，其余行照常。
+// ---------------------------------------------------------------------------
+
+/// 混合清单只干净根产行（坏根跳过，顺序保持）；全坏清单 = 等价空清单
+/// （零 OpenFilePath 行）。
+#[test]
+fn write_through_directives_skip_control_char_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let box_root = dir.path().join("box").join("NemesisBox");
+    let clean = dir.path().join("info");
+    // 注入形态复现：根字符串内嵌 LF + 伪指令行（JSON 手改可达——该形态
+    // is_absolute 校验放行，唯有 sink 过滤能拦）
+    let dirty_inject = PathBuf::from("D:\\kb\nOpenFilePath=C:");
+    let dirty_tab = PathBuf::from("D:\\kb\t2");
+
+    let d = global_box_directives(
+        "NemesisBox",
+        &box_root,
+        false,
+        &[dirty_inject, clean.clone(), dirty_tab],
+    );
+    assert_eq!(d.len(), 6, "基线 5 + 干净根 1（两个控制字符根跳行）");
+    assert_eq!(
+        d[5],
+        ("OpenFilePath".into(), format!(r"{}\*", clean.display()))
+    );
+
+    // 全坏清单 = 基线 5（零 OpenFilePath 行 = 等价空清单语义）
+    let d = global_box_directives(
+        "NemesisBox",
+        &box_root,
+        false,
+        &[PathBuf::from("D:\nx"), PathBuf::from("D:\ry")],
+    );
+    assert_eq!(d.len(), 5, "全坏清单 = 基线 5（等价空清单）");
+    assert!(d.iter().all(|(k, _)| k != "OpenFilePath"));
 }

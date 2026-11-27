@@ -630,11 +630,22 @@ impl ModuleHandler for SandboxHandler {
                 update_executor(&home, |e| {
                     e.allow_network = enabled;
                 })?;
+                // 写穿透清单（第四轮横扫 2026-11-27 建立面；第八轮横扫
+                // 2026-11-27 改全景单一真相源）：整文件重写必须带 home 域
+                // **全景**（workspace 级 + agents/* 逐 agent，与 CLI
+                // `sandbox start` / 装配期 upsert 同一
+                // `global_write_through_roots` 真相源）——此前只带 workspace
+                // 级：agent 级线被网络开关一翻转就抹掉，窗口期内镜像写困盒
+                // 静默丢失（且 `sandbox pending/commit` 只枚举工作区子树，
+                // 救不回）。
+                let write_through =
+                    nemesis_agent::knowledge::global_write_through_roots(&home.join("workspace"));
                 nemesis_sandbox::ini::write_sandboxie_ini(
                     &paths.ini_path,
                     nemesis_sandbox::DEFAULT_BOX_NAME,
                     &paths.box_root,
                     enabled,
+                    &write_through,
                 )
                 .map_err(|e| format!("rewrite Sandboxie.ini: {e}"))?;
                 #[cfg(target_os = "windows")]

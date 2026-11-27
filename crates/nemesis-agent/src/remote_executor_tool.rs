@@ -264,6 +264,15 @@ pub struct ExecutorChannel {
     /// （词表缺席 = 子进程按现状内置默认词表装配，两侧一致）。
     /// `None` = 老网关/测试/裸构造 = 子进程现状（内置默认词表）。
     pub deny_patterns_child: Option<Vec<String>>,
+    /// 知识库子进程重定向透传（天工系统 v1 第三轮横扫，2026-11-27）：
+    /// `Some(path)` 时 `env_pairs()` 写 `NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG`，
+    /// 子进程侧 `exec_worker` 据此构造 `KnowledgeHandle` 并接进工具注册
+    /// config——exec 分离形态下四文件工具（read/write/edit/multiedit）的
+    /// 项目视角路径重定向在子进程内**真实发生**（此前只透传围栏根、
+    /// 重定向缺席：LLM 发项目视角路径、围栏放行、工具按字面路径
+    /// File not found）。`None` = 老网关/测试/裸构造 = 子进程不重定向
+    /// （字节不变）。缺席不设 env（「缺省不设 env」家族纪律）。
+    pub knowledge_config_path: Option<PathBuf>,
     /// Per-call hard timeout (the child must respond within this).
     pub timeout: Duration,
 }
@@ -297,6 +306,7 @@ impl ExecutorChannel {
             restrict_child: true,
             protect_log_tree_child: true,
             deny_patterns_child: None,
+            knowledge_config_path: None,
             timeout: Duration::from_secs(24 * 3600),
         }
     }
@@ -394,6 +404,16 @@ impl ExecutorChannel {
         self
     }
 
+    /// 注入知识库子进程重定向配置路径（天工系统 v1 第三轮横扫
+    /// 2026-11-27；见 [`ExecutorChannel::knowledge_config_path`]）。gateway
+    /// 装配侧（exec_world）从知识库句柄派生注入；测试/裸构造默认 None
+    /// （子进程不重定向，现状不变）。Option 形态（与 `with_deny_patterns`
+    /// 家族一致）——装配值本就是「句柄派生、None 合法」的透传。
+    pub fn with_knowledge_config_path(mut self, path: Option<PathBuf>) -> Self {
+        self.knowledge_config_path = path;
+        self
+    }
+
     /// Windows dispatch 通道判定（纯函数，单测可达）——盒 wrap 缺位
     /// 且用户态 fallback 判定可顶 → stdio + 用户态标记（子进程自装 ACL）；
     /// 其余（盒在场 / 未注入 / 判定 false）→ 管道（现状）。
@@ -460,6 +480,16 @@ impl ExecutorChannel {
             env.push((
                 "NEMESISBOT_EXECUTOR_DENY_PATTERNS".to_string(),
                 patterns.join("\u{1f}"),
+            ));
+        }
+        // 知识库子进程重定向透传（天工系统 v1 第三轮横扫 2026-11-27）：
+        // 只在有配置路径时设（「缺省不设 env」家族纪律，老网关 spawn 的
+        // 子进程字节不变）。子进程 exec_worker 据此构造 KnowledgeHandle
+        // 接进工具注册——四文件工具的项目视角路径重定向在子进程真实发生。
+        if let Some(kp) = &self.knowledge_config_path {
+            env.push((
+                "NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG".to_string(),
+                kp.to_string_lossy().into_owned(),
             ));
         }
         env

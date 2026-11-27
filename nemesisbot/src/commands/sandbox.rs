@@ -674,12 +674,24 @@ impl Drop for ChildJob {
 #[cfg(target_os = "windows")]
 use std::os::windows::io::AsRawHandle as _;
 
+/// 全局盒写穿透清单（第四轮横扫 2026-11-27 建立面；第八轮横扫 2026-11-27
+/// 改全景单一真相源）：home 域内全部知识库实体（workspace 级 + agents/*）
+/// 的围栏双根并集——`global_write_through_roots`。镜像写是「写盘即生效」
+/// 承诺本体，盒虚拟化困住即静默丢失且 `sandbox pending/commit`（工作区
+/// 子树口径）救不回；`sandbox start` / 网关 ensure-ready 写全局 ini 时
+/// 必须带**全景**（单实体清单会被其他实体的 upsert 互抹）。全域配置缺席
+/// / 关闭 = 空集 = 旧行为逐字节不变。
+fn knowledge_write_through_roots(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    nemesis_agent::knowledge::global_write_through_roots(&home.join("workspace"))
+}
+
 /// Activate the engine: install driver + service + ini + start SbieSvc. Needs
 /// admin (kernel driver) → UAC self-relaunch. Requires files acquired (`install`).
 fn start(paths: &nemesis_sandbox::SandboxPaths, local: bool, internal: bool) -> Result<()> {
+    let kb_roots = knowledge_write_through_roots(&paths.home);
     if internal {
         println!("[sandbox] activating engine (elevated child)...");
-        nemesis_sandbox::install::start(paths)?;
+        nemesis_sandbox::install::start(paths, &kb_roots)?;
         println!("[sandbox] engine activated — SbieSvc RUNNING.");
         return Ok(());
     }
@@ -702,7 +714,7 @@ fn start(paths: &nemesis_sandbox::SandboxPaths, local: bool, internal: bool) -> 
         return Ok(());
     }
     println!("[sandbox] activating engine (already elevated)...");
-    nemesis_sandbox::install::start(paths)?;
+    nemesis_sandbox::install::start(paths, &kb_roots)?;
     println!("[sandbox] engine activated — SbieSvc RUNNING.");
     Ok(())
 }
@@ -778,8 +790,9 @@ fn stop(
 /// subcommand; users use `sandbox start`/`stop` instead.
 fn ensure_ready(home: &std::path::Path, internal: bool) -> Result<()> {
     let paths = nemesis_sandbox::SandboxPaths::new(home);
+    let kb_roots = knowledge_write_through_roots(home);
     if internal {
-        nemesis_sandbox::install::ensure_installed(&paths)?;
+        nemesis_sandbox::install::ensure_installed(&paths, &kb_roots)?;
         println!("[sandbox] engine ensured installed + SbieSvc running");
         return Ok(());
     }
@@ -804,7 +817,7 @@ fn ensure_ready(home: &std::path::Path, internal: bool) -> Result<()> {
         println!("[sandbox] SbieSvc state after ensure-ready: {state:?}");
         return Ok(());
     }
-    nemesis_sandbox::install::ensure_installed(&paths)?;
+    nemesis_sandbox::install::ensure_installed(&paths, &kb_roots)?;
     println!("[sandbox] engine ensured installed + SbieSvc running");
     Ok(())
 }
@@ -863,7 +876,10 @@ pub fn ensure_sandbox_ready(home: &std::path::Path, sandbox_enabled: bool) {
                 "[sandbox] engine not fully installed (drv={drv:?}, svc={svc:?}); \
                  running ensure-installed directly (already elevated)"
             );
-            if let Err(e) = nemesis_sandbox::install::ensure_installed(&paths) {
+            if let Err(e) = nemesis_sandbox::install::ensure_installed(
+                &paths,
+                &knowledge_write_through_roots(home),
+            ) {
                 tracing::warn!("[sandbox] ensure-installed failed: {e}");
             }
             return;

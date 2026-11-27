@@ -123,7 +123,8 @@ fn executor_allow_network_follows_config_disk_state() {
 /// nemesis-path `resolve_agent_browser_profile_in_workspace` 同一布局）、
 /// 围栏第二根（home≠exec_root 时透传 home，子进程围栏与主进程同源；
 /// 两根重合不写=6 键，selfbuilt 旧行为逐键一致）；路径专属键
-/// PIPE/SANDBOX_BACKEND 由调用方追加，不在本装配点。
+/// PIPE/SANDBOX_BACKEND 由调用方追加，不在本装配点。知识库键
+/// （第三轮横扫 2026-11-27）由下方专属用例钉死，本用例 None/空 = 不出现。
 #[test]
 fn base_executor_env_keys_pinned() {
     // fixture 路径必须随平台：装配点的 EXTRA_ROOTS 走 `env::join_paths`，
@@ -141,7 +142,7 @@ fn base_executor_env_keys_pinned() {
         "/tmp/agent-home"
     });
     let agent_id = "ag-42";
-    let env = super::base_executor_env(&exec_root, &home, agent_id);
+    let env = super::base_executor_env(&exec_root, &home, agent_id, None, &[]);
 
     assert_eq!(env.len(), 7, "装配点键集合变化必须显式更新本测试");
     let get = |k: &str| {
@@ -174,7 +175,7 @@ fn base_executor_env_keys_pinned() {
     );
 
     // 两根重合（selfbuilt）：不写第二根键，键集合回落 6 键旧行为。
-    let env_same = super::base_executor_env(&exec_root, &exec_root, agent_id);
+    let env_same = super::base_executor_env(&exec_root, &exec_root, agent_id, None, &[]);
     assert_eq!(
         env_same.len(),
         6,
@@ -186,6 +187,96 @@ fn base_executor_env_keys_pinned() {
             .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_EXTRA_ROOTS"),
         "重合形态必须缺第二根键"
     );
+    assert!(
+        !env.iter()
+            .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG"),
+        "knowledge=None 形态不得写知识库 env（家族纪律：缺省不设 env）"
+    );
+}
+
+/// 知识库常驻面 env 装配（天工系统 v1 第三轮横扫，2026-11-27）：
+/// 配置路径透传 + 双根并入 EXTRA_ROOTS（与 home 根排序去重合并）。
+#[test]
+fn base_executor_env_knowledge_wiring() {
+    let exec_root = PathBuf::from(if cfg!(windows) {
+        r"C:\tmp\workspace-root"
+    } else {
+        "/tmp/workspace-root"
+    });
+    let home = PathBuf::from(if cfg!(windows) {
+        r"C:\tmp\agent-home"
+    } else {
+        "/tmp/agent-home"
+    });
+    let kp = exec_root.join("config").join("config.knowledge.json");
+    let root_a = exec_root.join("proj");
+    let root_b = home.join("kb");
+    // 根顺序故意 b 前 a 后：排序职责在装配点不在调用侧。
+    let env = super::base_executor_env(
+        &exec_root,
+        &home,
+        "ag-42",
+        Some(&kp),
+        &[root_b.clone(), root_a.clone()],
+    );
+    let get = |k: &str| {
+        env.iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("缺键 {k}"))
+    };
+    assert_eq!(
+        get("NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG"),
+        kp.to_string_lossy(),
+        "配置路径必须透传（子进程据此构造 KnowledgeHandle——重定向在常驻链真实发生）"
+    );
+    // home（home≠exec_root 在场）+ 双根排序去重合并。
+    let parsed: Vec<PathBuf> =
+        std::env::split_paths(&get("NEMESISBOT_EXECUTOR_EXTRA_ROOTS")).collect();
+    let mut want = vec![home.clone(), root_a, root_b];
+    want.sort();
+    assert_eq!(
+        parsed, want,
+        "EXTRA_ROOTS = home + 知识库双根（排序去重合并，排序职责在装配点）"
+    );
+}
+
+/// 常驻执行体知识库形态判别（`knowledge_executor_env_parts` 三臂）：
+/// main（exec_root=workspace）→ workspace 级配置；selfbuilt（exec_root=
+/// agent home）→ agent 级配置；project（项目目录，两者皆非）→ None。
+#[test]
+fn knowledge_executor_env_parts_form_discrimination() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("workspace");
+    let agent_id = "ag-self";
+
+    // main 臂：exec_root == workspace。
+    let (path, roots) = super::knowledge_executor_env_parts(&ws, &ws, "main");
+    assert_eq!(
+        path.as_ref(),
+        Some(&nemesis_path::resolve_workspace_knowledge_config_path_in_workspace(&ws)),
+        "main 形态 → workspace 级知识库配置"
+    );
+    // 配置文件缺席 = handle 关闭态 = 双根空集（fail-closed，不预判存在性）。
+    assert!(roots.is_empty(), "配置缺席 → 围栏双根空集");
+
+    // selfbuilt 臂：exec_root == agent home。
+    let agent_home = nemesis_path::resolve_agent_home_in_workspace(&ws, agent_id);
+    let (path, _roots) = super::knowledge_executor_env_parts(&ws, &agent_home, agent_id);
+    assert_eq!(
+        path.as_ref(),
+        Some(&nemesis_path::resolve_agent_knowledge_config_path_in_workspace(&ws, agent_id)),
+        "selfbuilt 形态 → agent 级知识库配置"
+    );
+
+    // project 臂：项目目录（既非 workspace 也非 agent home）→ None。
+    let project_dir = tmp.path().join("my-project");
+    let (path, roots) = super::knowledge_executor_env_parts(&ws, &project_dir, agent_id);
+    assert!(
+        path.is_none(),
+        "project 形态 → None（v1 项目会话不装知识库）"
+    );
+    assert!(roots.is_empty(), "None 形态 → 双根空集");
 }
 
 /// （PLAN Linux 项）：persistent stdio 臂的 标记开关取自 config

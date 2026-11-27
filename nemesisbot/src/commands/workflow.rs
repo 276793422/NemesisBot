@@ -537,12 +537,22 @@ async fn cmd_run(
         let world = nemesis_config::ConfigStore::load(&home.join("config.json"))
             .ok()
             .and_then(|store| {
+                // 知识库句柄（天工系统 v1；2026-11-26 UAT 横扫围栏透传 +
+                // 2026-11-27 第三轮横扫子进程重定向接线）：world 通道子进程
+                // 围栏双根 + 重定向 env 都由装配函数从句柄单源派生（与
+                // gateway 侧同源；handle 现构造读一次配置）。
+                let ws = home.join("workspace");
+                let kh = std::sync::Arc::new(nemesis_agent::knowledge::KnowledgeHandle::new(
+                    nemesis_path::resolve_workspace_knowledge_config_path_in_workspace(&ws),
+                ));
                 crate::exec_world::build_workflow_world(
                     home,
                     &home.join("workspace"),
                     vec![workflow_root.clone()],
                     vec![home.join("workspace")],
+                    Vec::new(),
                     store.handle(),
+                    Some(&kh),
                 )
                 .ok()
                 .flatten()

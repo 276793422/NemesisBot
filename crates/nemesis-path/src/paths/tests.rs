@@ -3087,3 +3087,39 @@ fn test_minimal_config_workspace_path_bare_tilde_expands() {
         serde_json::from_str(r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
     assert!(cfg4.workspace_path().is_none());
 }
+
+/// agent_id 路径层消毒（第十一轮横扫 2026-11-27）：外部输入解析形态
+/// （`..`/分隔符/冒号）confine 在 `<workspace>/agents/<消毒名>/` 单段内
+/// 不越 workspace；生产 uuid 形态恒等（消毒 no-op）。memory 物理目录是
+/// 不经 home 的独立 join 点，同批加固同测。
+#[test]
+fn test_resolve_agent_paths_sanitize_traversal_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+
+    for hostile in [r"..\..\evil", "../../evil", "a/b", "a:b"] {
+        let p = resolve_agent_home_in_workspace(ws, hostile);
+        assert!(
+            p.starts_with(ws.join("agents")),
+            "home confine 失败（{hostile}）: {}",
+            p.display()
+        );
+        let rel = p.strip_prefix(ws).unwrap();
+        assert!(
+            rel.components()
+                .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "消毒后不得含穿越组件（{hostile}）: {}",
+            p.display()
+        );
+        let m = resolve_agent_memory_dir_in_workspace(ws, hostile);
+        assert!(
+            m.starts_with(ws.join("memory").join("agents")),
+            "memory confine 失败（{hostile}）: {}",
+            m.display()
+        );
+    }
+
+    // 生产 uuid 形态恒等（消毒 no-op）。
+    let p = resolve_agent_home_in_workspace(ws, "0af9c1e2d3b4");
+    assert_eq!(p, ws.join("agents").join("0af9c1e2d3b4").join("home"));
+}

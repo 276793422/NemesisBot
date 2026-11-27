@@ -362,7 +362,7 @@ fn make_shared(home: &std::path::Path) -> Arc<SharedResources> {
     // `ConfigStore::load(config_path)` 再把句柄交给工厂（gateway.rs 同款顺序），
     // 而 build_agent_loop 的 executor 通道装配读的是 shared.config_store.handle()
     // 运行时缓存，不是磁盘 config.json。此前夹具把 executor 段只写进磁盘、store
-    // 却留在 Config::default() → build_executor_channel 恒返回 None → Layer 1
+    // 却留在 Config::default() → build_executor_channel_with_extra_roots 恒返回 None → Layer 1
     // MOVE 工具替换循环从未被真实命中（假绿）。这里按 gateway 顺序把磁盘配置
     // 装进 store；load 失败（config.json 缺失/坏 JSON 时 load_config 有内嵌默认
     // 回落，Err 极罕）退回默认 store，与旧夹具行为一致。
@@ -585,7 +585,7 @@ async fn build_agent_loop_with_executor_layer1_wraps_move_tools() {
     // 配置必须经 ConfigStore 注入（夹具真相源）：工厂的通道装配读
     // shared.config_store.handle()，不读磁盘。RemoteExecutorTool 的元数据故意
     // 全量委托给本地实现（prompt-cache 逐字节同源保证），注册边界无任何外部
-    // 可观测物 —— 所以能钉住的确定性契约是「同一句柄喂给 build_executor_channel
+    // 可观测物 —— 所以能钉住的确定性契约是「同一句柄喂给 build_executor_channel_with_extra_roots
     // 必须出 Some」：它失守即意味着有人把注入改回只写磁盘（替换循环随之静默失活）。
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
@@ -595,10 +595,13 @@ async fn build_agent_loop_with_executor_layer1_wraps_move_tools() {
     );
 
     let shared = make_shared(&home);
-    let channel = crate::exec_world::build_executor_channel(
+    let channel = crate::exec_world::build_executor_channel_with_extra_roots(
         &home,
         &home.join("workspace"),
         shared.config_store.handle(),
+        Vec::new(),
+        true,
+        None,
     )
     .expect("channel build must not error offline");
     assert!(
@@ -958,8 +961,15 @@ mod r10 {
         let store = nemesis_config::ConfigStore::load(&home.join("config.json"))
             .expect("valid fixture config");
         let workspace = home.join("workspace");
-        let channel = crate::exec_world::build_executor_channel(&home, &workspace, store.handle())
-            .expect("channel build must not error on unready sandbox");
+        let channel = crate::exec_world::build_executor_channel_with_extra_roots(
+            &home,
+            &workspace,
+            store.handle(),
+            Vec::new(),
+            true,
+            None,
+        )
+        .expect("channel build must not error on unready sandbox");
         // 沙盒未就绪 ≠ 失败：降级为 stdio（Layer 1）通道仍然给出。
         assert!(
             channel.is_some(),

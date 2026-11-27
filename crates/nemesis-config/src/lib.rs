@@ -12,6 +12,7 @@ pub mod commands;
 pub mod credentials;
 pub mod eval_rules;
 pub mod hot_reload;
+pub mod knowledge;
 pub mod plugin_wasm;
 pub mod plugins_native;
 pub mod provider_resolver;
@@ -23,6 +24,11 @@ pub mod vault_ref;
 
 pub use commands::{CommandEntry, CommandsConfig, load_commands_config, save_commands_config};
 pub use hot_reload::HotReloader;
+pub use knowledge::{
+    KnowledgeConfig, KnowledgePair, TIANGONG_LOAD_FULL, TIANGONG_LOAD_POINTER,
+    load_knowledge_config, path_components_prefix_of, save_knowledge_config,
+    validate_knowledge_config,
+};
 
 // vault（计划）：`vault:<alias>` 引用的前缀常量、全局
 // 解析器钩子与通用秘密字段解析（channel/cluster/MCP 消费点共用）。
