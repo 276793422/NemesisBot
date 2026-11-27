@@ -95,6 +95,7 @@ pub(crate) async fn handle_chat_stream(
     let proxy_trace_id = format!("chat-stream-proxy-{proxy_ids}");
     // async_stream 块 'static，借不了 state——clone 进块。
     let ds_block = state.data_store.clone();
+    let estop_block = state.estop.clone();
     let em_block = execution_model.clone();
     let sk_block = proxy_session_key.clone();
     let tid_block = proxy_trace_id.clone();
@@ -120,6 +121,17 @@ pub(crate) async fn handle_chat_stream(
     };
 
     let stream = async_stream::stream! {
+        // BUG-20261128-016：急停冻结裸 LLM 代理 lane——openai_compat 同款
+        // 纪律：急停时不让请求进 provider 烧 token。闸在 provider 检查
+        // 之前（急停语义优先于任何配置状态）；error + done 双事件收尾
+        // 对齐流式契约（done 缺席客户端会挂在等终态）。
+        if estop_block.as_ref().is_some_and(|e| e.is_engaged()) {
+            yield Ok(SseEvent::default()
+                .event("error")
+                .data(r#"{"error":"急停（estop）已触发：agent 活动已冻结，释放急停后恢复"}"#));
+            yield Ok(SseEvent::default().event("done").data("[DONE]"));
+            return;
+        }
         let Some(provider) = provider else {
             yield Ok(SseEvent::default()
                 .event("error")

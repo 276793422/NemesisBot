@@ -517,3 +517,22 @@ async fn agt_cleanup_offline_without_cluster_is_honest_error() {
         .await;
     assert!(result.is_err(), "无集群实例必须诚实报错而非假成功");
 }
+
+// BUG-20261128-016 红证：persona_generate = 双次 LLM 调用（带工具环），
+// 急停（estop）期间必须冻结（EST-04 tasks.submit 同款纪律）。
+#[tokio::test]
+async fn agt_persona_generate_frozen_under_estop() {
+    let dir = tempfile::tempdir().unwrap();
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let ctx = agt_make_ctx(&dir, None, None, Some(estop));
+    let err = ClusterHandler::new()
+        .handle_cmd(
+            "persona_generate",
+            Some(serde_json::json!({ "kind": "jd", "text": "岗位描述" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("急停"), "err: {err}");
+}

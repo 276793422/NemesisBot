@@ -243,6 +243,15 @@ impl ModuleHandler for ClusterHandler {
                 self.identity_save_file(&data, ctx)
             }
             "persona_generate" => {
+                // BUG-20261128-016：persona 生成 = 双次 LLM 调用（带工具环），
+                // 急停期间冻结（EST-04 tasks.submit 同款纪律——gateway 内烧
+                // token 的 lane 都要 estop 闸）。
+                if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+                    return Err(
+                        "⛔ 急停（estop）生效中，persona 生成已冻结：`estop --release` 释放后恢复"
+                            .to_string(),
+                    );
+                }
                 let data = data.ok_or("missing data")?;
                 self.persona_generate(&data, ctx).await
             }

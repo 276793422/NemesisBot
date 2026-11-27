@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 fn make_state(
     provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
+    estop: Option<Arc<nemesis_agent::estop::EstopState>>,
 ) -> Arc<crate::api_handlers::AppState> {
     use crate::api_handlers::AppState;
     use crate::events::EventHub;
@@ -56,7 +57,7 @@ fn make_state(
         #[cfg(not(feature = "workflow"))]
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
-        estop: None,
+        estop,
         estop_audit: None,
         background_registry: None,
         signature_verify: None,
@@ -118,7 +119,7 @@ async fn explicit_model_passes_through_to_provider() {
         .await;
 
     let body = post_stream(
-        make_state(Some(provider_for(server.uri()))),
+        make_state(Some(provider_for(server.uri())), None),
         serde_json::json!({
             "messages": [{"role": "user", "content": "hi"}],
             "model": "explicit-model-x"
@@ -146,7 +147,7 @@ async fn unterminated_backend_stream_still_gets_done_event() {
         .await;
 
     let body = post_stream(
-        make_state(Some(provider_for(server.uri()))),
+        make_state(Some(provider_for(server.uri())), None),
         serde_json::json!({ "messages": [{"role": "user", "content": "hi"}] }),
     )
     .await;
@@ -217,16 +218,19 @@ fn delta_chunk(
 
 #[tokio::test]
 async fn error_frame_carries_retained_partial_after_forwarded_deltas() {
-    let state = make_state(Some(Arc::new(ScriptedStream {
-        script: vec![
-            delta_chunk("第一段"),
-            delta_chunk("第二段"),
-            Err(FailoverError::Unknown {
-                provider: "scripted".to_string(),
-                message: "mid-stream failure".to_string(),
-            }),
-        ],
-    })));
+    let state = make_state(
+        Some(Arc::new(ScriptedStream {
+            script: vec![
+                delta_chunk("第一段"),
+                delta_chunk("第二段"),
+                Err(FailoverError::Unknown {
+                    provider: "scripted".to_string(),
+                    message: "mid-stream failure".to_string(),
+                }),
+            ],
+        })),
+        None,
+    );
     let body = post_stream(
         state,
         serde_json::json!({"messages": [{"role": "user", "content": "hi"}]}),
@@ -248,12 +252,15 @@ async fn error_frame_carries_retained_partial_after_forwarded_deltas() {
 #[tokio::test]
 async fn error_frame_without_accumulated_deltas_keeps_legacy_shape() {
     // 无累积（首消息即 Err）维持纯 {"error": …} 旧形态（兼容）。
-    let state = make_state(Some(Arc::new(ScriptedStream {
-        script: vec![Err(FailoverError::Unknown {
-            provider: "scripted".to_string(),
-            message: "immediate failure".to_string(),
-        })],
-    })));
+    let state = make_state(
+        Some(Arc::new(ScriptedStream {
+            script: vec![Err(FailoverError::Unknown {
+                provider: "scripted".to_string(),
+                message: "immediate failure".to_string(),
+            })],
+        })),
+        None,
+    );
     let body = post_stream(
         state,
         serde_json::json!({"messages": [{"role": "user", "content": "hi"}]}),
@@ -270,15 +277,18 @@ async fn error_frame_without_accumulated_deltas_keeps_legacy_shape() {
 #[tokio::test]
 async fn error_frame_whitespace_only_deltas_treated_as_no_accumulation() {
     // 空白增量视同无累积（与 stream_util trim 判空口径一致）。
-    let state = make_state(Some(Arc::new(ScriptedStream {
-        script: vec![
-            delta_chunk("  \n"),
-            Err(FailoverError::Unknown {
-                provider: "scripted".to_string(),
-                message: "after whitespace".to_string(),
-            }),
-        ],
-    })));
+    let state = make_state(
+        Some(Arc::new(ScriptedStream {
+            script: vec![
+                delta_chunk("  \n"),
+                Err(FailoverError::Unknown {
+                    provider: "scripted".to_string(),
+                    message: "after whitespace".to_string(),
+                }),
+            ],
+        })),
+        None,
+    );
     let body = post_stream(
         state,
         serde_json::json!({"messages": [{"role": "user", "content": "hi"}]}),
@@ -289,5 +299,28 @@ async fn error_frame_whitespace_only_deltas_treated_as_no_accumulation() {
     assert!(
         !body.contains("retained_partial"),
         "空白增量不触发 retained_partial: {body}"
+    );
+}
+
+// BUG-20261128-016 红证：急停（estop）期间裸 LLM 代理 lane（/api/chat/stream）
+// 必须冻结——openai_compat 同款纪律：急停时不让请求进 provider 烧 token。
+#[tokio::test]
+async fn estop_engaged_freezes_bare_stream_lane() {
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let state = make_state(None, Some(estop));
+    let body = post_stream(
+        state,
+        serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+    )
+    .await;
+    assert!(body.contains("急停"), "estop gate missing, body: {body}");
+    assert!(
+        body.contains("event: done"),
+        "terminal done event missing, body: {body}"
+    );
+    assert!(
+        !body.contains("No streaming provider"),
+        "fell through to provider arm, body: {body}"
     );
 }

@@ -85,6 +85,12 @@ impl ModuleHandler for ModelsHandler {
                 self.set_default(home, &name, ctx)
             }
             "test" => {
+                // BUG-20261128-016：交互探针 = 真实 LLM 请求（8 题探针族），
+                // 急停期间冻结。B39 SaveCheck/后台 effort 探针刻意不闸
+                // （挂在显式 add 流程，非独立烧 token 动作）。
+                if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+                    return Err("模型探针被拒绝：急停（estop）冻结中".into());
+                }
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
                 self.test(home, &name, &data).await
@@ -108,6 +114,10 @@ impl ModuleHandler for ModelsHandler {
             "health" => self.health(ctx, data),
             // effort 探针手动重探（同 CLI `model probe` 的 effort 部分）。
             "probe_effort" => {
+                // BUG-20261128-016：手动重探 = 真实 LLM 请求，急停期间冻结。
+                if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+                    return Err("effort 探针被拒绝：急停（estop）冻结中".into());
+                }
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
                 let receipt = probe_effort_entry(home, &name).await?;

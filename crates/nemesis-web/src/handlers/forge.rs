@@ -88,6 +88,12 @@ impl ModuleHandler for ForgeHandler {
             // A5：学习闭环状态权威源 = Forge 运行时旗标（热切后 config
             // 快照会说谎）；实例缺席 = None，reflect 内回落 config 值。
             "reflect" => {
+                // BUG-20261128-016：reflect = judge LLM 裸调
+                // （resolve_judge_caller 现场造 provider 直连），急停期间
+                // 冻结（同文件 learn.run 同款纪律）。
+                if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+                    return Err("反思（reflect）被拒绝：急停（estop）冻结中".into());
+                }
                 let learning_flag = ctx
                     .state
                     .forge
@@ -97,6 +103,12 @@ impl ModuleHandler for ForgeHandler {
                     .await
             }
             "test" => {
+                // BUG-20261128-016：forge test 走 K1 runner（独立装配自带
+                // 新鲜 estop，gateway 急停传导不到它）——闸必须在 WSAPI
+                // 入口挡住，不能指望 runner 内部。
+                if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+                    return Err("技能行为测试（forge.test）被拒绝：急停（estop）冻结中".into());
+                }
                 let data = data.ok_or("missing data")?;
                 forge_test_cmd(home, workspace, &data, ctx.state.data_store.clone())
             }
@@ -1800,3 +1812,7 @@ fn build_caller_for_ref(
             .with_data_store(data_store.cloned()),
     )))
 }
+
+// BUG-20261128-016：急停（estop）冻结门测试（reflect / test 两烧 token lane）。
+#[cfg(test)]
+mod forge_estop_tests;

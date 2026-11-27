@@ -558,6 +558,14 @@ fn list_attaches_extras_and_catalog_match() {
 // pub(super)：copy_rename_tests（批）复用同一 AppState 形态，
 // 免复制 60 行构造体。
 pub(super) fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
+    make_ctx_with_estop(dir, None)
+}
+
+/// BUG-20261128-016：estop 注入变体（急停冻结门测试专用）。
+fn make_ctx_with_estop(
+    dir: &tempfile::TempDir,
+    estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+) -> crate::ws_router::RequestContext {
     use crate::api_handlers::AppState;
     use crate::events::EventHub;
     use crate::session::SessionManager;
@@ -605,7 +613,7 @@ pub(super) fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestCont
         #[cfg(not(feature = "workflow"))]
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
-        estop: None,
+        estop,
         estop_audit: None,
         background_registry: None,
         signature_verify: None,
@@ -1553,4 +1561,38 @@ fn update_field_stream_swap_fires_for_default_entry() {
         "no",
         "非默认条目仍要落盘"
     );
+}
+
+// BUG-20261128-016 红证：交互探针（models.test / models.probe_effort）是
+// 真实 LLM 请求（8 题探针族），急停（estop）期间必须冻结。
+#[tokio::test]
+async fn models_test_frozen_under_estop() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let ctx = make_ctx_with_estop(&dir, Some(estop));
+    let err = ModelsHandler::new()
+        .handle_cmd("test", Some(serde_json::json!({ "name": "m1" })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("急停"), "err: {err}");
+}
+
+#[tokio::test]
+async fn models_probe_effort_frozen_under_estop() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let ctx = make_ctx_with_estop(&dir, Some(estop));
+    let err = ModelsHandler::new()
+        .handle_cmd(
+            "probe_effort",
+            Some(serde_json::json!({ "name": "m1" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("急停"), "err: {err}");
 }
