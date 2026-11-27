@@ -30,7 +30,6 @@
 //! watcher must not degrade the loop.
 
 use notify::{EventKind, RecursiveMode, Watcher};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -185,24 +184,33 @@ pub fn start_with_debounce(
         .map_err(|e| format!("fs watcher watch({}) failed: {}", watch_root.display(), e))?;
 
     // Debouncer: reset-on-event quiescence window; flush dedupes paths.
+    // BUG-20261127-046：同路径去重必须是**最新分类制**（后到事件覆盖
+    // 分类）——git checkout / 原子保存编辑器在防抖窗口内产生 Remove→Create
+    // 同路径序列，首分类制把 Create 丢掉后 flush 侧 `!removed` 抑制整条
+    // 通知，真实外部修改静默丢失；反向 Create→Remove 则会为已删除文件
+    // 呈现「已修改」。索引表保首到位置（>10 条截断顺序稳定），分类取
+    // 最后一次事件 = 批末文件状态。
     std::thread::Builder::new()
         .name("fs-watcher-debounce".into())
         .spawn(move || {
             let mut pending: Vec<(PathBuf, bool)> = Vec::new();
-            let mut seen: HashSet<PathBuf> = HashSet::new();
+            let mut index: std::collections::HashMap<PathBuf, usize> =
+                std::collections::HashMap::new();
             loop {
                 match rx.recv_timeout(debounce) {
-                    Ok((path, removed)) => {
-                        if seen.insert(path.clone()) {
+                    Ok((path, removed)) => match index.get(&path) {
+                        Some(&i) => pending[i].1 = removed,
+                        None => {
+                            index.insert(path.clone(), pending.len());
                             pending.push((path, removed));
                         }
-                    }
+                    },
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         if pending.is_empty() {
                             continue; // steady-state tick, nothing to flush
                         }
                         flush(&mut pending, &on_instruction_change, &on_external_change);
-                        seen.clear();
+                        index.clear();
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }

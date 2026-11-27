@@ -309,6 +309,112 @@ fn test_write_file_touch_still_registers_self_write() {
     );
 }
 
+// --- BUG-20261127-046：防抖批内同路径先删后建（git checkout / 原子保存
+// --- 编辑器形态）必须呈现「外部修改」---
+
+/// 同一防抖批内 Remove→Create：去重表只记首个分类（Remove=true），后到的
+/// Create 被丢弃，flush 侧 `!removed` 把真实修改静默吞掉——模型拿旧内容
+/// 答题且无任何提示。修复语义 = 最新分类制（同路径后到事件覆盖分类：
+/// 先删后建 → 以 Create 收尾 = 文件在场且内容已变 → 必须呈现）。
+#[test]
+fn test_watcher_remove_create_same_batch_surfaces_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    let on_instr: Callback = Arc::new(|| {});
+    let on_ext: PathCallback = Arc::new(move |p| {
+        let _ = tx.send(p.to_string());
+    });
+    let _handle = start_with_debounce(
+        dir.path(),
+        &cfg(&[]),
+        Duration::from_millis(150),
+        on_instr,
+        on_ext,
+    )
+    .expect("start ok")
+    .expect("enabled");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // 第一批：首建（建立基线，收掉创建通知）。
+    std::fs::write(dir.path().join("notes.txt"), "v1").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && rx.try_recv().is_err() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        Instant::now() < deadline,
+        "前置：首建通知必须先到达（批次隔离）"
+    );
+    // 排空残留事件，防止串批。
+    while rx.try_recv().is_ok() {}
+
+    // 第二批：快速 先删→再写（同路径、同一防抖窗口——两操作间隔远小于
+    // 150ms，事件间 reset 语义保证同批）。
+    let p = dir.path().join("notes.txt");
+    std::fs::remove_file(&p).unwrap();
+    std::fs::write(&p, "v2").unwrap();
+
+    // 真实修改必须呈现（红证基线：修复前 flush 侧 removed=true 抑制 =
+    // 5s 内无通知）。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = false;
+    while Instant::now() < deadline {
+        if let Ok(p) = rx.try_recv()
+            && p.contains("notes.txt")
+        {
+            got = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        got,
+        "先删后建（git checkout / 原子保存形态）必须呈现外部修改通知"
+    );
+}
+
+/// 对照臂（设计语义钉死）：同批 Create→Remove（改完即删）→ 以 Remove
+/// 收尾 = 文件已不在 → 不呈现（删除通知本就不呈现；呈现会让模型去重读
+/// 一个已消失的文件）。
+#[test]
+fn test_watcher_create_remove_same_batch_not_surfaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, rx) = mpsc::channel::<String>();
+    let on_instr: Callback = Arc::new(|| {});
+    let on_ext: PathCallback = Arc::new(move |p| {
+        let _ = tx.send(p.to_string());
+    });
+    let _handle = start_with_debounce(
+        dir.path(),
+        &cfg(&[]),
+        Duration::from_millis(150),
+        on_instr,
+        on_ext,
+    )
+    .expect("start ok")
+    .expect("enabled");
+    std::thread::sleep(Duration::from_millis(300));
+
+    // 第一批：首建基线 + 排空。
+    std::fs::write(dir.path().join("temp.txt"), "v1").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && rx.try_recv().is_err() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(Instant::now() < deadline, "前置：首建通知必须先到达");
+    while rx.try_recv().is_ok() {}
+
+    // 第二批：写完即删（同窗口内 Modify→Remove，收尾分类 = Remove）。
+    let p = dir.path().join("temp.txt");
+    std::fs::write(&p, "v2").unwrap();
+    std::fs::remove_file(&p).unwrap();
+
+    // 5s 内不得呈现（红证基线：修复前首分类 Create=false 反而呈现）。
+    std::thread::sleep(Duration::from_millis(1500));
+    let leaked = rx.try_iter().any(|p| p.contains("temp.txt"));
+    assert!(!leaked, "改完即删（收尾分类 Remove）不得呈现外部修改通知");
+}
+
 // --- end-to-end: watcher fires through the loop ---
 
 #[test]

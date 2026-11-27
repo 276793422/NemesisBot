@@ -849,7 +849,7 @@ pub fn trash_purge_all_in(loc: &TrashLocations) -> Result<usize, String> {
     // BUG-20261127-033 同威胁模型在回收站清空臂的漏网；触发面 = WSAPI
     // trash_purge_all「清空回收站」）。链接根 = 诚实 no-op（Ok(0)，与根
     // 目录缺席同形态）；symlink_metadata 非跟随，读取失败按不可信跳过。
-    if std::fs::symlink_metadata(&root)
+    if std::fs::symlink_metadata(root)
         .map(|m| m.is_symlink())
         .unwrap_or(true)
     {

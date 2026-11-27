@@ -1091,8 +1091,8 @@ fn purge_all_junction_entry_skipped_real_entry_still_purged() {
     let f = plant_external_tree(external.path());
 
     let t = TempTrash::new("purge_junc_entry");
-    plant_link(&t.loc.trash_root().to_path_buf(), "junc", external.path());
-    plant_manifest_entry(&t.loc.trash_root(), "good", "web:t1");
+    plant_link(t.loc.trash_root(), "junc", external.path());
+    plant_manifest_entry(t.loc.trash_root(), "good", "web:t1");
 
     let n = trash_purge_all_in(&t.loc).expect("清空应成功");
     assert_eq!(n, 1, "真实条目照常清空（守卫不误伤）");
@@ -1116,12 +1116,8 @@ fn trash_list_junction_entry_not_listed() {
     let t = TempTrash::new("list_junc_entry");
     // 链接名用可派生形态（<ms>_<safe>）——不成形态的名字会被下游
     // 「目录名都不成形态跳过」掩蔽，守卫锁就不咬合了。
-    plant_link(
-        &t.loc.trash_root().to_path_buf(),
-        "1700000000000_web_zz",
-        external.path(),
-    );
-    plant_manifest_entry(&t.loc.trash_root(), "good", "web:t2");
+    plant_link(t.loc.trash_root(), "1700000000000_web_zz", external.path());
+    plant_manifest_entry(t.loc.trash_root(), "good", "web:t2");
 
     let list = trash_list_in(&t.loc);
     let names: Vec<String> = list
