@@ -208,7 +208,12 @@ jobs:
           # 对齐——fail-fast 在首个红即取消整桶（Cancelling due to test
           # failure），nightly 要全量体检报告不许半途腰斩。
           cargo nextest run --workspace --no-fail-fast --failure-output final --partition hash:${{ matrix.shard }}/3 2>&1 | tee nextest-s${{ matrix.shard }}.log
-          n=$(grep -oE '[0-9]+/[0-9]+ tests passed' nextest-s${{ matrix.shard }}.log | grep -oE '^[0-9]+' | tail -1)
+          # BUG-20261128-008：守卫 grep 模式 `[0-9]+/[0-9]+ tests passed` 与
+          # nextest 真实摘要（`Summary [...] N tests run: N passed, M skipped`）
+          # 永不匹配 → n 恒空 → 全绿分片也 exit 1（shard2 11126 全过假红实锤）。
+          # 数 "tests run"（执行数）：pipefail 下 nextest 非零即步骤先红，走不到
+          # 本守卫——能走到这里必然零失败，执行数即通过数。
+          n=$(grep -oE '[0-9]+ tests run' nextest-s${{ matrix.shard }}.log | grep -oE '^[0-9]+' | tail -1)
           echo "nextest shard ${{ matrix.shard }} executed: ${n:-0} passed (floor 500)"
           if [ -z "$n" ] || [ "$n" -lt 500 ]; then
             echo "::error::nextest shard ${{ matrix.shard }} passed ${n:-0} < floor 500（partition 参数 typo 或套件未跑完，不许假绿）"

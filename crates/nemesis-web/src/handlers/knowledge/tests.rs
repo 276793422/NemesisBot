@@ -190,6 +190,19 @@ fn resolve_scope_project_arm_rejects() {
 
 // get / set 冒烟（走 handler 全链）
 
+/// 平台中立绝对路径夹具（nemesis-config knowledge 测试同款）：validator 用
+/// `Path::is_absolute()`（平台语义——`C:/` 形态在 Linux 无盘符前缀组件 =
+/// 相对路径，被诚实拒绝）。BUG-20261128-008 四连红根因 = 夹具硬编码
+/// Windows 路径而非产品代码；按平台构造真实绝对路径，不用 cfg 门控
+/// （会把 Linux 侧校验覆盖归零）。
+fn abs_root(tag: &str) -> String {
+    if cfg!(windows) {
+        format!("C:/kb_{tag}")
+    } else {
+        format!("/tmp/kb_{tag}")
+    }
+}
+
 #[tokio::test]
 async fn get_returns_default_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -217,8 +230,8 @@ async fn set_roundtrip_and_readback() {
     let cfg = serde_json::json!({
         "enabled": true,
         "pairs": [{
-            "code_root": "C:/works/proj-a",
-            "info_root": "C:/kb/proj-a",
+            "code_root": abs_root("proj-a"),
+            "info_root": abs_root("proj-a-info"),
             "tiangong_load": "full",
         }],
     });
@@ -259,7 +272,7 @@ async fn set_rejects_relative_code_root() {
         "enabled": true,
         "pairs": [{
             "code_root": "relative/proj",
-            "info_root": "C:/kb/proj",
+            "info_root": abs_root("proj"),
         }],
     });
     let err = KnowledgeHandler
