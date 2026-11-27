@@ -180,6 +180,21 @@ jobs:
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
 
+      # 资源墙缓解（BUG-20261127-030，同 extended-tests.yml 同名步）：本 job
+      # 两次死亡 51:01/53:00、日志 BlobNotFound（runner 冻结族）——全 workspace
+      # 插桩构建产物远大于普通构建，逼近磁盘墙后 agent 写不出日志缓冲即被判
+      # 死。清盘回收预装大件（Android SDK ~12G 大头 + dotnet/JVM/ghcup/swift/
+      # docker 镜像池），不动构建语义。清盘后 df 留取证基线。
+      - name: Free runner disk (resource wall mitigation)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo rm -rf /usr/local/.ghcup /opt/ghcup /usr/share/swift /opt/pipx ~/.cache/pip /opt/az-modulecache 2>/dev/null || true
+          sudo docker image prune -a -f 2>/dev/null || sudo rm -rf /var/lib/docker 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo "=== disk after cleanup ==="
+          df -h /
+
       - name: Install Rust toolchain + llvm-tools (coverage 采集前置)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -432,6 +447,34 @@ jobs:
       - name: Environment fingerprint (Windows shard ${{ matrix.shard }})
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\dump-env.ps1"
+
+      # 资源墙缓解（BUG-20261127-030，同 extended-tests.yml 同名步的 Windows
+      # 形态）：重桶切片死亡时刻 50-55min、日志 BlobNotFound（冻结族），与
+      # ET Linux 全量腿同签名同窗——预装大件（Android SDK/AVD 镜像、Docker
+      # 镜像池、mongodb/mysql/Amazon SDK/CodeQL/Chocolatey 缓存）吃掉可用盘，
+      # 测试产物逼近墙后 agent 写不出日志缓冲即被判死。清盘只动预装大件，
+      # 不动 MSVC/hostedtoolcache 运行时（node/go/python 由 setup-* 随取）。
+      # 先 prune docker 镜像（服务在活）再删数据根；清盘后留取证基线。
+      - name: Free runner disk (resource wall mitigation)
+        shell: powershell
+        run: |
+          docker image prune -a -f 2>$null
+          $targets = @(
+            "C:\Program Files (x86)\Android",
+            "C:\Users\runneradmin\.android",
+            "C:\ProgramData\Docker",
+            "C:\ProgramData\Chocolatey\lib",
+            "C:\mysql",
+            "C:\mongodb",
+            "C:\Program Files\Amazon",
+            "C:\Program Files (x86)\Amazon SDKs",
+            "C:\hostedtoolcache\windows\CodeQL"
+          )
+          foreach ($t in $targets) {
+            if (Test-Path $t) { Remove-Item -Recurse -Force $t -ErrorAction SilentlyContinue }
+          }
+          echo "=== disk after cleanup ==="
+          Get-PSDrive C | Select-Object @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
 
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable
