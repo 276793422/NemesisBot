@@ -161,13 +161,25 @@ fn test_redirect_dotdot_components_lexically_normalized() {
     );
     // 折叠越过镜像根时 `..` 保留（不折叠出盘前缀——OS 语义：盘根之上
     // 即盘根；此形态仍含 `..`，checkpoint safe_path 拒绝 = 诚实不设防）。
+    // 期望值随平台组件语义分叉：Windows `C:` 是盘前缀组件，`..` 到
+    // RootDir 保留；Linux 无前缀组件，`C:` 是普通组件被两级 `..` 全折
+    // （相对路径词法语义）——normalize_lexical 两平台各自正确（CI
+    // coverage 腿 ubuntu 实录），断言按平台编码同一契约。
     let p3 = Path::new("C:/code/../../x/TIANGONG.md");
     let got = redirect_instruction_path(p3, &cfg);
-    assert_eq!(
-        got,
-        PathBuf::from("C:/../x/TIANGONG.md"),
-        "越根折叠应停在盘前缀: {got:?}"
-    );
+    if cfg!(windows) {
+        assert_eq!(
+            got,
+            PathBuf::from("C:/../x/TIANGONG.md"),
+            "越根折叠应停在盘前缀: {got:?}"
+        );
+    } else {
+        assert_eq!(
+            got,
+            PathBuf::from("x/TIANGONG.md"),
+            "无盘前缀组件，越根 `..` 全折: {got:?}"
+        );
+    }
 }
 
 #[test]

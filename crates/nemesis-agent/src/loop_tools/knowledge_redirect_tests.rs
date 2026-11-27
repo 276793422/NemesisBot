@@ -348,18 +348,17 @@ fn fence_allows_local_overlay_via_code_root() {
     assert!(err.contains("outside the workspace"), "{err}");
 }
 
-/// Windows 大小写混用：config 写大写盘符/目录、请求发小写 → 命中
-/// （仅 windows；其余平台敏感——分叉断言）。
+/// Windows 大小写混用：config 写大写盘符/目录、请求发小写 → 命中。
+/// 仅 windows：大小写不敏感匹配是 Windows 产品形态（其余平台路径敏感，
+/// 无此行为面可测）——平台形态测试按仓库约定挂 #[cfg(windows)]，Linux
+/// 编译期消失。原 Linux 运行分支误把 exact 命中断言成 identity（exact
+/// 路径照常命中重定向，CI coverage 腿 ubuntu 实录红）。
+#[cfg(windows)]
 #[test]
 fn case_insensitive_dispatch_on_windows() {
     let env = kb_env_multi();
-    let lower = if cfg!(windows) {
-        // 大写 code_a 路径的小写形态（盘符与目录名逐段小写）。
-        PathBuf::from(env.code_a.to_string_lossy().to_lowercase())
-    } else {
-        env.code_a.clone()
-    };
-    let p = lower.join("AGENTS.md");
+    // 大写 code_a 路径的小写形态（盘符与目录名逐段小写）。
+    let p = PathBuf::from(env.code_a.to_string_lossy().to_lowercase()).join("AGENTS.md");
     let got = resolve_tool_path_with_redirect(
         &p.to_string_lossy(),
         None,
@@ -367,11 +366,7 @@ fn case_insensitive_dispatch_on_windows() {
         Some(env.handle.as_ref()),
     )
     .unwrap();
-    if cfg!(windows) {
-        assert_eq!(got, env.info_a.join("AGENTS.md"));
-    } else {
-        assert_eq!(got, p);
-    }
+    assert_eq!(got, env.info_a.join("AGENTS.md"));
 }
 
 // ---------------------------------------------------------------------------

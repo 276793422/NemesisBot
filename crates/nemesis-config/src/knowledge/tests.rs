@@ -15,6 +15,19 @@ fn tmp_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// 平台中立绝对路径夹具：validator 用 `Path::is_absolute()`（平台语义——
+/// `C:/D:/` 形态在 Linux 无盘符前缀组件 = 相对路径，被诚实拒绝），CI
+/// Linux inline 腿 knowledge 四连红的根因是夹具硬编码 Windows 路径而非
+/// 产品代码。按平台构造真实绝对路径，validate 各臂两平台全覆盖（cfg
+/// 门控会把 Linux 侧覆盖归零）。
+fn abs_root(tag: &str) -> String {
+    if cfg!(windows) {
+        format!("C:/kb_{tag}")
+    } else {
+        format!("/tmp/kb_{tag}")
+    }
+}
+
 #[test]
 fn test_default_is_disabled_and_empty() {
     let cfg = KnowledgeConfig::default();
@@ -39,19 +52,19 @@ fn test_validate_rejects_relative_and_unknown_mode_and_overlap() {
     let base = KnowledgeConfig {
         enabled: true,
         pairs: vec![KnowledgePair {
-            code_root: "C:/code".into(),
-            info_root: "C:/info".into(),
+            code_root: abs_root("code"),
+            info_root: abs_root("info"),
             tiangong_load: TIANGONG_LOAD_POINTER.into(),
         }],
     };
     assert!(validate_knowledge_config(&base).is_ok());
 
-    // 相对路径拒绝。
+    // 相对路径拒绝（`code` 两平台都不是绝对路径）。
     let rel = KnowledgeConfig {
         enabled: true,
         pairs: vec![KnowledgePair {
             code_root: "code".into(),
-            info_root: "C:/info".into(),
+            info_root: abs_root("info"),
             tiangong_load: "pointer".into(),
         }],
     };
@@ -61,8 +74,8 @@ fn test_validate_rejects_relative_and_unknown_mode_and_overlap() {
     let bad_mode = KnowledgeConfig {
         enabled: true,
         pairs: vec![KnowledgePair {
-            code_root: "C:/code".into(),
-            info_root: "C:/info".into(),
+            code_root: abs_root("code"),
+            info_root: abs_root("info"),
             tiangong_load: "eager".into(),
         }],
     };
@@ -73,31 +86,31 @@ fn test_validate_rejects_relative_and_unknown_mode_and_overlap() {
         enabled: true,
         pairs: vec![
             KnowledgePair {
-                code_root: "C:/code".into(),
-                info_root: "C:/info".into(),
+                code_root: abs_root("code"),
+                info_root: abs_root("info"),
                 tiangong_load: "pointer".into(),
             },
             KnowledgePair {
-                code_root: "C:/code/src".into(),
-                info_root: "C:/info2".into(),
+                code_root: format!("{}/src", abs_root("code")),
+                info_root: abs_root("info2"),
                 tiangong_load: "pointer".into(),
             },
         ],
     };
     assert!(validate_knowledge_config(&overlap).is_err());
 
-    // 半截字符串不算重叠（/a/bc 与 /a/b）。
+    // 半截字符串不算重叠（X/b 与 X/bc 组件级无前缀关系）。
     let not_overlap = KnowledgeConfig {
         enabled: true,
         pairs: vec![
             KnowledgePair {
-                code_root: "C:/a/b".into(),
-                info_root: "C:/i1".into(),
+                code_root: format!("{}/b", abs_root("a")),
+                info_root: abs_root("i1"),
                 tiangong_load: "pointer".into(),
             },
             KnowledgePair {
-                code_root: "C:/a/bc".into(),
-                info_root: "C:/i2".into(),
+                code_root: format!("{}/bc", abs_root("a")),
+                info_root: abs_root("i2"),
                 tiangong_load: "pointer".into(),
             },
         ],
@@ -112,8 +125,8 @@ fn test_save_load_roundtrip() {
     let cfg = KnowledgeConfig {
         enabled: true,
         pairs: vec![KnowledgePair {
-            code_root: "D:/Code/NemesisBot/work".into(),
-            info_root: "D:/InfoBase/NemesisBot/work".into(),
+            code_root: abs_root("work"),
+            info_root: abs_root("work_info"),
             tiangong_load: TIANGONG_LOAD_FULL.into(),
         }],
     };
@@ -150,7 +163,7 @@ fn test_save_rejects_invalid_before_write() {
         enabled: true,
         pairs: vec![KnowledgePair {
             code_root: "relative/path".into(),
-            info_root: "C:/info".into(),
+            info_root: abs_root("info"),
             tiangong_load: "pointer".into(),
         }],
     };
@@ -192,12 +205,15 @@ fn test_validate_rejects_control_chars_in_roots() {
         }],
     };
     // LF 注入形态（绝对路径形态合法，控制字符拒绝）——code / info 双侧。
-    assert!(validate_knowledge_config(&mk("C:/kb\nOpenFilePath=C:", "C:/info")).is_err());
-    assert!(validate_knowledge_config(&mk("C:/code", "C:/info\rx")).is_err());
+    let lf_code = format!("{}/kb\nOpenFilePath=C:", abs_root("code"));
+    let cr_info = format!("{}\rx", abs_root("info"));
+    let tab_code = format!("{}\tde", abs_root("co"));
+    assert!(validate_knowledge_config(&mk(&lf_code, &abs_root("info"))).is_err());
+    assert!(validate_knowledge_config(&mk(&abs_root("code"), &cr_info)).is_err());
     // TAB 同类（全部 Cc 控制字符一网打尽）。
-    assert!(validate_knowledge_config(&mk("C:/co\tde", "C:/info")).is_err());
+    assert!(validate_knowledge_config(&mk(&tab_code, &abs_root("info"))).is_err());
     // 干净配置照常通过。
-    assert!(validate_knowledge_config(&mk("C:/code", "C:/info")).is_ok());
+    assert!(validate_knowledge_config(&mk(&abs_root("code"), &abs_root("info"))).is_ok());
 }
 
 #[test]
@@ -206,8 +222,8 @@ fn test_validate_caps_pair_count() {
         enabled: true,
         pairs: (0..n)
             .map(|i| KnowledgePair {
-                code_root: format!("C:/p{i}"),
-                info_root: format!("C:/i{i}"),
+                code_root: abs_root(&format!("p{i}")),
+                info_root: abs_root(&format!("i{i}")),
                 tiangong_load: TIANGONG_LOAD_POINTER.into(),
             })
             .collect(),
