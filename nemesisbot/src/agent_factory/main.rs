@@ -550,11 +550,29 @@ pub fn build_agent_loop(
 
     // 7. Build tool config + register all tools + enable MCP.
     // 第二返回值是 spawn 共享槽原件——Arc<AgentLoop> 定型后注入闭包。
+    // 知识库重定向（天工系统 v1，2026-11-26）：主 loop 配置落
+    // `<workspace>/config/config.knowledge.json`（与 security/scanner
+    // 等 workspace 域 sidecar 同目录惯例）。配置缺席/坏 JSON =
+    // KnowledgeHandle get() 返回关闭态——行为与功能不存在逐字节一致。
+    let knowledge_handle = std::sync::Arc::new(nemesis_agent::knowledge::KnowledgeHandle::new(
+        nemesis_path::resolve_workspace_knowledge_config_path_in_workspace(&workspace_dir),
+    ));
     let (mut tool_config, spawn_slot, steer_slot) =
-        build_shared_tool_config(shared, &cfg, &model_name);
+        build_shared_tool_config(shared, &cfg, &model_name, Some(knowledge_handle.clone()));
     // present_plan 工具供给（plan 模式白名单 + SharedToolConfig
     // 注册同源；loop 侧 verdict 消费槽已装配）。
     tool_config.plan_present = Some(plan_present_handle);
+    // TIANGONG 存在性声明闭包（每轮 build_messages 调用；层锚定 = 各
+    // pair code_root 侧项目层级（根 + 排序直接子目录），本地/镜像
+    // overlay 逐层裁决——初版锚 workspace 根在主对话形态（ws_root 与
+    // code_root 分离）永不命中，UAT 修正 2026-11-26）。开关关 = None =
+    // 段缺席零字节。
+    {
+        let khandle = knowledge_handle.clone();
+        agent_loop.set_knowledge_section_source(std::sync::Arc::new(move || {
+            nemesis_agent::knowledge_decl_section(&khandle.get())
+        }));
+    }
     // 写后钩子路径解析边界与工具表同一 Arc（单一
     // 权威定义——format-on-save / 诊断回灌与执行器同一落点）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
@@ -571,13 +589,24 @@ pub fn build_agent_loop(
     // install`. When the `sandbox` feature is compiled out, sandbox=true is ignored.
     //
     // the readiness/probe/degrade logic now lives in `exec_world:
-    // build_executor_channel` (single source of truth) — the workflow engine's
+    // build_executor_channel_with_extra_roots` (single source of truth) — the workflow engine's
     // ExecutionWorld uses the exact same assembly, so the agent tool layer and
     // workflow scripts share one switch chain (executor.enabled / executor.sandbox).
-    let executor_channel = crate::exec_world::build_executor_channel(
+    let executor_channel = crate::exec_world::build_executor_channel_with_extra_roots(
         &shared.home,
         &workspace_dir,
         shared.config_store.handle(),
+        // 非 knowledge 附加根：main 臂无 agent home/extra_dirs 附加根
+        //（知识库双根由装配函数从下方句柄单源派生，2026-11-27 第三轮
+        // 横扫——围栏 + 子进程重定向一个来源，调用侧不再手工拼根）。
+        Vec::new(),
+        true,
+        // 知识库句柄（天工系统 v1；UAT 横扫 2026-11-26 围栏透传 +
+        // 2026-11-27 第三轮横扫子进程重定向接线）：exec 分离开关两侧
+        // 围栏同根（exec_world 钦定语义）+ 子进程四文件工具重定向经
+        // env 透传真实发生。gateway/run/acp 三入口同源本臂 + workflow
+        // script 注册表车道共用本 channel。
+        Some(&knowledge_handle),
     )?;
     // 主 loop 常驻路由——解析闭包按 kind=main 现查 agents 表
     // （main 记录 exec_root=workspace，与 per-call 通道同一 cwd 锚语义）。

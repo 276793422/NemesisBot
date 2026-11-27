@@ -232,3 +232,10 @@ mod cov_wave6_tests;
 // / 常规值透传 / 巨值 clamp 600（挂死 agent loop 注入面回归锁）。
 #[cfg(test)]
 mod mcp_discover_timeout_tests;
+
+// 知识库重定向接线（天工系统 v1）——resolve_tool_path_with_redirect
+// 纯函数（None 恒等/多 pair 分发/幂等/深层嵌套/围栏两臂）+ 四工具
+// 端到端（write 落镜像零新增/read 读镜像/edit 改镜像/multiedit 双 pair
+// 单调用/knowledge=None 旁路零回归/热生效）。
+#[cfg(test)]
+mod knowledge_redirect_tests;

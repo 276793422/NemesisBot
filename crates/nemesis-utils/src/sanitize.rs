@@ -92,6 +92,33 @@ pub fn sanitize_path_segment(raw: &str) -> String {
     format!("{head}__{:016x}", fnv1a64(out.as_bytes()))
 }
 
+/// Agent 实体 id 消毒（路径层防线，第十一轮横扫 2026-11-27）：只保留
+/// ASCII 字母数字 `_` `-`，其余替换 `_`。生产形态 agent_id 是受控生成的
+/// uuid simple hex（消毒 = 恒等）；防御对象 = 外部输入解析出的 id 形态
+/// （WSAPI session_key 纯字符串解析 `agents:{id}:session:{sid}` 的 id 段、
+/// 远端集群元数据等）——含 `..` / 路径分隔符 / 控制字符的 id 经
+/// `Path::join` 原样保留组件，可拼出 workspace 外路径（nemesis-path
+/// `resolve_agent_home_in_workspace` 注释声明的「禁止用户输入直拼」前提
+/// 曾只靠调用方约定，knowledge handler 实证违反——`agents:..\..\evil:
+/// session:x` 可把配置写出 workspace，`write_file_atomic` 的
+/// `create_dir_all` 让穿越写真实落盘）。confine 而非报错：路径层无法
+/// 区分恶意与未来合法 id 字符集扩展，白名单替换把任何形态钉进
+/// `<workspace>/agents/` 单段之内（先例：nemesis-sandbox
+/// `sanitize_box_suffix` 同字符规则同理由）。消费方：nemesis-path 全部
+/// `resolve_agent_*_in_workspace` join 点（home / memory 物理目录）。
+pub fn sanitize_agent_id(agent_id: &str) -> String {
+    agent_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Validate a model identifier at every write entry point that creates a
 /// `model_list` entry (CLI `model add`, WSAPI `models.add` — the only two
 /// creators; `copy` reuses an existing legal string and `update_field`'s

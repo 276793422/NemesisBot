@@ -139,7 +139,7 @@ fn start_bails_on_missing_runtime_before_touching_system() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = SandboxPaths::new(tmp.path());
     // 空 tempdir：verify_runtime 先失败——绝不能走到 KmdUtil/注册表
-    let err = start(&paths).unwrap_err();
+    let err = start(&paths, &[]).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("runtime files missing"), "{msg}");
     assert!(msg.contains("sandbox install"), "{msg}");
@@ -212,7 +212,7 @@ fn ensure_installed_bails_on_missing_runtime() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = SandboxPaths::new(tmp.path());
     // 空 tempdir → verify_runtime 先失败：绝不进归属门/注册表/KmdUtil
-    let err = ensure_installed(&paths).unwrap_err();
+    let err = ensure_installed(&paths, &[]).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("runtime files missing"), "{msg}");
 }
@@ -246,7 +246,7 @@ fn start_propagates_kmdutil_spawn_failure_after_runtime_ok() {
     plant_fake_runtime(&paths);
     // dummy KmdUtil.exe 非 PE → kmdutil::run spawn 失败 → start 的
     // "install SbieDrv" context 传播。确定性、零系统副作用。
-    let err = start(&paths).unwrap_err();
+    let err = start(&paths, &[]).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("install SbieDrv"), "{msg}");
     assert!(
@@ -266,7 +266,7 @@ fn ensure_installed_bails_on_foreign_or_fails_at_service_start() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = SandboxPaths::new(tmp.path());
     plant_fake_runtime(&paths);
-    let err = ensure_installed(&paths).unwrap_err();
+    let err = ensure_installed(&paths, &[]).unwrap_err();
     let msg = format!("{err:#}");
     // 两种机器形态都确定性 Err：
     // - 本机（SbieSvc/SbieDrv 注册在别处）：foreign 归属门 bail；
@@ -291,8 +291,49 @@ fn start_fails_at_set_ini_path_without_elevation() {
     // （实测），让 install_driver 这步"成功"，推进到 set_ini_path——非提权下
     // reg add HKLM 必 ACCESS DENIED → 确定性 Err，零注册表副作用。
     std::fs::copy(r"C:\Windows\System32\rundll32.exe", paths.kmdutil()).unwrap();
-    let err = start(&paths).unwrap_err();
+    let err = start(&paths, &[]).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("set IniPath"), "{msg}");
     assert!(msg.contains("reg add"), "{msg}");
+}
+
+// ---------------------------------------------------------------------------
+// 第四轮横扫（2026-11-27）：装配期 `upsert_global_box_section`——selfbuilt
+// agent 的 per-call 通道也跑全局盒，其知识库根是 agent 级配置，只有通道
+// 装配点同时知道「全局盒 + 本实体形态的知识库根」两个事实，所以除
+// `sandbox start` 的整文件重写外还要有幂等 upsert（纯文件 IO，零系统副作用）。
+// ---------------------------------------------------------------------------
+
+/// upsert 语义：ini 缺失从零创建 + 写穿透双根进 `[NemesisBox]` 段；二次
+/// upsert 幂等（节不重复）；空清单 = 摘掉旧写穿透行（知识库关闭后下一轮
+/// 装配摘线的可执行证明）。
+#[test]
+fn upsert_global_box_section_idempotent_and_write_through() {
+    let _log = crate::test_util::capture_logs();
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = SandboxPaths::new(tmp.path());
+    let mirror = tmp.path().join("mirror");
+    let info = tmp.path().join("info");
+
+    // ini 缺失 → upsert 从零创建（upsert_box_section 既有语义），写穿透进段
+    upsert_global_box_section(&paths, &[mirror.clone(), info.clone()]).unwrap();
+    let text = std::fs::read_to_string(&paths.ini_path).unwrap();
+    assert!(text.contains("[NemesisBox]"), "{text}");
+    assert!(
+        text.contains(&format!(r"OpenFilePath={}\*", mirror.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(r"OpenFilePath={}\*", info.display())),
+        "{text}"
+    );
+
+    // 幂等：节不重复；空清单 upsert = 旧写穿透行不残留（摘线语义）
+    upsert_global_box_section(&paths, &[]).unwrap();
+    let text = std::fs::read_to_string(&paths.ini_path).unwrap();
+    assert_eq!(text.matches("[NemesisBox]").count(), 1, "{text}");
+    assert!(
+        !text.contains(&format!("OpenFilePath={}", mirror.display())),
+        "空清单 upsert 必须摘掉旧写穿透行: {text}"
+    );
 }

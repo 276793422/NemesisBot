@@ -34,7 +34,7 @@ fn ensure_installed_bails_on_foreign_engine() {
         return;
     }
 
-    let err = super::ensure_installed(&paths).expect_err("foreign 引擎必须被归属门拦下");
+    let err = super::ensure_installed(&paths, &[]).expect_err("foreign 引擎必须被归属门拦下");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("foreign Sandboxie registered"),

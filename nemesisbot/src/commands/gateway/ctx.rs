@@ -604,6 +604,16 @@ impl GatewayCtx {
             {
                 let workspace_dir = home.join("workspace");
                 let spawn_roots = vec![workspace_dir.clone()];
+                // 知识库句柄（天工系统 v1；2026-11-26 UAT 横扫围栏透传 +
+                // 2026-11-27 第三轮横扫子进程重定向接线）：world 通道子进程
+                // 围栏双根 + 重定向 env 都由装配函数从句柄单源派生（开关
+                // 两侧围栏同根语义 + 子进程四文件工具重定向真实发生）。
+                // handle 现构造读一次配置（mtime 缓存；gateway 启动期一次）。
+                let kh = std::sync::Arc::new(nemesis_agent::knowledge::KnowledgeHandle::new(
+                    nemesis_path::resolve_workspace_knowledge_config_path_in_workspace(
+                        &workspace_dir,
+                    ),
+                ));
                 match crate::exec_world::build_workflow_world(
                     &home,
                     &workspace_dir,
@@ -613,7 +623,9 @@ impl GatewayCtx {
                         workflow_executions_dir.clone(),
                     ],
                     spawn_roots,
+                    Vec::new(),
                     config_store.handle(),
+                    Some(&kh),
                 ) {
                     Ok(Some(world)) => {
                         engine.set_execution_world(world);

@@ -794,6 +794,14 @@ pub struct AgentLoop {
     /// `set_insights_section_source`.
     insights_section_source:
         parking_lot::RwLock<Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>>,
+    /// 知识库重定向（天工系统 v1）：TIANGONG 存在性声明注入段渲染闭包。
+    /// 闭包缺席（headless 未装配 / 测试 / 项目 loop / 集群 worker——v1
+    /// 覆盖面 main + selfbuilt）= 段缺席零字节；开关关（fail-closed）=
+    /// 闭包内返回 None 同样零字节。每 build 调用一次，经 KnowledgeHandle
+    /// mtime 缓存从盘读——knowledge.set 写盘后下一轮即生效。Set via
+    /// `set_knowledge_section_source`.
+    knowledge_section_source:
+        parking_lot::RwLock<Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>>,
     /// per-session message inbox for Queue/Steer modes. Unused in
     /// Reject mode (kept anyway — trivial cost, simplifies mode switching).
     inbox: crate::inbox::SharedInbox,
@@ -1156,6 +1164,7 @@ impl AgentLoop {
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
             insights_section_source: parking_lot::RwLock::new(None),
+            knowledge_section_source: parking_lot::RwLock::new(None),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),

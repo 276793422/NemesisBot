@@ -1365,7 +1365,7 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
 //    set_execution_world + install_composite_node_executors）→
 //    wave_b_run_attaches_execution_world_when_separation_enabled。确定性依据：
 //    home 是全新 tempdir，其下永远没有 tools/sandboxie/Start.exe ⇒ will_attach
-//    恒 false ⇒ build_executor_channel 走 stdio 落到 Ok(Some(channel))；
+//    恒 false ⇒ build_executor_channel_with_extra_roots 走 stdio 落到 Ok(Some(channel))；
 //    ConfigStore::load(path) 是纯读盘函数，不触碰 GLOBAL_STORE 单例；
 //  - 641（详情 <1s 毫秒臂）/645-646（started/ended 解析失败静默跳过）/
 //    702-704（节点输出 >200 截断 floor_char_boundary）/742-743（executions 目录

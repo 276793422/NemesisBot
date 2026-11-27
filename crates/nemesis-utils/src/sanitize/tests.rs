@@ -477,3 +477,32 @@ fn redact_url_secrets_value_terminators() {
         "https://example.com/hook"
     );
 }
+
+#[test]
+fn sanitize_agent_id_confines_and_keeps_uuid_identity() {
+    use super::sanitize_agent_id;
+    // 穿越形态逐字符替换 `_`：无 `..`、无分隔符、无盘符冒号。
+    for hostile in [r"..\..\evil", "../../evil", "a/b", "a:b", "a\nb"] {
+        let out = sanitize_agent_id(hostile);
+        assert!(
+            !out.contains('\\') && !out.contains('/') && !out.contains(':') && !out.contains('\n'),
+            "hostile={hostile:?} 消毒后不得含分隔/穿越/控制字符: {out:?}"
+        );
+        // 输出只含白名单字符（字母数字/_/-）——confine 语义而非全替换
+        // （`evil` 等字母数字段合法直通）。
+        assert!(
+            out.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "hostile={hostile:?} 消毒后不得含白名单外字符: {out:?}"
+        );
+        assert!(!out.contains(".."), "hostile={hostile:?} 不得残留穿越组件");
+    }
+    // 生产形态（uuid simple hex）恒等——消毒零破坏。
+    assert_eq!(
+        sanitize_agent_id("0af9c1e2d3b4"),
+        "0af9c1e2d3b4",
+        "uuid 形态必须恒等"
+    );
+    // 常规带分隔符 id（agent_x-1）恒等。
+    assert_eq!(sanitize_agent_id("agent_x-1"), "agent_x-1");
+}

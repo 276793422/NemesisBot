@@ -244,6 +244,16 @@ async fn run_loop(workspace: &str) -> Result<()> {
     // exec deny 自定义词表（gateway 透传；缺席 = 默认词表，与主进程一致）。
     let deny_patterns =
         deny_patterns_from_env(std::env::var_os("NEMESISBOT_EXECUTOR_DENY_PATTERNS"));
+    // 知识库子进程重定向（天工系统 v1 第三轮横扫 2026-11-27）：gateway
+    // 侧 env_pairs 经 `NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG` 透传配置路径
+    // ——子进程据此构造 KnowledgeHandle 接进工具注册，四文件工具的项目
+    // 视角路径重定向在子进程真实发生（此前缺席 = 围栏放行了、重定向没
+    // 发生：LLM 发项目视角路径、工具按字面路径 File not found）。缺席 =
+    // 不重定向（老网关 spawn 的子进程字节不变）；配置路径指向的文件
+    // 缺席/坏 JSON = handle 关闭态（与主进程同语义，fail-closed）。
+    // per-call 与 persistent 子进程共用本函数——一处接线两链同治。
+    let knowledge_config_path =
+        std::env::var_os("NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG").map(std::path::PathBuf::from);
     let cfg = SharedToolConfig {
         workspace: Some(workspace.to_string()),
         // 子进程侧同样设界——executor 工作区即边界根。
@@ -274,6 +284,10 @@ async fn run_loop(workspace: &str) -> Result<()> {
                 protect_log_tree,
             },
         )),
+        // 知识库重定向句柄（env 透传路径见上）：Some 时四文件工具注册进
+        // with_knowledge 接线（registry boundary/防御双分支同源消费）。
+        knowledge: knowledge_config_path
+            .map(|p| std::sync::Arc::new(nemesis_agent::knowledge::KnowledgeHandle::new(p))),
         // /：executor 侧租约——gateway 在 spawn 前经
         // `NEMESISBOT_LEASE=1` 透传「主进程开了租约」（executor 子进程不
         // 读用户 config，装配语义由父进程钉死）。持有者名带本子进程 PID。

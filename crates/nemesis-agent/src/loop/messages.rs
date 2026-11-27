@@ -735,6 +735,19 @@ impl AgentLoop {
                     }
                 }
             }
+            // 知识库重定向（天工系统 v1，2026-11-26）：TIANGONG 存在性
+            // 声明段（闭包缺席 = 段缺席零字节；开关关 fail-closed 同样
+            // None）。与现有注入链并列小段——现有链零改动。每 build 从盘
+            // 重渲（KnowledgeHandle mtime 缓存），knowledge.set 写盘后下
+            // 一轮即生效。
+            if let Some(section) = self
+                .knowledge_section_source
+                .read()
+                .as_ref()
+                .and_then(|source| source())
+            {
+                sections.push(section);
+            }
             // (devtool-upgrade): lazily discovered sub-directory
             // instructions — one-shot section drained from the instance
             // (same channel shape as the external_changes section below;

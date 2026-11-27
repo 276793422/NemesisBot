@@ -70,6 +70,8 @@ fn base_executor_env(
     exec_root: &std::path::Path,
     home: &std::path::Path,
     agent_id: &str,
+    knowledge_config_path: Option<&std::path::Path>,
+    knowledge_roots: &[std::path::PathBuf],
 ) -> Vec<(String, String)> {
     let mut env = vec![
         ("NEMESISBOT_ROLE".to_string(), "executor".to_string()),
@@ -94,15 +96,22 @@ fn base_executor_env(
             home.join("browser-profile").to_string_lossy().into_owned(),
         ),
     ];
-    // （项目 home 收编）：隔离根与 exec_root 分离时（项目
-    // 镜像形态：exec_root=项目目录、home=agents home），home 作为围栏第二
-    // 根透传（`NEMESISBOT_EXECUTOR_EXTRA_ROOTS`）——子进程侧 exec_worker
-    // 解析合并，写 home 与主进程围栏行为一致。两根重合
-    // （selfbuilt）= 不设 env，零变化；main 形态 home 本就在 workspace 内
-    // （透传是冗余白名单项，不放大可写集）。join 失败（路径含平台分隔
-    // 符）= 子进程围栏降级单根（拒绝方向），warn 留痕不静默。
+    // （项目 home 收编）+ 知识库双根（天工系统 v1 第三轮横扫 2026-11-27）：
+    // 隔离根与 exec_root 分离时（项目镜像形态）home 作为围栏第二根透传；
+    // 知识库配对双根按形态派生追加（main/selfbuilt 形态非空、project 空）。
+    // 合并排序去重后经 `NEMESISBOT_EXECUTOR_EXTRA_ROOTS` 透传——子进程侧
+    // exec_worker 解析合并进子进程围栏，开关两侧围栏同根。全空 = 不设 env
+    // （旧行为）。join 失败（路径含平台分隔符）= 子进程围栏降级单根（拒绝
+    // 方向，不放大可写集），warn 留痕不静默。
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
     if home != exec_root {
-        match std::env::join_paths([home]) {
+        roots.push(home.to_path_buf());
+    }
+    roots.extend(knowledge_roots.iter().cloned());
+    roots.sort();
+    roots.dedup();
+    if !roots.is_empty() {
+        match std::env::join_paths(&roots) {
             Ok(joined) => env.push((
                 "NEMESISBOT_EXECUTOR_EXTRA_ROOTS".to_string(),
                 joined.to_string_lossy().into_owned(),
@@ -112,7 +121,52 @@ fn base_executor_env(
             ),
         }
     }
+    // 知识库重定向配置路径透传（per-call 通道 env_pairs 同款家族纪律：
+    // 只在 Some 时设 env——老网关 spawn 的子进程字节不变）。子进程
+    // exec_worker 据此构造 KnowledgeHandle，四文件工具的项目视角路径
+    // 重定向在常驻子进程内真实发生（此前常驻链只透传 home 围栏根、
+    // 重定向 env 与知识库双根双双缺席）。
+    if let Some(kp) = knowledge_config_path {
+        env.push((
+            "NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG".to_string(),
+            kp.to_string_lossy().into_owned(),
+        ));
+    }
     env
+}
+
+/// 知识库常驻子进程面派生（天工系统 v1 第三轮横扫，2026-11-27）：按
+/// 常驻执行体形态判别知识库配置路径并派生围栏双根，供
+/// [`base_executor_env`] 拼 env。形态判别（与 spawn 侧 exec_root 语义
+/// 一一对应，见模块文档双根注释）：
+/// - main（exec_root == workspace）→ workspace 级配置
+///   `config/config.knowledge.json`（与主 loop 臂同点）；
+/// - selfbuilt（exec_root == agent home）→ agent 级配置
+///   `agents/<id>/home/config/config.knowledge.json`（与 selfbuilt 臂同点）；
+/// - project（exec_root = 项目目录，两者皆非）→ `None`——v1 项目会话
+///   不装知识库（项目 loop 句柄 None 同语义），随行双根为空集。
+///
+/// 返回 `(config_path, fence_roots)`；config_path 指向的文件缺席 = 子进程
+/// handle 关闭态（fail-closed，与主进程同语义），不在此预判存在性。
+fn knowledge_executor_env_parts(
+    workspace: &std::path::Path,
+    exec_root: &std::path::Path,
+    agent_id: &str,
+) -> (Option<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let config_path = if exec_root == workspace {
+        Some(nemesis_path::resolve_workspace_knowledge_config_path_in_workspace(exec_root))
+    } else if exec_root == nemesis_path::resolve_agent_home_in_workspace(workspace, agent_id) {
+        Some(nemesis_path::resolve_agent_knowledge_config_path_in_workspace(workspace, agent_id))
+    } else {
+        None
+    };
+    let handle = config_path
+        .as_ref()
+        .map(|p| std::sync::Arc::new(nemesis_agent::knowledge::KnowledgeHandle::new(p.clone())));
+    (
+        config_path,
+        crate::agent_factory::knowledge_fence_roots(handle.as_ref()),
+    )
 }
 
 /// 优雅关停等待（sleep/watchdog：EOF 信号 → 进程自行退出 → 超时 kill）。
@@ -885,7 +939,15 @@ impl AgentRuntimeSupervisor {
         cmd.env_clear();
         cmd.envs(filter_env_allowlist(env_vars_lossy()));
         cmd.envs(home_redirect_env_pairs(&home));
-        cmd.envs(base_executor_env(exec_root, &home, agent_id));
+        let (knowledge_path, knowledge_roots) =
+            knowledge_executor_env_parts(&self.workspace, exec_root, agent_id);
+        cmd.envs(base_executor_env(
+            exec_root,
+            &home,
+            agent_id,
+            knowledge_path.as_deref(),
+            &knowledge_roots,
+        ));
         // PLAN Linux 项：`executor.sandbox=true` 时挂 标记——子进程
         // exec_worker 启动自装 landlock/bwrap（与 per-call 非 Windows 臂同源
         // 语义，stdio 传输不变）。Windows 的盒臂在上面处理隔离；引擎未就绪
@@ -968,8 +1030,17 @@ impl AgentRuntimeSupervisor {
         let box_name = nemesis_sandbox::ini::agent_box_name(agent_id);
         let box_root = paths.base_dir.join("box").join(&box_name);
 
+        // 知识库形态判别（第四轮横扫 2026-11-27 上移到 upsert 之前）：双根
+        // 同时喂两处——盒段写穿透（OpenFilePath，镜像写是「写盘即生效」
+        // 承诺本体，困盒即静默丢失且 pending/commit 救不回）+ env 透传
+        // （子进程重定向）。
+        let (knowledge_path, knowledge_roots) =
+            knowledge_executor_env_parts(&self.workspace, exec_root, agent_id);
+
         // 盒内基础设施目录先在真盘建好（journal / 浏览器 profile 走
         // OpenFilePath 写穿透；目录在场消除首写 mkdir 的虚拟化歧义）。
+        // 知识库双根不预建目录（OpenFilePath 是前缀规则不查存在性，镜像
+        // 目录按需落真盘；预建会对用户盘产生声明即创建的副作用）。
         std::fs::create_dir_all(home.join(".runtime"))
             .map_err(|e| format!("create agent runtime dir: {e}"))?;
         std::fs::create_dir_all(home.join("browser-profile"))
@@ -982,6 +1053,7 @@ impl AgentRuntimeSupervisor {
         let home_c = home.to_path_buf();
         let agent_id_c = agent_id.to_string();
         let allow_network = self.executor_allow_network();
+        let knowledge_roots_c = knowledge_roots.clone();
         tokio::task::spawn_blocking(move || {
             nemesis_sandbox::ini::upsert_agent_box_section(
                 &ini_path,
@@ -989,6 +1061,7 @@ impl AgentRuntimeSupervisor {
                 &box_root_c,
                 &home_c,
                 allow_network,
+                &knowledge_roots_c,
             )
         })
         .await
@@ -1013,7 +1086,13 @@ impl AgentRuntimeSupervisor {
         cmd.env_clear();
         cmd.envs(filter_env_allowlist(env_vars_lossy()));
         cmd.envs(home_redirect_env_pairs(home));
-        cmd.envs(base_executor_env(exec_root, home, agent_id));
+        cmd.envs(base_executor_env(
+            exec_root,
+            home,
+            agent_id,
+            knowledge_path.as_deref(),
+            &knowledge_roots,
+        ));
         cmd.env("NEMESISBOT_EXECUTOR_PIPE", &pipe);
         // 台账标签证据化：真盒才标 sandboxie 后端名（与 per-call 管线路径
         // 同纪律——无盒 PIPE 传输不冒标）。
