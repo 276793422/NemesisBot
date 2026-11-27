@@ -115,11 +115,16 @@ pub fn build_smtp_message(from: &str, to: &str, subject: &str, body: &str) -> St
 }
 
 /// Parses email headers from IMAP FETCH response lines.
-/// Returns (from, subject, message_id).
-pub fn parse_email_headers(responses: &[String]) -> (String, String, String) {
+/// Returns (from, subject, message_id, cte)。subject 过
+/// [`decode_rfc2047`]（BUG-20261127-043 收件对称臂——出站
+/// [`encode_rfc2047_subject`] 的 encoded-word 序列解回原文）；cte =
+/// Content-Transfer-Encoding 头值（体解码由 [`parse_email_body`] 消费，
+/// 头缺该字段 = 空串）。
+pub fn parse_email_headers(responses: &[String]) -> (String, String, String, String) {
     let mut from = String::new();
     let mut subject = String::new();
     let mut message_id = String::new();
+    let mut cte = String::new();
     let mut in_literal = false;
     let mut header_data = String::new();
 
@@ -146,6 +151,7 @@ pub fn parse_email_headers(responses: &[String]) -> (String, String, String) {
             &mut from,
             &mut subject,
             &mut message_id,
+            &mut cte,
             FieldWriteMode::Overwrite,
         );
     }
@@ -157,15 +163,26 @@ pub fn parse_email_headers(responses: &[String]) -> (String, String, String) {
             &mut from,
             &mut subject,
             &mut message_id,
+            &mut cte,
             FieldWriteMode::KeepExisting,
         );
     }
 
-    (from, subject, message_id)
+    let subject = decode_rfc2047(&subject);
+    (from, subject, message_id, cte)
 }
 
 /// Parses email body from IMAP FETCH BODY[TEXT] response lines.
-pub fn parse_email_body(responses: &[String]) -> String {
+///
+/// `cte` = 邮件头 Content-Transfer-Encoding 值（[`parse_email_headers`]
+/// 返回的第 4 元素）。`base64`（大小写不敏感）→ 载荷剥空白后解码为
+/// UTF-8（收件对称臂，BUG-20261127-043——出站 [`encode_body_mime`] 的
+/// 逆：76 字符 CRLF 折行与 IMAP 行切分都在剥空白时归一）；解码失败 →
+/// 注记前缀 + 原文（诚实降级，损坏邮件不静默吞也不静默出乱码）。其他
+/// CTE（7bit/8bit/quoted-printable/缺头空串）→ 原样返回（既有 ASCII
+/// 路径零漂移；quoted-printable 不解 = 诚实保留原始形态，不做半吊子
+/// 解码）。
+pub fn parse_email_body(responses: &[String], cte: &str) -> String {
     if responses.is_empty() {
         return String::new();
     }
@@ -191,7 +208,15 @@ pub fn parse_email_body(responses: &[String]) -> String {
         body_parts.pop();
     }
 
-    body_parts.join("\n").trim().to_string()
+    let raw = body_parts.join("\n").trim().to_string();
+    if cte.eq_ignore_ascii_case("base64") {
+        let compact: String = raw.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        return match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &compact) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => format!("[邮件正文 base64 解码失败: {e}]\n{raw}"),
+        };
+    }
+    raw
 }
 
 /// SMTP envelope 命令值安全化（R737 协议注入面）：CR/LF 直接剥除——
@@ -204,25 +229,103 @@ pub fn smtp_envelope_safe(v: &str) -> String {
 /// RFC 2047 B-encoding（BUG-20261118-130，出站非 ASCII Subject）：RFC 5322
 /// 头部值是 ASCII 域——裸 8-bit 头在未协商 SMTPUTF8 的会话可被严格 MTA
 /// 拒收（554），收件端 MUA 按本地编码猜测乱码，反垃圾栈罚分。非 ASCII →
-/// `=?UTF-8?B?...?=` encoded-word 序列：载荷按 48 base64 字符切块（4 对齐
-/// ——每块独立可解，RFC 2047 §2 相邻 encoded-word 间的空白解码时丢弃），
-/// 整个 encoded-word 60 ≤ RFC 2047 的 75 字符 SHOULD；相邻块以 CRLF+WSP
-/// 折行衔接（RFC 5322 折行形态，行长有界不破 998 硬限）。纯 ASCII 原样
-/// 返回（字节不变，既有测试与 prompt 面零漂移）。
+/// `=?UTF-8?B?...?=` encoded-word 序列：载荷按 48 base64 字符（=36 字节）
+/// 预算切块，**切块点必须落在 UTF-8 字符边界**（BUG-20261127-043 同源臂：
+/// RFC 2047 encoded-word 含完整字符——逐词独立 base64 解码的形态下，跨词
+/// 劈开多字节字符 = 两词各持半截字节，任何 MUA 都渲染 replacement char；
+/// 边界回退使该块变短、下一块从头计，payload 恒 4 对齐独立可解），整个
+/// encoded-word ≤ 60 ≤ RFC 2047 的 75 字符 SHOULD；相邻块以 CRLF+WSP 折行
+/// 衔接（RFC 5322 折行形态，行长有界不破 998 硬限）。纯 ASCII 原样返回
+/// （字节不变，既有测试与 prompt 面零漂移）。
 pub fn encode_rfc2047_subject(v: &str) -> String {
     if v.is_ascii() {
         return v.to_string();
     }
-    const CHUNK: usize = 48;
-    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, v.as_bytes());
+    const MAX_BYTES: usize = 48 / 4 * 3; // 48 base64 字符 = 36 字节
+    let bytes = v.as_bytes();
     let mut parts: Vec<String> = Vec::new();
-    let mut i = 0usize;
-    while i < b64.len() {
-        let end = (i + CHUNK).min(b64.len());
-        parts.push(format!("=?UTF-8?B?{}?=", &b64[i..end]));
-        i = end;
+    let mut start = 0usize;
+    while start < bytes.len() {
+        let mut end = (start + MAX_BYTES).min(bytes.len());
+        if end < bytes.len() {
+            // 回退到最近字符边界（UTF-8 单字符 ≤4 字节，回退量 <4，
+            // 恒不退到 start——无空块无死循环）。
+            while !v.is_char_boundary(end) {
+                end -= 1;
+            }
+        }
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            &bytes[start..end],
+        );
+        parts.push(format!("=?UTF-8?B?{b64}?="));
+        start = end;
     }
     parts.join("\r\n ")
+}
+
+/// RFC 2047 解码（收件对称臂，BUG-20261127-043）：[`encode_rfc2047_subject`]
+/// 的逆——encoded-word 序列解回原文。契约范围（诚实边界）：
+/// - 只解 B-encoding + UTF-8 charset（本 crate 编码器的自产形态；charset/
+///   编码名大小写不敏感）。其他形态（Q-encoding、GBK 等 charset）**原样
+///   保留**——不猜码表（引入猜测表 = 静默错译，比诚实保留原始 encoded-word
+///   更糟）；
+/// - RFC 2047 §2：相邻 encoded-word 之间**仅空白**（含 CRLF+WSP 折行——
+///   正是编码器 48 字符切块的衔接形态）时丢弃该空白；encoded-word 与普通
+///   文本之间的空白保留；
+/// - 单个 encoded-word 载荷 base64 解码失败（损坏）→ 该词原样保留；
+/// - 无 encoded-word 的纯文本原样返回（ASCII 路径零漂移）。
+pub fn decode_rfc2047(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    let mut rest = v;
+    // 上一输出 token 是否为已解码 encoded-word（相邻空白丢弃的判定依据）。
+    let mut prev_was_word = false;
+    loop {
+        let Some(at) = rest.find("=?") else {
+            out.push_str(rest);
+            break;
+        };
+        let text = &rest[..at];
+        if !(prev_was_word && text.chars().all(char::is_whitespace)) {
+            out.push_str(text);
+        }
+        let after_marker = &rest[at + 2..];
+        // 闭合 `?=`：base64 字母表无 `?`，载荷区首个 `?=` 恒为终止符
+        // （`=` padding 后紧跟终止 `?`，find 不会提前截断）。
+        let Some(end) = after_marker.find("?=") else {
+            out.push_str("=?");
+            prev_was_word = false;
+            rest = after_marker;
+            continue;
+        };
+        let body = &after_marker[..end];
+        let seg: Vec<&str> = body.split('?').collect();
+        let decoded = if seg.len() == 3
+            && seg[0].eq_ignore_ascii_case("utf-8")
+            && seg[1].eq_ignore_ascii_case("b")
+        {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, seg[2])
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        } else {
+            None
+        };
+        match decoded {
+            Some(word) => {
+                out.push_str(&word);
+                prev_was_word = true;
+            }
+            None => {
+                // 非 UTF-8/B 形态或载荷损坏 → 整词原样保留（诚实降级）。
+                // 含 `=?` 前缀整段还原：after_marker 已跳过前缀 2 字节，
+                // 从 rest 的 `at` 起取 at+end+4 才是完整 encoded-word。
+                out.push_str(&rest[at..at + end + 4]);
+                prev_was_word = false;
+            }
+        }
+        rest = &after_marker[end + 2..];
+    }
+    out
 }
 
 /// 正文 MIME CTE 面（BUG-20261118-130）：RFC 2045 §6.1 缺省 CTE=7bit——
@@ -354,6 +457,7 @@ fn apply_header_field(
     from: &mut String,
     subject: &mut String,
     message_id: &mut String,
+    cte: &mut String,
     mode: FieldWriteMode,
 ) {
     let Some((name, value)) = split_header_field(line) else {
@@ -374,6 +478,7 @@ fn apply_header_field(
             message_id,
             value.trim_matches(|c| c == '<' || c == '>' || c == ' '),
         ),
+        "content-transfer-encoding" => write(cte, &value),
         _ => {}
     }
 }

@@ -111,7 +111,7 @@ fn test_parse_email_headers() {
         "Message-ID: <msg123@example.com>".to_string(),
         ")".to_string(),
     ];
-    let (from, subject, message_id) = EmailChannel::parse_email_headers(&responses);
+    let (from, subject, message_id, _cte) = EmailChannel::parse_email_headers(&responses);
     assert_eq!(from, "Alice <alice@example.com>");
     assert_eq!(subject, "Test Subject");
     assert_eq!(message_id, "msg123@example.com");
@@ -124,13 +124,13 @@ fn test_parse_email_body() {
         "Hello world".to_string(),
         ")".to_string(),
     ];
-    let body = EmailChannel::parse_email_body(&responses);
+    let body = EmailChannel::parse_email_body(&responses, "");
     assert_eq!(body, "Hello world");
 }
 
 #[test]
 fn test_parse_email_body_empty() {
-    let body = EmailChannel::parse_email_body(&[]);
+    let body = EmailChannel::parse_email_body(&[], "");
     assert!(body.is_empty());
 }
 
@@ -190,7 +190,7 @@ fn test_build_reply_subject_fwd() {
 
 #[test]
 fn test_parse_email_headers_empty() {
-    let (from, subject, message_id) = EmailChannel::parse_email_headers(&[]);
+    let (from, subject, message_id, _cte) = EmailChannel::parse_email_headers(&[]);
     assert!(from.is_empty());
     assert!(subject.is_empty());
     assert!(message_id.is_empty());
@@ -204,9 +204,129 @@ fn test_parse_email_body_multiline() {
         "Line two".to_string(),
         ")".to_string(),
     ];
-    let body = EmailChannel::parse_email_body(&responses);
+    let body = EmailChannel::parse_email_body(&responses, "");
     assert!(body.contains("Line one"));
     assert!(body.contains("Line two"));
+}
+
+// ---- BUG-20261127-043：收件对称臂（RFC 2047 subject 解码 + base64 CTE 体解码）
+// 修复前：出站编码（BUG-20261118-130 两处）而无入站解码——自产邮件自己收回来
+// subject 是 encoded-word 裸串、正文是 base64 载荷，且头 Fetch 命令根本不取
+// CONTENT-TRANSFER-ENCODING（收端无从得知编码）。
+
+#[test]
+fn test_decode_rfc2047_single_word_and_passthrough() {
+    assert_eq!(
+        nemesis_mail_protocol::decode_rfc2047("=?UTF-8?B?5L2g5aW9?="),
+        "你好"
+    );
+    // 无 encoded-word 纯文本零漂移
+    assert_eq!(
+        nemesis_mail_protocol::decode_rfc2047("Plain Subject"),
+        "Plain Subject"
+    );
+}
+
+#[test]
+fn test_decode_rfc2047_roundtrip_multibyte_and_chunked() {
+    for subject in [
+        "你好",
+        "混合 text 与中文 subject 行",
+        "多字节截断边界测试：这个主题字符串足够长，编码后 base64 载荷会超过 48 字符而切成多块 encoded-word 序列，解码必须还原原文（相邻词间 CRLF+WSP 空白按 RFC 2047 §2 丢弃）",
+    ] {
+        let enc = super::encode_rfc2047_subject(subject);
+        assert_eq!(
+            nemesis_mail_protocol::decode_rfc2047(&enc),
+            subject,
+            "round-trip 失败: {subject}"
+        );
+    }
+}
+
+#[test]
+fn test_decode_rfc2047_mixed_text_keeps_separating_whitespace() {
+    // encoded-word 与普通文本之间的空白保留（只有相邻 encoded-word 间的空白才丢）
+    assert_eq!(
+        nemesis_mail_protocol::decode_rfc2047("Hi =?UTF-8?B?5L2g5aW9?=!"),
+        "Hi 你好!"
+    );
+}
+
+#[test]
+fn test_decode_rfc2047_unsupported_forms_kept_raw() {
+    // 非 B 编码 / 非 UTF-8 charset / 载荷损坏 / 无闭合 → 原样保留（诚实降级，
+    // 不猜码表不猜 mojibake）
+    let raw_q = "=?UTF-8?Q?hello?=";
+    assert_eq!(nemesis_mail_protocol::decode_rfc2047(raw_q), raw_q);
+    let raw_gbk = "=?GBK?B?5L2g5aW9?=";
+    assert_eq!(nemesis_mail_protocol::decode_rfc2047(raw_gbk), raw_gbk);
+    let corrupt = "x =?UTF-8?B?!!!?= y";
+    assert_eq!(
+        nemesis_mail_protocol::decode_rfc2047(corrupt),
+        "x =?UTF-8?B?!!!?= y"
+    );
+    let unclosed = "a =?UTF-8?B? abc";
+    assert_eq!(nemesis_mail_protocol::decode_rfc2047(unclosed), unclosed);
+}
+
+#[test]
+fn test_parse_email_headers_extracts_cte_and_decodes_subject() {
+    let responses = vec![
+        "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID CONTENT-TRANSFER-ENCODING)] {130}"
+            .to_string(),
+        "From: Alice <alice@example.com>".to_string(),
+        "Subject: =?UTF-8?B?5L2g5aW9?=".to_string(),
+        "Message-ID: <m2@example.com>".to_string(),
+        "Content-Transfer-Encoding: base64".to_string(),
+        ")".to_string(),
+    ];
+    let (from, subject, message_id, cte) = EmailChannel::parse_email_headers(&responses);
+    assert_eq!(from, "Alice <alice@example.com>");
+    assert_eq!(subject, "你好");
+    assert_eq!(message_id, "m2@example.com");
+    assert_eq!(cte, "base64");
+}
+
+#[test]
+fn test_parse_email_body_base64_roundtrip_incl_76_wrap() {
+    let body = "你好，世界——收件对称臂 round-trip 验证用正文，长度要足够触发 76 字符折行的多行形态，确保剥空白归一覆盖 CRLF 行切分。";
+    let (cte_line, encoded) = super::encode_body_mime(body);
+    assert!(cte_line.contains("base64"));
+    // 模拟 IMAP read_literal_lines 的行切分形态（76 字符 CRLF 折行 → 多行）
+    let lines: Vec<String> = encoded.split("\r\n").map(|s| s.to_string()).collect();
+    assert!(lines.len() > 1, "fixture 应为多行折行形态");
+    assert_eq!(EmailChannel::parse_email_body(&lines, "base64"), body);
+}
+
+#[test]
+fn test_parse_email_body_base64_decode_failure_note() {
+    let responses = vec![
+        "* 1 FETCH (BODY[TEXT] {4}".to_string(),
+        "!!!!".to_string(),
+        ")".to_string(),
+    ];
+    let body = EmailChannel::parse_email_body(&responses, "base64");
+    assert!(body.contains("base64 解码失败"), "got: {body}");
+    assert!(body.contains("!!!!"), "解码失败必须保留原文");
+}
+
+#[test]
+fn test_email_roundtrip_nonascii_body_and_subject() {
+    // 端到端对称锁：build_smtp_message 产物 → 头段/BODY[TEXT] 段 →
+    // parse_email_headers / parse_email_body 还原原文。
+    let subject = "构建通知：中文标题";
+    let body = "第一行内容\n第二行内容";
+    let msg = EmailChannel::build_smtp_message("a@b.com", "c@d.com", subject, body);
+    let (headers, payload) = msg.split_once("\r\n\r\n").expect("header/body 分隔");
+    assert!(headers.contains("Content-Transfer-Encoding: base64"));
+    assert!(headers.contains("Subject: =?UTF-8?B?"));
+    // BODY[TEXT] = 头区之后的载荷（read_literal_lines 按行切分形态）
+    let lines: Vec<String> = payload.split("\r\n").map(|s| s.to_string()).collect();
+    assert_eq!(EmailChannel::parse_email_body(&lines, "base64"), body);
+    let header_lines: Vec<String> = headers.split("\r\n").map(|s| s.to_string()).collect();
+    let (_, got_subject, _, cte) = EmailChannel::parse_email_headers(&header_lines);
+    assert_eq!(got_subject, subject);
+    assert_eq!(cte, "base64");
 }
 
 #[test]
@@ -839,7 +959,7 @@ fn test_parse_email_headers_case_insensitive_111() {
         "From: Bob <bob@example.com>".to_string(),
         ")".to_string(),
     ];
-    let (from, _subject, message_id) = EmailChannel::parse_email_headers(&responses);
+    let (from, _subject, message_id, _cte) = EmailChannel::parse_email_headers(&responses);
     assert_eq!(
         message_id, "mid42@example.com",
         "字段名不得混入值: {message_id}"
@@ -853,18 +973,18 @@ fn test_parse_email_headers_case_insensitive_111() {
         "SUBJECT: Uppercase Name".to_string(),
         ")".to_string(),
     ];
-    let (from, subject, _) = EmailChannel::parse_email_headers(&responses);
+    let (from, subject, _, _cte) = EmailChannel::parse_email_headers(&responses);
     assert_eq!(from, "carol@example.com");
     assert_eq!(subject, "Uppercase Name");
 
     // 值含冒号（Subject: Re: xxx）——按首个冒号切分不截断：
     let responses = vec!["Subject: Re: Hello: World".to_string()];
-    let (_, subject, _) = EmailChannel::parse_email_headers(&responses);
+    let (_, subject, _, _cte) = EmailChannel::parse_email_headers(&responses);
     assert_eq!(subject, "Re: Hello: World");
 
     // 无空格冒号形态 Message-ID:<x>（此前 trim 后括号残留路径）：
     let responses = vec!["Message-ID:<nospace@example.com>".to_string()];
-    let (_, _, message_id) = EmailChannel::parse_email_headers(&responses);
+    let (_, _, message_id, _cte) = EmailChannel::parse_email_headers(&responses);
     assert_eq!(message_id, "nospace@example.com");
 }
 
@@ -977,7 +1097,7 @@ async fn test_literal_fake_tag_line_does_not_terminate_collection() {
         "literal after the fake tag line must still be collected: {responses:?}"
     );
     // 头解析照常（毒丸不污染字段）：
-    let (from, _, message_id) = EmailChannel::parse_email_headers(&responses);
+    let (from, _, message_id, _cte) = EmailChannel::parse_email_headers(&responses);
     assert_eq!(
         EmailChannel::extract_email_address(&from),
         "mallory@example.com"

@@ -410,15 +410,17 @@ impl EmailChannel {
     /// Returns (from, subject, message_id).
     ///
     /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
-    pub fn parse_email_headers(responses: &[String]) -> (String, String, String) {
+    pub fn parse_email_headers(responses: &[String]) -> (String, String, String, String) {
         nemesis_mail_protocol::parse_email_headers(responses)
     }
 
     /// Parses email body from IMAP FETCH BODY[TEXT] response lines.
     ///
     /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
-    pub fn parse_email_body(responses: &[String]) -> String {
-        nemesis_mail_protocol::parse_email_body(responses)
+    /// `cte` = 头 Content-Transfer-Encoding 值：`base64` → 载荷剥空白解码
+    /// 为 UTF-8（BUG-20261127-043 收件对称臂）；其他/缺头 → 原样。
+    pub fn parse_email_body(responses: &[String], cte: &str) -> String {
+        nemesis_mail_protocol::parse_email_body(responses, cte)
     }
 
     // -----------------------------------------------------------------------
@@ -730,7 +732,7 @@ impl EmailChannel {
                                             .send_command_multi(&fetch_cmd)
                                             .await
                                         {
-                                            let (from, subject, message_id) =
+                                            let (from, subject, message_id, cte) =
                                                 parse_email_headers_static(&headers);
 
                                             // Check seen（BUG-20261120-023：只查不插——
@@ -755,7 +757,7 @@ impl EmailChannel {
                                                 .send_command_multi(&body_cmd)
                                                 .await
                                             {
-                                                Ok(r) => parse_email_body_static(&r),
+                                                Ok(r) => parse_email_body_static(&r, &cte),
                                                 Err(e) => {
                                                     warn!(error = %e, uid = %uid,
                                                         "[EmailChannel] failed to fetch email body");
@@ -1299,12 +1301,12 @@ fn parse_search_results_static(responses: &[String]) -> Vec<String> {
     EmailChannel::parse_search_results(responses)
 }
 
-fn parse_email_headers_static(responses: &[String]) -> (String, String, String) {
+fn parse_email_headers_static(responses: &[String]) -> (String, String, String, String) {
     EmailChannel::parse_email_headers(responses)
 }
 
-fn parse_email_body_static(responses: &[String]) -> String {
-    EmailChannel::parse_email_body(responses)
+fn parse_email_body_static(responses: &[String], cte: &str) -> String {
+    EmailChannel::parse_email_body(responses, cte)
 }
 
 fn extract_email_address_static(from: &str) -> String {
@@ -1317,9 +1319,11 @@ fn build_reply_subject_static(subject: &str) -> String {
 
 /// UID FETCH envelope 命令（BUG-20261117-078 回归锚：UID 命令族免疫
 /// 并发 EXPUNGE 下的 MSN 重编号；助手化以便单测钉死前缀）。
+/// CONTENT-TRANSFER-ENCODING（BUG-20261127-043）：收件对称臂——体解码
+/// 需要知道 CTE，头 Fetch 不取该字段则收端无从得知正文编码形态。
 fn uid_fetch_envelope_cmd(uid: &str) -> String {
     format!(
-        "UID FETCH {} (ENVELOPE BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)])",
+        "UID FETCH {} (ENVELOPE BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID CONTENT-TRANSFER-ENCODING)])",
         uid
     )
 }

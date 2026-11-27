@@ -126,7 +126,7 @@ fn test_parse_email_body_keeps_paren_line_in_content() {
         "text".to_string(),
         ")".to_string(),
     ];
-    let body = parse_email_body(&responses);
+    let body = parse_email_body(&responses, "");
     assert_eq!(body, ")\ntext");
 }
 
@@ -134,7 +134,7 @@ fn test_parse_email_body_keeps_paren_line_in_content() {
 fn test_parse_email_body_no_trailing_paren_envelope() {
     // 无信封 ")"（服务器省略形态）：末行是正文则不剥
     let responses = vec!["* 1 FETCH (BODY[TEXT] {3}".to_string(), "abc".to_string()];
-    let body = parse_email_body(&responses);
+    let body = parse_email_body(&responses, "");
     assert_eq!(body, "abc");
 }
 
