@@ -1070,6 +1070,7 @@ fn probe_frame(manager: &PluginManager, manifest: &PluginManifest) -> crate::run
         data_dir,
         audit: None,
         session_key: String::new(),
+        invocation_depth: 0,
     }
 }
 

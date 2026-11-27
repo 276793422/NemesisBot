@@ -699,3 +699,117 @@ async fn console_handles_edge_value_shapes() {
         "undefined 字面量 + null/数组 JSON 序列化: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 深度透传回归锁：脚本内 tool() dispatch 必须携带发起实例的真实嵌套深度
+// ——否则 spawn 的 max_depth 闸被 code_run 中转绕过（depth N 子代理的
+// 脚本内 spawn 按父深度 0 计算恒放行 → 嵌套无界）。
+// ---------------------------------------------------------------------------
+
+/// 深度探针：记录 dispatch 层注入的 invocation_depth 并回显。
+struct DepthProbeTool(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl Tool for DepthProbeTool {
+    fn description(&self) -> String {
+        "reports the invocation depth it was dispatched at".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    fn set_invocation_depth(&self, depth: usize) {
+        self.0.store(depth, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Ok(format!(
+            "depth:{}",
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
+}
+
+/// 注册 code_run + 附加工具的 loop 构造（build_loop 的多工具变体）。
+fn build_loop_with_extra(
+    extra: Vec<(String, Box<dyn Tool>)>,
+) -> (Arc<AgentLoop>, Arc<CodeRunTool>) {
+    let mut al = AgentLoop::new(Box::new(NoopProvider), test_config());
+    for (name, tool) in extra {
+        al.register_tool(name, tool);
+    }
+    let al = Arc::new(al);
+    let tool = Arc::new(CodeRunTool::new(10, 64));
+    al.register_plugin_tool(CODE_RUN_TOOL_NAME.to_string(), tool.clone());
+    tool.set_loop(Arc::downgrade(&al));
+    (al, tool)
+}
+
+fn code_run_call(id: &str, script: &str) -> ToolCallInfo {
+    ToolCallInfo {
+        id: id.to_string(),
+        name: CODE_RUN_TOOL_NAME.to_string(),
+        arguments: serde_json::json!({ "script": script }).to_string(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_tool_calls_carry_invoking_instance_depth() {
+    let (al, _tool) = build_loop_with_extra(vec![(
+        "depth_probe".to_string(),
+        Box::new(DepthProbeTool(std::sync::atomic::AtomicUsize::new(0))) as Box<dyn Tool>,
+    )]);
+
+    // 以深度 2 的实例身份派发 code_run（模拟子代理脚本编排）：脚本内
+    // tool() 落到 depth_probe 时，dispatch 注入深度必须是 2 而非硬编码 0。
+    let out = al
+        .handle_tool_call_at_depth(
+            &code_run_call("cr-depth-2", "tool('depth_probe', '{}')"),
+            &test_ctx(),
+            2,
+        )
+        .await;
+    assert!(
+        out.contains("depth:2"),
+        "脚本内 tool() dispatch 必须携带发起实例深度（2），实际: {out}"
+    );
+
+    // 顶层（深度 0）派发同款脚本 → 探针见 0（顶层语义与旧代码一致）。
+    let out0 = al
+        .handle_tool_call_at_depth(
+            &code_run_call("cr-depth-0", "tool('depth_probe', '{}')"),
+            &test_ctx(),
+            0,
+        )
+        .await;
+    assert!(out0.contains("depth:0"), "顶层派发深度语义不变: {out0}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_run_mediated_spawn_respects_max_depth() {
+    let (al, _tool) = build_loop_with_extra(vec![(
+        "spawn".to_string(),
+        Box::new(crate::loop_tools::SpawnTool::new(
+            crate::loop_tools::SpawnConfig {
+                default_model: "test-model".to_string(),
+                max_concurrent: 1,
+                max_depth: 1,
+            },
+        )) as Box<dyn Tool>,
+    )]);
+
+    // 深度 1 子代理经 code_run 脚本中转 spawn：修复前脚本内 dispatch
+    // 硬编码深度 0 → 子深度 1 ≤ max_depth(1) 放行（一路走到 spawn_slot
+    // 缺席的 "not available"）；修复后按真实父深度 1 判定 → 子深度 2 > 1
+    // → 深度闸先行拒绝（execute 检查序：allowlist → depth → … → slot）。
+    let script = r#"try { tool("spawn", JSON.stringify({task: "x", tools: "full"})); "spawned" } catch (e) { String(e) }"#;
+    let out = al
+        .handle_tool_call_at_depth(&code_run_call("cr-depth-spawn", script), &test_ctx(), 1)
+        .await;
+    assert!(
+        out.contains("Sub-agent depth limit (1) reached"),
+        "深度 1 子代理经脚本中转 spawn 必须被 max_depth 闸拒绝，实际: {out}"
+    );
+    assert!(!out.contains("spawned"), "不得放行: {out}");
+}

@@ -79,6 +79,7 @@ fn ctx() -> ExecContext {
     ExecContext {
         session_key: "sess-abort-probe".into(),
         call_id: "call-abort-probe".into(),
+        invocation_depth: 0,
     }
 }
 

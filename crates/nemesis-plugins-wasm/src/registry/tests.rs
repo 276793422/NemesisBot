@@ -830,6 +830,7 @@ async fn execute_tool_gates_and_roundtrip() {
             ExecContext {
                 session_key: "s1".into(),
                 call_id: "c1".into(),
+                invocation_depth: 0,
             },
         )
         .await

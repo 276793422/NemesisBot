@@ -131,6 +131,11 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
         let exec_ctx = nemesis_plugins_wasm::runtime::ExecContext {
             session_key: context.session_key.clone(),
             call_id: uuid::Uuid::new_v4().to_string(),
+            // dispatch 层注入的发起实例嵌套深度（set_invocation_depth →
+            // self.depth）透传给 guest 的 tool-invoke——宿主 dispatch 按
+            // 真实深度判定 depth-aware 工具（spawn 的 max_depth 闸），
+            // 硬编码 0 会让深度 N 子代理的 guest 中转 spawn 恒按顶层判定。
+            invocation_depth: self.depth.load(Ordering::SeqCst),
         };
         let depth = self.depth.load(Ordering::SeqCst);
         let slug = self
@@ -705,6 +710,7 @@ impl HostToolInvoker for GatewayHostInvoker {
         &self,
         tool: &str,
         args_json: &str,
+        invocation_depth: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
     {
         let tool = tool.to_string();
@@ -724,10 +730,14 @@ impl HostToolInvoker for GatewayHostInvoker {
                 arguments: args_json,
             };
             // 完整 dispatch 瀑布：estop/hidden/Plan/安全 8 层/hooks 全生效
-            // （guest tool-invoke 不是安全旁路）。user 字段标 wasm-plugin
+            // （guest tool-invoke 不是安全旁路）。dispatch 携带发起实例的
+            // 真实嵌套深度（ExecContext 透传）——spawn 的 max_depth 闸按
+            // 真实深度判定，不被 guest 中转绕过。user 字段标 wasm-plugin
             // 供审计溯源；session_key 空——宿主侧审计已带 slug 溯源。
             let ctx = RequestContext::new("plugin", "", "wasm-plugin", "");
-            let result = loop_arc.handle_tool_call_at_depth(&call, &ctx, 0).await;
+            let result = loop_arc
+                .handle_tool_call_at_depth(&call, &ctx, invocation_depth)
+                .await;
             if nemesis_agent::turn_guard::tool_result_indicates_error(&result) {
                 Err(result)
             } else {

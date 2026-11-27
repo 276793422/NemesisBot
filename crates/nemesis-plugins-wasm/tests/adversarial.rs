@@ -160,6 +160,7 @@ fn ctx() -> ExecContext {
     ExecContext {
         session_key: "sess-adv".into(),
         call_id: "call-adv".into(),
+        invocation_depth: 0,
     }
 }
 

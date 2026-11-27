@@ -26,6 +26,7 @@ fn caps_with(log_cap: usize, line_max: usize) -> CallCaps {
         tokio_handle: None,
         audit: None,
         session_key: String::new(),
+        invocation_depth: 0,
     }
 }
 

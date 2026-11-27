@@ -65,6 +65,7 @@ fn caps_for(kind: PluginKind, observer_frame: bool) -> CallCaps {
         tokio_handle: None,
         audit: None,
         session_key: String::new(),
+        invocation_depth: 0,
     }
 }
 
@@ -234,6 +235,7 @@ fn write_caps(
         tokio_handle: None,
         audit: None,
         session_key: String::new(),
+        invocation_depth: 0,
     }
 }
 
@@ -457,8 +459,14 @@ impl CapsBuilder {
                 tokio_handle: None,
                 audit: None,
                 session_key: String::new(),
+                invocation_depth: 0,
             },
         }
+    }
+
+    fn invocation_depth(mut self, d: usize) -> Self {
+        self.caps.invocation_depth = d;
+        self
     }
 
     fn budget(mut self, n: u32) -> Self {
@@ -985,6 +993,7 @@ impl HostToolInvoker for StubInvoker {
         &self,
         tool: &str,
         _args_json: &str,
+        _invocation_depth: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
     {
         let tool = tool.to_string();
@@ -1004,6 +1013,7 @@ impl HostToolInvoker for PanickingInvoker {
         &self,
         _tool: &str,
         _args_json: &str,
+        _invocation_depth: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
     {
         Box::pin(async { panic!("invoker exploded") })
@@ -1105,6 +1115,50 @@ fn tool_invoke_roundtrip_and_error_text() {
     );
     assert_eq!(tag, host_err::UNAVAILABLE, "detail: {detail:?}");
     assert!(detail.unwrap_or_default().contains("tool exploded"));
+}
+
+/// 深度记录 invoker（深度透传回归锁）。
+struct DepthRecorderInvoker(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl HostToolInvoker for DepthRecorderInvoker {
+    fn invoke(
+        &self,
+        _tool: &str,
+        _args_json: &str,
+        invocation_depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
+        let seen = self.0.clone();
+        Box::pin(async move {
+            seen.store(invocation_depth, std::sync::atomic::Ordering::Relaxed);
+            Ok("done".to_string())
+        })
+    }
+}
+
+#[test]
+fn tool_invoke_carries_invocation_depth() {
+    // 深度透传契约：CallCaps.invocation_depth（生产路径 = ExecContext →
+    // CallFrame → CallCaps）必须原样到达 invoker——GatewayHostInvoker 靠它
+    // 把 dispatch 打在发起实例的真实嵌套深度上（spawn 的 max_depth 闸）。
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let caps = CapsBuilder::new()
+        .invoker(Arc::new(DepthRecorderInvoker(seen.clone())))
+        .tokio(rt.handle().clone())
+        .invocation_depth(3)
+        .build();
+    let (tag, detail) = run_shim(caps, |env, detail| {
+        let tool = cstring("spawn");
+        let args = cstring("{}");
+        let mut out: *mut std::os::raw::c_char = std::ptr::null_mut();
+        unsafe { cb_tool_invoke(env, tool.as_ptr(), args.as_ptr(), &mut out, detail) }
+    });
+    assert_eq!(tag, host_err::OK, "detail: {detail:?}");
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::Relaxed),
+        3,
+        "caps.invocation_depth 必须透传给 invoker"
+    );
 }
 
 #[test]

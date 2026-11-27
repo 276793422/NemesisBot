@@ -149,6 +149,7 @@ fn ctx() -> ExecContext {
     ExecContext {
         session_key: "sess-e2e".into(),
         call_id: "call-e2e".into(),
+        invocation_depth: 0,
     }
 }
 

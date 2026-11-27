@@ -49,6 +49,9 @@ pub(crate) struct CallFrame {
     pub(crate) data_dir: std::path::PathBuf,
     pub(crate) audit: Option<crate::host_impl::SharedAuditLogger>,
     pub(crate) session_key: String,
+    /// 发起实例嵌套深度（execute_tool 从 ExecContext 灌入；其余帧路径
+    /// 恒 0 = 顶层语义）。
+    pub(crate) invocation_depth: usize,
 }
 
 /// 工具执行入参上下文（桥层注入）。
@@ -58,6 +61,10 @@ pub struct ExecContext {
     pub session_key: String,
     /// 本次调用 ID。
     pub call_id: String,
+    /// 发起实例的 sub-agent 嵌套深度（桥层注入；guest 内 tool-invoke 的
+    /// dispatch 携带它判定 depth-aware 工具——spawn 的 max_depth 闸。
+    /// 缺省 0 = 顶层语义；不透传 = 深度闸被 guest 中转绕过）。
+    pub invocation_depth: usize,
 }
 
 /// 工具执行结果。
@@ -96,6 +103,7 @@ impl CallSession {
             tokio_handle: tokio::runtime::Handle::try_current().ok(),
             audit: frame.audit.clone(),
             session_key: frame.session_key.clone(),
+            invocation_depth: frame.invocation_depth,
         });
         let env = Box::into_raw(caps) as *mut std::os::raw::c_void;
         match host.store_new(
@@ -251,6 +259,7 @@ impl PluginRuntime {
         exec_ctx: ExecContext,
     ) -> Result<ExecOutput, PluginError> {
         frame.session_key = exec_ctx.session_key.clone();
+        frame.invocation_depth = exec_ctx.invocation_depth;
         let timeout_ms = frame.limits.timeout_ms;
         let workspace_root = frame.workspace_root.to_string_lossy().to_string();
         self.run_call(comp, frame, timeout_ms, move |session| {

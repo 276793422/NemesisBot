@@ -498,7 +498,7 @@ unsafe extern "C" fn cb_tool_invoke(
                 Some("no tokio runtime for tool dispatch".to_string()),
             );
         };
-        match handle.block_on(invoker.invoke(&tool, &args)) {
+        match handle.block_on(invoker.invoke(&tool, &args, caps.invocation_depth)) {
             Ok(text) => {
                 if !out_content.is_null() {
                     *out_content = string_to_cstr(&text);

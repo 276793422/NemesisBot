@@ -820,6 +820,9 @@ impl PluginManager {
             data_dir: reg.data_dir.clone(),
             audit: self.audit.lock().clone(),
             session_key: String::new(),
+            // execute_tool 从 ExecContext 灌入真实值；此处 0 = 顶层缺省
+            //（observe/policy/probe 帧不经 execute_tool，恒顶层语义）。
+            invocation_depth: 0,
         }
     }
 

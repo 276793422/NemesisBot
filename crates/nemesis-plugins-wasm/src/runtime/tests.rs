@@ -35,6 +35,7 @@ fn frame(slug: &str, kind: PluginKind, limits: PluginLimits) -> CallFrame {
         data_dir,
         audit: None,
         session_key: String::new(),
+        invocation_depth: 0,
     }
 }
 
@@ -155,6 +156,7 @@ async fn execute_tool_roundtrip_and_persistence() {
             ExecContext {
                 session_key: "sess-rt".into(),
                 call_id: "call-rt".into(),
+                invocation_depth: 0,
             },
         )
         .await

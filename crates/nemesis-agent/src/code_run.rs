@@ -8,6 +8,9 @@
 //! - 脚本内 `tool()` 走 [`AgentLoop::handle_tool_call_at_depth`] **完整
 //!   dispatch 瀑布**（estop → hidden → min-tier → Plan → 安全 8 层 → 审批
 //!   → hooks）——与 WASM 插件 guest tool-invoke 同一桥形态（GatewayHostInvoker）；
+//! - dispatch 携带**发起实例的真实嵌套深度**（`set_invocation_depth` 注入
+//!   → execute 快照 → 透传），spawn 的 `max_depth` 闸不被脚本中转绕过
+//!   ——与 WASM 桥同一深度契约；
 //! - 脚本内不能调 `code_run` 自身（深度 1 闸，防递归线程放大）；
 //! - 资源闸：interrupt handler 掐墙钟（`agents.codemode.timeout_secs`，
 //!   JS 字节码检查点生效 + 每次工具调用的剩余预算透传）、
@@ -189,12 +192,22 @@ mod imp {
         loop_ref: parking_lot::RwLock<Option<Weak<AgentLoop>>>,
         timeout: Duration,
         memory_limit_bytes: usize,
+        /// 本次调用的发起实例 sub-agent 嵌套深度（dispatch 层
+        /// `set_invocation_depth` 注入——与 SpawnTool 同一机制）。execute
+        /// 顶部快照进脚本执行上下文，脚本内 tool() dispatch 携带它。不透传
+        /// （硬编码 0）会让 `agents.subagent.max_depth` 闸被 code_run 中转
+        /// 绕过：depth N 子代理的脚本内 spawn 按父深度 0 计算（子 = 1 ≤
+        /// max_depth 恒放行）→ 嵌套无界；顶层 loop 的常规派发恒注入 0，
+        /// 行为与旧代码一致。注入→快照窗口的并发误归属与 SpawnTool 的
+        /// set-then-read 竞态同类（已接受，边际误归属）。
+        invocation_depth: std::sync::atomic::AtomicUsize,
     }
 
     impl CodeRunTool {
         pub fn new(timeout_secs: u64, memory_limit_mb: u64) -> Self {
             Self {
                 loop_ref: parking_lot::RwLock::new(None),
+                invocation_depth: std::sync::atomic::AtomicUsize::new(0),
                 // 0 = 不限时（诚实语义：配置者显式选了不限）。运行形态是
                 // Option<Instant> deadline（run_script）：`Duration::MAX` 与
                 // `Instant` 相加必溢出 panic——checked_add
@@ -270,6 +283,11 @@ cannot call code_run itself.",
             Some("big")
         }
 
+        fn set_invocation_depth(&self, depth: usize) {
+            self.invocation_depth
+                .store(depth, std::sync::atomic::Ordering::Relaxed);
+        }
+
         async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
             let v: serde_json::Value =
                 serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
@@ -284,6 +302,12 @@ cannot call code_run itself.",
             let loop_weak = self.loop_ref.read().clone();
             let timeout = self.timeout;
             let memory_limit = self.memory_limit_bytes;
+            // 快照发起实例深度：快照后整段脚本生命周期用它，不再读共享
+            // 原子（脚本内多次 tool() dispatch 深度一致；并发派发的
+            // 注入→快照窗口竞态见字段注释）。
+            let invocation_depth = self
+                .invocation_depth
+                .load(std::sync::atomic::Ordering::Relaxed);
             let handle = tokio::runtime::Handle::try_current()
                 .map_err(|_| "code_run requires a tokio runtime context".to_string())?;
 
@@ -291,7 +315,14 @@ cannot call code_run itself.",
             // 非 Send）。脚本错误回传文本（Ok，模型可自纠；turn_guard 不判
             // 为错误——错误预算不被脚本笔误烧掉）；只有装配级失败走 Err。
             let outcome = tokio::task::spawn_blocking(move || {
-                run_script(&script, loop_weak, timeout, memory_limit, handle)
+                run_script(
+                    &script,
+                    loop_weak,
+                    timeout,
+                    memory_limit,
+                    invocation_depth,
+                    handle,
+                )
             })
             .await
             .map_err(|e| format!("code_run worker panicked: {e}"))?;
@@ -303,11 +334,13 @@ cannot call code_run itself.",
     }
 
     /// 单次脚本的完整生命周期（blocking 线程内）。
+    #[allow(clippy::too_many_arguments)]
     fn run_script(
         script: &str,
         loop_weak: Option<Weak<AgentLoop>>,
         timeout: Duration,
         memory_limit: usize,
+        invocation_depth: usize,
         handle: tokio::runtime::Handle,
     ) -> Result<String, String> {
         let rt =
@@ -349,7 +382,14 @@ cannot call code_run itself.",
                               name: String,
                               args: String|
                               -> rquickjs::Result<String> {
-                            match invoke_tool(loop_weak.clone(), &name, &args, deadline, &handle) {
+                            match invoke_tool(
+                                loop_weak.clone(),
+                                &name,
+                                &args,
+                                deadline,
+                                invocation_depth,
+                                &handle,
+                            ) {
                                 Ok(s) => Ok(s),
                                 Err(e) => {
                                     let msg = format!("tool('{name}') rejected: {e}");
@@ -402,11 +442,16 @@ cannot call code_run itself.",
     }
 
     /// 脚本内单次工具调用 → 完整 dispatch 瀑布。
+    ///
+    /// 深度语义：dispatch 携带发起实例的真实嵌套深度（`invocation_depth`，
+    /// dispatch 层注入、execute 快照）——depth-aware 工具（spawn 的
+    /// max_depth 闸）在脚本中转路径下与模型直调路径同一判定基准。
     fn invoke_tool(
         loop_weak: Option<Weak<AgentLoop>>,
         name: &str,
         args_json: &str,
         deadline: Option<Instant>,
+        invocation_depth: usize,
         handle: &tokio::runtime::Handle,
     ) -> Result<String, String> {
         // 深度 1 闸：code_run 不能在脚本内调自身（每次嵌套吃一个 blocking
@@ -425,7 +470,7 @@ cannot call code_run itself.",
         // user 字段标 code-run 供审计溯源（同 GatewayHostInvoker 的
         // wasm-plugin 形态）；session_key 空——宿主侧审计已带工具名。
         let ctx = RequestContext::new("code-run", "", "code_run-script", "");
-        let fut = loop_arc.handle_tool_call_at_depth(&call, &ctx, 0);
+        let fut = loop_arc.handle_tool_call_at_depth(&call, &ctx, invocation_depth);
         // interrupt handler 只在 JS 字节码检查点生效——脚本阻塞在宿主函数里
         // 时不轮询。因此单次 dispatch 吃**剩余预算**：到点 future 被丢弃
         // （dispatch 中断点语义同 estop 中途打断），脚本在下一个 JS 检查点

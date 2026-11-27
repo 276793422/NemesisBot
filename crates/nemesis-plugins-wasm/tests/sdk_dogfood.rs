@@ -110,6 +110,7 @@ fn ctx() -> ExecContext {
     ExecContext {
         session_key: "sess-dogfood".into(),
         call_id: "call-dogfood".into(),
+        invocation_depth: 0,
     }
 }
 

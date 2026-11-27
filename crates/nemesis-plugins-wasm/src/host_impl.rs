@@ -94,11 +94,15 @@ pub trait SecretResolver: Send + Sync {
 /// 深度 1 闸：`plugin.` 前缀目标拒绝）。异步——dispatch 走安全 8 层。
 pub trait HostToolInvoker: Send + Sync {
     /// 调用一个宿主工具，返回结果文本（Err = 工具失败文本，转
-    /// `HostError::Host` 语义由调用方归约）。
+    /// `HostError::Host` 语义由调用方归约）。`invocation_depth` = 发起
+    /// 实例的 sub-agent 嵌套深度（ExecContext 透传）——dispatch 按它
+    /// 判定 depth-aware 工具（spawn 的 max_depth 闸），硬编码 0 会让
+    /// 深度 N 子代理的 guest 中转 spawn 恒按顶层判定（嵌套无界）。
     fn invoke(
         &self,
         tool: &str,
         args_json: &str,
+        invocation_depth: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
 }
 
@@ -234,6 +238,9 @@ pub struct CallCaps {
     pub audit: Option<SharedAuditLogger>,
     /// 发起会话键（审计 user 字段；观察者帧为空）。
     pub session_key: String,
+    /// 发起实例的 sub-agent 嵌套深度（ExecContext 透传；tool-invoke
+    /// dispatch 携带它判定 depth-aware 工具——spawn 的 max_depth 闸）。
+    pub invocation_depth: usize,
 }
 
 impl CallCaps {
