@@ -232,3 +232,5 @@ NemesisBot 采用 **双授权（dual-license）** 模式：同一份代码，两
 Made with Rust by NemesisBot contributors
 
 </div>
+
+若有问题，晚23点后，可去此直播间提问：<http://live.bilibili.com/1934306506>

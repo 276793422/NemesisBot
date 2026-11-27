@@ -278,7 +278,7 @@ async fn wip_full_turn_lifecycle_inject_register_append_fold() {
 }
 
 // -----------------------------------------------------------------------
-// 用例 2：错误收尾同样折叠（现场随异常冲刷语义落 chat_log，wip 不残留）。
+// 用例 2：错误收尾同样折叠（现场随 work 键语义落 chat_log，wip 不残留）。
 // -----------------------------------------------------------------------
 #[tokio::test]
 async fn wip_error_ending_still_folds() {

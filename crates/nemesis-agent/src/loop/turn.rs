@@ -570,58 +570,13 @@ impl AgentLoop {
         {
             final_response.push_str(&summary);
         }
-        // BUG （对话链路三缺陷 BUG-2）：异常收尾轮的中间正文落盘。
-        // 正常轮 chat_log 只写最终回复（「一轮 = jsonl 恰好 +2 行」不变量），
-        // 中间轮正文只进内存 history / session store——turn 死于错误时最终
-        // 行 = 错误通知，用户轮内看到的所有流式正文（分析/表格）重载后凭空
-        // 消失，前端只剩一行错误（ziwei-e2e 实证：两轮各只剩一行
-        // guard 错误）。Error 收尾时把本轮中间 assistant 正文冲刷为独立
-        // chat_log 行（错误行之前），重载后对话连贯、断点可辨。Done 收尾不
-        // 冲刷——正常轮保持 +2 行不变量（rewind/fork 的结构假设）。
-        let abnormal_ending = matches!(
-            events.iter().rev().find_map(|e| match e {
-                AgentEvent::Done(_) => Some(false),
-                AgentEvent::Error(_) => Some(true),
-                _ => None,
-            }),
-            Some(true)
-        );
-        if !session_key.is_empty() && abnormal_ending {
-            // 本轮中间 assistant 正文 = 最后一条 user 行（turn 起点）之后的
-            // assistant 条目，排除空正文与最终回复本身（它由下方主路径落盘，
-            // 避免双份）。倒序收集正序写出（保 jsonl 时序）。
-            let flushed: Vec<String> = instance
-                .get_history()
-                .iter()
-                .rev()
-                .take_while(|t| t.role != "user")
-                .filter(|t| t.role == "assistant")
-                .map(|t| t.content.clone())
-                .filter(|c| {
-                    !c.trim().is_empty()
-                        && c.as_str() != final_response.as_str()
-                        // 终局错误的 history 形态（裸
-                        // `Error: {raw}`，recovery.rs 三处 add_assistant_message
-                        // 是全仓唯一来源）在用户可见终局为改写形态（可行动提示
-                        // `Error: {hint}（原始错误：{raw}）`/ vision 兜底提示
-                        // 追加）时与 final_response 恒不等——上方等值过滤失
-                        // 效，冲刷 + 主路径 = 同一失败双份落盘。裸错误行由主
-                        // 路径的改写形态代表，冲刷跳过。诚实边界：模型中间
-                        // 正文恰以 "Error:" 开头时不再冲刷（仍在 session
-                        // store，不丢上下文）。
-                        && !c.starts_with("Error:")
-                })
-                .collect();
-            let model_badge = self.current_display_model();
-            for text in flushed.into_iter().rev() {
-                crate::chat_log::append_chat_log_with_model(
-                    session_key,
-                    "assistant",
-                    &text,
-                    Some(&model_badge),
-                );
-            }
-        }
+        // 异常收尾（Error）不冲刷中间正文为独立 jsonl 行（原「对话链路
+        // 三缺陷 BUG-2」块，d083e51ed 2026-10-23 引入，2026-11-28 移除，
+        // BUG-20261128-012）：下方 work 时间线上线（2026-10-30）后同一
+        // 正文已随终局 assistant 行的 `work` 键落盘，冲刷与其构成双持久化
+        // → 切窗重载双重渲染（独立 NB 气泡 + 时间线思考卡各一份）。中间
+        // 正文唯一持久化面 = work 键；所有收尾形态（正常/错误/急停）恒
+        // 维持「一轮 = jsonl 恰好 +2 行」（rewind/fork 的结构假设）。
         // Work 时间线（ChatPanel 长任务时间线改造）：turn 终局
         // 取走累加器（直答无中间轮 = None → 行不带 work 键）。错误收尾的
         // turn 也走到这里（最终行 = 错误通知）——部分时间线随行落盘，重载
@@ -659,8 +614,9 @@ impl AgentLoop {
 
         // wip 侧车折叠（批二 A，2026-11-22）：assistant 行落盘成功 = 现场
         // 已持久化进会话记录 → 删 wip 文件 + pending 兜底清理。本函数是
-        // turn 收尾单一收口：正常/错误/急停收尾都到达（错误轮上方已先冲刷
-        // 中间正文，现场不丢）；turn-end hook 续轮走 Continue 提前返回、
+        // turn 收尾单一收口：正常/错误/急停收尾都到达（错误轮的中间正文
+        // 随上方 work 键落盘，现场不丢）；turn-end hook 续轮走 Continue
+        // 提前返回、
         // 永远到不了这里（结构保证续轮不折叠）。折叠删除同样走
         // spawn_blocking（BUG-20261124-046，register 同款——韧性包装的
         // thread::sleep 退避不占 worker 线程）。
@@ -1072,7 +1028,8 @@ impl AgentLoop {
     }
 }
 
-// 异常收尾冲刷去重回归（终局错误行禁双份落盘）。
+// 异常收尾 chat_log 落盘回归（jsonl 恒恰好两行；中间正文唯一持久化面 =
+// work 键，禁独立行；终局错误行禁任何旁路双份）。
 #[cfg(test)]
 #[path = "turn_flush_dedup_tests.rs"]
 mod turn_flush_dedup_tests;
