@@ -396,38 +396,44 @@ fn export_import_roundtrip_preserves_values_and_meta() {
 /// 缺别名 loud 拒绝 + 未解锁拒绝导出。
 #[test]
 fn export_rejects_missing_alias_and_locked_store() {
-    let path = tmp_vault_path("xfer-errs");
-    let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
-    store.set("only", "v", "d", "").unwrap();
-    store.save().unwrap();
-    assert!(matches!(
-        store.export_entries(&["only".into(), "ghost".into()], "p"),
-        Err(VaultError::UnknownAlias(_))
-    ));
-    // 锁定后拒绝导出。
-    drop(store);
-    let locked = VaultStore::open(&path).unwrap();
-    assert!(matches!(
-        locked.export_entries(&["only".into()], "p"),
-        Err(VaultError::Locked)
-    ));
-    // 锁定后拒绝导入（先造合法 blob）。
-    let mut unlocked = VaultStore::open(&path).unwrap();
-    unlocked.unlock("pw").unwrap();
-    let blob = unlocked.export_entries(&["only".into()], "p2").unwrap();
-    let dst_path = tmp_vault_path("xfer-errs-dst");
-    let dst_locked = create_retrying(&dst_path, VaultMode::Argon2id, Some("x"));
-    drop(unlocked);
-    // dst create 后已解锁；重开成锁定态再试导入。
-    drop(dst_locked);
-    let mut dst = VaultStore::open(&dst_path).unwrap();
-    assert!(matches!(
-        dst.import_entries(&blob, "p2"),
-        Err(VaultError::Locked)
-    ));
+    // body 级重跑（2026-11-28 ET 46071188610 shard2 实录：save 之后的
+    // drop→open 窗口 vault.enc 被外力删掉，`NotFound("/tmp/...")`——
+    // create_retrying 管不了 create 返回之后的窗口，同 vault_body_retried
+    // 所记 2026-11-09/11-13 臂，整段重来）。
+    vault_body_retried("xfer-errs", |path| {
+        let mut store = create_retrying(path, VaultMode::Argon2id, Some("pw"));
+        store.set("only", "v", "d", "").unwrap();
+        store.save().unwrap();
+        assert!(matches!(
+            store.export_entries(&["only".into(), "ghost".into()], "p"),
+            Err(VaultError::UnknownAlias(_))
+        ));
+        // 锁定后拒绝导出。
+        drop(store);
+        let locked = VaultStore::open(path).unwrap();
+        assert!(matches!(
+            locked.export_entries(&["only".into()], "p"),
+            Err(VaultError::Locked)
+        ));
+        // 锁定后拒绝导入（先造合法 blob）。
+        let mut unlocked = VaultStore::open(path).unwrap();
+        unlocked.unlock("pw").unwrap();
+        let blob = unlocked.export_entries(&["only".into()], "p2").unwrap();
+        // dst 与主 vault 同目录派生（随 attempt 换新；cleanup 删同目录幂等）。
+        let dst_path = path.with_file_name("vault-dst.enc");
+        let dst_locked = create_retrying(&dst_path, VaultMode::Argon2id, Some("x"));
+        drop(unlocked);
+        // dst create 后已解锁；重开成锁定态再试导入。
+        drop(dst_locked);
+        let mut dst = VaultStore::open(&dst_path).unwrap();
+        assert!(matches!(
+            dst.import_entries(&blob, "p2"),
+            Err(VaultError::Locked)
+        ));
 
-    cleanup(&path);
-    cleanup(&dst_path);
+        cleanup(&dst_path);
+        cleanup(path);
+    });
 }
 
 // ---------------------------------------------------------------------------
