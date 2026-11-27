@@ -148,6 +148,42 @@ describe('TrashPanel 会话回收站（2026-10-30）', () => {
     w.unmount()
   })
 
+  it('BUG-20261127-024 冲突改名流 busy 闸：恢复进行中 keyup.enter 不双发', async () => {
+    trashListMock.mockResolvedValue({ entries: [row()] })
+    trashRestoreMock
+      .mockResolvedValueOnce({ conflict: true, suggested_sid: 'conflict1-restored' })
+    // 改名恢复本体：手动 deferred 制造 in-flight 窗口（修复前第二次 Enter 绕过
+    // 按钮 :disabled 直调 doRestore → trashRestore 第三次调用；修复后闸住）
+    let resolveRestore!: (v: Record<string, unknown>) => void
+    const inFlight = new Promise<Record<string, unknown>>(res => { resolveRestore = res })
+    trashRestoreMock.mockReturnValueOnce(inFlight)
+
+    const w = await mountView()
+    await w.find('[data-test="trash-restore-btn"]').trigger('click')
+    await flushPromises()
+    expect(trashRestoreMock).toHaveBeenCalledTimes(1) // conflict 探测
+
+    const modal = w.find('[data-test="trash-conflict-modal"]')
+    const input = modal.find('[data-test="trash-conflict-sid"]')
+    await input.setValue('conflict1-restored')
+
+    // 第一次 Enter：发起恢复（in-flight，未 resolve）
+    await input.trigger('keyup.enter')
+    expect(trashRestoreMock).toHaveBeenCalledTimes(2)
+
+    // 第二次 Enter（恢复仍在进行中）：busy 闸拦住，不双发
+    await input.trigger('keyup.enter')
+    expect(trashRestoreMock).toHaveBeenCalledTimes(2)
+
+    // 放行 in-flight 恢复 → 成功收尾，模态收起
+    resolveRestore({ restored: 'agent:main:session:conflict1-restored', renamed: true })
+    await flushPromises()
+    expect(w.find('[data-test="trash-conflict-modal"]').exists()).toBe(false)
+    const toasts = useToast().toasts
+    expect(toasts.some(t => t.type === 'success' && t.message.includes('已改名恢复'))).toBe(true)
+    w.unmount()
+  })
+
   it('彻底删除（单条）：二次确认——取消不发请求，确认调 trash_purge 并重拉', async () => {
     trashListMock.mockResolvedValue({ entries: [row()] })
     const w = await mountView()

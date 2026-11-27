@@ -80,6 +80,7 @@ const conflictSidBuf = ref('')
 const restoreBusy = ref(false)
 
 async function doRestore(r: TrashRow, newSid?: string) {
+  if (restoreBusy.value) return // BUG-20261127-024 同族补修：Enter 直调绕过按钮 disabled（commitConflictRestore 委托路径）
   restoreBusy.value = true
   try {
     const res = (await api.trashRestore(r.entry, newSid)) as Record<string, unknown>
