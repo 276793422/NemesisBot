@@ -661,18 +661,41 @@ impl Drop for OperatingGuard<'_> {
     }
 }
 
+/// pid 探测/击杀资格裁决（BUG-20261128-009，按平台分叉的契约声明）。
+///
+/// Unix：libc `kill()` 以 i32 收 pid——u32::MAX 折 -1 的广播别名必须堵死
+/// （`kill(-1, 0)` 探测恒真 / `kill(-1, 9)` 屠杀本用户可 signaling 全体，
+/// BUG-20261128-001 发现）；Linux pid_max 上限 4194304，合法 pid 折 i32
+/// 恒正，该守卫无损失。
+///
+/// Windows：仅 0 号保留。tasklist /FI "PID eq" 与 taskkill /PID 吃完整
+/// u32 pid 空间——Windows PID 按 4 递增回绕全空间，[2^31, 2^32) 高段是
+/// 真实存在的进程（长 uptime 高进程翻新机器可见）。BUG-20261128-001 修复
+/// 曾把 `(pid as i32) <= 0` 统一放 cfg 分叉前（注释主张「Windows 对超界
+/// pid 本就查无此人」——不成立：高段活体被假判死/拒杀，孤儿浏览器进程
+/// 恰是 kill_profile_tree 要清的对象），本裁决恢复 Windows 全空间可达。
+fn pid_targetable(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        pid != 0
+    }
+    #[cfg(not(windows))]
+    {
+        pid != 0 && (pid as i32) > 0
+    }
+}
+
 /// 进程是否还活着（强杀前的窗口期判定）。
 fn process_alive(pid: u32) -> bool {
     // F36（2026-11-15 六审）：pid=0 是保留值——Windows tasklist 语义查不到
     // （System Idle Process 占 0）；Unix kill(0,0) 语义是「探测本进程组」
     // 恒真。spawn 竞态的 unwrap_or(0) 与收养会话（孤儿收养 pid 未知=0）
     // 都不许被误判成活进程（收养会话靠 exited 探针旗标判活，不走这里）。
-    // BUG-20261128-001：同族陷阱高一号位——u32::MAX as i32 = -1，Unix
-    // `kill(-1, 0)` 语义=「探测本用户可 signaling 的全体进程」恒真；
-    // `kill(-1, 9)` 更是屠杀。pid 折进 i32 后必须仍为正才是合法探测值
-    // （守卫统一放 cfg 分叉前，契约一处声明；Windows 两臂对超界 pid
-    // 本就查无此人，无行为变化）。
-    if (pid as i32) <= 0 {
+    // BUG-20261128-001：u32::MAX as i32 = -1，Unix `kill(-1, 0)` 探测恒真 /
+    // `kill(-1, 9)` 屠杀——资格裁决统一走 pid_targetable（BUG-20261128-009：
+    // 守卫必须按平台分叉，统一 `(pid as i32) <= 0` 会把 Windows 回绕高段
+    // 活体假判死，见 pid_targetable 文档）。
+    if !pid_targetable(pid) {
         return false;
     }
     #[cfg(windows)]
@@ -706,9 +729,9 @@ fn kill_process(pid: u32) {
     // 路径：spawn 竞态 `child.id().unwrap_or(0)` → fail! 兜底；收养会话
     // （pid=0）close 的强杀兜底臂。0 号一律诚实 no-op。
     // BUG-20261128-001：u32::MAX as i32 = -1 → `kill(-1, 9)` = 屠杀本用户
-    // 可 signaling 的全体进程（比探测侧更致命）。同守卫 `(pid as i32)
-    // <= 0` 一并堵死（含 0 号）。
-    if (pid as i32) <= 0 {
+    // 可 signaling 的全体进程（比探测侧更致命）。资格裁决统一走
+    // pid_targetable（BUG-20261128-009：守卫按平台分叉，见其文档）。
+    if !pid_targetable(pid) {
         return;
     }
     #[cfg(windows)]

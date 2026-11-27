@@ -1,6 +1,6 @@
 //! session 辅助函数单测（纯本机、无浏览器依赖）。
 
-use super::{kill_process, process_alive, tail_file};
+use super::{kill_process, pid_targetable, process_alive, tail_file};
 
 #[test]
 fn tail_file_reads_last_lines() {
@@ -375,4 +375,36 @@ fn kill_profile_tree_kills_matching_process() {
     // 无匹配目录 = 诚实 0 杀不 panic（空转 smoke）。
     let empty = tempfile::tempdir().unwrap();
     super::kill_profile_tree(empty.path());
+}
+
+// BUG-20261128-009：pid 资格守卫平台契约钉死（Unix 堵 -1 广播别名 /
+// Windows 保回绕高段 u32 全空间可达）。
+#[test]
+fn pid_targetable_rejects_zero() {
+    assert!(!pid_targetable(0));
+}
+
+#[cfg(windows)]
+#[test]
+fn pid_targetable_windows_accepts_high_u32_pids() {
+    // Windows PID 按 4 递增回绕整个 u32 空间，[2^31, 2^32) 高段是真实
+    // 存在的进程（长 uptime 高翻新机器可见）；tasklist /FI "PID eq" 与
+    // taskkill /PID 都吃完整 u32——守卫不得用 i32 负数别名假判死。
+    assert!(pid_targetable(3_000_000_000));
+    assert!(pid_targetable(u32::MAX));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn pid_targetable_unix_rejects_negative_alias() {
+    // u32::MAX 折 i32 = -1：kill(-1, 0) 探测恒真 / kill(-1, 9) 屠杀全体。
+    assert!(!pid_targetable(u32::MAX));
+    assert!(pid_targetable(1));
+}
+
+#[test]
+fn process_alive_self_pid_is_alive() {
+    // 守卫不被误扩的端到端锚：本进程 pid 必须可达（Windows 走 tasklist，
+    // Unix 走 kill(pid, 0)）。
+    assert!(process_alive(std::process::id()));
 }
