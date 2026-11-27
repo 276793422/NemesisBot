@@ -85,13 +85,21 @@ fn stored_full_chain_value_lands_in_vault() {
         create_fixture(&dir);
 
         let responder = broker.clone();
+        // BUG-20261128-003：50ms sleep 靠时序保证「请求先于响应」，高载
+        // runner 下主线程调度延迟可越过 50ms → respond 扑空（pending 无
+        // 此卡即 Err）→ 等待方耗尽整窗假超时。重试环兜住：扑空即 50ms
+        // 退避重投，200×50ms=10s 预算 > 5s 请求窗。
         let t = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            responder.respond("cred-1", SECRET).unwrap()
+            for _ in 0..200 {
+                std::thread::sleep(Duration::from_millis(50));
+                if let Ok(receipt) = responder.respond("cred-1", SECRET) {
+                    return receipt;
+                }
+            }
+            panic!("respond 重试环耗尽：请求卡 10s 内未出现");
         });
         let outcome = broker.request_credential(&request("cred-1", 5)).unwrap();
         let receipt = t.join().unwrap();
-
         assert_eq!(outcome, CredentialOutcome::Stored);
         assert_eq!(receipt["stored"], serde_json::json!(true));
         assert_eq!(receipt["rotated"], serde_json::json!(false));
@@ -116,9 +124,15 @@ fn requested_event_carries_metadata_only() {
     let (broker, mut rx) = make_broker(&dir);
 
     let responder = broker.clone();
+    // BUG-20261128-003：同兄弟测试——重试环兜住「响应先于请求注册」的
+    // 扑空（扑空值被 let _ = 吞掉 = 必假超时）。
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        let _ = responder.respond("cred-evt", SECRET);
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(50));
+            if responder.respond("cred-evt", SECRET).is_ok() {
+                return;
+            }
+        }
     });
     let outcome = broker.request_credential(&request("cred-evt", 5)).unwrap();
     assert_eq!(outcome, CredentialOutcome::Stored);

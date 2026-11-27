@@ -701,9 +701,16 @@ async fn test_export_artifact_side_file_failure_propagates() {
         .await
         .expect_err("side-file write failure must propagate");
     let _ = err.kind();
+    // BUG-20261128-002：Linux write 落目录路径 = EISDIR → ErrorKind::
+    // IsADirectory（1.83 io_error_more 稳定化进 allowlist）；Windows 同形
+    // = ACCESS_DENIED → PermissionDenied。测试意图是「任一失败 kind 都
+    // 不许吞掉照 push 清单」，具体 kind 平台各异，名单只收历史实测值。
     assert!(matches!(
         err.kind(),
-        ErrorKind::PermissionDenied | ErrorKind::Other | ErrorKind::InvalidInput
+        ErrorKind::PermissionDenied
+            | ErrorKind::Other
+            | ErrorKind::InvalidInput
+            | ErrorKind::IsADirectory
     ));
 
     // 清单不得产出（残缺包没有谎报的资格）

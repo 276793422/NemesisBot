@@ -667,7 +667,12 @@ fn process_alive(pid: u32) -> bool {
     // （System Idle Process 占 0）；Unix kill(0,0) 语义是「探测本进程组」
     // 恒真。spawn 竞态的 unwrap_or(0) 与收养会话（孤儿收养 pid 未知=0）
     // 都不许被误判成活进程（收养会话靠 exited 探针旗标判活，不走这里）。
-    if pid == 0 {
+    // BUG-20261128-001：同族陷阱高一号位——u32::MAX as i32 = -1，Unix
+    // `kill(-1, 0)` 语义=「探测本用户可 signaling 的全体进程」恒真；
+    // `kill(-1, 9)` 更是屠杀。pid 折进 i32 后必须仍为正才是合法探测值
+    // （守卫统一放 cfg 分叉前，契约一处声明；Windows 两臂对超界 pid
+    // 本就查无此人，无行为变化）。
+    if (pid as i32) <= 0 {
         return false;
     }
     #[cfg(windows)]
@@ -700,7 +705,10 @@ fn kill_process(pid: u32) {
     // 「信号发给整个进程组」= 网关自己被杀（不是杀不动，是杀反了）。可达
     // 路径：spawn 竞态 `child.id().unwrap_or(0)` → fail! 兜底；收养会话
     // （pid=0）close 的强杀兜底臂。0 号一律诚实 no-op。
-    if pid == 0 {
+    // BUG-20261128-001：u32::MAX as i32 = -1 → `kill(-1, 9)` = 屠杀本用户
+    // 可 signaling 的全体进程（比探测侧更致命）。同守卫 `(pid as i32)
+    // <= 0` 一并堵死（含 0 号）。
+    if (pid as i32) <= 0 {
         return;
     }
     #[cfg(windows)]

@@ -406,10 +406,23 @@ async fn run_script_live_orchestrates_type_click_extract() {
         None,
     ));
     let t = tool_for_screenshot(home.clone());
-    let session = manager
-        .spawn(Some("edge"), None)
-        .await
-        .expect("spawn Edge failed");
+    // BUG-20261128-004：SKIP 守卫只验「Edge 存在」，CI 容器形态 Edge 在但
+    // SUID sandbox 配置不合法（msedge-sandbox 须 root:4755）→ spawn 即
+    // FATAL 自杀。与「无 Edge 诚实 SKIP」同纪律扩一位：sandbox 不可用 =
+    // 环境不能跑活体，诚实跳过；非 sandbox 死因仍硬红（不许遮真实回归）。
+    let session = match manager.spawn(Some("edge"), None).await {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("sandbox") {
+                eprintln!(
+                    "SKIP：Edge 在但 sandbox 不可用（容器/CI 形态），活体编排诚实跳过：{msg}"
+                );
+                return;
+            }
+            panic!("spawn Edge failed: {msg}");
+        }
+    };
 
     // data: URL 页面（单引号避转义地狱）：type 进输入框 → click 触发
     // onclick 回显 → extract 读回显；details（open 态）+ 密码预填框 +
