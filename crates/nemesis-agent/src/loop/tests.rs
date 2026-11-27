@@ -5082,7 +5082,9 @@ async fn test_force_compression_preserves_last_message() {
         .await;
 
     let cache = instance.get_summary_cache().expect("cache should be set");
-    assert_eq!(cache.covers_up_to, 42 - SMALL_K_FORCE); // tail = last 2 messages
+    // user-first 钳制：raw=40（assistant）回退到最近 user（39），尾巴
+    // [u39, a40, u41]——"Final message" 仍在逐字尾部。
+    assert_eq!(cache.covers_up_to, 42 - SMALL_K_FORCE - 1);
     // build_messages sends the verbatim tail, which includes "Final message".
     let messages = agent_loop.build_messages(&instance);
     let joined: String = messages
@@ -5362,7 +5364,7 @@ async fn test_maybe_summarize_no_session_store() {
     }
     // Should not panic even without session store
     agent_loop
-        .maybe_update_summary(&instance, "test-session", "web", "chat1")
+        .maybe_update_summary(&instance, "test-session", "web", "chat1", true)
         .await;
 }
 
@@ -5403,11 +5405,11 @@ async fn test_maybe_summarize_already_summarizing() {
 
     // First call triggers summarization
     agent_loop
-        .maybe_update_summary(&instance, "sess1", "web", "chat1")
+        .maybe_update_summary(&instance, "sess1", "web", "chat1", true)
         .await;
     // Second call should be skipped (already summarizing)
     agent_loop
-        .maybe_update_summary(&instance, "sess1", "web", "chat1")
+        .maybe_update_summary(&instance, "sess1", "web", "chat1", true)
         .await;
 }
 
@@ -5440,15 +5442,16 @@ async fn test_maybe_update_summary_advances_cache_when_tail_over_threshold() {
         );
     }
     // history = [sys, 5u, 5a] = 11；尾巴 tokens 150 ≥ 75。预算 10 只装得下
-    // 最后 1 条（首条无条件保留）→ token_budget_boundary = 10。
+    // 最后 1 条（首条无条件保留）→ token_budget_boundary = 10；user-first
+    // 钳制再回退到最近 user（9）→ 尾巴保留最后一组问答 [u9, a10]。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     let cache = instance.get_summary_cache().expect("cache should be set");
     assert_eq!(
-        cache.covers_up_to, 10,
-        "token 预算尾巴：预算只够最后 1 条，covers 推进到 len-1"
+        cache.covers_up_to, 9,
+        "token 预算尾巴 + user-first 钳制：covers = len-2（尾首为 user）"
     );
     assert_eq!(cache.text, "SUMMARY");
     let _ = std::fs::remove_file(&cfg_path);
@@ -5475,7 +5478,7 @@ async fn test_maybe_update_summary_no_trigger_below_threshold() {
         instance.add_assistant_message(&format!("reply {}", i), Vec::new(), None);
     }
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(instance.get_summary_cache().is_none());
 }
@@ -5513,10 +5516,10 @@ async fn test_maybe_update_summary_no_stuck_when_tail_short_but_over_threshold()
     // Two calls while over-threshold-but-too-short. Old bug: stuck ticks to 2
     // and pauses. Fix: no tick (can't summarize yet).
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(instance.get_summary_cache().is_none()); // too short to summarize
 
@@ -5526,7 +5529,7 @@ async fn test_maybe_update_summary_no_stuck_when_tail_short_but_over_threshold()
         instance.add_assistant_message(&format!("ack {}", i), Vec::new(), None);
     }
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     instance
         .get_summary_cache()
@@ -5640,14 +5643,16 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         turn("assistant", "a3", vec![], None),               // 8
         turn("user", &pad("u5"), vec![], None),              // 9
     ]);
-    // raw new_c = 4（预算边界卡在 parent 与 res 之间）→ tool_safe backs to 3.
+    // raw new_c = 4（预算边界卡在 parent 与 res 之间）→ tool_safe backs to 3
+    // → user-first 钳制再回退到最近 user（2）——tool 对（3/4）整体留在
+    // 尾部，比原语义更保守。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     let cache = instance.get_summary_cache().expect("cache should be set");
     assert_eq!(
-        cache.covers_up_to, 3,
-        "boundary must back up past the tool result to its parent assistant"
+        cache.covers_up_to, 2,
+        "boundary must back up past the tool result to its parent assistant, then to the nearest user"
     );
     // 尾巴绝不能以孤儿 tool 结果开头（repair 会把它连同交互一起丢掉）。
     let history = instance.get_history();
@@ -5691,7 +5696,7 @@ async fn test_e2e_summarize_persist_reload_inject() {
         inst.add_assistant_message(&format!("assistant reply {}", i), Vec::new(), None);
     }
     agent_loop
-        .maybe_update_summary(&inst, "e2e:k", "web", "c")
+        .maybe_update_summary(&inst, "e2e:k", "web", "c", true)
         .await;
     let cache_after = inst
         .get_summary_cache()

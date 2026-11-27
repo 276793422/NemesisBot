@@ -63,10 +63,14 @@ async fn provider_stream_push_frame_shape_e2e() -> Result<()> {
         out.stdout,
         out.stderr
     );
-    // testai-1.2 = 流式回复测试模型（TestAIServer 内置）。
+    // testai-1.2 = 流式回复测试模型，但它是 **30s 延迟模型**（TestAI12.Delay
+    // = 30s，TestAIServer 的延迟测试档）——`model add` 的验证（5s 超时）+
+    // 强度探针（30s 超时）两笔对 30s 延迟端点注定超时，三探针合计 ~35s，
+    // 默认 run_cli 15s 预算必杀（探针失败本身只是 WARN + 条目照存，退码 0
+    // ——必须给足墙钟）。流式 lane 判定与延迟无关，帧形态验证照常成立。
     let base = format!("http://127.0.0.1:{AI_PORT}/v1");
     let out = ws
-        .run_cli(
+        .run_cli_with_timeout(
             &bin,
             &[
                 "model",
@@ -79,6 +83,7 @@ async fn provider_stream_push_frame_shape_e2e() -> Result<()> {
                 "test-key",
                 "--default",
             ],
+            90,
         )
         .await;
     anyhow::ensure!(

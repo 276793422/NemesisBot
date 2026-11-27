@@ -8,8 +8,10 @@
 //!
 //! 真相源：`docs/PLAN/2026-11-24_自学习铺路计划.md` §4.2 / §3。
 //!
-//! 确定性触发形状（v1 范围，用户批复）：**question 工具调用且用户已作答**。
-//! 数据来源与形态锚点（动工前逐行复核）：
+//! 确定性触发形状（v2，2026-11-27 补第二形状）：
+//! 1. **提问应答**（v1，用户批复）：**question 工具调用且用户已作答**。
+//!
+//!    数据来源与形态锚点（动工前逐行复核）：
 //! - chat_log assistant 行 `"work"` 时间线（`work_timeline::WorkTimeline`
 //!   serde 形态）——question 调用记录（args_preview / result_preview）随
 //!   **turn 终局**落盘，故「问→答→turn 收敛」三段天然压进同一条行内；
@@ -18,6 +20,12 @@
 //!   `User selected:` / `User selected N option(s):` / `User answered form:`
 //!   = 已作答；`No answer:`（超时/estop）= 用户没回，不是候选——v1 只抓
 //!   卡片作答形态（§11.3 审批卡形态同样不抓）。
+//! 2. **文本纠正**（v2，真实数据实测后补——该用户从不答卡片，纠正全走
+//!    自由文本，v1 形状 0/3 触发）：**非注入 user 行命中纠正词表**。
+//!    ask = 此前最近一条 assistant 内容尾段（被纠正的上下文），reply =
+//!    用户纠正原文，result = 纠正行之后第一条 assistant 尾段（纠正后回
+//!    应；缺席诚实空串）。词表只管粗筛（宁滥勿缺——语义真假归对话期
+//!    LLM 判）；语言范围诚实声明：仅中文形态。
 //! - 会话身份 = `logs/session_logs/*.jsonl` 文件名消毒键（chat_log 寻址
 //!   唯一可恢复身份；`sanitize_path_segment` 有损不可逆，原始键不落盘
 //!   也不需要——目标摘要已给对话引擎语义锚点）。
@@ -79,20 +87,73 @@ pub const CONSUMER_PROFILE: &str = "profile";
 /// 形态变更时本表与 interactive 测试同步改——drift 由测试钉住）。
 const ANSWERED_PREFIXES: [&str; 3] = ["User selected:", "User selected ", "User answered form:"];
 
+/// 文本纠正触发下限（字符）：「不对」级两三字短应答不算候选，纠正通常
+/// 带实质内容（真实数据最短样本 40+ 字符，4 是防御性下限）。
+const CORRECTION_MIN_CHARS: usize = 4;
+
+/// 自由文本纠正词表（v2 形状的确定性粗筛）。取舍方向 = 宁滥勿缺：漏一条
+/// 真实纠正 = 信号永久丢失；多一条噪声候选 = 台账多一行、对话多判一次
+/// （无害）。语义真假归对话期 LLM 判；语言范围诚实声明：仅中文形态。
+/// 词表是行为契约——变更须连带核对 tests 内词表漂移锁。
+const CORRECTION_MARKERS: [&str; 20] = [
+    "不对",
+    "错了",
+    "搞错",
+    "弄错",
+    "理解错",
+    "判断错",
+    "我说的是",
+    "我的意思是",
+    "我是说",
+    "我让你",
+    "你没",
+    "你漏",
+    "应该是",
+    "重来",
+    "别用",
+    "你就别",
+    "懂了么",
+    "明白吗",
+    "你先确认",
+    "为什么你",
+];
+
+/// 文本纠正粗筛：命中任一纠正词 = true（语义真假归对话期 LLM）。
+fn correction_marker_hit(content: &str) -> bool {
+    CORRECTION_MARKERS.iter().any(|m| content.contains(m))
+}
+
+/// 候选形状（v2，2026-11-27 补自由文本纠正；v1 唯一形状 = 提问应答）。
+/// serde default = QuestionAnswer——旧台账行零迁移；未知 kind 值 = 行级
+/// 反序列化失败 → `read_all` 宽容跳过（WARN），不炸台账。
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    /// 提问应答：agent question 卡 → 用户作答 → turn 收敛（v1；default——
+    /// 旧台账行零迁移）。
+    #[default]
+    QuestionAnswer,
+    /// 文本纠正：用户在 agent 输出后用自由文字直接纠偏/纠错/改范围（v2）。
+    Correction,
+}
+
 /// 扫描产出的候选草稿（未落账前的内存形态；`id` 由 ingest 发号）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CandidateDraft {
     /// 会话日志文件名消毒键（见模块注释「会话身份」）。
     pub session_key: String,
-    /// 触发行的 timestamp（turn 收敛时刻，RFC3339 原样）。
+    /// 触发行 timestamp（RFC3339 原样；应答行/纠正行）。
     pub ts: String,
-    /// question 参数摘要（JSON 可解则取 `question` 字段，否则原始 preview）。
+    /// 提问应答 = question 参数摘要（JSON 可解则取 `question` 字段）；
+    /// 文本纠正 = 此前最近一条 assistant 内容尾段（被纠正的上下文）。
     pub ask: String,
-    /// 用户答复摘要（`User selected …` / `User answered form …` 原样截断）。
+    /// 提问应答 = 用户答复摘要（`User selected …` 原样截断）；
+    /// 文本纠正 = 用户纠正原文截断。
     pub reply: String,
     /// 任务目标摘要（会话首条真实 user 行）。
     pub goal: String,
-    /// 收敛结果摘要（该 assistant 行 content 尾段——turn 最终回复）。
+    /// 提问应答 = turn 最终回复尾段；文本纠正 = 纠正后第一条 assistant
+    /// 尾段（缺席 = 空串诚实）。
     pub result: String,
     /// 去重指纹：sha256(session|ask|reply) 前 16 hex（重复扫描不重复落账）。
     pub fp: String,
@@ -101,6 +162,9 @@ pub struct CandidateDraft {
     /// project_id/损坏 = 对话，诚实缺省）。serde default 旧台账行零迁移。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// 候选形状（v2 2026-11-27；default = 提问应答，旧台账行零迁移）。
+    #[serde(default)]
+    pub kind: CandidateKind,
 }
 
 /// 候选台账行（`<forge>/evidence/candidates.jsonl` 单行 serde 形态）。
@@ -321,7 +385,12 @@ pub fn scan_chat_log(session_key: &str, scope: Option<&str>, bytes: &[u8]) -> Ve
     let text = String::from_utf8_lossy(bytes);
     let mut goal = String::new();
     let mut drafts = Vec::new();
-    for line in text.lines() {
+    // v2 文本纠正：assistant 尾段轨迹（行号→尾段）供「纠正上下文 / 纠正
+    // 后回应」两个槽取数；纠正种子攒到收尾统一成稿（result 要看纠正行
+    // 之后的第一条 assistant）。
+    let mut assistant_tails: Vec<(usize, String)> = Vec::new();
+    let mut correction_seeds: Vec<(usize, String, String, String)> = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -332,17 +401,38 @@ pub fn scan_chat_log(session_key: &str, scope: Option<&str>, bytes: &[u8]) -> Ve
         let role = row["role"].as_str().unwrap_or("");
         let content = row["content"].as_str().unwrap_or("");
         let ts = row["timestamp"].as_str().unwrap_or("");
-        if role == "user" && goal.is_empty() {
-            // 首条真实 user 行（system_notice / steer 注入行不是用户的话）
+        if role == "user" {
+            // 注入行（system_notice / steer）不是用户说的话：既不当目标
+            // 也不进纠正粗筛。
             let is_injected = row.get("system_notice").is_some()
                 || row.get("steer").and_then(|v| v.as_bool()).unwrap_or(false);
-            if !is_injected && !content.trim().is_empty() {
+            if is_injected || content.trim().is_empty() {
+                continue;
+            }
+            // 首条真实 user 行 = 任务目标摘要
+            if goal.is_empty() {
                 goal = truncate_chars(content, GOAL_MAX_CHARS);
             }
+            // v2 形状粗筛：纠正词命中 → 种子（ask = 此前最近 assistant 尾段；
+            // 首行纠正无前文 = 空 ask 诚实）
+            if content.chars().count() >= CORRECTION_MIN_CHARS && correction_marker_hit(content) {
+                let ask = assistant_tails
+                    .last()
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or_default();
+                correction_seeds.push((
+                    idx,
+                    ts.to_string(),
+                    ask,
+                    truncate_chars(content, REPLY_MAX_CHARS),
+                ));
+            }
+            continue;
         }
         if role != "assistant" {
             continue;
         }
+        assistant_tails.push((idx, tail_chars(content, ASK_MAX_CHARS)));
         let Some(tools) = row
             .get("work")
             .and_then(|w| w.get("rounds"))
@@ -375,8 +465,30 @@ pub fn scan_chat_log(session_key: &str, scope: Option<&str>, bytes: &[u8]) -> Ve
                 result: tail_chars(content, RESULT_MAX_CHARS),
                 fp: candidate_fingerprint(session_key, args_preview, result_preview),
                 scope: scope.map(|s| s.to_string()),
+                kind: CandidateKind::QuestionAnswer,
             });
         }
+    }
+    // v2 纠正种子成稿：result = 纠正行之后第一条 assistant 尾段（纠正后
+    // 回应；无后续 = 空串诚实——纠正落在会话末尾/还没回应）。
+    for (idx, ts, ask, reply) in correction_seeds {
+        let fp = candidate_fingerprint(session_key, &ask, &reply);
+        let result = assistant_tails
+            .iter()
+            .find(|(i, _)| *i > idx)
+            .map(|(_, t)| t.clone())
+            .unwrap_or_default();
+        drafts.push(CandidateDraft {
+            session_key: session_key.to_string(),
+            ts,
+            ask,
+            reply,
+            goal: goal.clone(),
+            result,
+            fp,
+            scope: scope.map(|s| s.to_string()),
+            kind: CandidateKind::Correction,
+        });
     }
     drafts
 }
@@ -573,16 +685,24 @@ pub fn build_evidence_pack(
     let mut candidate_section = String::new();
     if candidates.is_empty() {
         candidate_section.push_str(
-            "## 纠正候选\n\n（本批无候选——没有检测到「agent 停下问→用户答复→任务收敛」形状）",
+            "## 纠正候选\n\n（本批无候选——没有检测到「agent 停下问→用户答复」或「用户自由文本纠正」形状）",
         );
     } else {
         let mut body = String::new();
         let mut included = 0usize;
         for c in candidates.iter().take(CANDIDATE_PACK_MAX) {
-            let entry = format!(
-                "\n### {} [{}]\n- 会话任务目标：{}\n- agent 问：{}\n- 用户答：{}\n- 任务收敛结果：{}\n",
-                c.id, c.draft.ts, c.draft.goal, c.draft.ask, c.draft.reply, c.draft.result
-            );
+            // 形状感知标签：两种形状的槽位语义不同（问/答 vs 此前/纠正），
+            // 标签写进条目头帮对话期 LLM 对齐语义。
+            let entry = match c.draft.kind {
+                CandidateKind::QuestionAnswer => format!(
+                    "\n### {} [{} 提问应答]\n- 会话任务目标：{}\n- agent 问：{}\n- 用户答：{}\n- 任务收敛结果：{}\n",
+                    c.id, c.draft.ts, c.draft.goal, c.draft.ask, c.draft.reply, c.draft.result
+                ),
+                CandidateKind::Correction => format!(
+                    "\n### {} [{} 文本纠正]\n- 会话任务目标：{}\n- agent 此前：{}\n- 用户纠正：{}\n- 纠正后回应：{}\n",
+                    c.id, c.draft.ts, c.draft.goal, c.draft.ask, c.draft.reply, c.draft.result
+                ),
+            };
             let n = entry.chars().count();
             if n > budget {
                 new_signal_budget_stop = true;

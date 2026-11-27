@@ -147,3 +147,12 @@ for (const f of names.filter(x => x.endsWith(".log"))) {
 - `@单词`（无路径分隔符无扩展名）视为普通提及，不会触发文件读取。
 - Dashboard 输入框敲 `@` 会弹出工作区路径补全（与 fs watcher 共用忽略表，`logs/`、`target/` 等运行时目录不在列表里）。
 
+## 知识库重定向（天工引导）
+
+开启知识库后（用户在 Dashboard 资产盘点页配置 `config.knowledge.json`），`read_file` / `write_file` / `edit_file` / `multiedit` 四工具对项目三件套（AGENTS.md / CLAUDE.md / TIANGONG.md）有 overlay 语义：
+
+- 本地已有该文件 → 照常，知识库旁路。
+- 本地没有且路径在配置的项目目录子树内 → 自动落到知识库目录的同构镜像（如 `C:/works/proj/src/AGENTS.md` 本地缺失 → 读到 `D:/kb/proj/src/AGENTS.md`）。写入同样落镜像，项目目录零新增文件。
+- 上下文里会看到「# 天工」存在性声明（本项目有 TIANGONG.md 引导文件，含层级地图/知识地图/行为规则，按需阅读）；配置为全文模式时根层 TIANGONG.md 全文直接注入。
+- 只有上述四工具重定向；`list_dir` / shell / `grep` 不重定向——直接 read 镜像路径即可。配置保存即时生效（无需重启）；项目目录与知识库目录的围栏放行需重启网关。
+

@@ -312,7 +312,7 @@ async fn fallback_window_still_auto_summarizes() {
     }
 
     agent_loop
-        .maybe_update_summary(&instance, &key, "web", "c")
+        .maybe_update_summary(&instance, &key, "web", "c", true)
         .await;
 
     let cache = instance
@@ -361,7 +361,7 @@ async fn auto_summarize_emits_soft_and_summarize_notes() {
     }
 
     agent_loop
-        .maybe_update_summary(&instance, &key, "web", "c")
+        .maybe_update_summary(&instance, &key, "web", "c", true)
         .await;
 
     let cache = instance.get_summary_cache().expect("摘要应已采用");
@@ -438,7 +438,7 @@ async fn stuck_pause_emits_one_shot_chat_note() {
     // COMPACT_STUCK_LIMIT(2) → stuck 置位 + 注记。
     for _ in 0..3 {
         agent_loop
-            .maybe_update_summary(&instance, &key, "web", "c")
+            .maybe_update_summary(&instance, &key, "web", "c", true)
             .await;
     }
 
@@ -458,7 +458,7 @@ async fn stuck_pause_emits_one_shot_chat_note() {
 
     // 闩保持（paused_stuck 提前返回），转变沿一次性不重复注记。
     agent_loop
-        .maybe_update_summary(&instance, &key, "web", "c")
+        .maybe_update_summary(&instance, &key, "web", "c", true)
         .await;
     let rows = system_rows(&key);
     assert_eq!(count_stuck(&rows), 1, "one-shot：不重复: {rows:?}");
@@ -633,7 +633,8 @@ async fn auto_summarize_in_flight_visible_during_and_cleared_after() {
     let al2 = agent_loop.clone();
     let key2 = key.clone();
     let handle = tokio::spawn(async move {
-        al2.maybe_update_summary(&instance, &key2, "web", "c").await;
+        al2.maybe_update_summary(&instance, &key2, "web", "c", true)
+            .await;
     });
 
     // 摘要执行期间：登记在册（running=true）。

@@ -281,6 +281,7 @@ impl AgentLoop {
             skills_loader: parking_lot::RwLock::new(None),
             skills_digest_state: std::sync::Arc::new(crate::skills_digest::DigestState::new()),
             insights_section_source: parking_lot::RwLock::new(None),
+            knowledge_section_source: parking_lot::RwLock::new(None),
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(queue_size.max(1))),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),

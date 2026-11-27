@@ -2452,6 +2452,127 @@ async fn test_use_llm_false_reflection_acks_fallback() {
     );
 }
 
+/// 语义/对话消费分流计数 caller（按 system prompt 归类）：
+/// 2026-11-27 语义消费收敛的断言面——深学对话开启时 cycle 的语义分析
+/// （SEMANTIC_ANALYSIS_SYSTEM_PROMPT）必须零调用，语义判断只发生在
+/// 对话（LEARN_DIALOGUE_SYSTEM_PROMPT）侧。
+struct CountingCaller {
+    semantic: std::sync::atomic::AtomicUsize,
+    dialogue: std::sync::atomic::AtomicUsize,
+    other: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingCaller {
+    fn new() -> Self {
+        Self {
+            semantic: std::sync::atomic::AtomicUsize::new(0),
+            dialogue: std::sync::atomic::AtomicUsize::new(0),
+            other: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn semantic(&self) -> usize {
+        self.semantic.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn dialogue(&self) -> usize {
+        self.dialogue.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn other(&self) -> usize {
+        self.other.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for CountingCaller {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        _user_prompt: &str,
+        _max_tokens: Option<i64>,
+    ) -> Result<String, String> {
+        if system_prompt == nemesis_prompts::forge::SEMANTIC_ANALYSIS_SYSTEM_PROMPT {
+            self.semantic
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        } else if system_prompt == nemesis_prompts::forge::LEARN_DIALOGUE_SYSTEM_PROMPT {
+            self.dialogue
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            self.other.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        // 空提议安全形态：对话第一阶段即收束（只调一次）。
+        Ok(r#"{"proposals":[],"empty_reason":"计数桩：无候选"}"#.to_string())
+    }
+}
+
+#[tokio::test]
+async fn test_learn_enabled_cycle_skips_semantic_llm_call() {
+    let _serial = crate::learn_dialogue::TEST_LOCK.lock().await;
+    // learn.enabled + use_llm → 对话是本周期唯一语义消费方：Step 2 落纯
+    // 统计反思（语义分析零调用），语义判断只发生在对话侧。回归钉咬合：
+    // 摘掉 Step 2 的 !dialogue_owns_semantics 条件 → semantic 计数 ≥1 本
+    // 测试必红。
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.learn.enabled = true;
+    config.reflection.use_llm = true;
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+    let caller = Arc::new(CountingCaller::new());
+    forge.set_provider(caller.clone() as Arc<dyn crate::reflector_llm::LLMCaller>);
+    let forge = Arc::new(forge);
+
+    write_test_experiences(forge.forge_dir(), 3).await;
+    forge.run_reflection_cycle().await;
+
+    assert_eq!(caller.semantic(), 0, "对话开：语义分析必须零调用");
+    assert_eq!(
+        caller.dialogue(),
+        1,
+        "对话跑且空提议第一阶段收束（恰一次调用）"
+    );
+    assert_eq!(caller.other(), 0, "无第三类消费方（pipeline 未装配）");
+    assert!(
+        forge.forge_dir().join("learn").exists(),
+        "对话留痕存在（learn/ 目录）"
+    );
+}
+
+#[tokio::test]
+async fn test_learn_disabled_cycle_keeps_semantic_call() {
+    // learn.enabled=false → 对话不跑，Step 2 的语义分析是本周期唯一语义
+    // 路径：保持旧行为（use_llm=true 时恰一次语义调用）。语义消费收敛
+    // 不得波及 learn 关的部署形态（默认部署零变化）。
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.learn.enabled = false;
+    config.reflection.use_llm = true;
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+    let caller = Arc::new(CountingCaller::new());
+    forge.set_provider(caller.clone() as Arc<dyn crate::reflector_llm::LLMCaller>);
+    let forge = Arc::new(forge);
+
+    write_test_experiences(forge.forge_dir(), 3).await;
+    forge.run_reflection_cycle().await;
+
+    assert_eq!(
+        caller.semantic(),
+        1,
+        "对话关：语义分析是唯一语义路径（恰一次调用）"
+    );
+    assert_eq!(caller.dialogue(), 0, "对话关零对话调用");
+    assert!(
+        !forge.forge_dir().join("learn").exists(),
+        "对话关（零 learn 留痕）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 0=关 惯例（复查）
 // ---------------------------------------------------------------------------
@@ -2634,6 +2755,7 @@ fn scope_cand(id: &str, scope: Option<&str>) -> crate::session_evidence::Correct
             result: "x".into(),
             fp: id.into(),
             scope: scope.map(|s| s.into()),
+            kind: crate::session_evidence::CandidateKind::QuestionAnswer,
         },
     }
 }

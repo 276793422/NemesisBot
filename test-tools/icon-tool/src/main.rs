@@ -33,7 +33,8 @@ fn main() {
 
     // Save individual PNG files
     let outputs = [
-        (32u32, "web/public/favicon.png"),
+        // favicon 随 BUG-20261127-005 迁入 src/assets（vite 打包资产）。
+        (32u32, "web/src/assets/favicon.png"),
         (256u32, "crates/nemesis-desktop/icons/icon.png"),
         (256u32, "plugins/plugin-ui/icons/icon.png"),
     ];

@@ -81,6 +81,9 @@ pub mod image_path_detector;
 pub mod inbox;
 pub mod instance;
 pub mod interrupt_replay;
+/// 知识库重定向运行时面（天工系统 v1）：存在性声明 + 路径重定向
+/// + KnowledgeHandle（mtime 缓存热生效）。schema 在 nemesis-config::knowledge。
+pub mod knowledge;
 pub mod r#loop;
 pub mod loop_continuation;
 pub mod loop_executor;
@@ -169,6 +172,10 @@ pub use context::RequestContext;
 pub use estop::EstopState;
 pub use image_attach::LlmImage;
 pub use instance::AgentInstance;
+pub use knowledge::{
+    INSTRUCTION_FILE_NAMES, KnowledgeHandle, TIANGONG_FILE_NAME, is_instruction_file_name,
+    knowledge_decl_section, maybe_redirect_path, redirect_instruction_path,
+};
 pub use loop_continuation::{
     ContinuationData, ContinuationManager, ContinuationSnapshot, ContinuationStore,
     ContinuationToolResult, handle_cluster_continuation,

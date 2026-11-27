@@ -172,6 +172,14 @@ pub struct SharedToolConfig {
     /// 注册 / 测试形态）。executor 子进程按同根注入（NEMESISBOT_EXECUTOR_
     /// WORKSPACE），保证 Layer-1 分离后写路径仍受同一边界约束。
     pub workspace_boundary: Option<Arc<WorkspaceBoundary>>,
+    /// 知识库重定向（天工系统 v1，2026-11-26）：read_file / write_file /
+    /// edit_file（含 append）/ multiedit 四工具入口的三件套路径重定向
+    /// 句柄（KnowledgeHandle mtime 缓存，knowledge.set 写盘后下一次工具
+    /// 调用即生效）。`None` = 不接线（基线注册 / exec_worker 哑执行 /
+    /// 项目 loop / 集群 worker——v1 覆盖面 main + selfbuilt），行为与
+    /// 旧「无重定向」逐字节一致。开关关（fail-closed）时句柄在场但
+    /// redirect 恒等——同一诚实降级。
+    pub knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
     /// todowrite 工具配置（workspace 存储 + TodoUpdated
     /// 广播通道）。None = 不注册该工具（register_default_tools 基线形态 /
     /// 无 workspace 的测试）。事件通道与 ToolEventHook 共用同一
@@ -365,19 +373,31 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     if let Some(ref boundary) = config.workspace_boundary {
         tools.insert(
             "write_file".to_string(),
-            Box::new(WriteFileTool::with_boundary(boundary.clone())),
+            Box::new(
+                WriteFileTool::with_boundary(boundary.clone())
+                    .with_knowledge(config.knowledge.clone()),
+            ),
         );
         tools.insert(
             "edit_file".to_string(),
-            Box::new(EditFileTool::with_boundary(boundary.clone())),
+            Box::new(
+                EditFileTool::with_boundary(boundary.clone())
+                    .with_knowledge(config.knowledge.clone()),
+            ),
         );
         tools.insert(
             "multiedit".to_string(),
-            Box::new(MultiEditTool::with_boundary(boundary.clone())),
+            Box::new(
+                MultiEditTool::with_boundary(boundary.clone())
+                    .with_knowledge(config.knowledge.clone()),
+            ),
         );
         tools.insert(
             "read_file".to_string(),
-            Box::new(ReadFileTool::with_boundary(boundary.clone())),
+            Box::new(
+                ReadFileTool::with_boundary(boundary.clone())
+                    .with_knowledge(config.knowledge.clone()),
+            ),
         );
         tools.insert(
             "list_dir".to_string(),
@@ -400,6 +420,26 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert(
             "read_image".to_string(),
             Box::new(ReadImageTool::with_boundary(boundary.clone())),
+        );
+    } else if config.knowledge.is_some() {
+        // 无边界但注入了 knowledge 的形态（当前装配点不产生，防御完整）：
+        // 四工具仍以无界 default() 形态接线重定向（绝对路径改写不依赖边界）。
+        let k = config.knowledge.clone();
+        tools.insert(
+            "write_file".to_string(),
+            Box::new(WriteFileTool::default().with_knowledge(k.clone())),
+        );
+        tools.insert(
+            "edit_file".to_string(),
+            Box::new(EditFileTool::default().with_knowledge(k.clone())),
+        );
+        tools.insert(
+            "multiedit".to_string(),
+            Box::new(MultiEditTool::default().with_knowledge(k.clone())),
+        );
+        tools.insert(
+            "read_file".to_string(),
+            Box::new(ReadFileTool::default().with_knowledge(k)),
         );
     }
 
@@ -1095,6 +1135,7 @@ pub fn register_extended_tools(
         skills_install_gate_slot: None,
         security: None,
         workspace_boundary: None,
+        knowledge: None,
         todo: None,
         background_registry: None,
         exec_output_tx: None,

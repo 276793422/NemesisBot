@@ -265,3 +265,87 @@ describe('formatDuration ≥1h 保留秒（2026-11-25）', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 插话处理指示唯一性（2026-11-27 修复回归锁）。缺陷：指示行/预览卡用全局
+// 窗口条件 steerProcessing（rounds.some(...)）挂在 per-round v-for 里，多轮
+// 时间线每轮各渲染一条——一条插话产生 N 个「处理插话中…」标记（生产实例
+// 长 turn 截图实证）。修复 = 条件收窄到未收口注记轮本身。
+// ---------------------------------------------------------------------------
+
+describe('WorkTimelineBlock 插话处理指示唯一性（2026-11-27 修复）', () => {
+  /** 多轮 live 时间线：注记前 2 个工具轮 + 1 个未收口注记轮 + 注记后 1 轮
+   *  （插话专轮执行中的工具轮）。回应文本可选（未传 = 窗口未收口）。 */
+  function liveBlockWithSteer(response?: string, steerLiveText = '') {
+    return mount(WorkTimelineBlock, {
+      props: {
+        live: true,
+        steerLiveText,
+        work: {
+          started_at_ms: 1000,
+          ended_at_ms: 2000,
+          rounds: [
+            {
+              text: '轮1叙述',
+              tools: [{ tool: 'exec', call_id: 'e1', ok: true, duration_ms: 10, args_preview: '{"cmd":"a"}' }],
+            },
+            {
+              text: '轮2叙述',
+              tools: [{ tool: 'exec', call_id: 'e2', ok: true, duration_ms: 10, args_preview: '{"cmd":"b"}' }],
+            },
+            { text: '', tools: [], steer_note: '⚡ 插话已注入本轮思考：先看结果', steer_response: response },
+            {
+              text: '',
+              tools: [{ tool: 'read_file', call_id: 'e3', ok: true, duration_ms: 10, args_preview: '{"path":"x"}' }],
+            },
+          ],
+        },
+      },
+    })
+  }
+
+  it('未收口窗口：指示行恰 1 次（多轮不复制），且紧跟 ⚡ 注记行', () => {
+    const w = liveBlockWithSteer()
+    const indicators = w.findAll('.wt-steer-working')
+    expect(indicators.length).toBe(1)
+    const children = Array.from(w.find('.wt-body').element.children)
+    const noteIdx = children.findIndex((el) => el.classList.contains('wt-steer-note'))
+    const indIdx = children.findIndex((el) => el.classList.contains('wt-steer-working'))
+    expect(noteIdx).toBeGreaterThanOrEqual(0)
+    expect(indIdx).toBe(noteIdx + 1)
+    w.unmount()
+  })
+
+  it('注记之前的历史轮不渲染指示行（全局条件不得作用于无关注记轮）', () => {
+    const w = liveBlockWithSteer()
+    // 前 2 轮各自的内容（叙述/工具组）之后都不得出现指示行——总数 1 已在
+    // 上例钉死，这里补位置断言：指示行前面的孩子里恰好只有一个注记行。
+    const children = Array.from(w.find('.wt-body').element.children)
+    const indIdx = children.findIndex((el) => el.classList.contains('wt-steer-working'))
+    const notesBefore = children
+      .slice(0, indIdx)
+      .filter((el) => el.classList.contains('wt-steer-note')).length
+    expect(notesBefore).toBe(1)
+    w.unmount()
+  })
+
+  it('回应落地：指示行消失，回应段接棒恰 1 次', () => {
+    const w = liveBlockWithSteer('已看完结果，结论是可行')
+    expect(w.find('.wt-steer-working').exists()).toBe(false)
+    expect(w.findAll('.wt-steer-response').length).toBe(1)
+    w.unmount()
+  })
+
+  it('正文流预览卡同样恰 1 次（流式模型窗口，同族条件收窄）', () => {
+    const w = liveBlockWithSteer(undefined, '生成中的正文…')
+    expect(w.findAll('.wt-steer-live-text').length).toBe(1)
+    w.unmount()
+  })
+
+  it('落地态（live=false）不渲染指示行（历史回看注记轮恒已收口或轮已终局）', async () => {
+    const w = liveBlockWithSteer()
+    await w.setProps({ live: false })
+    expect(w.find('.wt-steer-working').exists()).toBe(false)
+    w.unmount()
+  })
+})

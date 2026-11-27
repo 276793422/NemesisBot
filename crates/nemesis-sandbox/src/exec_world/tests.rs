@@ -145,7 +145,7 @@ fn sanitize_env_strips_executor_internals_and_applies_overrides() {
     assert_eq!(out.get("MY_FLAG").map(String::as_str), Some("1"));
 }
 
-/// 运输层 env 表完整性——全部 13 个 spawn 侧注入的
+/// 运输层 env 表完整性——全部 14 个 spawn 侧注入的
 /// executor/eval 角色标记键必须在表内（漏键 = workflow 直 spawn 车道成为
 /// CLI 嵌套劫持的传播面）。表键逐字面量钉死：新增运输层 env 不入表这条
 /// 测试红出来兜底；`NEMESISBOT_HOME` 等用户配置语义键**必须不在**表内
@@ -163,6 +163,7 @@ fn executor_internal_env_table_is_complete() {
         "NEMESISBOT_EXECUTOR_REEXEC",
         "NEMESISBOT_EXECUTOR_EXTRA_ROOTS",
         "NEMESISBOT_EXECUTOR_DENY_PATTERNS",
+        "NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG",
         "NEMESISBOT_EXECUTOR_AGENT_ID",
         "NEMESISBOT_LEASE",
         "NEMESISBOT_SANDBOX_BACKEND",

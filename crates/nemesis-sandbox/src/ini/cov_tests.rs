@@ -15,7 +15,7 @@ fn write_ini_creates_missing_parent_dirs_and_blocks_network_by_default() {
         .join("Sandboxie.ini");
     let box_root = home.path().join("box").join("NemesisBox");
 
-    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, false)
+    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, false, &[])
         .expect("ini write must create parent dirs");
 
     let text = std::fs::read_to_string(&ini_path).unwrap();
@@ -42,7 +42,7 @@ fn write_ini_reflects_allow_network_switch() {
     let ini_path = home.path().join("Sandboxie.ini");
     let box_root = home.path().join("box");
 
-    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, true).expect("flat ini write");
+    write_sandboxie_ini(&ini_path, "NemesisBox", &box_root, true, &[]).expect("flat ini write");
     let text = std::fs::read_to_string(&ini_path).unwrap();
     assert!(text.contains("AllowNetworkAccess=y"), "{text}");
 }

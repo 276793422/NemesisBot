@@ -389,6 +389,14 @@ pub fn resolve_commands_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.commands.json")
 }
 
+/// `<workspace>/config/config.knowledge.json` —— main 侧知识库重定向配置
+/// （天工系统 v1：main home = workspace 根，与 config.cluster.json 等
+/// 专题文件同目录同模式；selfbuilt agent 走
+/// [`resolve_agent_knowledge_config_path_in_workspace`]）。
+pub fn resolve_workspace_knowledge_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.knowledge.json")
+}
+
 /// Resolve security config path within a specific workspace.
 pub fn resolve_security_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.security.json")
@@ -569,9 +577,18 @@ pub fn resolve_agents_root_in_workspace(workspace: &Path) -> PathBuf {
 /// `<workspace>/agents/<id>/home` —— Agent home（记忆/浏览器 profile/
 /// 凭据引用锚点；自建 agent 的 exec_root 亦指此处；项目 agent 的
 /// exec_root=项目目录、home 元数据仍在此）。
+///
+/// `agent_id` **路径层消毒**（第十一轮横扫 2026-11-27）：生产形态 uuid
+/// simple hex 恒等；外部输入解析出的 id（WSAPI session_key 的 id 段等）
+/// 经 [`nemesis_utils::sanitize::sanitize_agent_id`] 白名单替换——`..` /
+/// 路径分隔符 / 控制字符不再进 join（曾只靠本族注释的「禁止用户输入
+/// 直拼」约定，knowledge handler 实证违反可把配置写出 workspace）。
+/// confine 语义：恶意形态落 `<workspace>/agents/<消毒名>/`（inert 目录，
+/// 无越界）。派生函数（browser-profile / config / knowledge config）全经
+/// 本函数，单一修复点。
 pub fn resolve_agent_home_in_workspace(workspace: &Path, agent_id: &str) -> PathBuf {
     resolve_agents_root_in_workspace(workspace)
-        .join(agent_id)
+        .join(nemesis_utils::sanitize::sanitize_agent_id(agent_id))
         .join("home")
 }
 
@@ -583,11 +600,33 @@ pub fn resolve_agent_browser_profile_in_workspace(workspace: &Path, agent_id: &s
     resolve_agent_home_in_workspace(workspace, agent_id).join("browser-profile")
 }
 
+/// `<workspace>/agents/<id>/home/config` —— Agent 专题配置目录
+/// （home/config/ 子目录：与 workspace 级 config/ 专题文件模式同构的
+/// per-agent 新规范；知识库重定向等 per-agent 专题配置落此处）。
+pub fn resolve_agent_config_dir_in_workspace(workspace: &Path, agent_id: &str) -> PathBuf {
+    resolve_agent_home_in_workspace(workspace, agent_id).join("config")
+}
+
+/// `<workspace>/agents/<id>/home/config/config.knowledge.json` —— Agent
+/// 知识库重定向配置（天工系统 v1；与 main 侧
+/// [`resolve_workspace_knowledge_config_path_in_workspace`] 同 schema）。
+pub fn resolve_agent_knowledge_config_path_in_workspace(
+    workspace: &Path,
+    agent_id: &str,
+) -> PathBuf {
+    resolve_agent_config_dir_in_workspace(workspace, agent_id).join("config.knowledge.json")
+}
+
 /// `<workspace>/memory/agents/<id>` —— Agent 记忆命名空间物理目录
 /// （增强内存 jsonl 分域；记录里的 `memory_namespace` 是逻辑键
-/// `agents/<id>`，物理位置由本函数派生）。
+/// `agents/<id>`，物理位置由本函数派生）。`agent_id` 同
+/// [`resolve_agent_home_in_workspace`] 路径层消毒（不经 home 的独立
+/// join 点，同批加固）。
 pub fn resolve_agent_memory_dir_in_workspace(workspace: &Path, agent_id: &str) -> PathBuf {
-    workspace.join("memory").join("agents").join(agent_id)
+    workspace
+        .join("memory")
+        .join("agents")
+        .join(nemesis_utils::sanitize::sanitize_agent_id(agent_id))
 }
 
 // --- 看板数据区（board.db + 每日备份；写方 nemesis-board / gateway 维护循环） ---

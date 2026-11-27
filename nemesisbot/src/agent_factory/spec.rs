@@ -584,8 +584,21 @@ pub fn build_agent_loop_from_spec(
     //    AgentLoop 对 None 优雅降级，零风险）。
 
     // 6. 工具注册：主配置构造后字段覆盖（项目锚 + 剥离三资产件套）。
+    // 知识库重定向（天工系统 v1，2026-11-26）实体分臂：selfbuilt agent
+    // （loop_origin="agent:{id}"）配置落 `<主workspace>/agents/{sid}/home/
+    // config/config.knowledge.json`（正规落点，与人格/记忆资产同 home 域）；
+    // 项目 loop（"project:{id}"）v1 不装（None = 功能不存在，行为与引入前
+    // 一致）。主 loop 形态（workspace config 落点）在 main.rs 装配臂。
+    let knowledge_handle = spec.loop_origin.strip_prefix("agent:").map(|agent_id| {
+        std::sync::Arc::new(nemesis_agent::knowledge::KnowledgeHandle::new(
+            nemesis_path::resolve_agent_knowledge_config_path_in_workspace(
+                &shared.workspace_dir(),
+                agent_id,
+            ),
+        ))
+    });
     let (mut tool_config, spawn_slot, steer_slot) =
-        build_shared_tool_config(shared, &cfg, &model_name);
+        build_shared_tool_config(shared, &cfg, &model_name, knowledge_handle.clone());
     // present_plan 工具供给（与 loop verdict 消费槽同一句柄）。
     tool_config.plan_present = Some(project_plan_present);
     // 项目 loop 同样接 present_files——交付物桶锚本 loop
@@ -625,6 +638,14 @@ pub fn build_agent_loop_from_spec(
             // （canonical 校验在 add_project_dir 落盘前已保证——这里信任
             // 注册表，主根/重叠检测不重跑）。
             roots.extend(spec.extra_dirs.iter().cloned());
+            // 知识库配对双根放行（天工系统 v1；selfbuilt 臂才有句柄）：
+            // 构造单一真相源 = shared::knowledge_fence_roots（与 gateway
+            // 侧 boundary / executor 分离子进程围栏三方同源，UAT 横扫
+            // 2026-11-26 修正：code_root 不放行时 overlay 本地臂
+            // access denied；项目 loop 句柄 None = 自然空集零放行）。
+            roots.extend(crate::agent_factory::shared::knowledge_fence_roots(
+                knowledge_handle.as_ref(),
+            ));
             roots
         },
         editor_gate,
@@ -658,6 +679,15 @@ pub fn build_agent_loop_from_spec(
     tool_config.skills_registry = None;
     tool_config.forge = None;
     tool_config.forge_executor = None;
+    // TIANGONG 存在性声明闭包（天工系统 v1；仅 selfbuilt 臂有句柄）：
+    // 层锚定 = 各 pair code_root 侧项目层级（根 + 排序直接子目录），
+    // 与 main 臂同锚（UAT 修正 2026-11-26——初版锚 exec_root 同病）。
+    // 开关关 = None = 段缺席。
+    if let Some(khandle) = knowledge_handle.clone() {
+        agent_loop.set_knowledge_section_source(std::sync::Arc::new(move || {
+            nemesis_agent::knowledge_decl_section(&khandle.get())
+        }));
+    }
     // 记忆分域：namespace 空（main/项目镜像）维持 剥离——增强
     // 内存是主 workspace 资产，行为零变化；非空（自建 agent `agents/<id>`）
     // 挂本域 manager（jsonl 与向量库都落自己域），主 corpus 不可见。增强
@@ -707,6 +737,11 @@ pub fn build_agent_loop_from_spec(
     // 透传（executor 子进程围栏与 gateway 侧一致，2026-11-19 D 批）。
     let mut executor_extra_roots: Vec<std::path::PathBuf> = agent_home.iter().cloned().collect();
     executor_extra_roots.extend(spec.extra_dirs.iter().cloned());
+    // 知识库双根 + 子进程重定向（天工系统 v1；2026-11-26 UAT 横扫围栏
+    // 透传 + 2026-11-27 第三轮横扫重定向接线）：不再在调用侧手工拼
+    // knowledge_fence_roots——句柄直传装配函数单源派生（围栏双根 +
+    // knowledge_config_path env 透传，子进程四文件工具重定向真实发生）。
+    // 项目 loop 句柄 None = 空集 + env 缺席（与 gateway 侧同相）。
     // 审计面日志树保护豁免镜像（2026-11-26）：项目会话 executor 子进程
     // root=项目目录——项目自身的 logs/（如 node 项目运行日志）是项目内容，
     // agent 开发期写入合法；gateway 侧项目 boundary 同为 protect_log_tree
@@ -717,6 +752,7 @@ pub fn build_agent_loop_from_spec(
         shared.config_store.handle(),
         executor_extra_roots,
         false,
+        knowledge_handle.as_ref(),
     )?;
     let persistent_route = spec
         .persistent_resolve

@@ -16,7 +16,7 @@
 //! 3. 各装配点（agent / workflow / 未来的 tool-plugin）各写一套 spawn 语义。
 //!
 //! 本模块提供两个出口：
-//! - [`build_executor_channel`]：从 agent_factory 抽出的**单一真相源**装配函数
+//! - [`build_executor_channel_with_extra_roots`]：从 agent_factory 抽出的**单一真相源**装配函数
 //!   （live ConfigStore probe + Sandboxie 就绪检查 + 优雅降级），gateway 的
 //!   agent 工具层与 workflow 引擎共用同一套就绪/probe 逻辑（各自持有独立的
 //!   `ExecutorChannel` 实例——它只是无状态配置持有器，per-call spawn，共享无益）。
@@ -56,7 +56,7 @@ use nemesis_config::ConfigHandle;
 /// 退化 stdio，与 per-call 通道的 strict fail-closed 闸契约不一致。
 ///
 /// 与 per-call 侧的关系（诚实注记，防误读）：per-call 通道
-/// （[`build_executor_channel`]）保留既有 ConfigHandle 闭包闸——它必须校验
+/// （[`build_executor_channel_with_extra_roots`]）保留既有 ConfigHandle 闭包闸——它必须校验
 /// **构造期**是否挂上 Start.exe（通道态，本结构表达不了），故两侧是**同语义
 /// 两实现**而非共享代码：同键（sandbox/strict/allow_network）、同缺省（键
 /// 缺失 = false）、同就绪三元组（`SandboxPaths::engine_ready` 统一定义）。
@@ -151,7 +151,8 @@ impl ExecutorIsolationPolicy {
     }
 }
 
-/// 构建 executor 分离通道（统一定义，gateway agent 层与 workflow 引擎共用）。
+/// 构建 executor 分离通道（统一定义，**单一构造路径**——gateway agent 层、
+/// selfbuilt 臂与 workflow 引擎共用本函数）。
 ///
 /// 返回 `Ok(None)` = `executor.enabled = false`（Layer 0：无通道）。
 /// 就绪语义与优雅降级和 agent 工具层完全一致：
@@ -174,17 +175,11 @@ impl ExecutorIsolationPolicy {
 ///
 /// `home` 只在 `sandbox` feature 开启时用于 Sandboxie 就绪检查（trim 构建下
 /// 允许未使用）。
-#[cfg_attr(not(feature = "sandbox"), allow(unused_variables))]
-pub fn build_executor_channel(
-    home: &Path,
-    workspace_dir: &Path,
-    config_handle: ConfigHandle,
-) -> anyhow::Result<Option<Arc<nemesis_agent::ExecutorChannel>>> {
-    // gateway/主形态：子进程 boundary 日志树保护闸 = true（审计面 logs/
-    // 系统所有，与主 loop boundary 同相；见 protect_log_tree_child 参数注）。
-    build_executor_channel_with_extra_roots(home, workspace_dir, config_handle, Vec::new(), true)
-}
-
+///
+/// （2026-11-27 第二轮横扫）：删除无 `extra_roots` 的短形态 wrapper——
+/// 主臂改传知识库双根后其生产调用面归零，留着即「短形态静默丢围栏根」
+/// 的陷阱（正是本轮要消灭的形态）。测试调用点全部迁移到本函数。
+///
 /// （项目 home 收编）：围栏第二根透传形态。`extra_roots` 写进
 /// per-call 子进程 env `NEMESISBOT_EXECUTOR_EXTRA_ROOTS`（`exec_worker` 侧
 /// 解析合并进子进程围栏）——exec 分离开关两侧（主进程/子进程）围栏同根，
@@ -196,6 +191,15 @@ pub fn build_executor_channel(
 /// `exec_worker`（缺省 true=保护，只在 false 时注入 0 值省 env）。主
 /// workspace/集群 worker 形态传 true；项目 loop 传 false（项目自身 logs/
 /// 是项目内容，agent 开发期写入合法）。
+///
+/// `knowledge`（天工系统 v1 第三轮横扫，2026-11-27）：知识库句柄——
+/// 装配函数从中**单源派生**两件东西：① 配对双根 extend 进子进程围栏
+/// （`knowledge_fence_roots`，第二轮横扫的「调用侧手工拼根」形态收敛
+/// 到此）；② 配置路径落 `channel.knowledge_config_path`，经 env
+/// `NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG` 透传，子进程侧四文件工具的
+/// 项目视角路径重定向真实发生（此前只透传围栏根、重定向缺席：LLM 发
+/// 项目视角路径、围栏放行、工具按字面路径 File not found）。`None` =
+/// 项目 loop/集群 worker 臂（v1 不装知识库）= 双根空集 + env 缺席。
 #[cfg_attr(not(feature = "sandbox"), allow(unused_variables))]
 pub fn build_executor_channel_with_extra_roots(
     home: &Path,
@@ -203,6 +207,7 @@ pub fn build_executor_channel_with_extra_roots(
     config_handle: ConfigHandle,
     extra_roots: Vec<std::path::PathBuf>,
     protect_log_tree_child: bool,
+    knowledge: Option<&std::sync::Arc<nemesis_agent::knowledge::KnowledgeHandle>>,
 ) -> anyhow::Result<Option<Arc<nemesis_agent::ExecutorChannel>>> {
     // #2 安全分级（W2，2026-11-20）：enabled 走 raw resolver（键缺席 →
     // 档位缺省，strict 开）。**不走 ConfigHandle typed 读**：typed
@@ -224,6 +229,18 @@ pub fn build_executor_channel_with_extra_roots(
     let exe_path = std::env::current_exe()
         .map_err(|err| anyhow::anyhow!("resolve current_exe for executor: {err}"))?;
     let workspace = workspace_dir.to_string_lossy().to_string();
+
+    // 知识库单源派生（第三轮横扫 2026-11-27，见 fn doc `knowledge` 段）：
+    // 双根围栏 + 子进程重定向配置路径都从调用方句柄派生。
+    let mut extra_roots = extra_roots;
+    // 知识库双根单一真相源（第四轮横扫 2026-11-27 建立面；第八轮横扫
+    // 2026-11-27 收窄语义）：kb_roots 只喂**围栏** extra_roots——全局盒段
+    // upsert 的写穿透清单改用全景 `global_write_through_roots`（单实体
+    // 清单在多实体下互抹，见盒臂注释）；围栏保持实体级（全景会把他实体
+    // 根放进本实体围栏 = 放行面扩大）。
+    let kb_roots = crate::agent_factory::knowledge_fence_roots(knowledge);
+    extra_roots.extend(kb_roots.iter().cloned());
+    let knowledge_config_path = knowledge.map(|h| h.config_path().to_path_buf());
 
     // Live sandbox probe: read the ConfigStore on EVERY tool call so toggling
     // executor.sandbox (dashboard stop/start, config edit) takes effect WITHOUT
@@ -578,7 +595,27 @@ pub fn build_executor_channel_with_extra_roots(
         // 就绪三元组（Start.exe 在场 + SbieSvc Running + 引擎归属）单一真
         // 相源 = SandboxPaths::engine_ready（② 常驻盒监督器共用）。
         let (start_exe, ready) = (paths.start_exe(), paths.engine_ready());
-        (start_exe, ready && !backend_mxc, ready)
+        let will_attach = ready && !backend_mxc;
+        // 第四轮横扫（2026-11-27）：盒挂上时装配期幂等 upsert 全局盒段——
+        // 镜像写穿透缺席 = 镜像写被盒虚拟化困住且 pending/commit（工作区
+        // 子树口径）救不回——静默数据丢失，即修复的本体。第八轮横扫
+        //（2026-11-27）清单升级为**全景单一真相源** `global_write_through_roots`：
+        // 全局盒 ini 是跨实体共享可变状态，此前传单实体清单（kb_roots），
+        // 各臂 / CLI start / set_network 互相抹线（knowledge=None 臂更摘空
+        // 全部线）——全景后域内所有写入方恒等值，互抹消灭。与 sandbox start
+        // 共用 global_box_directives 单一构建器（等值重写自愈漂移；
+        // allow_network 同源读）；失败 = 盒配置链路坏（与 runtime 盒臂「真盒
+        // 链路失败显式上抛，不静默无盒」同纪律）。
+        // ⚠ kb_roots（本实体围栏双根）与全景清单刻意分家：围栏只放行本
+        // 实体知识库根（全景会把他实体根放进本实体围栏 = 放行面扩大）。
+        if will_attach {
+            let global_roots =
+                nemesis_agent::knowledge::global_write_through_roots(&home.join("workspace"));
+            nemesis_sandbox::install::upsert_global_box_section(&paths, &global_roots).map_err(
+                |e| anyhow::anyhow!("global box ini upsert (knowledge write-through): {e}"),
+            )?;
+        }
+        (start_exe, will_attach, ready)
     };
 
     // ── strict gate, per platform (see fn docs) ─────────────────────────
@@ -707,7 +744,8 @@ pub fn build_executor_channel_with_extra_roots(
                 .with_lease_child((lease_child_now)())
                 .with_restrict_child(restrict_child)
                 .with_protect_log_tree_child(protect_log_tree_child)
-                .with_deny_patterns(deny_patterns_child.clone());
+                .with_deny_patterns(deny_patterns_child.clone())
+                .with_knowledge_config_path(knowledge_config_path.clone());
             // DACL hook 挂载（盒在场时 agent 侧 start_exe 闸保证不咨询）。
             #[cfg(all(feature = "sandbox", windows))]
             let channel = match dacl_hook {
@@ -768,6 +806,7 @@ pub fn build_executor_channel_with_extra_roots(
         .with_restrict_child(restrict_child)
         .with_protect_log_tree_child(protect_log_tree_child)
         .with_deny_patterns(deny_patterns_child)
+        .with_knowledge_config_path(knowledge_config_path)
         // Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，
         // 判定面不存在 → 现状不变）。
         .with_userland_fallback({
@@ -918,7 +957,11 @@ mod world {
     ///
     /// `writable_roots`：引擎控制面允许写的子树（workflow definitions /
     /// checkpoints / executions 等）；`spawn_roots`：Spawn 车道允许的 cwd 根
-    /// （通常是 `{home}/workspace`）。
+    /// （通常是 `{home}/workspace`）；`fence_extra_roots`：**通道子进程围栏**
+    /// 附加放行根（script 节点经通道分发工具时的围栏，调用方传
+    /// `knowledge_fence_roots` 等与 gateway 侧 boundary 同源集合——UAT 横扫
+    /// 2026-11-26：知识库配对双根不透传时分离形态读写被拒）。三组根语义
+    /// 互不相干：writable/spawn 是引擎 IO/spawn 守卫域，fence 是工具围栏域。
     #[allow(clippy::too_many_arguments)]
     #[cfg_attr(not(feature = "workflow"), allow(dead_code))]
     pub fn build_workflow_world(
@@ -926,9 +969,18 @@ mod world {
         workspace_dir: &Path,
         writable_roots: Vec<PathBuf>,
         spawn_roots: Vec<PathBuf>,
+        fence_extra_roots: Vec<PathBuf>,
         config_handle: ConfigHandle,
+        knowledge: Option<&std::sync::Arc<nemesis_agent::knowledge::KnowledgeHandle>>,
     ) -> anyhow::Result<Option<Arc<ExecutorWorld>>> {
-        let channel = build_executor_channel(home, workspace_dir, config_handle)?;
+        let channel = build_executor_channel_with_extra_roots(
+            home,
+            workspace_dir,
+            config_handle,
+            fence_extra_roots,
+            true,
+            knowledge,
+        )?;
         Ok(channel.map(|channel| {
             Arc::new(ExecutorWorld {
                 channel,

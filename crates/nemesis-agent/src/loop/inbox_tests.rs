@@ -283,6 +283,137 @@ async fn test_inbox_capacity_limit() {
 }
 
 // ===========================================================================
+// remove_entry（2026-11-27 资源看板「等待队列」逐条删除）
+// ===========================================================================
+
+fn qmsg(session: &str, content: &str, ts: &str) -> crate::inbox::QueuedMessage {
+    crate::inbox::QueuedMessage {
+        msg: inbound(session, content),
+        timestamp: ts.to_string(),
+        priority: crate::inbox::MessagePriority::Normal,
+    }
+}
+
+/// 中段摘除：序保持、其余条目原样、返回剩余计数 (next_turn, next_step)、
+/// peek 快照同步反映删除。
+#[test]
+fn test_inbox_remove_entry_middle_preserves_order() {
+    let lp = loop_with(
+        ConcurrentMode::Queue,
+        Box::new(CapturingProvider::new(vec![])),
+    );
+    let key = "agent:rm1";
+    for (i, ts) in ["t0", "t1", "t2"].iter().enumerate() {
+        lp.inbox.enqueue(key, qmsg(key, &format!("msg {i}"), ts));
+    }
+    // 身份对取自 peek（前端同款流程：快照行原样回传）。
+    let before = lp.inbox.peek(key);
+    let victim = &before.follow_up[1];
+    let (turns, steps) = lp
+        .inbox
+        .remove_entry(
+            key,
+            crate::inbox::QueueKind::FollowUp,
+            1,
+            &victim.sender_id,
+            &victim.timestamp,
+        )
+        .expect("middle removal must succeed");
+    assert_eq!((turns, steps), (2, 0), "剩余计数与 pending() 同形");
+    let after = lp.inbox.peek(key);
+    let contents: Vec<&str> = after.follow_up.iter().map(|e| e.content.as_str()).collect();
+    assert_eq!(contents, ["msg 0", "msg 2"], "中段摘除后序保持");
+}
+
+/// 身份复核：快照过期（timestamp 不符 = 窗口内队列已变化）诚实拒绝，
+/// 队列原样零副作用——盲删会误删相邻条目，此闸就是误删面封条。
+#[test]
+fn test_inbox_remove_entry_identity_mismatch_rejects() {
+    let lp = loop_with(
+        ConcurrentMode::Queue,
+        Box::new(CapturingProvider::new(vec![])),
+    );
+    let key = "agent:rm2";
+    lp.inbox.enqueue(key, qmsg(key, "first", "t0"));
+    lp.inbox.enqueue(key, qmsg(key, "second", "t1"));
+    let err = lp
+        .inbox
+        .remove_entry(
+            key,
+            crate::inbox::QueueKind::FollowUp,
+            0,
+            "tester",
+            "stale-ts",
+        )
+        .expect_err("stale identity must be rejected");
+    assert_eq!(err, crate::inbox::QueueRemoveError::Mismatch);
+    assert_eq!(lp.inbox.pending(key), (2, 0), "拒绝路径零副作用");
+}
+
+/// NotFound 两臂：下标越界 / 会话无队列。sender 相符也不放行（先界内后身份）。
+#[test]
+fn test_inbox_remove_entry_not_found_arms() {
+    let lp = loop_with(
+        ConcurrentMode::Queue,
+        Box::new(CapturingProvider::new(vec![])),
+    );
+    let key = "agent:rm3";
+    lp.inbox.enqueue(key, qmsg(key, "only", "t0"));
+    let err = lp
+        .inbox
+        .remove_entry(key, crate::inbox::QueueKind::FollowUp, 5, "tester", "t0")
+        .expect_err("out-of-range must be NotFound");
+    assert_eq!(err, crate::inbox::QueueRemoveError::NotFound);
+    let err = lp
+        .inbox
+        .remove_entry(
+            "agent:rm3-empty",
+            crate::inbox::QueueKind::FollowUp,
+            0,
+            "tester",
+            "t0",
+        )
+        .expect_err("no session queues must be NotFound");
+    assert_eq!(err, crate::inbox::QueueRemoveError::NotFound);
+}
+
+/// steer 臂：next_step 队列同语义可摘；摘后 peek 的 steer 数组同步反映。
+#[test]
+fn test_inbox_remove_entry_steer_queue() {
+    let lp = loop_with(
+        ConcurrentMode::Steer,
+        Box::new(CapturingProvider::new(vec![])),
+    );
+    let key = "agent:rm4";
+    // Steer 模式下 `!` 前缀消息进 next_step。
+    lp.inbox.enqueue(key, qmsg(key, "!urgent", "t0"));
+    lp.inbox.enqueue(key, qmsg(key, "!second", "t1"));
+    let before = lp.inbox.peek(key);
+    assert_eq!(before.steer.len(), 2);
+    let victim = &before.steer[0];
+    let (turns, steps) = lp
+        .inbox
+        .remove_entry(
+            key,
+            crate::inbox::QueueKind::Steer,
+            0,
+            &victim.sender_id,
+            &victim.timestamp,
+        )
+        .expect("steer removal must succeed");
+    assert_eq!((turns, steps), (0, 1), "剩余计数 next_step 臂");
+    let after = lp.inbox.peek(key);
+    assert_eq!(
+        after
+            .steer
+            .iter()
+            .map(|e| e.content.as_str())
+            .collect::<Vec<_>>(),
+        ["!second"]
+    );
+}
+
+// ===========================================================================
 // context snapshot channel
 // ===========================================================================
 

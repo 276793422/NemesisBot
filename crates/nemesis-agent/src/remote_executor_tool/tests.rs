@@ -958,6 +958,42 @@ fn env_pairs_omits_deny_patterns_when_none_or_empty() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// 知识库子进程重定向透传（天工系统 v1 第三轮横扫 2026-11-27）：只在
+// Some(config_path) 形态注入——子进程 exec_worker 据此构造
+// KnowledgeHandle 接进工具注册，四文件工具的项目视角路径重定向在
+// executor 分离形态下真实发生（此前只透传围栏根、重定向缺席）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn env_pairs_writes_knowledge_config_when_set() {
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false))
+        .with_knowledge_config_path(Some(PathBuf::from("/ws/config/config.knowledge.json")));
+    let pairs = ch.env_pairs();
+    assert_eq!(
+        pairs
+            .iter()
+            .find(|(k, _)| k == "NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG")
+            .map(|(_, v)| v.as_str()),
+        Some("/ws/config/config.knowledge.json"),
+        "Some 形态必须写 env（子进程重定向透传契约）"
+    );
+}
+
+#[test]
+fn env_pairs_omits_knowledge_config_when_none() {
+    // None（默认/老网关/项目 loop/集群 worker 臂）不写 env——子进程不
+    // 重定向，字节不变（「缺省不设 env」家族纪律）。
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false));
+    let pairs = ch.env_pairs();
+    assert!(
+        !pairs
+            .iter()
+            .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_KNOWLEDGE_CONFIG"),
+        "None 形态不得写 env"
+    );
+}
+
 // ============================================================
 // BUG-20261126-090 回归锁：per-call 响应行带帽读（read_resp_line_capped）
 // ============================================================

@@ -123,8 +123,18 @@ function resourcesPayload(revision: number): any {
   }
 }
 
-async function mountPanel(sessionId: string | null, payload = resourcesPayload(1)) {
-  requestMock.mockImplementation(async (mod: string, cmd: string) => {
+async function mountPanel(
+  sessionId: string | null,
+  payload = resourcesPayload(1),
+  /** 额外命令处理（先于默认臂；返回 undefined = 落默认臂）——知识库等
+   *  新增 WSAPI 面（knowledge.*）用，避免覆盖 mountPanel 的默认 mock。 */
+  extra?: (mod: string, cmd: string, data?: any) => any,
+) {
+  requestMock.mockImplementation(async (mod: string, cmd: string, data?: any) => {
+    if (extra) {
+      const r = await extra(mod, cmd, data)
+      if (r !== undefined) return r
+    }
     if (mod === 'session' && cmd === 'resources') return payload
     if (mod === 'system' && cmd === 'status') return { workspace: 'C:/ws' }
     return {}
@@ -234,7 +244,8 @@ describe('渲染分区', () => {
       && !c.text().includes('前往'))
     const titles = cards.map(c => c.find('.srp-card-title').text())
     // ok 类目 order：durable_loops(80) < file_changes(100) < usage(130) < session_allow(140)
-    expect(titles).toEqual(['常驻目标', '文件变更', '用量', '全部放行'])
+    // 知识库静态卡（天工系统 v1）固定在卡流尾部。
+    expect(titles).toEqual(['常驻目标', '文件变更', '用量', '全部放行', '知识库'])
     expect(w.text()).toContain('a.rs')
     expect(w.text()).toContain('$0.0200')
     const cb = w.find('.srp-switch-row input[type="checkbox"]')
@@ -396,6 +407,84 @@ describe('等待队列气泡（2026-11-24）', () => {
     expect(w.findAll('.srp-queue').length).toBe(1)
     const genericTitles = w.findAll('.srp-card-head.clickable .srp-card-title').map(t => t.text())
     expect(genericTitles).not.toContain('等待队列')
+    w.unmount()
+  })
+
+  // 逐条删除（2026-11-27）：行尾 ✕ → session.queue_remove，随行身份复
+  // 核对（sender_id + timestamp 快照行原样回传）；成功/失败都 debounce 重拉。
+  it('每行渲染 ✕ 删除钮（title 提示不再执行）', async () => {
+    const w = await mountPanel('s1', wqPayload())
+    const dels = w.findAll('.srp-wq-del')
+    expect(dels.length).toBe(3)
+    expect(dels[0].attributes('title')).toContain('不再执行')
+    w.unmount()
+  })
+
+  it('点击 ✕ 发出随行寻址载荷 + 成功 toast + 单飞防双发 + debounce 重拉', async () => {
+    vi.useFakeTimers()
+    // 受控挂起 promise：请求在途期间双击，第二次必须落单飞锁
+    // （mock 立即 resolve 的话 finally 先放锁，压不到窗口）。
+    let release!: () => void
+    const gate = new Promise<void>(r => { release = r })
+    const w = await mountPanel('s1', wqPayload(), (_mod, cmd) => {
+      if (cmd === 'queue_remove') return gate.then(() => ({}))
+      return undefined
+    })
+    const resourcesCallsBefore = requestMock.mock.calls.filter(c => c[1] === 'resources').length
+    const del0 = w.findAll('.srp-wq-row')[0].find('.srp-wq-del')
+    await del0.trigger('click')
+    await del0.trigger('click')
+    await flushPromises()
+    const qr = requestMock.mock.calls.filter(c => c[1] === 'queue_remove')
+    expect(qr.length, '单飞锁：请求在途双击只发一次').toBe(1)
+    expect(qr[0][0]).toBe('session')
+    expect(qr[0][2]).toEqual({
+      session_id: 's1', queue: 'steer', index: 0, sender_id: 'web', timestamp: '14:32:05',
+    })
+    release()
+    await flushPromises()
+    expect(toastMocks.success).toHaveBeenCalledTimes(1)
+    expect(toastMocks.error).not.toHaveBeenCalled()
+    // 成功也 debounce 400ms 重拉（确认新队列序）。
+    await vi.advanceTimersByTimeAsync(450)
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'resources').length)
+      .toBeGreaterThan(resourcesCallsBefore)
+    w.unmount()
+  })
+
+  it('follow_up 行寻址 = 组内下标（steer 数不计入）', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1', wqPayload())
+    await w.findAll('.srp-wq-row')[2].find('.srp-wq-del').trigger('click')
+    await flushPromises()
+    const qr = requestMock.mock.calls.filter(c => c[1] === 'queue_remove')
+    expect(qr[0][2]).toEqual({
+      session_id: 's1', queue: 'follow_up', index: 1, sender_id: 'web', timestamp: '14:36:00',
+    })
+    w.unmount()
+  })
+
+  it('失败（快照过期被后端拒绝）→ error toast + 仍重拉自愈', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1', wqPayload(), (_mod, cmd) => {
+      if (cmd === 'queue_remove') {
+        return Promise.reject(new Error('队列已变化（该条位置已移动或已被消费），请刷新后重试'))
+      }
+      return undefined
+    })
+    const resourcesCallsBefore = requestMock.mock.calls.filter(c => c[1] === 'resources').length
+    await w.findAll('.srp-wq-row')[0].find('.srp-wq-del').trigger('click')
+    await flushPromises()
+    expect(toastMocks.error).toHaveBeenCalledTimes(1)
+    expect(String(toastMocks.error.mock.calls[0][0])).toContain('删除失败')
+    expect(String(toastMocks.error.mock.calls[0][0])).toContain('队列已变化')
+    expect(toastMocks.success).not.toHaveBeenCalled()
+    // 失败也重拉（重拿新快照 = 自愈）。
+    await vi.advanceTimersByTimeAsync(450)
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'resources').length)
+      .toBeGreaterThan(resourcesCallsBefore)
     w.unmount()
   })
 })
@@ -943,6 +1032,134 @@ describe('附加放行目录显示（2026-11-25：注册表 extra_dirs 投影）
     expect(rows.length).toBe(1)
     expect(rows[0].text()).toContain('C:/Zoo')
     expect(store.projects[0].extra_dirs).toEqual(['C:/Zoo'])
+    w.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 知识库（天工系统 v1，2026-11-26）：knowledge.get/set 前端面。
+// - 卡片三分支：项目会话注记 / 正常态（开关徽标+设置入口）/ 后端缺席暂不可用；
+// - 设置窗：关窗校验（开关开无有效配对 → 阻止退出）+ 保存走 knowledge.set
+//   + saved 后原位重拉。
+// ---------------------------------------------------------------------------
+describe('知识库（天工系统 v1）', () => {
+  const kbConfig = (enabled: boolean, pairs: any[] = []) => ({
+    enabled,
+    pairs: pairs.map(p => ({ tiangong_load: 'pointer', ...p })),
+  })
+
+  function mockKnowledge(config: any, setErr?: string) {
+    return async (mod: string, cmd: string, _data?: any) => {
+      if (mod === 'knowledge' && cmd === 'get') {
+        return { scope: 'main', config_path: 'C:/ws/config/config.knowledge.json', config }
+      }
+      if (mod === 'knowledge' && cmd === 'set') {
+        if (setErr) throw new Error(setErr)
+        return { saved: true, config_path: 'C:/ws/config/config.knowledge.json' }
+      }
+      return undefined
+    }
+  }
+
+  it('关态卡片：徽标「关」+ 关闭注记；设置按钮打开设置窗', async () => {
+    const w = await mountPanel('s1', resourcesPayload(1), mockKnowledge(kbConfig(false)))
+    const card = w.find('[data-test="srp-knowledge-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.find('.srp-badge').text()).toBe('关')
+    expect(card.text()).toContain('重定向关闭')
+    await card.find('.srp-knowledge-settings').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="kb-enabled"]').exists()).toBe(true)
+    expect((w.find('[data-test="kb-enabled"]').element as HTMLInputElement).checked).toBe(false)
+    w.unmount()
+  })
+
+  it('开态卡片：徽标「开 · N 配对」', async () => {
+    const w = await mountPanel('s1', resourcesPayload(1), mockKnowledge(kbConfig(true, [
+      { code_root: 'C:/proj/a', info_root: 'C:/kb/a' },
+      { code_root: 'C:/proj/b', info_root: 'C:/kb/b' },
+    ])))
+    const card = w.find('[data-test="srp-knowledge-card"]')
+    expect(card.find('.srp-badge').text()).toBe('开 · 2 配对')
+    expect(card.text()).toContain('已启用')
+    w.unmount()
+  })
+
+  it('设置窗保存：knowledge.set 收到编辑后的配置；saved 后原位重拉 get', async () => {
+    const w = await mountPanel('s1', resourcesPayload(1), mockKnowledge(kbConfig(false)))
+    await w.find('.srp-knowledge-settings').trigger('click')
+    await flushPromises()
+    // 开开关 + 添加一对配对
+    await w.find('[data-test="kb-enabled"]').setValue(true)
+    await w.find('[data-test="kb-add-pair"]').trigger('click')
+    const inputs = w.findAll('[data-test="kb-pair"] input')
+    await inputs[0].setValue('C:/proj/a') // code_root
+    await inputs[1].setValue('C:/kb/a') // info_root
+    await w.find('[data-test="kb-save"]').trigger('click')
+    await flushPromises()
+    const setCall = requestMock.mock.calls.find((c: any[]) => c[0] === 'knowledge' && c[1] === 'set')
+    expect(setCall).toBeTruthy()
+    expect(setCall![2]).toEqual({
+      session_id: 's1',
+      config: {
+        enabled: true,
+        pairs: [{ code_root: 'C:/proj/a', info_root: 'C:/kb/a', tiangong_load: 'pointer' }],
+      },
+    })
+    // saved → Modal 关 + get 重拉（set 后 get 再次被调）。
+    const getCalls = requestMock.mock.calls.filter((c: any[]) => c[0] === 'knowledge' && c[1] === 'get')
+    expect(getCalls.length).toBeGreaterThanOrEqual(2)
+    expect(w.find('[data-test="kb-enabled"]').exists()).toBe(false) // modal 已关
+    w.unmount()
+  })
+
+  it('关窗校验（用户裁决）：开关开但无有效配对 → 取消被阻止并提示；关开关后可退出', async () => {
+    const w = await mountPanel('s1', resourcesPayload(1), mockKnowledge(kbConfig(false)))
+    await w.find('.srp-knowledge-settings').trigger('click')
+    await flushPromises()
+    await w.find('[data-test="kb-enabled"]').setValue(true)
+    await w.find('[data-test="kb-cancel"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="kb-error"]').exists()).toBe(true)
+    expect(w.find('[data-test="kb-enabled"]').exists()).toBe(true) // modal 未关
+    // 关开关 → 校验放行，Modal 关闭。
+    await w.find('[data-test="kb-enabled"]').setValue(false)
+    await w.find('[data-test="kb-cancel"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="kb-enabled"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('保存前置校验：开关开无配对时保存同样被阻止（不发 set）', async () => {
+    const w = await mountPanel('s1', resourcesPayload(1), mockKnowledge(kbConfig(false)))
+    await w.find('.srp-knowledge-settings').trigger('click')
+    await flushPromises()
+    await w.find('[data-test="kb-enabled"]').setValue(true)
+    await w.find('[data-test="kb-save"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="kb-error"]').exists()).toBe(true)
+    expect(requestMock.mock.calls.some((c: any[]) => c[1] === 'set')).toBe(false)
+    w.unmount()
+  })
+
+  it('get 失败（后端命令缺席）→ 暂不可用卡，不弹错误', async () => {
+    const w = await mountPanel('s1', resourcesPayload(1), async (mod: string) => {
+      if (mod === 'knowledge') throw new Error('unknown command: knowledge.get')
+      return undefined
+    })
+    expect(w.find('[data-test="srp-knowledge-card"]').exists()).toBe(false)
+    expect(w.text()).toContain('暂不可用')
+    expect(toastMocks.error).not.toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it('项目会话（注册表解析命中）→ 注记不发请求', async () => {
+    const store = useSessionStore()
+    store.sessions = [{ id: 's1', channel: 'web', startTime: 't', lastTime: 't', messageCount: 0, firstMessage: '', model: 'm', projectId: 'p1' }]
+    store.projects = [{ id: 'p1', name: '演示项目', path: 'C:/proj/a', created_at: '', running: false }]
+    const w = await mountPanel('s1', resourcesPayload(1))
+    expect(w.text()).toContain('项目会话暂不支持知识库配置')
+    expect(requestMock.mock.calls.some((c: any[]) => c[0] === 'knowledge')).toBe(false)
     w.unmount()
   })
 })

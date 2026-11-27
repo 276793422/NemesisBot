@@ -445,11 +445,20 @@ impl AgentLoop {
         node_badge: Option<&str>,
         events: &[AgentEvent],
     ) -> Result<String, String> {
-        // Maybe trigger summarization.
-        if !session_key.is_empty() {
-            self.maybe_update_summary(instance, session_key, channel, chat_id)
-                .await;
-        }
+        // 〔轮末压缩点 · 停用 2026-11-27〕代码保留备还原（用户要求不删）。
+        // 停用原因：轮顶压力闸（run_loop 轮循环顶部）上线后，本点在安全上
+        // 多余——防溢出由「下 turn 第 1 轮轮顶、任何 LLM 调用之前必压」
+        // 结构性承担，压缩结果落盘由下方 cache 写回（cache_changed 检测）
+        // 承担；而本点会阻塞最终回复的出站（压缩跑完才 publish，用户看到
+        // 回复被无谓延迟几秒到几十秒）。B17 边界轴同步挪到轮顶首回合
+        // （turns_used == 0 + boundary 开 → soft 位）。
+        // 还原方法：取消下方注释即可。双点并存无损坏——轮顶刚压完尾部已
+        // 落阈值下，本点大概率 no-op（summarizing 互斥 + covers 单调闸兜
+        // 底）；并存 = 恢复旧行为（轮末可能多压一次）。
+        // if !session_key.is_empty() {
+        //     self.maybe_update_summary(instance, session_key, channel, chat_id, true)
+        //         .await;
+        // }
 
         // Persist to session store. Post-refactor (inline-summarization): the
         // store holds the FULL instance history (system + user + assistant +

@@ -59,7 +59,8 @@ if %SKIP_BOT%==0 (
 
 REM ② 图标进载荷（share\icon.png；桌面入口/展示面引用）。
 if not exist "%~dp0..\bin\bin_windows\share" mkdir "%~dp0..\bin\bin_windows\share"
-copy /Y "%~dp0..\web\public\favicon.png" "%~dp0..\bin\bin_windows\share\icon.png" >nul
+REM favicon 随 BUG-20261127-005 自 public\ 迁入 src\assets（vite 打包资产）。
+copy /Y "%~dp0..\web\src\assets\favicon.png" "%~dp0..\bin\bin_windows\share\icon.png" >nul
 echo [2/5] 图标已同步 share\icon.png
 
 REM ③ 安装器构建（本 workspace release；骨架 = 未签名原始 exe）。

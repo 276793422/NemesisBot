@@ -2174,6 +2174,21 @@ impl AgentLoop {
         self.inbox.peek(session_key)
     }
 
+    /// 等待队列单条摘除（2026-11-27 资源看板「逐条删除」）：委托
+    /// [`Inbox::remove_entry`]——身份复核 + A3 镜像写穿（删后重启不复活）。
+    /// pub 面（`session.queue_remove` WSAPI 直调，`inbox_peek` 的写侧兄弟）。
+    pub fn inbox_remove(
+        &self,
+        session_key: &str,
+        queue: crate::inbox::QueueKind,
+        index: usize,
+        expect_sender: &str,
+        expect_timestamp: &str,
+    ) -> Result<(usize, usize), crate::inbox::QueueRemoveError> {
+        self.inbox
+            .remove_entry(session_key, queue, index, expect_sender, expect_timestamp)
+    }
+
     /// 测试支撑：共享 inbox 句柄——跨 crate（nemesis-web）
     /// 测试播种队列条目用（crate 内测试直引私有字段即可，无需此访问器）。
     /// doc-hidden：非公开 API 承诺，仅供测试生态使用，运行时路径不得依赖。

@@ -72,6 +72,10 @@ pub mod canvas;
 #[cfg(feature = "browser")]
 pub mod browser;
 pub mod estop;
+// 知识库重定向（天工系统 v1，2026-11-26）：knowledge.get/set——配置按
+// 实体路由（main=workspace config / selfbuilt=agent home config / 项目
+// 会话 v1 诚实报不支持）；写盘即热生效（KnowledgeHandle mtime 缓存）。
+pub mod knowledge;
 // 事件驱动唤醒管理面（events.status/rules.get/rules.save；`events` feature
 // 门控——读泵观测快照 + events.json 规则 CRUD；项1 P2）。
 #[cfg(feature = "events")]
@@ -285,6 +289,12 @@ mod models_add_validation_tests;
 #[cfg(test)]
 mod models_effort_autofix_tests;
 
+// 回归钉: models.* 条目引用三层查找（entry_index_by_ref 单一真相源）——
+// set_default/delete/copy/rename/test/probe_effort 收编 model 串回退匹配
+//（此前各点只认 model_name 别名，传 model 串恒 not found）。
+#[cfg(test)]
+mod models_ref_lookup_tests;
+
 // (, devtool-upgrade): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + wsapi-commands 文档生成 +
 // 安全子集 dispatch 冒烟。
@@ -321,6 +331,9 @@ pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
+    // 知识库重定向管理面（天工系统 v1；无 feature 门控——nemesis-config
+    // 核心类型恒编译，功能开关在配置层 fail-closed）。
+    router.register(Arc::new(knowledge::KnowledgeHandler));
     // 事件驱动唤醒管理面（`events` feature 门控；泵快照槽未装配诚实报）。
     #[cfg(feature = "events")]
     {

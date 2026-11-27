@@ -161,8 +161,19 @@ jobs:
   coverage:
     name: Line coverage floor (cargo-llvm-cov)
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # 75→90（BUG-20261127-032）：清盘+JOBS:3 把墙死从 51 推到 64min 仍未完赛，
+    # 加上增量关闭后的构建减速，预算留足（实测完赛线未知，盖过即可）。
+    timeout-minutes: 90
     env:
+      # BUG-20261127-031：插桩构建内存峰值高，-j4 rustc 并行承诺峰值同 ET
+      # Linux 腿墙杀面（031 实录：清盘后仍 54:01 零日志冻结死）。对齐 ET
+      # Linux / UAT 的 JOBS:3 资源姿势，削一个 rustc 的并行峰值（约 2-4GB）。
+      CARGO_BUILD_JOBS: 3
+      # BUG-20261127-032：插桩构建的 incremental 目录数 GB 级纯增量盘耗
+      # （032 实录：清盘+JOBS:3 后墙死从 54 推到 64min，仍零日志 BlobNotFound
+      # ——coverage 死点单调后移 51→53→54→64 但 0/4 完赛）。关增量削掉
+      # 这块盘耗（同 ET Linux/UAT 惯例）。
+      CARGO_INCREMENTAL: 0
       # 扩展计划 T7a/D6（docs/INFO/2026-11-16_公开基准.md §5）：行覆盖硬地板，
       # 防倒退不追高。基线口径：全 workspace lib（nemesis-config 除外——
       # llvm-cov 独立 target-dir 环境特定失败；test-harness / nemesis-build-config
@@ -179,6 +190,21 @@ jobs:
       - name: Environment fingerprint
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
+
+      # 资源墙缓解（BUG-20261127-030，同 extended-tests.yml 同名步）：本 job
+      # 两次死亡 51:01/53:00、日志 BlobNotFound（runner 冻结族）——全 workspace
+      # 插桩构建产物远大于普通构建，逼近磁盘墙后 agent 写不出日志缓冲即被判
+      # 死。清盘回收预装大件（Android SDK ~12G 大头 + dotnet/JVM/ghcup/swift/
+      # docker 镜像池），不动构建语义。清盘后 df 留取证基线。
+      - name: Free runner disk (resource wall mitigation)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo rm -rf /usr/local/.ghcup /opt/ghcup /usr/share/swift /opt/pipx ~/.cache/pip /opt/az-modulecache 2>/dev/null || true
+          sudo docker image prune -a -f 2>/dev/null || sudo rm -rf /var/lib/docker 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo "=== disk after cleanup ==="
+          df -h /
 
       - name: Install Rust toolchain + llvm-tools (coverage 采集前置)
         uses: dtolnay/rust-toolchain@stable
@@ -432,6 +458,42 @@ jobs:
       - name: Environment fingerprint (Windows shard ${{ matrix.shard }})
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\dump-env.ps1"
+
+      # 资源墙缓解（BUG-20261127-030 引入、031 修正）：重桶切片死亡时刻
+      # 50-55min、日志 BlobNotFound（冻结族），与 ET Linux 全量腿同签名同窗
+      # ——预装大件（Android SDK/AVD 镜像、Docker 镜像池、mongodb/mysql/
+      # Amazon SDK/CodeQL/Chocolatey 缓存）吃掉可用盘，测试产物逼近墙后
+      # agent 写不出日志缓冲即被判死。清盘只动预装大件，不动 MSVC/
+      # hostedtoolcache 运行时（node/go/python 由 setup-* 随取）。
+      # 031 修正（030 实录全 10 切片早夭根因）：病 VM 上 docker CLI 会挂
+      # ~8min 后 exit 1，且 GH powershell 默认 ErrorActionPreference=stop
+      # 使之一步致命——改为停 docker 服务后删数据根（不经 CLI，无挂起面），
+      # $ErrorActionPreference 放开 + 逐项 try/catch + exit 0 收尾：本步是
+      # 尽力而为的资源回收，任何失败都不许红。
+      - name: Free runner disk (resource wall mitigation)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          try { Stop-Service docker -Force -ErrorAction SilentlyContinue } catch {}
+          $targets = @(
+            "C:\Program Files (x86)\Android",
+            "C:\Users\runneradmin\.android",
+            "C:\ProgramData\Docker",
+            "C:\ProgramData\Chocolatey\lib",
+            "C:\mysql",
+            "C:\mongodb",
+            "C:\Program Files\Amazon",
+            "C:\Program Files (x86)\Amazon SDKs",
+            "C:\hostedtoolcache\windows\CodeQL"
+          )
+          foreach ($t in $targets) {
+            try {
+              if (Test-Path $t) { Remove-Item -Recurse -Force $t -ErrorAction SilentlyContinue }
+            } catch {}
+          }
+          echo "=== disk after cleanup ==="
+          Get-PSDrive C | Select-Object @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+          exit 0
 
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable

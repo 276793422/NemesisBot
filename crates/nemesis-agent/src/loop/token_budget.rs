@@ -109,6 +109,9 @@ impl AgentLoop {
                 used,
                 budget
             );
+            // P8 器官在轮顶跑（turn 内），压缩后同 turn 的后续请求必须以
+            // user 开头——force_compression_opts 已内置无条件 user-first
+            // 钳制（2026-11-27 live 400 根修，轴无关），此处直接受益。
             self.force_compression_opts(instance, false, session_key)
                 .await;
         }

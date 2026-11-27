@@ -256,6 +256,25 @@ pub(super) fn resolve_small_model_slot(
     }
 }
 
+/// 知识库配对双根围栏放行集合（天工系统 v1，2026-11-26）——薄委托
+/// [`nemesis_agent::knowledge::KnowledgeHandle::fence_roots`]（**单一真相
+/// 源**已下沉到 handle 方法：第四轮横扫 2026-11-27 全局盒写穿透需要第五
+/// 消费点 nemesis-web `sandbox.set_network`，lib 拿不到本 pub(crate) 函数；
+/// 语义 = boundary.extra_roots（gateway 侧工具围栏）与 executor 通道
+/// extra_roots（分离子进程围栏 env 透传，exec_world 注释钦定「开关两侧
+/// 围栏同根」）必须同源，杜绝第三处装配漏配对目录（UAT 横扫实录：
+/// 主臂 executor channel 只放 workspace、selfbuilt 臂漏双根——同族于
+/// code_root 围栏缺口）。
+///
+/// None → 空集；enabled=false → 空集（功能不存在零放行）；enabled 时
+/// 全部 code_root + info_root 排序去重。装配期读一次配置（mtime 缓存）=
+/// 重启网关生效。
+pub(crate) fn knowledge_fence_roots(
+    knowledge: Option<&std::sync::Arc<nemesis_agent::knowledge::KnowledgeHandle>>,
+) -> Vec<std::path::PathBuf> {
+    knowledge.map(|k| k.fence_roots()).unwrap_or_default()
+}
+
 /// Build SharedToolConfig from shared resources + fresh config.
 ///
 /// Extracted from build_agent_loop so both main and cluster agents
@@ -269,6 +288,7 @@ pub(super) fn build_shared_tool_config(
     shared: &Arc<SharedResources>,
     cfg: &nemesis_config::Config,
     model_name: &str,
+    knowledge: Option<std::sync::Arc<nemesis_agent::knowledge::KnowledgeHandle>>,
 ) -> (
     nemesis_agent::SharedToolConfig,
     Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
@@ -335,6 +355,21 @@ pub(super) fn build_shared_tool_config(
     #[cfg(not(feature = "security"))]
     let deny_audit_hook = None::<nemesis_agent::loop_tools::DenyAuditHook>;
 
+    // 知识库重定向（天工系统 v1，2026-11-26）围栏放行根（PLAN 决策 11
+    // 实现形态）：塞 boundary.extra_roots——restrict=true 下知识库镜像
+    // 路径与项目目录本身经现成多根机制放行，围栏代码零改动。
+    // code_root 放行（UAT 横扫 2026-11-26 修正）：overlay 本地优先臂
+    // 「本地有三件套 → 本地生效」要求 code_root 可读——初版只放行
+    // info_root，主对话 + restrict=true + 外部 code_root 形态下本地臂被
+    // 围栏 access denied（真实链路 UAT 轮 4 实证），overlay 承诺虚假。
+    // 配对声明 = 用户明确「agent 为此项目工作」的意志，整树放行与项目
+    // loop 围栏根=项目目录同语义（PLAN 决策 11 原文「联动 projects.add_dir
+    // 进项目目录列表」的本质；项目会话砍除后联动语境落到主对话装配面）。
+    // Arc 注册期烧入 = **重启网关生效**（UI 注明）；重定向与声明即时生效。
+    // 构造逻辑单一真相源 = knowledge_fence_roots（executor 分离子进程
+    // 围栏同源消费，两侧围栏同根）。
+    let knowledge_extra_roots = knowledge_fence_roots(knowledge.as_ref());
+
     let config = nemesis_agent::SharedToolConfig {
         workspace: Some(workspace_dir.to_string_lossy().to_string()),
         // bot 域产物根：None = 回落 workspace。本装配器的所有调用方
@@ -349,7 +384,7 @@ pub(super) fn build_shared_tool_config(
         workspace_boundary: Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
             root: workspace_dir.clone(),
             restrict: cfg.agents.defaults.restrict_to_workspace,
-            extra_roots: Vec::new(),
+            extra_roots: knowledge_extra_roots,
             // editor 开关（Full Access）闸：界外即将拒绝的分支先问一次
             // （热生效，与审批层同一开关同一判定）。
             editor_gate,
@@ -359,6 +394,10 @@ pub(super) fn build_shared_tool_config(
             // agent 工具写删族不得触碰）。
             protect_log_tree: true,
         })),
+        // 知识库重定向句柄（read/write/edit/multiedit 四文件工具接线；
+        // None = 功能不存在，行为与引入前一致）。实体相关：调用方决定
+        // （main/selfbuilt 传 Some，集群 worker/项目 loop 传 None）。
+        knowledge,
         // todowrite tool — workspace storage + TodoUpdated
         // broadcast（与 ToolEventHook 共用同一 sender；gateway 建、
         // web pump 消费）。

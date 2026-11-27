@@ -23,6 +23,44 @@ pub(crate) fn resolve_tool_path(
     }
 }
 
+/// 知识库重定向（天工系统 v1）完整链：围栏前 redirect（绝对路径命中
+/// ——restrict=true 时围栏外的本地缺席三件套先改写成镜像路径才能进围
+/// 栏）→ resolve_tool_path（相对路径锚定边界根 + 围栏闸）→ 围栏后
+/// redirect（相对路径锚定后的二次命中）。redirect 纯函数幂等（改写
+/// 结果不在 code_root 子树内恒原样），两段调用无害。knowledge 缺席
+/// （基线/测试/exec_worker 形态）= 与旧 resolve_tool_path 行为逐字节
+/// 一致。
+pub(crate) fn resolve_tool_path_with_redirect(
+    path: &str,
+    boundary: Option<&WorkspaceBoundary>,
+    family: FenceOpFamily,
+    knowledge: Option<&crate::knowledge::KnowledgeHandle>,
+) -> Result<PathBuf, String> {
+    let pre = crate::knowledge::maybe_redirect_path(Path::new(path), knowledge);
+    let resolved = resolve_tool_path(&pre.to_string_lossy(), boundary, family)?;
+    Ok(crate::knowledge::maybe_redirect_path(&resolved, knowledge))
+}
+
+/// preview 侧路径解析（best-effort）：与 execute 同链（复用
+/// [`resolve_tool_path_with_redirect`——单一真相源，写工具 preview 的
+/// 声明路径必须等于 execute 的落盘路径，否则 checkpoint/rewind 对
+/// 重定向写不设防：快照记原路径、镜像写永不回滚，第五轮横扫
+/// 2026-11-27 修正）。失败（围栏拒绝等）回落原路径——execute 届时同样
+/// 失败不产生写入，对原路径的快照是无害 no-op。knowledge=None 时仍须
+/// 走边界解析（BUG-20261127-039：preview 的存在性判定必须与 execute
+/// 同源——裸相对路径对照进程 CWD 会把工作区已有文件系统性误报
+/// Create → checkpoint 基线漏捕 → rewind 整删；合并天工链时此语义
+/// 并入本单一真相源，不再因 knowledge 缺席回落裸路径）。preview 契约
+/// （[`crate::loop::tools_trait::Tool::preview`]）：绝不 panic。
+fn preview_resolve_path(
+    path: &str,
+    boundary: Option<&WorkspaceBoundary>,
+    knowledge: Option<&crate::knowledge::KnowledgeHandle>,
+) -> PathBuf {
+    resolve_tool_path_with_redirect(path, boundary, FenceOpFamily::WriteDelete, knowledge)
+        .unwrap_or_else(|_| PathBuf::from(path))
+}
+
 /// A tool that reads the contents of a file from disk.
 ///
 /// FT：可携带工作区边界（`with_boundary`，生产形态）——
@@ -43,6 +81,10 @@ const READ_FILE_MAX_BYTES: u64 = 20_000_000;
 #[derive(Default)]
 pub struct ReadFileTool {
     boundary: Option<Arc<WorkspaceBoundary>>,
+    /// 知识库重定向（天工系统 v1）：Some = 命中 code_root 子树的本地缺席
+    /// 三件套路径改写为知识库镜像（围栏前+围栏后双段，见
+    /// [`resolve_tool_path_with_redirect`]）；None = 行为与引入前一致。
+    knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
 }
 
 impl ReadFileTool {
@@ -50,7 +92,17 @@ impl ReadFileTool {
     pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
         Self {
             boundary: Some(boundary),
+            knowledge: None,
         }
+    }
+
+    /// 知识库重定向接线（registry 生产形态注入；重复调用覆盖）。
+    pub fn with_knowledge(
+        mut self,
+        knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
+    ) -> Self {
+        self.knowledge = knowledge;
+        self
     }
 }
 
@@ -83,7 +135,12 @@ impl Tool for ReadFileTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = resolve_tool_path(&path, self.boundary.as_deref(), FenceOpFamily::Read)?;
+        let path = resolve_tool_path_with_redirect(
+            &path,
+            self.boundary.as_deref(),
+            FenceOpFamily::Read,
+            self.knowledge.as_deref(),
+        )?;
 
         if !path.exists() {
             return Err(format!("File not found: {}", path.display()));
@@ -382,6 +439,8 @@ pub fn validate_workspace_path(
 #[derive(Default)]
 pub struct WriteFileTool {
     boundary: Option<Arc<WorkspaceBoundary>>,
+    /// 知识库重定向（天工系统 v1）：同 [`ReadFileTool::knowledge`]。
+    knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
 }
 
 impl WriteFileTool {
@@ -389,7 +448,17 @@ impl WriteFileTool {
     pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
         Self {
             boundary: Some(boundary),
+            knowledge: None,
         }
+    }
+
+    /// 知识库重定向接线（registry 生产形态注入；重复调用覆盖）。
+    pub fn with_knowledge(
+        mut self,
+        knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
+    ) -> Self {
+        self.knowledge = knowledge;
+        self
     }
 }
 
@@ -419,11 +488,14 @@ impl Tool for WriteFileTool {
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let (path, content) = extract_path_and_content(args)?;
 
-        // 工作区边界（纵深防御，不单靠安全 8 层管线）。
-        let path = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
-            None => PathBuf::from(&path),
-        };
+        // 工作区边界（纵深防御，不单靠安全 8 层管线）+ 知识库重定向
+        // （围栏前改写绝对路径 → 围栏 → 围栏后二次改写相对路径）。
+        let path = resolve_tool_path_with_redirect(
+            &path,
+            self.boundary.as_deref(),
+            FenceOpFamily::WriteDelete,
+            self.knowledge.as_deref(),
+        )?;
 
         // 覆盖保护——已存在文件先读旧内容（读取失败按新建处理，不挡
         // 写入），覆盖成功后附 unified diff。超大旧文件跳过 diff 读
@@ -473,23 +545,18 @@ impl Tool for WriteFileTool {
 
     fn preview(&self, args: &str) -> Option<FileChange> {
         let (path, _content) = extract_path_and_content(args).ok()?;
-        // BUG-20261127-039：kind 的存在性判定必须与 execute 同源——相对
-        // 路径先经边界解析到实际写入落点再 `exists()`。此前直接对裸 args
-        // 路径判定，相对路径对照的是进程 CWD（gateway 启动目录 ≠ 工作区），
-        // 工作区已有文件被系统性误报 Create → checkpoint 基线内容漏捕
-        // （快照按 Create 语义记 content=None，不读现盘）→ rewind 落删除
-        // 臂把文件整删而非还原上一版（JSON 形态无影子 tree，前向内容不
-        // 可恢复）。围栏必拒的路径返回 None（调用不会执行，无从基线）。
-        let resolved = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete).ok()?,
-            None => PathBuf::from(&path),
-        };
-        let kind = if resolved.exists() {
+        // 重定向感知（第五轮横扫 2026-11-27）：存在性判定与声明路径都用
+        // 解析后路径（镜像命中时 kind 如实反映镜像侧现状）。
+        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref());
+        let kind = if path.exists() {
             FileChangeKind::Modify
         } else {
             FileChangeKind::Create
         };
-        Some(FileChange { path, kind })
+        Some(FileChange {
+            path: path.to_string_lossy().to_string(),
+            kind,
+        })
     }
 }
 
@@ -769,6 +836,9 @@ pub(crate) fn apply_edit_to_content(
 #[derive(Default)]
 pub struct EditFileTool {
     boundary: Option<Arc<WorkspaceBoundary>>,
+    /// 知识库重定向（天工系统 v1）：同 [`ReadFileTool::knowledge`]；
+    /// edit/append 两分支均接线。
+    knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
 }
 
 impl EditFileTool {
@@ -776,7 +846,17 @@ impl EditFileTool {
     pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
         Self {
             boundary: Some(boundary),
+            knowledge: None,
         }
+    }
+
+    /// 知识库重定向接线（registry 生产形态注入；重复调用覆盖）。
+    pub fn with_knowledge(
+        mut self,
+        knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
+    ) -> Self {
+        self.knowledge = knowledge;
+        self
     }
 }
 
@@ -819,17 +899,13 @@ impl Tool for EditFileTool {
     fn preview(&self, args: &str) -> Option<FileChange> {
         let val: serde_json::Value = serde_json::from_str(args).ok()?;
         let path = val.get("path")?.as_str()?.to_string();
+        // 重定向感知（第五轮横扫 2026-11-27）：同 write_file——声明路径
+        // 必须是 execute 的落盘路径（镜像）。
+        let path = preview_resolve_path(&path, self.boundary.as_deref(), self.knowledge.as_deref());
         let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("edit");
         let kind = if action == "append" {
-            // BUG-20261127-039 同族：append 的存在性判定与 execute_append
-            // 同源——先按边界解析到实际落点再 `exists()`（此前裸路径对照
-            // 进程 CWD，相对路径指向的工作区已有文件被系统性误报 Create
-            // → checkpoint 基线漏捕 → rewind 整删）。围栏必拒 = None。
-            let resolved = match &self.boundary {
-                Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete).ok()?,
-                None => PathBuf::from(&path),
-            };
-            if resolved.exists() {
+            // append 分支允许目标不存在（create=true），按存在性如实申报。
+            if path.exists() {
                 FileChangeKind::Modify
             } else {
                 FileChangeKind::Create
@@ -838,7 +914,10 @@ impl Tool for EditFileTool {
             // edit 分支要求文件已存在（execute errors otherwise）。
             FileChangeKind::Modify
         };
-        Some(FileChange { path, kind })
+        Some(FileChange {
+            path: path.to_string_lossy().to_string(),
+            kind,
+        })
     }
 }
 
@@ -847,11 +926,14 @@ impl EditFileTool {
     async fn execute_edit(&self, args: &str) -> Result<String, String> {
         let (path, old_text, new_text, replace_all) = extract_edit_args(args)?;
 
-        // 工作区边界（纵深防御，不单靠安全 8 层管线）。
-        let path = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
-            None => PathBuf::from(&path),
-        };
+        // 工作区边界（纵深防御，不单靠安全 8 层管线）+ 知识库重定向
+        // （同 write_file 双段链）。
+        let path = resolve_tool_path_with_redirect(
+            &path,
+            self.boundary.as_deref(),
+            FenceOpFamily::WriteDelete,
+            self.knowledge.as_deref(),
+        )?;
         let path = Path::new(&path);
 
         if !path.exists() {
@@ -916,11 +998,14 @@ impl EditFileTool {
     async fn execute_append(&self, args: &str) -> Result<String, String> {
         let (path, content) = extract_path_and_content(args)?;
 
-        // A5（2026-09-04）：工作区边界（纵深防御，不单靠安全 8 层管线）。
-        let path = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
-            None => PathBuf::from(&path),
-        };
+        // A5（2026-09-04）：工作区边界（纵深防御，不单靠安全 8 层管线）
+        // + 知识库重定向（同 write_file 双段链）。
+        let path = resolve_tool_path_with_redirect(
+            &path,
+            self.boundary.as_deref(),
+            FenceOpFamily::WriteDelete,
+            self.knowledge.as_deref(),
+        )?;
         let path = path.as_path();
 
         // Create parent directories if needed.
@@ -967,6 +1052,9 @@ impl EditFileTool {
 #[derive(Default)]
 pub struct MultiEditTool {
     boundary: Option<Arc<WorkspaceBoundary>>,
+    /// 知识库重定向（天工系统 v1）：同 [`ReadFileTool::knowledge`]；
+    /// 逐条 edit 接线（原子性不变——重定向发生在内存工作区收集前）。
+    knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
 }
 
 /// 一条批量编辑条目（schema 校验后的形态）。
@@ -1016,7 +1104,17 @@ impl MultiEditTool {
     pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
         Self {
             boundary: Some(boundary),
+            knowledge: None,
         }
+    }
+
+    /// 知识库重定向接线（registry 生产形态注入；重复调用覆盖）。
+    pub fn with_knowledge(
+        mut self,
+        knowledge: Option<Arc<crate::knowledge::KnowledgeHandle>>,
+    ) -> Self {
+        self.knowledge = knowledge;
+        self
     }
 }
 
@@ -1071,22 +1169,25 @@ impl Tool for MultiEditTool {
 
         for (i, e) in edits.iter().enumerate() {
             let label = format!("edit {}/{}", i + 1, total);
-            // 工作区边界（纵深防御，与 edit_file 同源校验）。
-            let vpath = match &self.boundary {
-                Some(b) => match validate_workspace_path(&e.path, b, FenceOpFamily::WriteDelete) {
-                    Ok(p) => p,
-                    Err(m) => {
-                        statuses.push(format!("  {}. {} — FAILED: {}", i + 1, e.path, m));
-                        return Err(format!(
-                            "multiedit aborted at {}: {}\n\nNo files were \
+            // 工作区边界（纵深防御，与 edit_file 同源校验）+ 知识库
+            // 重定向（同 edit_file 双段链）。
+            let vpath = match resolve_tool_path_with_redirect(
+                &e.path,
+                self.boundary.as_deref(),
+                FenceOpFamily::WriteDelete,
+                self.knowledge.as_deref(),
+            ) {
+                Ok(p) => p,
+                Err(m) => {
+                    statuses.push(format!("  {}. {} — FAILED: {}", i + 1, e.path, m));
+                    return Err(format!(
+                        "multiedit aborted at {}: {}\n\nNo files were \
                              modified. Edit status:\n{}",
-                            label,
-                            m,
-                            statuses.join("\n")
-                        ));
-                    }
-                },
-                None => PathBuf::from(&e.path),
+                        label,
+                        m,
+                        statuses.join("\n")
+                    ));
+                }
             };
             let idx = match files.iter().position(|f| f.path == vpath) {
                 Some(i) => i,
@@ -1236,14 +1337,22 @@ impl Tool for MultiEditTool {
         let Ok(edits) = extract_multiedit_args(args) else {
             return Vec::new();
         };
-        // 去重保序（同文件多条编辑只快照一次——checkpoint seen 表本就幂等）。
+        // 重定向感知（第五轮横扫 2026-11-27）：与 execute 的内存工作区
+        // 同键——去重按解析后路径（同一文件经不同形态路径两次声明只
+        // 快照一次）。
         let mut seen = std::collections::HashSet::new();
         edits
             .into_iter()
-            .filter(|e| seen.insert(e.path.clone()))
-            .map(|e| FileChange {
-                path: e.path,
-                kind: FileChangeKind::Modify,
+            .filter_map(|e| {
+                let resolved = preview_resolve_path(
+                    &e.path,
+                    self.boundary.as_deref(),
+                    self.knowledge.as_deref(),
+                );
+                seen.insert(resolved.clone()).then_some(FileChange {
+                    path: resolved.to_string_lossy().to_string(),
+                    kind: FileChangeKind::Modify,
+                })
             })
             .collect()
     }

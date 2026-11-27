@@ -155,6 +155,8 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "assets",
     // 用途登记：charter.get/set（W1 #1，2026-11-19）。
     "charter",
+    // 知识库重定向（天工系统 v1）：knowledge.get/set（2026-11-26）。
+    "knowledge",
 ];
 
 // 结构不变量
@@ -261,6 +263,9 @@ fn registry_anchor_commands_present() {
     // 独立代理配置：proxy.get/save 恒注册，锚点在这里红。
     assert!(cmds_of(&reg, "proxy").contains(&"get"));
     assert!(cmds_of(&reg, "proxy").contains(&"save"));
+    // 知识库重定向（天工系统 v1）：knowledge.get/set 恒注册，锚点在这里红。
+    assert!(cmds_of(&reg, "knowledge").contains(&"get"));
+    assert!(cmds_of(&reg, "knowledge").contains(&"set"));
     // （机制加固）：评审重触发入口（模块内无条件注册，钩子
     // 未安装时诚实报错）。模块本体 起随 board feature 门控。
     if cfg!(feature = "board") {

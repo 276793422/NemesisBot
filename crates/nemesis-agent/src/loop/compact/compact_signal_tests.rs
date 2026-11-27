@@ -184,7 +184,7 @@ async fn provider_signal_pulls_trigger_above_estimate() {
     // 增量）≥ 75 → 触发。
     agent_loop.note_compaction_provider_signal("s", 90, 8);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     let cache = instance
@@ -215,7 +215,7 @@ async fn no_provider_signal_falls_back_to_estimate() {
     let instance = low_estimate_history();
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     assert!(
@@ -290,7 +290,7 @@ async fn auto_adoption_clears_stale_provider_signal() {
 
     agent_loop.note_compaction_provider_signal("s", 90, 8); // 实报 90 ≥ 75 → 触发
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     let cache = instance
@@ -622,7 +622,7 @@ async fn b2_no_progress_discard_then_pause() {
 
     // 第 1 轮：触发 → 摘要无进展 → 弃用（covers 不进、cache None）。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(instance.get_summary_cache().is_none(), "无进展摘要被弃用");
     let (np, stuck) = {
@@ -636,7 +636,7 @@ async fn b2_no_progress_discard_then_pause() {
     // 第 2 轮：同 tail 再触发（last_summary_tokens 已记账 → ineffective 轴
     // 同步 +1）→ 再弃用 → no_progress=2 → stuck 置位。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(instance.get_summary_cache().is_none());
     let (np, stuck) = {
@@ -649,7 +649,7 @@ async fn b2_no_progress_discard_then_pause() {
 
     // 第 3 轮：stuck 闩 → 提前 return，provider 不再被调。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(calls.load(Ordering::SeqCst), 2, "暂停后不再烧摘要 LLM 调用");
     let _ = std::fs::remove_file(&cfg_path);
@@ -688,17 +688,19 @@ async fn b2_effective_summary_adopted_and_counter_resets() {
     agent_loop.set_config_path(cfg_path.clone());
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(instance.get_summary_cache().is_none(), "第 1 轮弃用");
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     let cache = instance
         .get_summary_cache()
         .expect("有效摘要（省幅 83% ≥ 5%）被采用");
-    assert_eq!(cache.covers_up_to, 8);
+    // user-first 钳制：raw=8（预算只装 a8）回退到最近 user（7），尾巴
+    // 保留 [u7, a8] 最后一组问答。
+    assert_eq!(cache.covers_up_to, 7);
     assert_eq!(cache.text, "SUMMARY");
     let np = agent_loop
         .compact_state
@@ -754,7 +756,7 @@ async fn b2_baseline_is_estimate_axis_not_inflated_provider_signal() {
     // est("") + 84 = 84 → saved 0 < 4 → 必须弃用。旧实现 signal=2000 →
     // saved 1870 ≥ 100 → 误采纳（本测试在旧实现下红）。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(
         instance.get_summary_cache().is_none(),
@@ -771,10 +773,11 @@ async fn b2_baseline_is_estimate_axis_not_inflated_provider_signal() {
     // 第 2 轮：projected = 2 + 10 = 12 → saved 72 ≥ 4 → 采用（反向：provider
     // 信号在场也不得误弃有效摘要）。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     let cache = instance.get_summary_cache().expect("有效摘要不被误弃");
-    assert_eq!(cache.covers_up_to, 8);
+    // user-first 钳制：raw=8 回退到最近 user（7），尾巴保留 [u7, a8]。
+    assert_eq!(cache.covers_up_to, 7);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let _ = std::fs::remove_file(&cfg_path);
 }
@@ -802,7 +805,7 @@ async fn user_compact_point_triggers_below_default_ratio() {
     let instance = low_estimate_history(); // 估算 74；默认链 75 不触发
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     let cache = instance
@@ -830,7 +833,7 @@ async fn user_compact_point_not_reached_no_trigger() {
     let instance = low_estimate_history(); // 估算 74 < 200
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     assert!(instance.get_summary_cache().is_none(), "74 < 200 未到点");
@@ -857,7 +860,7 @@ async fn clamp_notice_fires_once_even_below_soft() {
     let instance = low_estimate_history(); // 窗口 100 → 钳 100；估算 74 < 100
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(
         instance.get_summary_cache().is_none(),
@@ -872,7 +875,7 @@ async fn clamp_notice_fires_once_even_below_soft() {
 
     // 状态仍在（一次性闸保持），无 panic、无重复触发副作用。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     let still = agent_loop
         .compact_state
@@ -989,7 +992,7 @@ async fn noop_prefix_gate_blocks_then_opens_as_history_grows() {
         turn("assistant", &"x".repeat(40)),
     ]);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     assert_eq!(
@@ -1012,24 +1015,28 @@ async fn noop_prefix_gate_blocks_then_opens_as_history_grows() {
         "空转不计失败（旧代码此处 +1，两轮烧掉 stuck 闩）"
     );
 
-    // 历史长过尾巴预算（2 组问答，边界到 2）→ 闸门放开，摘要发生。
+    // 历史长过尾巴预算（3 组问答）→ 闸门放开，摘要发生。user-first 钳制
+    // 下可折叠区必须含至少一组完整问答：keep=30 边界到 4（保留 [a4,u5,a6]
+    // 30 tok），钳制回退到最近 user（3）→ 折叠区 [system, u1, a2] 含问答。
     instance.set_history(vec![
         turn("system", &huge_system),
         turn("user", &"x".repeat(40)),
         turn("assistant", &"x".repeat(40)),
         turn("user", &"x".repeat(40)),
         turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
     ]);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
-        "边界前进到有效轮后闸门放开，摘要调用发生"
+        "边界前进到含问答的有效轮后闸门放开，摘要调用发生"
     );
     let cache = instance.get_summary_cache().expect("有效前进 → 摘要被采用");
-    assert_eq!(cache.covers_up_to, 2);
+    assert_eq!(cache.covers_up_to, 3);
     let failures_after = agent_loop
         .compact_state
         .lock()
@@ -1124,7 +1131,7 @@ async fn b17_boundary_on_compacts_at_soft_band() {
     let instance = soft_band_history(); // 估算 54 ∈ [50, 75)
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     assert_eq!(
@@ -1160,7 +1167,7 @@ async fn b17_boundary_off_keeps_legacy_threshold() {
     let instance = soft_band_history();
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     assert!(
@@ -1197,12 +1204,273 @@ async fn b17_below_soft_no_trigger_even_boundary_on() {
     ]); // 估算 33 < soft 50
 
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     assert!(instance.get_summary_cache().is_none(), "低于 soft 不触发");
     assert_eq!(calls.load(Ordering::SeqCst), 0, "provider 不被调");
     let _ = std::fs::remove_file(&cfg_path);
+}
+
+// ---------------------------------------------------------------------------
+// 轮顶压力闸（2026-11-27 turn 中途自动压缩）：at_turn_end=false 轴分离
+// ---------------------------------------------------------------------------
+
+/// B17 开启 + 轮顶调用点 + 信号落 [soft, trigger) 区间 → 不触发：
+/// 中途压缩恒用标准触发位，不参与轮末 soft 提前（B17 用户不会在 50%
+/// 窗口被频繁中间压缩）。同一历史 + at_turn_end=true 即触发
+/// （b17_boundary_on_compacts_at_soft_band 已钉）。
+#[tokio::test]
+async fn round_top_ignores_b17_soft_band() {
+    let (provider, calls) = QueueProvider::boxed(vec![]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = boundary_config("roundtop_soft", 10, Some(true));
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = soft_band_history(); // 估算 54 ∈ [50, 75) soft 区间
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c", false)
+        .await;
+
+    assert!(
+        instance.get_summary_cache().is_none(),
+        "54 < 标准触发位 75：轮顶不跟 B17 soft 位，不触发"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "provider 不被调");
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// B17 开启 + 轮顶调用点 + 信号达标准触发位 → 照常触发：轴分离只收窄
+/// 触发窗口（soft 之下不压），不吞标准触发位之上的正常中途压缩。
+#[tokio::test]
+async fn round_top_uses_standard_trigger_even_boundary_on() {
+    let (provider, calls) = QueueProvider::boxed(vec![Ok("SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = boundary_config("roundtop_over", 10, Some(true));
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // trigger = 75
+    instance.set_history(vec![
+        turn("system", "sys prompt"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+    ]); // 估算 3 + 8×10 = 83 ≥ 75
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c", false)
+        .await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "83 ≥ 标准触发位 75 → 中途压缩照常发生"
+    );
+    let cache = instance.get_summary_cache().expect("标准触发位之上应压缩");
+    // keep=10 只装最后一条（10 tok），raw 边界 = len-1 = 8；但中途轴 user
+    // 边界回退到不越过最后一条 user（idx 7）——当前交换（user+assistant 回
+    // 复）必须留在逐字尾部，否则下一请求 assistant 开头（anthropic 400）。
+    assert_eq!(cache.covers_up_to, 7);
+    assert_eq!(cache.text, "SUMMARY");
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// 中途轴 user 边界 · live 400 回归钉（2026-11-27 glm-5.3-flash 实测抓捕）：
+/// turn-1 中途历史 [sys, user, assistant(tool_use), tool, tool]——折叠区在
+/// user 边界钳制后只剩 system 前缀（无可摘要内容）→ 诚实 no-op（provider
+/// 零调用、cache 不动），绝不把 user 折掉制造 assistant 开头请求
+/// （anthropic 端点 400 [1214] messages 参数非法）。
+#[tokio::test]
+async fn mid_turn_user_boundary_skips_when_only_system_foldable() {
+    let (provider, calls) = QueueProvider::boxed(vec![]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = boundary_config("midturn_skip", 10, None);
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // trigger = 75
+    instance.set_history(vec![
+        turn("system", "sys prompt"),
+        turn("user", &"x".repeat(300)), // 当前任务消息（>阈值的大尾巴成员）
+        turn("assistant", &"x".repeat(40)),
+        turn("tool", &"x".repeat(40)),
+        turn("tool", &"x".repeat(40)),
+    ]); // 尾部远超 75：触发条件满足，但可折叠区为空
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c", false)
+        .await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "折叠区只剩 system → 无可摘要内容，诚实 no-op 不打摘要器"
+    );
+    assert!(
+        instance.get_summary_cache().is_none(),
+        "covers 不推进：不制造 assistant 开头的下一请求"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// 中途轴 user 边界 · 正常折叠形态：多轮交换后停在当前 user 消息之前——
+/// 老交换折进摘要、当前交换（user+assistant）留在逐字尾部，投影后首条
+/// 非 system 消息恒为 user。
+#[tokio::test]
+async fn mid_turn_user_boundary_folds_old_exchanges_keeps_current() {
+    let (provider, calls) = QueueProvider::boxed(vec![Ok("SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = boundary_config("midturn_fold", 10, None);
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // trigger = 75
+    instance.set_history(vec![
+        turn("system", "sys prompt"),
+        turn("user", &"x".repeat(60)),      // u1
+        turn("assistant", &"x".repeat(60)), // a1
+        turn("user", &"x".repeat(60)),      // u2
+        turn("assistant", &"x".repeat(60)), // a2
+        turn("user", &"x".repeat(60)),      // u3（当前 turn 的任务消息）
+        turn("assistant", &"x".repeat(60)), // a3（进行中的回复）
+    ]); // 每条 60 字 ≈ 15 tok：估算 3 + 6×15 = 93 ≥ 75 → 触发
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c", false)
+        .await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "超阈值 → 中途压缩发生");
+    let cache = instance.get_summary_cache().expect("应折叠老交换");
+    assert_eq!(
+        cache.covers_up_to, 5,
+        "折叠停在最后一条 user（idx 5）之前：u3/a3 留在尾部"
+    );
+    let projected = crate::r#loop::compact::project_history_for_request(
+        &instance.get_history(),
+        Some((&cache.text, cache.covers_up_to)),
+    );
+    assert_eq!(
+        projected
+            .iter()
+            .find(|t| t.role != "system")
+            .map(|t| t.role.as_str()),
+        Some("user"),
+        "投影后首条非 system 消息必须是 user（assistant 开头 = anthropic 400 形态）"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// force 应急链 user-first 钳制：上下文错误环的折叠同样无条件回退到
+/// ≤ new_c 的最近 user 轮（轴无关，2026-11-27 live 400 根修同款规则）。
+/// raw_c=7（tail 8 > SMALL_K_FORCE，history[7]=tool 回退到 assistant 6）
+/// → 最近 user ≤ 6 = idx 5 → covers=5，重试请求以 user 开头。
+#[tokio::test]
+async fn force_clamps_to_user_boundary() {
+    let (provider, _calls) = QueueProvider::boxed(vec![Ok("FSUM".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![
+        turn("system", "sys prompt"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("tool", &"x".repeat(40)),
+        turn("tool", &"x".repeat(40)),
+    ]); // len=9，tail 8 > SMALL_K_FORCE(2) → raw_c = 7；history[7]=tool → tool_safe 回退到 6
+
+    let advanced = agent_loop
+        .force_compression_opts(&instance, false, "s")
+        .await;
+    assert!(advanced, "有可推进内容 → 已发起摘要");
+    let cache = instance.get_summary_cache().expect("force 应推进 covers");
+    assert_eq!(
+        cache.covers_up_to, 5,
+        "折叠回退到最后一条 user（idx 5），u5 之后留在尾部——重试请求 user 开头"
+    );
+}
+
+/// force 空尾豁免：当前尾部 ≤ SMALL_K_FORCE(2)（单交换极小历史）→
+/// raw = history.len() ≥ len → 不钳——尾部为空 → 请求 = system+摘要
+/// （+后续新 user），wire 合法。应急链 tail→0 最后一搏依赖此豁免：
+/// 单交换历史若被钳（covers 卡在 last user 前的 system）则折叠区空、
+/// 永无进展，上下文错误环死锁。
+#[tokio::test]
+async fn force_full_fold_exempt_from_user_clamp() {
+    let (provider, _calls) = QueueProvider::boxed(vec![Ok("FSUM0".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    // len=2：current_tail_len=2 ≤ SMALL_K_FORCE → raw = 2 = len → 豁免臂。
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(vec![turn("system", "sys prompt"), turn("user", "Hello")]);
+
+    let advanced = agent_loop
+        .force_compression_opts(&instance, false, "s")
+        .await;
+    assert!(
+        advanced,
+        "全折叠覆盖 [system, user]，含可摘要内容 → 发起摘要"
+    );
+    assert_eq!(
+        instance
+            .get_summary_cache()
+            .expect("空尾豁免 → 全折叠被采用")
+            .covers_up_to,
+        2,
+        "raw=history.len() → 空尾豁免 → covers 推到全部历史（尾部为空 = wire 合法）"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1245,13 +1513,13 @@ async fn hostile_provider_signal_no_panic() {
     let _status = agent_loop.session_context_status("s");
     // 第一轮：soft 提示行（signal*100）+ 触发压缩 + last_summary_tokens 记账巨值。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(instance.get_summary_cache().is_some(), "巨值实报应触发压缩");
     // 第二轮：summarize_was_ineffective(last*90) 位点（首轮已记账巨值）。
     agent_loop.note_compaction_provider_signal("s", u64::MAX / 2, 8);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     let _ = std::fs::remove_file(&cfg_path);
 }
@@ -1290,21 +1558,22 @@ async fn success_adoption_clears_failure_axis_no_latch_on_successive_successes()
     // last=90 → 摘要成功采用 covers=7 → 成功臂清 failures/last。
     agent_loop.note_compaction_provider_signal("s", 90, 8);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(instance.get_summary_cache().unwrap().covers_up_to, 7);
 
     // 轮 2：历史增长 2 轮（边界可前进）→ 重新锚定 → 触发 → tick 不再把
-    // 上轮成功误记账（修复点）→ 摘要再成功。
+    // 上轮成功误记账（修复点）→ 摘要再成功。user-first 钳制：raw=9（assistant）
+    // 回退到最近 user（8），尾巴保留 [u8, a9]。
     let mut hist = instance.get_history();
     hist.push(turn("user", &"x".repeat(40)));
     hist.push(turn("assistant", &"x".repeat(40)));
     instance.set_history(hist);
     agent_loop.note_compaction_provider_signal("s", 90, 10);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
-    assert_eq!(instance.get_summary_cache().unwrap().covers_up_to, 9);
+    assert_eq!(instance.get_summary_cache().unwrap().covers_up_to, 8);
 
     // 轮 3：同构再一轮——旧代码此处 tick failures=2 置闩、provider 不被调。
     let mut hist = instance.get_history();
@@ -1313,7 +1582,7 @@ async fn success_adoption_clears_failure_axis_no_latch_on_successive_successes()
     instance.set_history(hist);
     agent_loop.note_compaction_provider_signal("s", 90, 12);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
 
     assert_eq!(
@@ -1371,10 +1640,10 @@ async fn force_success_clears_latch_and_auto_resumes() {
 
     // 置闩（同 b2_no_progress_discard_then_pause 形态）。
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(
         agent_loop.compact_state.lock().get("s").unwrap().stuck,
@@ -1402,11 +1671,19 @@ async fn force_success_clears_latch_and_auto_resumes() {
         "force 成功清失败轴两件 + no_progress"
     );
 
-    // 自动压缩恢复：重新锚定触发 → tick 正常记账（不被闩拦）→ 摘要真实发起
-    // （队列耗尽返回 Err 也算「发起了」——断言对象是闸放行，不是摘要结果）。
-    agent_loop.note_compaction_provider_signal("s", 90, 9);
+    // 自动压缩恢复：追加一组问答（user-first 钳制下 covers 已钉在 7——
+    // 旧历史无可推进，需新交换才能前进边界）→ 重新锚定触发 → tick 正常
+    // 记账（不被闩拦）→ 摘要真实发起（队列耗尽返回 Err 也算「发起了」
+    // ——断言对象是闸放行，不是摘要结果）。
+    {
+        let mut hist = instance.get_history();
+        hist.push(turn("user", &"x".repeat(40)));
+        hist.push(turn("assistant", &"x".repeat(40)));
+        instance.set_history(hist);
+    }
+    agent_loop.note_compaction_provider_signal("s", 90, 11);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -1452,17 +1729,17 @@ async fn deadman_rescue_runs_at_high_water_then_cooldown_blocks() {
         turn("assistant", &"x".repeat(40)),
     ]);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(agent_loop.compact_state.lock().get("s").unwrap().stuck);
 
     // 高危水位（96 ≥ 95%×100）→ 救援放行：provider 被调、last_rescue 记账。
     agent_loop.note_compaction_provider_signal("s", 96, 9);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(calls.load(Ordering::SeqCst), 3, "救援摘要真实发起");
     assert_eq!(instance.get_summary_cache().unwrap().text, "SUMMARY");
@@ -1480,7 +1757,7 @@ async fn deadman_rescue_runs_at_high_water_then_cooldown_blocks() {
     // 冷却期内同水位再触发 → 闩照旧暂停（provider 不再被调）。
     agent_loop.note_compaction_provider_signal("s", 96, 9);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -1529,17 +1806,17 @@ async fn deadman_rescue_low_water_gated_and_cooldown_expiry_retries() {
         turn("assistant", &"x".repeat(40)),
     ]);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert!(agent_loop.compact_state.lock().get("s").unwrap().stuck);
 
     // 低水位（90 < 95%×100）→ 不放行、不记账。
     agent_loop.note_compaction_provider_signal("s", 90, 9);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(calls.load(Ordering::SeqCst), 2, "低水位闩照旧暂停");
     assert!(
@@ -1561,7 +1838,7 @@ async fn deadman_rescue_low_water_gated_and_cooldown_expiry_retries() {
     }
     agent_loop.note_compaction_provider_signal("s", 90, 9);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(calls.load(Ordering::SeqCst), 2, "冷却到期但低水位仍不放行");
 
@@ -1569,7 +1846,7 @@ async fn deadman_rescue_low_water_gated_and_cooldown_expiry_retries() {
     // 重试一次，闩保持，真实会话不死）。
     agent_loop.note_compaction_provider_signal("s", 96, 9);
     agent_loop
-        .maybe_update_summary(&instance, "s", "web", "c")
+        .maybe_update_summary(&instance, "s", "web", "c", true)
         .await;
     assert_eq!(
         calls.load(Ordering::SeqCst),

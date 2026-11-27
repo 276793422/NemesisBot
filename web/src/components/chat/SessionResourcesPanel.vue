@@ -57,6 +57,8 @@ import { useChatStore } from '../../stores/chat'
 import { useSessionStore } from '../../stores/session'
 import { useToast } from '../../composables/useToast'
 import ProjectCreateModal from '../ProjectCreateModal.vue'
+import KnowledgeSettingsModal from './KnowledgeSettingsModal.vue'
+import type { KnowledgeConfigFront } from './KnowledgeSettingsModal.vue'
 import type { ProjectInfo } from '../../composables/useChatApi'
 
 const props = defineProps<{
@@ -208,6 +210,57 @@ const loadError = ref('')
 const workdir = ref('')
 const showProjectModal = ref(false)
 
+// ---- 知识库（天工系统 v1，2026-11-26）：knowledge.get/set 前端面 ----
+// 静态卡显示开关态 + 配对数；设置窗（KnowledgeSettingsModal）负责编辑。
+// 项目会话不支持（后端 knowledge.* 诚实报错，卡片直接注记不发请求）。
+// get 失败静默（知识库是可选面——headless 早期/旧网关无此命令，卡片显示
+// 暂不可用即可，不弹错误噪音）。
+interface KnowledgeInfo {
+  scope: string
+  config_path: string
+  config: KnowledgeConfigFront
+}
+const knowledgeInfo = ref<KnowledgeInfo | null>(null)
+const knowledgeSupported = ref(true)
+const showKnowledgeModal = ref(false)
+
+async function fetchKnowledge(): Promise<void> {
+  if (!props.sessionId) return
+  // 项目会话：v1 不支持（后端会诚实报错，但前端明知归属就别发请求制造
+  // 错误噪音——卡片直接注记）。归属判定经 resolvedProject（注册表单一
+  // 裁决点，装配早于本调用——sessionId watch 在 store 就绪后触发）。
+  if (knowledgeIsProjectSession.value) {
+    knowledgeSupported.value = false
+    return
+  }
+  try {
+    const data = await request('knowledge', 'get', { session_id: props.sessionId })
+    knowledgeInfo.value = data as KnowledgeInfo
+    knowledgeSupported.value = true
+  } catch {
+    knowledgeSupported.value = false
+  }
+}
+
+/** 项目会话（v1 不支持知识库）：identity 归属项目 = 注册表解析命中。 */
+const knowledgeIsProjectSession = computed(() => resolvedProject.value != null)
+
+/** 知识库卡徽标文案。 */
+const knowledgeBadge = computed(() => {
+  if (!knowledgeInfo.value) return knowledgeSupported.value ? '…' : '不可用'
+  const c = knowledgeInfo.value.config
+  return c?.enabled ? `开 · ${c.pairs?.length ?? 0} 配对` : '关'
+})
+
+/** code_root 下拉候选盘点：当前会话工作目录（主会话 = 主 workspace，
+ *  项目会话 = 项目目录）+ 全部注册项目目录。 */
+const knowledgeDirOptions = computed(() => {
+  const opts = new Set<string>()
+  if (workdir.value) opts.add(workdir.value)
+  for (const p of sessionStore.projects) if (p.path) opts.add(p.path)
+  return [...opts]
+})
+
 // ---- ＋项目分叉（2026-11-25）：项目会话 → 给该项目追加放行目录 ----
 // D 批围栏多根（2026-11-19）在侧栏（SessionSidebar.onProjectPlusClick）已
 // 实现的语义分叉，补齐资源窗臂：当前会话属某项目 → 弹 add-dir 模式（
@@ -282,8 +335,15 @@ const pendingCategories = computed(() =>
 interface WqRow {
   icon: string
   kind: string
+  /** wire 队列键：'steer'（⚡插队/next_step）| 'follow_up'（⏳排队/next_turn）——
+   *  删除入参原样回传（2026-11-27 逐条删除批）。 */
+  queue: 'steer' | 'follow_up'
+  /** 本条在各自队列数组内的下标（删除寻址键）。 */
+  idx: number
   content: string
   timestamp: string
+  /** 发送者 id（删除身份复核对之一——防快照过期后下标漂移误删）。 */
+  senderId: string
   priority: string
 }
 
@@ -296,16 +356,25 @@ const wqRows = computed<WqRow[]>(() => {
   const s = waitingQueue.value?.summary ?? {}
   const steer = Array.isArray(s.steer) ? (s.steer as Record<string, unknown>[]) : []
   const follow = Array.isArray(s.follow_up) ? (s.follow_up as Record<string, unknown>[]) : []
-  const toRow = (e: Record<string, unknown>, icon: string, kind: string): WqRow => ({
+  const toRow = (
+    e: Record<string, unknown>,
+    idx: number,
+    icon: string,
+    kind: string,
+    queue: WqRow['queue'],
+  ): WqRow => ({
     icon,
     kind,
+    queue,
+    idx,
     content: typeof e.content === 'string' ? e.content : '',
     timestamp: typeof e.timestamp === 'string' ? e.timestamp : '',
+    senderId: typeof e.sender_id === 'string' ? e.sender_id : '',
     priority: typeof e.priority === 'string' ? e.priority : 'normal',
   })
   return [
-    ...steer.map(e => toRow(e, '⚡', '插队')),
-    ...follow.map(e => toRow(e, '⏳', '排队')),
+    ...steer.map((e, i) => toRow(e, i, '⚡', '插队', 'steer')),
+    ...follow.map((e, i) => toRow(e, i, '⏳', '排队', 'follow_up')),
   ]
 })
 
@@ -364,6 +433,32 @@ const wqPopStyle = computed(() => {
     top: `${Math.max(8, Math.min(h.y + 12, window.innerHeight - 240))}px`,
   }
 })
+
+/** 逐条删除（2026-11-27）：行尾 ✕ → `session.queue_remove`，随行身份
+ *  复核对（sender_id + timestamp，快照行原样回传）——快照过期（条目已被
+ *  消费/下标漂移）= 后端诚实拒绝，前端 toast + 自动重拉自愈。成功/失败
+ *  都 scheduleRefresh（成功=确认新队列序；失败=重拿新快照）。单飞锁防
+ *  双击双发。 */
+const wqDeleting = ref(false)
+async function wqDelete(row: WqRow): Promise<void> {
+  if (!props.sessionId || wqDeleting.value) return
+  wqDeleting.value = true
+  try {
+    await request('session', 'queue_remove', {
+      session_id: props.sessionId,
+      queue: row.queue,
+      index: row.idx,
+      sender_id: row.senderId,
+      timestamp: row.timestamp,
+    })
+    toast.success('已删除该条（不会执行）')
+  } catch (e: any) {
+    toast.error(`删除失败：${e?.message ?? e}`)
+  } finally {
+    wqDeleting.value = false
+    scheduleRefresh()
+  }
+}
 
 /** 资源卡流：排除执行态/在途区/identity 后的 ok 类目，order 升序。
  *  session_allow 例外：empty（未开启=常态）也渲染——开关是「状态开关」
@@ -651,12 +746,14 @@ watch(() => props.sessionId, (sid) => {
   loadError.value = ''
   workdir.value = ''
   collapsedCards.value = new Set()
+  knowledgeInfo.value = null
   if (sid) {
     void fetchResources()
     void fetchWorkdir()
     void initVoiceState()
     void refreshInboxMode(sid)
     void refreshSessionAllow(sid)
+    void fetchKnowledge()
   }
 }, { immediate: true })
 
@@ -1027,7 +1124,8 @@ function subagentElapsed(row: Record<string, unknown>): string {
       </div>
 
       <!-- 等待队列（2026-11-24）：插队/排队消息逐条可见，行 hover 弹层看
-           全文（fixed 定位逃裁剪链）；无等待 = Empty 不渲染，与执行态同机制 -->
+           全文（fixed 定位逃裁剪链）；无等待 = Empty 不渲染，与执行态同机制。
+           行尾 ✕ 逐条删除（2026-11-27）：hover 显现，点击摘除该条不执行。 -->
       <div v-if="waitingQueue" class="srp-card srp-queue">
         <div class="srp-card-head">
           <span class="srp-card-title">{{ waitingQueue.label }}</span>
@@ -1044,6 +1142,12 @@ function subagentElapsed(row: Record<string, unknown>): string {
           >
             <span class="srp-key">{{ e.icon }}</span>
             <span class="srp-wq-preview">{{ wqPreview(e.content) }}</span>
+            <button
+              class="srp-wq-del"
+              type="button"
+              title="删除此条（从队列摘除，不再执行）"
+              @click.stop="wqDelete(e)"
+            >✕</button>
           </li>
         </ul>
       </div>
@@ -1233,6 +1337,43 @@ function subagentElapsed(row: Record<string, unknown>): string {
 
       <!-- Unavailable ⚠ 行 -->
       <div v-for="[id, c] in unavailableCategories" :key="id" class="srp-unavail">⚠ {{ c.label }}：{{ c.reason ?? '不可用' }}</div>
+
+      <!-- 知识库卡（天工系统 v1，2026-11-26）：开关态 + 配对数 + 设置入口。
+           项目会话 v1 不支持（注记不发请求）；后端命令缺席 = 暂不可用。 -->
+      <div v-if="knowledgeIsProjectSession" class="srp-card srp-knowledge">
+        <div class="srp-card-head">
+          <span class="srp-card-title">知识库</span>
+        </div>
+        <div class="srp-metrics"><span>项目会话暂不支持知识库配置</span></div>
+      </div>
+      <div v-else-if="knowledgeSupported && knowledgeInfo" class="srp-card srp-knowledge" data-test="srp-knowledge-card">
+        <div class="srp-card-head">
+          <span class="srp-card-title">知识库</span>
+          <span
+            class="srp-badge"
+            :class="{ active: knowledgeInfo.config?.enabled }"
+          >{{ knowledgeBadge }}</span>
+          <button
+            class="srp-knowledge-settings"
+            type="button"
+            title="配置引导文件重定向（AGENTS/CLAUDE/TIANGONG → 知识库镜像）"
+            @click="showKnowledgeModal = true"
+          >⚙ 设置</button>
+        </div>
+        <div class="srp-metrics">
+          <span>{{
+            knowledgeInfo.config?.enabled
+              ? '引导文件重定向已启用（读/写/编辑四工具热生效）'
+              : '重定向关闭（本地文件优先，功能不存在）'
+          }}</span>
+        </div>
+      </div>
+      <div v-else class="srp-card srp-knowledge">
+        <div class="srp-card-head">
+          <span class="srp-card-title">知识库</span>
+          <span class="srp-badge">暂不可用</span>
+        </div>
+      </div>
     </template>
 
     <!-- 等待队列 hover 全文弹层（fixed 定位，挂根级逃出卡片/面板裁剪链；
@@ -1262,6 +1403,17 @@ function subagentElapsed(row: Record<string, unknown>): string {
       :project="addDirTarget"
       @close="addDirTarget = null"
       @updated="onAddDirUpdated"
+    />
+    <!-- 知识库设置窗（天工系统 v1）：saved 后原位重拉 get（卡片徽标/配对
+         数立即反映；后端写盘即热生效）。 -->
+    <KnowledgeSettingsModal
+      v-if="showKnowledgeModal && knowledgeInfo"
+      :session-id="props.sessionId || ''"
+      :config-path="knowledgeInfo.config_path"
+      :config="knowledgeInfo.config"
+      :dir-options="knowledgeDirOptions"
+      @close="showKnowledgeModal = false"
+      @saved="showKnowledgeModal = false; void fetchKnowledge()"
     />
   </div>
 </template>
@@ -1404,6 +1556,24 @@ function subagentElapsed(row: Record<string, unknown>): string {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 行尾逐条删除键（2026-11-27）：hover 显现（触屏常显可见），danger 色
+   hover 强化；点击不冒泡（行无 click 链，.stop 是双保险）。 */
+.srp-wq-del {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.srp-wq-row:hover .srp-wq-del,
+.srp-wq-del:focus-visible { opacity: 1; }
+.srp-wq-del:hover { color: var(--danger, #e5484d); background: var(--bg-secondary); }
 .srp-wq-pop {
   position: fixed;
   z-index: 500;
@@ -1486,6 +1656,23 @@ function subagentElapsed(row: Record<string, unknown>): string {
   border-color: var(--accent);
 }
 .srp-badge.warn { color: var(--accent); border-color: var(--accent); }
+.srp-badge.active { color: var(--ok, #4caf7d); border-color: var(--ok, #4caf7d); }
+
+/* 知识库卡（天工系统 v1）：设置按钮（head 行右侧，hover 显色）。 */
+.srp-knowledge-settings {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.srp-knowledge-settings:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
 
 /* 行 */
 .srp-rows { list-style: none; margin: 0; padding: 0; }

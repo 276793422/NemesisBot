@@ -216,13 +216,23 @@ watch(liveTailSig, () => {
              正文流增长预览（边生成边长出来，回应落地后由下方 steer_
              response 接棒，预览让位——单份展示不双份）。窗口内仅一个
              未收口注记轮（后续插话排队不注入，后端原子性拍板），两行
-             天然归属唯一活动窗口。 -->
-        <div v-if="steerProcessing" class="wt-steer-working">
+             天然归属唯一活动窗口。
+             2026-11-27 修复：条件必须含 r 本身（r.steer_note &&
+             !r.steer_response）——steerProcessing 是全局窗口条件（some），
+             此前直接挂在 per-round v-for 里令每一轮都渲染一条指示行，
+             一条插话在多轮时间线下产生 N 个标记（回归锁
+             WorkTimelineBlock.spec.ts 插话处理指示唯一性组）。 -->
+        <div
+          v-if="steerProcessing && r.steer_note && !r.steer_response"
+          class="wt-steer-working"
+        >
           <span class="wt-spinner"></span>
           <span>处理插话中…</span>
         </div>
         <div
-          v-if="steerProcessing && steerLiveText"
+          v-if="
+            steerProcessing && r.steer_note && !r.steer_response && steerLiveText
+          "
           class="wt-steer-live-text"
         >{{ steerLiveText }}</div>
         <!-- 插话专轮收口回应（2026-11-21 插话专轮批）：后端

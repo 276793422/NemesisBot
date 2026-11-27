@@ -23,6 +23,11 @@ use crate::common;
 #[cfg(test)]
 mod tests;
 
+// （知识库围栏根）knowledge_fence_roots 单一真相源 + executor 通道透传
+// 契约测试（无 cluster 门——纯装配逻辑）。
+#[cfg(test)]
+mod knowledge_fence_tests;
+
 // （扩展计划）fallback 链装配测试（无 cluster 门——纯装配逻辑）。
 #[cfg(test)]
 mod fallback_chain_tests;

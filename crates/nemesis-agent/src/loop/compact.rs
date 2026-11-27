@@ -666,12 +666,21 @@ impl AgentLoop {
     ///
     /// Persistence: this updates the in-memory cache on the instance. The save
     /// path persists the cache alongside the full history (see.3).
+    ///
+    /// 调用点（2026-11-27 第二批）：**唯一活调用点 = run_loop 轮顶**
+    /// （每轮 LLM 调用前）。轮末 finalize 的调用点已停用（turn.rs 注释
+    /// 保留备还原——它会阻塞最终回复出站；防溢出由轮顶「下 turn 第 1 轮、
+    /// 任何调用前必压」结构性承担）。两轴语义不变：`at_turn_end=true` =
+    /// 任务边界轴（B17 soft 位），现由轮顶首回合（turns_used==0 +
+    /// compact_boundary 开）消费；`false` = 标准触发位（「别撞墙」到点
+    /// 即压），轮顶其余回合消费。
     pub(crate) async fn maybe_update_summary(
         &self,
         instance: &AgentInstance,
         session_key: &str,
         channel: &str,
         chat_id: &str,
+        at_turn_end: bool,
     ) {
         let history = instance.get_history();
         // 压缩点一等公民化：触发点 = per-model `compact_context_tokens`
@@ -719,14 +728,18 @@ impl AgentLoop {
         // 「1M 模型设 200K 压缩点」场景于 500K 才响——压缩点早过了）。
         let soft = trig.trigger * 2 / 3;
         let threshold = trig.trigger;
-        // B17 任务边界压缩：开启时轮末触发点提前到 soft 位——此刻最终回复
+        // B17 任务边界压缩：开启时**轮末**触发点提前到 soft 位——此刻最终回复
         // 已出、下一任务未开始，压缩永远发生在任务边界且带足余量（中途撞
-        // overflow 应急链=cache 全失效重算的概率随之坍缩）。effective 只喂
-        // 内置触发判定与 stuck 清闩轴（下方 will_summarize / 清闩臂两处）；
-        // policy 槽 input 的 threshold 保持 trig.trigger 原语义（组件契约
-        // 不变）。
-        let effective_threshold =
-            turn_end_effective_trigger(self.current_compact_boundary(), trig.trigger);
+        // overflow 应急链=cache 全失效重算的概率随之坍缩）。轮顶中途调用点
+        // （at_turn_end=false）不参与该提前——恒用标准触发位。
+        // effective 只喂内置触发判定与 stuck 清闩轴（下方 will_summarize /
+        // 清闩臂两处）；policy 槽 input 的 threshold 保持 trig.trigger 原语义
+        // （组件契约不变）。
+        let effective_threshold = if at_turn_end {
+            turn_end_effective_trigger(self.current_compact_boundary(), trig.trigger)
+        } else {
+            trig.trigger
+        };
 
         // new boundary — token budget (default) or legacy count fallback
         // (0), then back off any tool_call/result pair straddling it.
@@ -742,6 +755,23 @@ impl AgentLoop {
             history.len().saturating_sub(K_TARGET)
         };
         let new_c = tool_safe_boundary(&history, raw_new_c);
+        // user-first 铁律（2026-11-27 live 实证）：投影后请求的第一条非
+        // system 消息必须是 user（anthropic 协议端点 400 [1214] glm
+        // 「messages 参数非法」live 抓捕；provider 层逐字序列化无兜底，
+        // 见 anthropic.rs build_request_body）。折叠边界无条件回退到
+        // ≤ new_c 的最近 user 轮——**与轴无关**：turn 末轴同样成立，
+        // 下一条 user 追加在尾部、救不了首条（几何依赖，keep_recent <
+        // 被折 tool 载荷时必现）。例外：new_c 覆盖全部历史（尾部为空）
+        // → 请求 = system+摘要（+后续新 user），wire 合法，不钳（应急链
+        // tail→0 最后一搏依赖此豁免）。
+        let new_c = if new_c >= history.len() {
+            new_c
+        } else {
+            history[..=new_c]
+                .iter()
+                .rposition(|t| t.role == "user")
+                .map_or(0, |u| tool_safe_boundary(&history, u))
+        };
         // 触发比较用混合信号（锚点实报 + 增量，双向收敛）。`new_c > c`
         // 闸保留——可折叠前缀没变化时（尾巴太短/工具与 system 占大头）摘要帮
         // 不上，交给 force_compression，不空转。
@@ -1429,6 +1459,20 @@ impl AgentLoop {
         // Keep tool_call/result pairs intact in the tail (don't let the boundary
         // drop an orphan result that the summary can't capture).
         let new_c = tool_safe_boundary(&history, raw_c);
+        // user-first 铁律（与 maybe_update_summary 同一无条件钳制，轴无关）：
+        // 折叠不越过 ≤ new_c 的最近 user 轮——应急链重试请求也必须 user 开头
+        // （anthropic 端点 400）。空尾豁免：raw_c=history.len()（tail→0 最后
+        // 一搏）时覆盖全部历史 → 请求 = system+摘要，wire 合法，不钳——
+        // 真相：当前 user 轮自身撑爆窗口且无其他可折内容时，钳制后折叠区
+        // 为空、重试照常失败——诚实失败优于畸形请求。
+        let new_c = if new_c >= history.len() {
+            new_c
+        } else {
+            history[..=new_c]
+                .iter()
+                .rposition(|t| t.role == "user")
+                .map_or(0, |u| tool_safe_boundary(&history, u))
+        };
         // Must advance and have a non-empty prefix to summarize.
         // 返回值区分两臂（真模型验证发现）：false = 无可推进内容
         // （tail 已到 SMALL_K_FORCE 或 tool_safe_boundary 无法再前移），

@@ -313,6 +313,7 @@ fn sample_draft(session_key: &str, ask: &str) -> CandidateDraft {
         result: "结果".into(),
         fp: candidate_fingerprint(session_key, ask, ANSWERED),
         scope: None,
+        kind: CandidateKind::QuestionAnswer,
     }
 }
 
@@ -456,6 +457,7 @@ fn pack_candidate(id: &str) -> CorrectionCandidate {
             result: "全部通过".into(),
             fp: "fp".into(),
             scope: None,
+            kind: CandidateKind::QuestionAnswer,
         },
     }
 }
@@ -950,4 +952,142 @@ fn test_answered_prefixes_match_interactive_contract() {
         answered_reply("User task failed: {}").is_none(),
         "非答复形态不误抓"
     );
+}
+
+// ── v2 文本纠正形状（2026-11-27，真实数据实测后补）────────────────────
+
+#[test]
+fn test_scan_correction_shape_extracts_candidate() {
+    let rows = [
+        user_row("帮我确认接口数量"),
+        plain_assistant_row("已确认，共 48 个 Native 接口，全部测试通过。"),
+        user_row(
+            "不对，接口应该是49个 Native 接口，除此之外有12个云端接口做受控 mock。你需要重新核对。",
+        ),
+        plain_assistant_row("收到，已按 49 个 Native + 12 个云端 mock 重新核对，结论已修正。"),
+    ];
+    let drafts = scan_chat_log("sdk_1", None, &log_bytes(&rows));
+    assert_eq!(drafts.len(), 1, "只有纠正行触发：{} 条", drafts.len());
+    let d = &drafts[0];
+    assert_eq!(d.kind, CandidateKind::Correction);
+    assert_eq!(
+        d.ask, "已确认，共 48 个 Native 接口，全部测试通过。",
+        "ask = 此前最近 assistant 尾段（被纠正的上下文）"
+    );
+    assert!(
+        d.reply.contains("49个"),
+        "reply = 用户纠正原文：{}",
+        d.reply
+    );
+    assert!(
+        d.result.contains("重新核对"),
+        "result = 纠正后第一条 assistant 尾段：{}",
+        d.result
+    );
+    assert_eq!(d.goal, "帮我确认接口数量");
+    assert!(!d.fp.is_empty());
+}
+
+#[test]
+fn test_scan_correction_without_context_and_without_reply() {
+    // 首行纠正：无前文 = 空 ask；会话末尾纠正：无后续 = 空 result（诚实缺省）
+    let rows = [user_row("不对，这个方向从一开始就错了，应该走 BLE。")];
+    let d = &scan_chat_log("s", None, &log_bytes(&rows))[0];
+    assert_eq!(d.kind, CandidateKind::Correction);
+    assert!(d.ask.is_empty(), "无前文 = 空 ask");
+    assert!(d.result.is_empty(), "无后续 = 空 result");
+    assert_eq!(d.goal, d.reply, "首行纠正同时是任务目标");
+}
+
+#[test]
+fn test_scan_correction_skips_injected_and_plain() {
+    // 注入行（system_notice / steer）不触发；普通指令与短应答（无纠正词）不触发
+    let steer_row = serde_json::json!({
+        "role": "user",
+        "content": "不对，你要重新想（steer 注入行不触发）",
+        "timestamp": "2026-11-24T10:01:00+08:00",
+        "steer": true,
+    })
+    .to_string();
+    let rows = [
+        system_notice_row("（不对——system_notice 注入行不触发）"),
+        steer_row,
+        user_row("请把测试跑完并汇总结果给我。"),
+        user_row("好的，继续。"),
+        plain_assistant_row("好的。"),
+    ];
+    assert!(
+        scan_chat_log("s", None, &log_bytes(&rows)).is_empty(),
+        "注入行/普通指令/短应答全不触发"
+    );
+}
+
+#[test]
+fn test_correction_marker_table_drift_lock() {
+    // 词表漂移锁：真实数据五条纠正样本（forge-eval 实测提取）必须全部
+    // 命中（宁滥勿缺的「勿缺」半边）；普通指令/卡片应答文本不命中。
+    for sample in [
+        "不对，接口应该是49个 Native 接口。你需要重新核对。",
+        "你不需要管那么多，我让你做测试。我说的是真机测试，懂了么",
+        "所以这个你先确认是不是你测试的问题。",
+        ".104 设备，你就别用了，你用当前设备做 windows 吧。",
+        "为什么你前面就测了48个接口，这是不正确的",
+    ] {
+        assert!(correction_marker_hit(sample), "真实纠正样本漏检：{sample}");
+    }
+    for normal in [
+        "帮我跑测试并修复失败",
+        "User selected: 需要",
+        "好的，继续。",
+        "请把测试跑完并汇总结果给我。",
+    ] {
+        assert!(!correction_marker_hit(normal), "普通文本误检：{normal}");
+    }
+}
+
+#[test]
+fn test_pack_renders_both_shape_labels() {
+    let mut corr = pack_candidate("cand-20261127-002");
+    corr.draft.kind = CandidateKind::Correction;
+    corr.draft.ask = "已确认共 48 个接口".into();
+    corr.draft.reply = "不对，应该是 49 个".into();
+    let cands = vec![pack_candidate("cand-20261127-001"), corr];
+    let pack = build_evidence_pack(None, &cands, &[], None, None, &[], None, None);
+    assert!(
+        pack.text.contains("[2026-11-24T10:05:00+08:00 提问应答]"),
+        "应答形状标签进包：{}",
+        pack.text
+    );
+    assert!(pack.text.contains("- agent 问：需要授权吗？"));
+    assert!(
+        pack.text.contains("[2026-11-24T10:05:00+08:00 文本纠正]"),
+        "纠正形状标签进包"
+    );
+    assert!(pack.text.contains("- 用户纠正：不对，应该是 49 个"));
+    assert!(pack.text.contains("- 纠正后回应：全部通过"));
+    assert_eq!(pack.candidate_count, 2, "形状不影响装箱记账");
+}
+
+#[test]
+fn test_ledger_old_row_without_kind_backcompat() {
+    // 旧台账行（无 kind 字段）反序列化 = QuestionAnswer（serde default
+    // 零迁移）；新行 kind 按 snake_case 往返。
+    let old_row = r#"{"id":"cand-20261124-001","session_key":"web_1","ts":"2026-11-24T10:05:00+08:00","ask":"问","reply":"User selected: 需要","goal":"目标","result":"结果","fp":"abc"}"#;
+    let c: CorrectionCandidate = serde_json::from_str(old_row).unwrap();
+    assert_eq!(c.draft.kind, CandidateKind::QuestionAnswer);
+    let row = CorrectionCandidate {
+        id: "x".into(),
+        draft: sample_draft("s1", "问"),
+    };
+    let back: CorrectionCandidate =
+        serde_json::from_str(&serde_json::to_string(&row).unwrap()).unwrap();
+    assert_eq!(back.draft.kind, CandidateKind::QuestionAnswer);
+    let mut corr = sample_draft("s1", "问");
+    corr.kind = CandidateKind::Correction;
+    let jc = serde_json::to_string(&CorrectionCandidate {
+        id: "y".into(),
+        draft: corr,
+    })
+    .unwrap();
+    assert!(jc.contains("\"correction\""), "snake_case 序列化：{jc}");
 }

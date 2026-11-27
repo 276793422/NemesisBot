@@ -3,6 +3,12 @@
 //! 三态诚实（Unavailable 原因透传）/ 空 sid → legacy 键 / sid 清洗 /
 //! PerLoop 路由缺席统一 Unavailable。
 //!
+//! `session.queue_remove`（2026-11-27 等待队列逐条删除）契约：真实
+//! AgentLoop + 播种双队列 → 身份对取自 peek（前端同款）→ happy path 双臂
+//! （follow_up 中段 + steer）/ 身份过期 Mismatch 诚实拒绝 / 越界
+//! NotFound / 未知 queue 值 loud 报错 / 无 loop 透传 resolver 错误 /
+//! commands() 清单登记。删除键不需要 registry（headless 形态可删）。
+//!
 //! registry 是进程级静态槽——全部用例持 [`SESSION_RESOURCES_TEST_LOCK`]
 //! 串行；每用例自带 install（下一用例覆盖槽值），槽残留不出测试进程
 //! （生产装配在 gateway，测试路径无人触碰）。
@@ -260,4 +266,304 @@ async fn unknown_cmd_rejected() {
         .await
         .expect_err("unknown cmd must error");
     assert!(err.contains("unknown session command"), "err={err}");
+}
+
+// ---- queue_remove（2026-11-27 等待队列逐条删除）契约 ----
+
+use nemesis_agent::inbox::QueuedMessage;
+use nemesis_agent::r#loop::{AgentLoop, LlmProvider, LlmResponse};
+use nemesis_agent::types::AgentConfig;
+
+struct QrNoopProvider;
+
+#[async_trait::async_trait]
+impl LlmProvider for QrNoopProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "ok".to_string(),
+            tool_calls: vec![],
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// queue_remove 不读 workspace（无 require_workspace 闸），None 即可。
+fn qr_ctx(al: Option<Arc<AgentLoop>>) -> RequestContext {
+    let state = Arc::new(AppState {
+        cors_manager: None,
+        events_snapshot: None,
+        auth_token: String::new(),
+        session_count: Arc::new(AtomicUsize::new(0)),
+        workspace: None,
+        home: None,
+        version: "test".to_string(),
+        start_time: Instant::now(),
+        model_name: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
+        event_hub: Arc::new(EventHub::new()),
+        running: Arc::new(AtomicBool::new(true)),
+        session_manager: Arc::new(SessionManager::with_default_timeout()),
+        inbound_tx: None,
+        streaming_provider: None,
+        ws_router: None,
+        agent_service: None,
+        data_store: None,
+        memory_manager: None,
+        forge: None,
+        agent_loop: Arc::new(parking_lot::RwLock::new(al)),
+        cluster: None,
+        quic_relay: None,
+        mail_plugin: None,
+        cluster_service: None,
+        cluster_log_dir: None,
+        workflow_engine: None,
+        #[cfg(feature = "workflow")]
+        chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(feature = "workflow")]
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
+        internal_cmd_tx: None,
+        estop: None,
+        estop_audit: None,
+        background_registry: None,
+        signature_verify: None,
+        skills_install_gate: None,
+        session_stats: None,
+        cron: None,
+        board: None,
+    });
+    RequestContext {
+        session_id: "qr".to_string(),
+        chat_id: "qr".to_string(),
+        workspace: None,
+        home: None,
+        state,
+        auth_method: crate::session::AuthMethod::default(),
+    }
+}
+
+/// 播种条目（timestamp 显式可辨——身份复核的验真半边靠它）。
+fn qr_seeded(session: &str, content: &str, ts: &str) -> QueuedMessage {
+    QueuedMessage {
+        msg: nemesis_types::channel::InboundMessage::user_ingress(
+            "web".to_string(),
+            "tester".to_string(),
+            "c1".to_string(),
+            content.to_string(),
+        )
+        .with_session_key(session.to_string())
+        .with_metadata_map(Default::default()),
+        timestamp: ts.to_string(),
+        priority: nemesis_agent::inbox::MessagePriority::Normal,
+    }
+}
+
+async fn qr_call(
+    ctx: &RequestContext,
+    data: serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    ResourcesHandler
+        .handle_cmd("queue_remove", Some(data), ctx)
+        .await
+}
+
+/// happy path 双臂：follow_up 中段摘除（序保持）+ steer 臂同语义；
+/// 删除键不需要 registry（先置 None——headless 形态同源可删）。
+#[tokio::test]
+async fn queue_remove_removes_follow_up_then_steer_arm() {
+    let _g = SESSION_RESOURCES_TEST_LOCK.lock().await;
+    set_session_resources_for_test(None);
+    let lp = Arc::new(AgentLoop::new(
+        Box::new(QrNoopProvider),
+        AgentConfig::default(),
+    ));
+    let key = "agent:main:session:qr-1";
+    {
+        let inbox = lp.inbox_handle();
+        // `!` 前缀 → next_step（steer）；无前缀 → next_turn（follow_up）。
+        inbox.enqueue(key, qr_seeded(key, "! 插队甲", "t-s0"));
+        inbox.enqueue(key, qr_seeded(key, "排队甲", "t-f0"));
+        inbox.enqueue(key, qr_seeded(key, "排队乙", "t-f1"));
+    }
+    let ctx = qr_ctx(Some(lp.clone()));
+
+    // 身份对取自 peek（前端同款流程：快照行原样回传）。
+    let snap = lp.inbox_handle().peek(key);
+    let victim = &snap.follow_up[1];
+    let resp = qr_call(
+        &ctx,
+        serde_json::json!({
+            "session_id": "qr-1",
+            "queue": "follow_up",
+            "index": 1,
+            "sender_id": victim.sender_id,
+            "timestamp": victim.timestamp,
+        }),
+    )
+    .await
+    .expect("ok")
+    .expect("payload");
+    assert_eq!(resp["removed"], true);
+    assert_eq!(resp["session_key"], serde_json::json!(key));
+    assert_eq!(resp["queue"], serde_json::json!("follow_up"));
+    assert_eq!(resp["follow_up"], 1);
+    assert_eq!(resp["steer"], 1);
+
+    // 剩下的正是排队甲（中段摘除序保持）。
+    let after = lp.inbox_handle().peek(key);
+    assert_eq!(
+        after
+            .follow_up
+            .iter()
+            .map(|e| e.content.as_str())
+            .collect::<Vec<_>>(),
+        ["排队甲"]
+    );
+
+    // steer 臂同语义。
+    let v = &after.steer[0];
+    let resp = qr_call(
+        &ctx,
+        serde_json::json!({
+            "session_id": "qr-1",
+            "queue": "steer",
+            "index": 0,
+            "sender_id": v.sender_id,
+            "timestamp": v.timestamp,
+        }),
+    )
+    .await
+    .expect("ok")
+    .expect("payload");
+    assert_eq!(resp["queue"], serde_json::json!("steer"));
+    assert_eq!(resp["steer"], 0);
+    assert_eq!(resp["follow_up"], 1);
+}
+
+/// 身份过期（peek→delete 窗口内队列已变化）诚实拒绝，队列零副作用。
+#[tokio::test]
+async fn queue_remove_mismatch_honest_refusal() {
+    let _g = SESSION_RESOURCES_TEST_LOCK.lock().await;
+    set_session_resources_for_test(None);
+    let lp = Arc::new(AgentLoop::new(
+        Box::new(QrNoopProvider),
+        AgentConfig::default(),
+    ));
+    let key = "agent:main:session:qr-2";
+    {
+        let inbox = lp.inbox_handle();
+        inbox.enqueue(key, qr_seeded(key, "甲", "t-a"));
+        inbox.enqueue(key, qr_seeded(key, "乙", "t-b"));
+    }
+    let ctx = qr_ctx(Some(lp.clone()));
+    let err = qr_call(
+        &ctx,
+        serde_json::json!({
+            "session_id": "qr-2",
+            "queue": "follow_up",
+            "index": 0,
+            "sender_id": "tester",
+            "timestamp": "stale-ts",
+        }),
+    )
+    .await
+    .expect_err("stale identity must refuse");
+    assert!(err.contains("队列已变化"), "err={err}");
+    let snap = lp.inbox_handle().peek(key);
+    assert_eq!(snap.follow_up.len(), 2, "拒绝路径零副作用");
+}
+
+/// 越界下标 = NotFound 文案（已被消费/清空同臂）。
+#[tokio::test]
+async fn queue_remove_not_found_out_of_range() {
+    let _g = SESSION_RESOURCES_TEST_LOCK.lock().await;
+    set_session_resources_for_test(None);
+    let lp = Arc::new(AgentLoop::new(
+        Box::new(QrNoopProvider),
+        AgentConfig::default(),
+    ));
+    let key = "agent:main:session:qr-3";
+    lp.inbox_handle()
+        .enqueue(key, qr_seeded(key, "唯一", "t-0"));
+    let ctx = qr_ctx(Some(lp));
+    let err = qr_call(
+        &ctx,
+        serde_json::json!({
+            "session_id": "qr-3",
+            "queue": "follow_up",
+            "index": 7,
+            "sender_id": "tester",
+            "timestamp": "t-0",
+        }),
+    )
+    .await
+    .expect_err("out-of-range must error");
+    assert!(err.contains("已不在队列"), "err={err}");
+}
+
+/// 未知 queue 值 loud 报错（不静默纠偏）。
+#[tokio::test]
+async fn queue_remove_unknown_queue_value_loud() {
+    let _g = SESSION_RESOURCES_TEST_LOCK.lock().await;
+    set_session_resources_for_test(None);
+    let ctx = qr_ctx(Some(Arc::new(AgentLoop::new(
+        Box::new(QrNoopProvider),
+        AgentConfig::default(),
+    ))));
+    let err = qr_call(
+        &ctx,
+        serde_json::json!({
+            "session_id": "qr-x",
+            "queue": "nope",
+            "index": 0,
+            "sender_id": "",
+            "timestamp": "",
+        }),
+    )
+    .await
+    .expect_err("unknown queue must error");
+    assert!(err.contains("unknown queue"), "err={err}");
+}
+
+/// 无 loop → resolver 错误透传（resolve_session_loop 单一裁决点语义）。
+#[tokio::test]
+async fn queue_remove_without_loop_propagates() {
+    let _g = SESSION_RESOURCES_TEST_LOCK.lock().await;
+    set_session_resources_for_test(None);
+    let ctx = qr_ctx(None);
+    let err = qr_call(
+        &ctx,
+        serde_json::json!({
+            "session_id": "qr-dead",
+            "queue": "follow_up",
+            "index": 0,
+            "sender_id": "tester",
+            "timestamp": "t",
+        }),
+    )
+    .await
+    .expect_err("no loop must error");
+    assert_eq!(err, "agent loop not running");
+}
+
+#[test]
+fn queue_remove_registered_in_commands_list() {
+    // 注册表纪律：清单外命令在 debug 构建会 warn 漂移——契约测试兜底。
+    assert!(ResourcesHandler.commands().contains(&"queue_remove"));
 }

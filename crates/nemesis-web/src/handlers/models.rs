@@ -739,10 +739,12 @@ impl ModelsHandler {
                 .get_mut("model_list")
                 .and_then(|v| v.as_array_mut())
                 .ok_or("config.json has no model_list")?;
-            let idx = list
-                .iter()
-                .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name.as_str()))
+            // 三层引用查找（entry_index_by_ref 单一真相源）：传别名或模型串
+            // 皆可命中；克隆本体按下标取（list[idx].clone()，无别名条目同样
+            // 可克隆）；回显身份 = entry_ref_identity（无别名条目回显模型串）。
+            let idx = entry_index_by_ref(list, name.as_str())
                 .ok_or_else(|| format!("model '{}' not found", name))?;
+            let src_alias = entry_ref_identity(&list[idx]);
             if list
                 .iter()
                 .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(new_name))
@@ -756,7 +758,7 @@ impl ModelsHandler {
             }
             list.push(entry);
             Ok(Some(
-                serde_json::json!({ "copied": true, "name": name, "new_name": new_name }),
+                serde_json::json!({ "copied": true, "name": src_alias, "new_name": new_name }),
             ))
         })
     }
@@ -772,9 +774,10 @@ impl ModelsHandler {
     /// RMW 一并改 `model` 字段。协议/流式是独立字段不跟动（同供应商场景
     /// 正确；跨协议在属性编辑器改）。
     ///
-    /// 引用匹配走 `ref_owner`（resolver 同序归属判定）：精确 model_name
-    /// 命中压倒模型串/别名软匹配——复制体共享模型串时认领不了指向原始
-    /// 条目名的引用（偷默认指针/假热切实障的闸门）。改到
+    /// 引用匹配按下标归属（`is_owner`：引用串与被改条目各经
+    /// `entry_index_by_ref` 同源解析、比对解析出的下标——与 resolver
+    /// 「运行时解析到谁」同语义；`ref_owner` 按名归属只留给展示面
+    /// 默认徽标）。改到
     /// **当前默认模型** =
     /// 允许 + 热切（方案 B：「保证用户能用，改错了是
     /// 用户的问题，严格执行用户想法」）：defaults.llm 已在 RMW 里同步成
@@ -816,48 +819,34 @@ impl ModelsHandler {
             nemesis_utils::sanitize::validate_model_entry_name(nm)?;
         }
         let final_cfg = super::config::update_raw_config(home, |cfg| {
-            // 第一趟（只读）：存在性、重名、引用归属普查。model_name 的可变
-            // 写借用与 pointer_mut（引用同步）借不到一起——两趟分离（锁在
-            // update_raw_config，两趟间无并发）。
-            let list_ro = cfg
+            // list_ro 取 **owned 克隆**（条目小数组）：归属普查闭包 is_owner
+            // 要活到第二趟写阶段（pointer_mut 引用同步期间逐引用判定），
+            // 借 cfg 的不可变借用与 pointer_mut 借不到一起。
+            let list_ro: Vec<serde_json::Value> = cfg
                 .get("model_list")
                 .and_then(|v| v.as_array())
-                .ok_or("config.json has no model_list")?;
-            if !list_ro
-                .iter()
-                .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name.as_str()))
-            {
-                return Err(format!("model '{}' not found", name));
-            }
-            // 重名检查排除自身（只换 model 不改显示名时 new_name == name，
-            // 命中的是自己条目，不算冲突）。
-            if new_name != name
-                && list_ro
-                    .iter()
-                    .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(new_name))
-            {
+                .ok_or("config.json has no model_list")?
+                .clone();
+            // 三层引用查找（entry_index_by_ref 单一真相源）：传别名或模型串
+            // 皆可命中；回显身份走 entry_ref_identity（无别名条目回显模型串）。
+            let idx = entry_index_by_ref(&list_ro, name.as_str())
+                .ok_or_else(|| format!("model '{}' not found", name))?;
+            let old_alias = entry_ref_identity(&list_ro[idx]);
+            // 重名检查排除自身（按下标排除——引用串可能是模型串/尾段命中，
+            // 字符串比较排除不了「new_name == 命中条目现别名」的自改名形态）。
+            if list_ro.iter().enumerate().any(|(i, m)| {
+                i != idx && m.get("model_name").and_then(|v| v.as_str()) == Some(new_name)
+            }) {
                 return Err(format!("model '{}' already exists", new_name));
             }
-            // 引用归属普查（ref_owner，resolver 同序）：每处引用独立判「指向
-            // 的是不是被改名条目」——精确 model_name 命中压倒模型串/别名软
-            // 匹配，复制体共享模型串时认领不了指向原始条目名的引用（否则
-            // defaults.llm 会被偷给复制体 + 凭空热切， 实障）。
-            let pairs: Vec<(String, String)> = list_ro
-                .iter()
-                .map(|m| {
-                    (
-                        m.get("model_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        m.get("model")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    )
-                })
-                .collect();
-            let is_owner = |v: &str| ref_owner(&pairs, v).as_deref() == Some(name.as_str());
+            // 引用归属普查（entry_index_by_ref 单一真相源，resolver 同序）：
+            // 每处引用独立判「指向的是不是被改名条目」——**按下标比对**
+            //（引用串经同源三层查找解析出的下标 == 改名主体下标；空引用不
+            // 认领）。无别名条目的归属名都是 ""，按名比对（ref_owner 旧法）
+            // 会把其他无别名条目的引用偷给被改名条目；复制体共享模型串时
+            // 精确名命中压倒软匹配——认领不了指向复制体的引用（否则
+            // defaults.llm 会被偷给复制体 + 凭空热切，实障）。
+            let is_owner = |v: &str| !v.is_empty() && entry_index_by_ref(&list_ro, v) == Some(idx);
             let old_llm = cfg
                 .pointer("/agents/defaults/llm")
                 .and_then(|v| v.as_str())
@@ -883,21 +872,20 @@ impl ModelsHandler {
                 .and_then(|v| v.as_array_mut())
                 .ok_or("config.json has no model_list")?;
             let entry = list
-                .iter_mut()
-                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name.as_str()))
+                .get_mut(idx)
                 .ok_or_else(|| format!("model '{}' not found", name))?;
             entry["model_name"] = serde_json::Value::String(new_name.to_string());
             // 可选换 LLM ID：同趟落盘（热切从 config 重解析，一并生效）。
             if let Some(nm) = &new_model {
                 entry["model"] = serde_json::Value::String(nm.clone());
             }
-            Ok((was_default, cfg.clone()))
+            Ok((was_default, old_alias, cfg.clone()))
         })?;
 
         // 方案 B 热切（was_default 由闭包带出）：改名的是当前默认模型 →
         // set_default 同一 chokepoint（展示三字段 + 统一默认槽 + 主 loop +
         // Forge），项目 loop 经 bridge 同步。
-        let (was_default, final_cfg) = final_cfg;
+        let (was_default, old_alias, final_cfg) = final_cfg;
         if was_default {
             Self::apply_runtime_swap(&final_cfg, new_name, ctx)?;
             if let Some(bridge) = crate::handlers::projects::projects_bridge() {
@@ -907,7 +895,7 @@ impl ModelsHandler {
 
         Ok(Some(serde_json::json!({
             "renamed": true,
-            "name": name,
+            "name": old_alias,
             "new_name": new_name,
             "model_changed": new_model.is_some(),
         })))
@@ -920,10 +908,7 @@ impl ModelsHandler {
         super::config::update_raw_config(home, |cfg| {
             // 守卫：禁止删除当前默认模型。否则 agents.defaults.llm 变成悬空引用，
             // 下次启动 get_effective_llm → resolve_model_config 找不到模型直接失败。
-            // 归属判定与 list() 同源（ref_owner，resolver 同序）：defaults.llm
-            // 为空沿用 list[0] 位置兜底；复制体共享模型串时精确名命中压倒软
-            // 匹配——删的不是运行时默认就放行（隐患修复，此前
-            // first_name 位置臂无条件生效，默认在别处时第一条也删不掉）。
+            // 归属判定与摘除机制见闭包内注释（按下标比对 + remove(idx)）。
             let default_llm = cfg
                 .get("agents")
                 .and_then(|a| a.get("defaults"))
@@ -935,51 +920,35 @@ impl ModelsHandler {
                 .get_mut("model_list")
                 .and_then(|v| v.as_array_mut())
                 .ok_or("config.json has no model_list")?;
-            let first_name = list
-                .first()
-                .and_then(|m| m.get("model_name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let pairs: Vec<(String, String)> = list
-                .iter()
-                .map(|m| {
-                    (
-                        m.get("model_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        m.get("model")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    )
-                })
-                .collect();
-            let default_owner = ref_owner(&pairs, &default_llm);
-            if list
-                .iter()
-                .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
-            {
-                let is_default = if default_llm.is_empty() {
-                    name == first_name
-                } else {
-                    default_owner.as_deref() == Some(name)
-                };
-                if is_default {
-                    return Err(format!(
-                        "cannot delete default model '{}'. Switch the default to another model first.",
-                        name
-                    ));
-                }
+            // 三层引用查找（entry_index_by_ref 单一真相源）：传别名或模型串
+            // 皆可命中。默认守卫**按下标**比对（default_llm 经同一查找解析
+            // 出的下标 == 命中下标 = 删的是运行时默认；空引用不参与——无
+            // 别名条目归属名都是 ""，按名比对会误拦其他无别名条目）；
+            // defaults.llm 为空沿用 list[0] 位置兜底（idx == 0）；复制体共享
+            // 模型串时精确名命中压倒软匹配——删的不是运行时默认就放行
+            //（隐患修复，此前 first_name 位置臂无条件生效，默认在别处时
+            // 第一条也删不掉）。移除按命中下标（remove(idx)）——按别名
+            // retain 摘不掉无别名条目（缺键 get=None），还会把同别名复制
+            // 条目一并误删。
+            let idx = entry_index_by_ref(list, name)
+                .ok_or_else(|| format!("model '{}' not found", name))?;
+            let identity = entry_ref_identity(&list[idx]);
+            let is_default = if default_llm.is_empty() {
+                idx == 0
+            } else {
+                entry_index_by_ref(list, &default_llm) == Some(idx)
+            };
+            if is_default {
+                return Err(format!(
+                    "cannot delete default model '{}'. Switch the default to another model first.",
+                    identity
+                ));
             }
 
-            let before = list.len();
-            list.retain(|m| m.get("model_name").and_then(|v| v.as_str()) != Some(name));
-            if list.len() == before {
-                return Err(format!("model '{}' not found", name));
-            }
-            Ok(Some(serde_json::json!({ "deleted": true, "name": name })))
+            list.remove(idx);
+            Ok(Some(
+                serde_json::json!({ "deleted": true, "name": identity }),
+            ))
         })
     }
 
@@ -997,10 +966,14 @@ impl ModelsHandler {
                 .get_mut("model_list")
                 .and_then(|v| v.as_array_mut())
                 .ok_or("config.json has no model_list")?;
-            let idx = list
-                .iter()
-                .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+            // 三层引用查找（entry_index_by_ref 单一真相源）：传别名或模型串
+            // 皆可命中；默认槽写入/热切/回显一律用条目对外引用身份
+            //（entry_ref_identity：别名优先，无别名条目回退模型串——raw ""
+            // 落盘 defaults.llm 是配置损坏，且空串 resolve 失败会让
+            // apply_runtime_swap 的 `?` 在写盘后传播成半状态）。
+            let idx = entry_index_by_ref(list, name)
                 .ok_or_else(|| format!("model '{}' not found", name))?;
+            let alias = entry_ref_identity(&list[idx]);
             // 集群专业职能框架 守卫②：图像协议条目唯一消费点 = generate_image
             // 工具，不能坐上 agent 默认对话模型槽（写盘前 loud 拒绝，不产生半状态）。
             {
@@ -1045,18 +1018,18 @@ impl ModelsHandler {
                 let defaults_obj = defaults
                     .as_object_mut()
                     .ok_or("config.json agents.defaults is not an object")?;
-                defaults_obj.insert(
-                    "llm".to_string(),
-                    serde_json::Value::String(name.to_string()),
-                );
+                defaults_obj.insert("llm".to_string(), serde_json::Value::String(alias.clone()));
             }
-            Ok(cfg.clone())
+            Ok((alias, cfg.clone()))
         })?;
 
         // Runtime provider swap so the change takes effect immediately.
         // 唯一 chokepoint（方案A）：展示三字段 + 统一默认槽 +
-        // 主 loop + Forge 全在 apply_runtime_swap 内。
-        Self::apply_runtime_swap(&final_cfg, name, ctx)?;
+        // 主 loop + Forge 全在 apply_runtime_swap 内。热切传条目对外引用
+        // 身份（entry_ref_identity：别名优先，无别名条目回退模型串——
+        // canonical_swap_params → resolve 精确层可解析，不吃推断臂）。
+        let (alias, final_cfg) = final_cfg;
+        Self::apply_runtime_swap(&final_cfg, &alias, ctx)?;
 
         // 模型热切联动（BUG）：项目 loop 不经上面的 agent_loop
         // 槽——gateway 装配期一次性 spawn 后永不再读 config。通知 bridge 用
@@ -1067,7 +1040,7 @@ impl ModelsHandler {
         }
 
         Ok(Some(
-            serde_json::json!({ "set_default": true, "name": name }),
+            serde_json::json!({ "set_default": true, "name": alias }),
         ))
     }
 
@@ -1452,15 +1425,12 @@ impl ModelsHandler {
             }
         };
 
-        // 锁在 update_raw_config 内；闭包返回 (是否默认条目, 热切用 model_name,
-        // 落盘后的配置快照)。
-        let (entry_is_default, entry_model_name, final_cfg) =
+        // 锁在 update_raw_config 内；闭包返回 (是否默认条目, 热切用引用身份,
+        // 落盘后的配置快照)。热切身份 = entry_ref_identity（别名优先，无别名
+        // 条目回退模型串）——空串 resolve 失败会让 apply_runtime_swap 的 `?`
+        // 在写盘后传播成半状态。
+        let (entry_is_default, entry_swap_ref, final_cfg) =
             super::config::update_raw_config(home, |cfg| {
-                // 默认判定（改 protocol/proxy/stream 时的热切条件）：引用归属
-                // 判定走 ref_owner（resolver 同序），权威是 agents.defaults.llm
-                // （get_effective_llm），不含 list[0] 位置臂。复制体共享模型串时
-                // 精确名命中压倒软匹配——改的不是运行时默认就绝不假热切、不
-                // 造成内存/磁盘默认分叉（隐患修复）。
                 let default_llm = cfg
                     .pointer("/agents/defaults/llm")
                     .and_then(|v| v.as_str())
@@ -1470,76 +1440,60 @@ impl ModelsHandler {
                     .get_mut("model_list")
                     .and_then(|v| v.as_array_mut())
                     .ok_or("config.json has no model_list")?;
-                // 归属普查借用在 mut 循环之前完成（pairs 的不可变借用随
-                // collect 结束，不与下面的 iter_mut 冲突）。
-                let pairs: Vec<(String, String)> = list
-                    .iter()
-                    .map(|m| {
-                        (
-                            m.get("model_name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            m.get("model")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
+                // 三层引用查找（entry_index_by_ref 单一真相源，替换此前内联
+                // model_name||model 双键——补齐尾段软匹配层，与全文件条目
+                // 查找口径一致）。热切/回显用命中条目的对外引用身份（而非
+                // 调用方 name）：name 可能是模型串命中，裸串走 resolve 推断
+                // 臂会拿到不带本条目 key 的合成 resolution，热切会造出坏
+                // provider。
+                let idx = entry_index_by_ref(list, name.as_str())
+                    .ok_or_else(|| format!("model '{name}' not found"))?;
+                // 默认判定（改 protocol/proxy/stream/api_base 时的热切条件）：
+                // **按下标**比对（default_llm 经同一查找解析出的下标 == 命中
+                // 下标 = 改的是运行时默认；空引用不参与——无别名条目归属名
+                // 都是 ""，按名比对会把其他无别名条目误判成默认而假热切）。
+                // 权威是 agents.defaults.llm（get_effective_llm），不含
+                // list[0] 位置臂；复制体共享模型串时精确名命中压倒软匹配——
+                // 改的不是运行时默认就绝不假热切、不造成内存/磁盘默认分叉
+                //（隐患修复）。
+                let entry_is_default =
+                    !default_llm.is_empty() && entry_index_by_ref(list, &default_llm) == Some(idx);
+                let entry_swap_ref = entry_ref_identity(&list[idx]);
+                {
+                    // 守卫②b（原地转换面，2026-11-15）：protocol 在
+                    // provider 构造期消费，图像协议条目唯一消费点 =
+                    // generate_image 工具——**当前默认条目**经属性编辑
+                    // 原地转成 images-openai 与 set_default 守卫②同罪
+                    // （写盘前 loud 拒绝，不产生「盘上默认条目非法、
+                    // 重启 factory 拒绝 → NullProvider 降级」半状态）。
+                    // 非默认条目放行——图像条目的正常创建路径就是
+                    // 属性编辑 / 带协议 add。
+                    let entry = list
+                        .get_mut(idx)
+                        .ok_or_else(|| format!("model '{name}' not found"))?;
+                    if field == "protocol"
+                        && entry_is_default
+                        && nemesis_types::capability::is_image_protocol(
+                            normalized.as_str().unwrap_or(""),
                         )
-                    })
-                    .collect();
-                let default_owner = ref_owner(&pairs, &default_llm);
-                let mut entry_is_default = false;
-                // 热切用命中条目的 model_name（而非调用方 name）：name 可能是 model
-                // 串命中，无斜杠时 resolve_model_config 会走推断臂拿到不带本条目
-                // key 的合成 resolution，热切会造出坏 provider。
-                let mut entry_model_name = String::new();
-                let mut updated = false;
-                for entry in list.iter_mut() {
-                    let model_name = entry
-                        .get("model_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                    if model_name == name || model == name {
-                        entry_is_default = default_owner.as_deref() == Some(model_name);
-                        entry_model_name = model_name.to_string();
-                        // 守卫②b（原地转换面，2026-11-15）：protocol 在
-                        // provider 构造期消费，图像协议条目唯一消费点 =
-                        // generate_image 工具——**当前默认条目**经属性编辑
-                        // 原地转成 images-openai 与 set_default 守卫②同罪
-                        // （写盘前 loud 拒绝，不产生「盘上默认条目非法、
-                        // 重启 factory 拒绝 → NullProvider 降级」半状态）。
-                        // 非默认条目放行——图像条目的正常创建路径就是
-                        // 属性编辑 / 带协议 add。
-                        if field == "protocol"
-                            && entry_is_default
-                            && nemesis_types::capability::is_image_protocol(
-                                normalized.as_str().unwrap_or(""),
-                            )
-                        {
-                            return Err(format!(
-                                "'{name}' 是当前默认对话模型，不能原地改为 images-openai \
-                                 图像协议（仅供 generate_image 工具消费）——\
-                                 请先把默认模型切到其他条目再改"
-                            ));
+                    {
+                        return Err(format!(
+                            "'{name}' 是当前默认对话模型，不能原地改为 images-openai \
+                             图像协议（仅供 generate_image 工具消费）——\
+                             请先把默认模型切到其他条目再改"
+                        ));
+                    }
+                    // Null 哨兵 = 清除：移键落盘（写 Null 会留 `"key": null`
+                    // 字节垃圾；resolver 对缺席本就按 None 处理）。
+                    if normalized.is_null() {
+                        if let Some(obj) = entry.as_object_mut() {
+                            obj.remove(field.as_str());
                         }
-                        // Null 哨兵 = 清除：移键落盘（写 Null 会留 `"key": null`
-                        // 字节垃圾；resolver 对缺席本就按 None 处理）。
-                        if normalized.is_null() {
-                            if let Some(obj) = entry.as_object_mut() {
-                                obj.remove(field.as_str());
-                            }
-                        } else {
-                            entry[field.as_str()] = normalized.clone();
-                        }
-                        updated = true;
-                        break;
+                    } else {
+                        entry[field.as_str()] = normalized.clone();
                     }
                 }
-                if !updated {
-                    return Err(format!("model '{name}' not found"));
-                }
-                Ok((entry_is_default, entry_model_name, cfg.clone()))
+                Ok((entry_is_default, entry_swap_ref, cfg.clone()))
             })?;
 
         // 统一默认槽联动（方案A）：protocol/proxy/stream/api_base 在
@@ -1552,7 +1506,7 @@ impl ModelsHandler {
         if matches!(field.as_str(), "protocol" | "proxy" | "stream" | "api_base")
             && entry_is_default
         {
-            Self::apply_runtime_swap(&final_cfg, &entry_model_name, ctx)?;
+            Self::apply_runtime_swap(&final_cfg, &entry_swap_ref, ctx)?;
             // 模型热切联动（BUG 同族）：update_field 改默认模型
             // 的构造期消费字段时，项目 loop 同样要经 bridge 同步——
             // set_default / rename 两处同款（漏接 = 项目 loop 保持旧
@@ -1767,17 +1721,22 @@ pub async fn probe_model_entry(
     name: &str,
     depth: ProbeDepth,
 ) -> Result<serde_json::Value, String> {
-    // 条目必须按 model_name 精确存在（防 resolve 推断臂造出假条目测试）。
+    // 条目必须真实存在（entry_index_by_ref 三层查找——传别名或模型串皆可
+    // 命中；防 resolve 推断臂造出假条目测试）。命中后下传身份 =
+    // entry_ref_identity（见下方注释），canonical_swap_params 精确层 +
+    // 各分支回显身份一致。
     let raw_cfg = super::config::read_raw_config(home)?;
-    let entry = raw_cfg
+    let list = raw_cfg
         .get("model_list")
         .and_then(|v| v.as_array())
-        .and_then(|list| {
-            list.iter()
-                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
-        })
         .ok_or_else(|| format!("model '{}' not found", name))?;
-    let proto = entry
+    let idx =
+        entry_index_by_ref(list, name).ok_or_else(|| format!("model '{}' not found", name))?;
+    // 下传身份 = entry_ref_identity（别名优先，无别名条目回退模型串——
+    // 空串 resolve 必败，探针会拿到无意义 fail 报告）。
+    let alias = entry_ref_identity(&list[idx]);
+    let name: &str = alias.as_str();
+    let proto = list[idx]
         .get("protocol")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -2321,17 +2280,20 @@ pub fn effort_probe_stale_entries(home: &str) -> Vec<String> {
 /// fail = 基准请求失败（端点连普通 tiny 请求都服务不了，探测无意义）或
 /// 对照未定。Err 仅调用方级失败（读 config 失败 / 条目不存在）。
 pub async fn probe_effort_entry(home: &str, name: &str) -> Result<serde_json::Value, String> {
-    // 条目必须精确存在（防 resolve 推断臂造出假条目探测）。
+    // 条目必须真实存在（entry_index_by_ref 三层查找——传别名或模型串皆可
+    // 命中；防 resolve 推断臂造出假条目探测）。命中后下传身份 =
+    // entry_ref_identity（见下方注释），canonical_swap_params 精确层 +
+    // 回显身份一致。
     let raw_cfg = super::config::read_raw_config(home)?;
-    let entry = raw_cfg
+    let list = raw_cfg
         .get("model_list")
         .and_then(|v| v.as_array())
-        .and_then(|list| {
-            list.iter()
-                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
-        })
         .ok_or_else(|| format!("model '{name}' not found"))?;
-    let proto = entry
+    let idx = entry_index_by_ref(list, name).ok_or_else(|| format!("model '{name}' not found"))?;
+    // 下传身份 = entry_ref_identity（别名优先，无别名条目回退模型串）。
+    let alias = entry_ref_identity(&list[idx]);
+    let name: &str = alias.as_str();
+    let proto = list[idx]
         .get("protocol")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -2517,7 +2479,7 @@ pub async fn probe_effort_entry(home: &str, name: &str) -> Result<serde_json::Va
                 .collect()
         })
         .unwrap_or_default();
-    let current_effort = entry
+    let current_effort = list[idx]
         .get("reasoning_effort")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -2632,6 +2594,64 @@ pub fn runtime_fill_model_key(
         bridge.reload_provider_all();
     }
     Ok(())
+}
+
+/// 条目引用查找单一真相源（用户引用串 → model_list 条目下标）。
+/// 层序与 [`ref_owner`]（resolver 同序归属判定）完全一致：
+/// ① 精确 model_name（显示别名）→ ② 精确 model（模型串）→ ③ 别名软匹配
+/// （条目 model 末段；ref 含斜杠时不降级——须②精确命中，破坏性/变更性
+/// 命令不做「换个 vendor 前缀也认」的宽容）。多候选取首条（与
+/// ref_owner / resolver 同为首命中语义）。非对象条目（手改坏 config）
+/// `.get()` 恒 None → 不参与匹配（BUG-20261122-028 同款顺带加固）。
+/// 此前 set_default/delete/copy/rename/test/probe_effort 各写各的
+/// 「model_name 精确匹配」（窄于 resolver 口径——传模型串报 not found），
+/// 收编到此单点；命中后下游一律用条目对外引用身份（[`entry_ref_identity`]：
+/// 别名优先，无别名条目回退模型串）下传（热切/回显身份一致，避免
+/// update_field 注释记载的「裸串 resolve 推断臂」分叉）；变更命令的
+/// 归属判定也复用本函数按下标比对（见 [`entry_ref_identity`] doc）。
+pub(crate) fn entry_index_by_ref(list: &[serde_json::Value], name: &str) -> Option<usize> {
+    if let Some(i) = list
+        .iter()
+        .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+    {
+        return Some(i);
+    }
+    if let Some(i) = list
+        .iter()
+        .position(|m| m.get("model").and_then(|v| v.as_str()) == Some(name))
+    {
+        return Some(i);
+    }
+    list.iter().position(|m| {
+        m.get("model")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.split('/').next_back())
+            .is_some_and(|bare| !bare.is_empty() && bare == name)
+    })
+}
+
+/// 条目对外引用身份（**写回 / 热切 / 回显**用）：`model_name` 非空优先，
+/// 否则回退 `model`——无别名条目（手改 config 的 legacy 形态，现代 add
+/// 路径恒写别名）唯一可解析引用就是模型串本身（resolver tier ② 精确
+/// 命中）；两者皆空返回空串（调用方守卫语义不受影响）。
+/// **归属判定不走此值也不按名字**：delete 默认守卫 / rename is_owner /
+/// update_field entry_is_default 三处一律**按下标比对**——引用串与目标
+/// 各经 [`entry_index_by_ref`] 同源解析、比对解析出的下标（无别名条目
+/// 的归属名都是 ""，按名比对会互相误认）。展示面（list/proxy_overview
+/// 默认徽标）仍走 [`ref_owner`] 按名归属（typed 侧，既有行为）。
+fn entry_ref_identity(entry: &serde_json::Value) -> String {
+    let alias = entry
+        .get("model_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !alias.is_empty() {
+        return alias.to_string();
+    }
+    entry
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 引用归属判定（隐患修复）：defaults.llm 等引用值指向哪个

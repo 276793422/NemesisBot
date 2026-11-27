@@ -72,6 +72,19 @@ impl AgentLoop {
         *self.insights_section_source.write() = Some(source);
     }
 
+    /// 知识库重定向（天工系统 v1）：注入 TIANGONG 存在性声明渲染闭包
+    /// （见 `knowledge_section_source` 字段文档）。装配点按实体解析
+    /// config.knowledge.json 路径构造闭包（main = workspace config；
+    /// selfbuilt = agent home config；项目 loop / 集群 worker 不注入）。
+    /// 每 build 调用一次；返回 None = 段缺席（开关关 fail-closed /
+    /// 无挂载命中）。重复调用覆盖（agent 重建装配点每次注入等价 Arc）。
+    pub fn set_knowledge_section_source(
+        &self,
+        source: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) {
+        *self.knowledge_section_source.write() = Some(source);
+    }
+
     /// enable the workspace instruction-chain section by giving
     /// the workspace root (chain root = this dir; the chain itself is read
     /// per-injection).
