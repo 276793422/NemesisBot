@@ -62,6 +62,14 @@ pub struct ForgeConfig {
     /// 学习对话配置（自学习铺路批次三）：四阶段对话引擎总闸与预算。
     #[serde(default)]
     pub learn: LearnConfig,
+
+    /// 顶层未建模键保真（BUG-20261128-021，ModelConfig.extra / CFG-08
+    /// SkillsFullConfig 同款）：本文件是 RMW 活配置（BUG-20261114-022），
+    /// dashboard `forge.config.set` 走 raw Value RMW 天然保真，CLI forge
+    /// 写回走本 typed 结构全量覆写——无 flatten 时用户手编键（含未来版本
+    /// 新键的前向兼容面）被任何一次 CLI 写回静默剥离。
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Collection subsystem configuration.

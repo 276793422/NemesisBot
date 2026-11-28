@@ -384,3 +384,42 @@ fn forge_config_from_str_syntax_error_loud() {
         "语法错误通道: {err}"
     );
 }
+
+/// BUG-20261128-021（CFG-08 同族横扫补位）：config.forge.json typed
+/// round-trip 必须保留用户手加的未建模键。本文件是 RMW 活配置
+/// （BUG-20261114-022 定性）——dashboard `forge.config.set` 走 raw Value
+/// RMW 天然保真，而 CLI `forge enable/disable/optimize/replay-confirm`
+/// 走 typed `save_forge_config` 全量覆写；无 flatten 时用户手编键
+/// （含未来版本新键的前向兼容面）被任何一次 CLI 写回静默剥离。
+/// ModelConfig.extra / SkillsFullConfig（CFG-08）/ PluginsHostConfig
+/// 先例同款保真语义。
+#[test]
+fn test_typed_forge_save_roundtrip_preserves_user_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.forge.json");
+    let raw = serde_json::json!({
+        "enabled": true,
+        "replay_auto_ingest": true,
+        "my_custom_key": { "nested": [1, 2, 3] },
+        "another_future": "keep-me"
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let cfg = load_forge_config(&path);
+    assert!(cfg.enabled);
+    assert!(cfg.replay_auto_ingest);
+    save_forge_config(&path, &cfg).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        after["my_custom_key"]["nested"][2], 3,
+        "用户手编嵌套键必须原样回吐"
+    );
+    assert_eq!(
+        after["another_future"], "keep-me",
+        "用户手编标量键必须原样回吐"
+    );
+    assert_eq!(after["enabled"], true);
+    assert_eq!(after["replay_auto_ingest"], true);
+}
