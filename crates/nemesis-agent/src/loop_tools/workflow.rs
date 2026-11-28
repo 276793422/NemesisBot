@@ -47,6 +47,33 @@ pub struct WorkflowTool {
     /// this from the enclosing execution's trigger source. Each run
     /// increments by 1 before dispatching.
     starting_depth: u32,
+    /// BUG-20261129-003：经本工具发起且尚未落地的 run 数（嵌套或并发）。
+    /// 生产装配是全桥共享单例（gateway 把 agent 全部工具经 AgentToolAdapter
+    /// 桥进 workflow 引擎 tool registry，agent_build.rs），`starting_depth`
+    /// 是构造期常量、`with_starting_depth` 生产零调用 → 每层嵌套触发的
+    /// `AgentTool { recursion_depth }` 恒 1：工具侧前置闸与引擎侧
+    /// `WorkflowCallStack::push`（只查帧携带值）两道深度闸对
+    /// 「workflow A 的 tool 节点经 `workflow` 工具 run B，B 又 run A」的
+    /// 动态环全部失效——环检测矩阵的另外两面（`check_subworkflow_cycle`
+    /// 注册期闸只见 sub_workflow 静态边、事件触发环有 TRIGGER_CHAIN_KEY
+    /// 链闸）都罩不到 tool 节点动态边 → 无限递归：每层新 Execution +
+    /// checkpoint + JSONL persist，直到内存/磁盘耗尽。in-flight 计数每层
+    /// +1、落地即减（guard drop 兜底 future 取消不泄漏），超过
+    /// [`nemesis_workflow::MAX_RECURSION_DEPTH`] 拒绝——文档明文的
+    /// primary 闸（rejects outbound calls before they reach the engine）
+    /// 恢复效力。无关并发出现在途叠加与嵌套共用同一全局帽（并发深度帽
+    /// 语义，拒绝文案点明 in-flight）。
+    in_flight: std::sync::atomic::AtomicU32,
+}
+
+/// 在途计数 guard：drop 时回滚计数。run 的 future 被取消（tokio 选择性
+/// drop / 上层 abort）时 `fetch_sub` 仍会执行——计数不泄漏、闸不永久收紧。
+struct InFlightGuard<'a>(&'a std::sync::atomic::AtomicU32);
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[cfg(feature = "workflow")]
@@ -55,6 +82,7 @@ impl WorkflowTool {
         Self {
             engine,
             starting_depth: 0,
+            in_flight: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -68,6 +96,7 @@ impl WorkflowTool {
         Self {
             engine,
             starting_depth,
+            in_flight: std::sync::atomic::AtomicU32::new(0),
         }
     }
 }
@@ -184,6 +213,25 @@ impl WorkflowTool {
             return Err(format!(
                 "workflow recursion limit reached: new depth {} would exceed MAX_RECURSION_DEPTH={}",
                 new_depth,
+                nemesis_workflow::MAX_RECURSION_DEPTH
+            ));
+        }
+
+        // BUG-20261129-003：in-flight 帽（见字段注释）。参数/构造期深度
+        // 检查在计数之前（参数错误不占名额）；guard 在所有后续提前返回
+        // 路径上自动回滚。单例装配下 trigger depth 恒 1，本计数是嵌套
+        // 深度的唯一真实度量。
+        let current = self
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let _in_flight = InFlightGuard(&self.in_flight);
+        if current > nemesis_workflow::MAX_RECURSION_DEPTH {
+            return Err(format!(
+                "workflow recursion limit reached: {} runs already in flight through this \
+                 tool (nested tool-node loop or concurrent burst) — cap is \
+                 MAX_RECURSION_DEPTH={}",
+                current - 1,
                 nemesis_workflow::MAX_RECURSION_DEPTH
             ));
         }

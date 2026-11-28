@@ -4434,6 +4434,59 @@ async fn test_workflow_action_run_rejects_recursion_depth_exceeded() {
     );
 }
 
+// BUG-20261129-003：tool 节点动态环（A→tool(run B)→B→tool(run A)→…）在
+// 生产单例装配下 trigger depth 恒 1，工具侧与 call_stack 两道深度闸全失效；
+// check_subworkflow_cycle 只见 sub_workflow 静态边。修复 = 工具内 in-flight
+// 计数闸（每层经本工具发起的 run 计数，cap = MAX_RECURSION_DEPTH）。
+// 回归锁：并发 4 个 run 恰 3 放行 1 拒（原子 fetch_add 保证 1..=4 恰各见
+// 一次）+ 在途清零后恢复放行。
+#[cfg(feature = "workflow")]
+#[tokio::test]
+async fn test_workflow_action_run_in_flight_cap_blocks_over_concurrent_runs() {
+    let (engine, mut workflow) = build_test_engine_with_workflow("slow_wf").await;
+    // 慢化：delay 节点 0.5s，让 4 个并发 run 的在途窗口稳定重叠。
+    workflow.nodes[0]
+        .config
+        .insert("seconds".to_string(), serde_json::json!(0.5));
+    engine.register_workflow(workflow).unwrap();
+
+    let tool = std::sync::Arc::new(WorkflowTool::new(engine));
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let tool = tool.clone();
+        let ctx = ctx.clone();
+        handles.push(tokio::spawn(async move {
+            tool.execute(r#"{"action": "run", "workflow": "slow_wf"}"#, &ctx)
+                .await
+        }));
+    }
+    let mut ok = 0usize;
+    let mut rejected = Vec::new();
+    for h in handles {
+        match h.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(e) => rejected.push(e),
+        }
+    }
+    assert_eq!(ok, 3, "恰好 3 个在途 run 放行（cap = MAX_RECURSION_DEPTH）");
+    assert_eq!(rejected.len(), 1, "第 4 个并发 run 必须被在途帽拒绝");
+    assert!(
+        rejected[0].contains("recursion"),
+        "拒绝文案须点明递归/在途帽，实际: {}",
+        rejected[0]
+    );
+
+    // 恢复语义：在途全部落地后计数回落，新调用放行（guard drop 回滚）。
+    let out = tool
+        .execute(r#"{"action": "run", "workflow": "slow_wf"}"#, &ctx)
+        .await
+        .expect("在途清零后新 run 必须放行");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["state"], "Completed");
+}
+
 #[cfg(feature = "workflow")]
 #[tokio::test]
 async fn test_workflow_action_run_returns_schema_with_input_property() {
