@@ -415,6 +415,11 @@ impl Transport for StdioTransport {
             Ok(Ok(())) => self.write_interrupted = false,
             Ok(Err(e)) => {
                 self.write_interrupted = false;
+                // BUG-20261129-012：stdin 写失败 = 管道已破（子进程死亡/
+                // 读端关闭）——传输已死，诚实断链。旧行为只报错不翻标志，
+                // is_connected() 永远谎报 true。与写超时臂同形态走 close()
+                // （翻标志 + 杀可能存活的对端 + 清管道字段）。
+                let _ = self.close().await;
                 return Err(TransportError::send_failed(format!(
                     "failed to write to stdin: {e}"
                 )));
@@ -489,6 +494,15 @@ impl Transport for StdioTransport {
                 let (raw, truncated) = match read {
                     Some(pair) => pair,
                     None => {
+                        // BUG-20261129-012：EOF = 子进程已死（stdout 关闭）
+                        // ——传输已死，诚实翻标志。此处持 stdout 读锁（不
+                        // 相交字段借用，不可重入 self 方法调 close——close
+                        // 需 &mut self 且要 kill 子进程），只写标志位；管道
+                        // 字段与子进程句柄由后续 close()/connect() 重置。
+                        // 旧行为只报错不翻标志：is_connected() 谎报 true，
+                        // client 层死亡恢复臂（以 !is_connected 为闸）结构性
+                        // 不可达 → 挂载 adapter 共享 client 永久变砖。
+                        self.connected = false;
                         return Err(TransportError::send_failed(
                             "connection closed (EOF from MCP server)",
                         ));

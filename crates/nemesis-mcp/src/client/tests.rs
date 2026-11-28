@@ -1753,6 +1753,104 @@ async fn recovery_failure_does_not_permanently_brick_client() {
     assert_eq!(result.content[0].text.as_deref(), Some("healed"));
 }
 
+/// 传输死亡恢复回归锁（BUG-20261129-012）：stdio MCP server 进程崩溃
+/// （stdout EOF）/ stdin 管道破裂（写失败）/ 脏帧断链（BUG-20261107-012）/
+/// 写超时断链（BUG-20261105-037）后，传输自报 `!is_connected`——与
+/// session_expired（HTTP 404）同类：「连接死了但 client 还活着」。旧实现
+/// 恢复臂只认 session_expired 形态（code -4），stdio 四种死亡形态全部
+/// 永久变砖（挂载 adapter 共享同一 client，每次调用报
+/// "transport is not connected" 直到 gateway 重启）。恢复纪律以「连接已死」
+/// 的语义为准，不以「哪种传输报的死」为准。
+/// 判别性：旧实现 list_tools 直接 Err(not_connected)，本测试红。
+#[tokio::test]
+async fn transport_death_triggers_reconnect_and_retry() {
+    // SharedMockTransport：client 持 clone 把手，测试可在 client 外把
+    // 传输幕后杀死（模拟 stdio server 崩溃把连接带进坟墓）。
+    let mock = crate::transport::SharedMockTransport::new();
+    let init_result = serde_json::json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "serverInfo": { "name": "test-server", "version": "1.0" }
+    });
+    mock.add_success("initialize", init_result.clone()).await;
+    mock.add_success("notifications/initialized", serde_json::json!({}))
+        .await;
+
+    let mut client = McpClient::new(Box::new(mock.clone()));
+    client.initialize().await.unwrap();
+    assert!(client.is_connected());
+
+    // 幕后杀死传输（stdio server 崩溃的确定性等价形态——真 stdio 的
+    // 死亡标志诚实化由 stdio_transport/tests.rs 的真子进程锁钉住）。
+    use crate::transport::Transport as _;
+    let mut killer = mock.clone();
+    killer.close().await.unwrap();
+    assert!(!client.is_connected());
+
+    // 服务器「重启」（重握手 + tools/list 脚本就位）。
+    mock.add_success("initialize", init_result).await;
+    mock.add_success("notifications/initialized", serde_json::json!({}))
+        .await;
+    mock.add_success(
+        "tools/list",
+        serde_json::json!({
+            "tools": [
+                { "name": "resurrected_tool", "description": "served after recovery",
+                  "inputSchema": { "type": "object", "properties": {} } }
+            ]
+        }),
+    )
+    .await;
+
+    let tools = client
+        .list_tools()
+        .await
+        .expect("传输死亡必须触发重连恢复并重试成功，而不是把 not_connected 原样抛给调用方");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "resurrected_tool");
+    assert!(client.is_connected(), "恢复成功后 client 必须回到已连接态");
+}
+
+/// 传输死亡恢复失败（重握手也挂）诚实返回根因链——与 session_expired
+/// 恢复臂同契约（"{e}; transport recovery also failed: {re}"）。
+#[tokio::test]
+async fn transport_death_recovery_failure_returns_honest_error() {
+    let mock = crate::transport::SharedMockTransport::new();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    )
+    .await;
+    mock.add_success("notifications/initialized", serde_json::json!({}))
+        .await;
+
+    let mut client = McpClient::new(Box::new(mock.clone()));
+    client.initialize().await.unwrap();
+
+    // 杀死传输；恢复脚本不就位 → 恢复必然失败。
+    use crate::transport::Transport as _;
+    let mut killer = mock.clone();
+    killer.close().await.unwrap();
+
+    let err = client
+        .list_tools()
+        .await
+        .expect_err("恢复失败必须报错（根因链），不得静默");
+    let err_msg = err.to_string();
+    assert!(
+        matches!(err, crate::client::ClientError::Transport(_)),
+        "恢复失败必须以传输层错误落面，实际: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("transport recovery also failed"),
+        "错误信息必须携带恢复失败的根因链，实际: {err_msg}"
+    );
+}
+
 // =========================================================================
 // BUG-20261117-070：config `timeout` 巨值换算链不加闸——修复前
 // `as_millis() as u64 + 1_000` 裸加法 debug panic（溢出）/ release 静默

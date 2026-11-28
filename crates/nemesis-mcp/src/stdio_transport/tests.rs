@@ -1,4 +1,5 @@
 use super::*;
+use crate::client::Client as _;
 use crate::types::JSONRPC_VERSION;
 
 #[test]
@@ -1427,4 +1428,106 @@ async fn cwd_none_child_cwd_inherits_parent_process_cwd() {
     assert_eq!(printed.trim(), parent_cwd.to_str().unwrap());
     t.close().await.unwrap();
     let _ = std::fs::remove_file(parent_cwd.join(&marker));
+}
+
+// ===========================================================================
+// BUG-20261129-012：stdio 传输死亡（子进程崩溃）后 connected 标志必须
+// 诚实翻 false + client 层死亡恢复全链（重 spawn + 重握手 + 重试）
+// ===========================================================================
+
+/// EOF 读臂 / stdin 写失败臂死亡后 `is_connected()` 必须如实报 false。
+/// 旧行为：两臂只报错不翻标志——传输已死还谎报在线，client 层恢复臂
+/// （以 `!is_connected` 为闸，BUG-20261129-012 同步补齐）结构性不可达，
+/// 挂载 adapter 的共享 client 永久变砖。
+/// 断言锁「诚实状态」：错误返回后标志必须为 false。具体死法（stdin 写
+/// 失败 broken pipe / stdout EOF）依赖子进程退出与写入的时序竞争，两者
+/// 都是本缺陷覆盖的死亡形态——环境性宽容与 test_w4c 家族同纪律。
+#[tokio::test]
+async fn death_marks_transport_disconnected() {
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), "import sys; sys.exit(0)".to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+    // 等子进程（及 PyManager shim 链）退出。
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "ping".to_string(),
+        params: None,
+    };
+    let err = t.send(&req, 3000).await.unwrap_err();
+    assert!(
+        err.message.contains("write to stdin") || err.message.contains("connection closed"),
+        "死亡传输的报错必须是写失败或 EOF 形态，got: {}",
+        err.message
+    );
+    assert!(
+        !t.is_connected(),
+        "传输死亡（EOF/写失败）后 is_connected 必须诚实报 false（旧实现谎报 true）"
+    );
+    let _ = t.close().await;
+}
+
+/// 全链恢复锁（BUG-20261129-012）：stdio MCP server 在首个 tools/list 上
+/// 崩溃（die-once marker 脚本）→ McpClient 死亡恢复臂重 spawn 新进程
+/// （marker 在场 = 第二进程常态应答）→ 重握手 → 原请求重试成功。
+/// 判别性：旧实现（标志谎报 + 无恢复臂）list_tools 直接 Err，本测试红。
+#[tokio::test]
+async fn client_recovers_after_stdio_server_death() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = r#"
+import sys, json, os, time
+marker = os.path.join(os.getcwd(), "died_once.marker")
+died = os.path.exists(marker)
+if not died:
+    with open(marker, "w") as f:
+        f.write("1")
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        time.sleep(30)
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    m = req.get("method", "")
+    if not died and m == "tools/list":
+        sys.exit(0)
+    if m == "initialize":
+        send({"jsonrpc": "2.0", "id": req.get("id"), "result": {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "respawn-test", "version": "1.0"}}})
+    elif m == "tools/list":
+        send({"jsonrpc": "2.0", "id": req.get("id"), "result": {"tools": [{"name": "resurrected_tool", "description": "served by second process", "inputSchema": {"type": "object", "properties": {}}}]}})
+    elif req.get("id") is not None:
+        send({"jsonrpc": "2.0", "id": req.get("id"), "result": {}})
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![])
+        .with_cwd(Some(dir.path().to_path_buf()));
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let mut client = crate::client::McpClient::new(Box::new(t));
+    client.initialize().await.expect("第一进程必须完成握手");
+    // 第一进程在 marker 写入后才服务——握手成功即 marker 必在。
+    assert!(dir.path().join("died_once.marker").exists());
+
+    let tools = client
+        .list_tools()
+        .await
+        .expect("server 崩溃必须触发死亡恢复（重 spawn + 重握手 + 重试），而不是永久变砖");
+    assert_eq!(tools.len(), 1, "got: {:?}", tools);
+    assert_eq!(tools[0].name, "resurrected_tool");
+    assert!(client.is_connected(), "恢复成功后 client 必须回到已连接态");
+    client.close().await.unwrap();
 }

@@ -387,11 +387,17 @@ impl McpClient {
 
     /// Send a JSON-RPC request via the transport and return the response.
     ///
-    /// 会话过期恢复（Streamable HTTP）：server 侧会话已终止（重启/TTL 过期，
-    /// transport 报 session_expired）→ 重置传输 + 重新 initialize 建新会话 +
-    /// 原请求重试一次。恢复逻辑只在本层——握手内部走
-    /// [`Self::send_request_raw`]（无恢复臂），结构上不可能递归；恢复失败 →
-    /// 诚实返回原始会话过期错误（warn 留痕），绝不静默吞。
+    /// 传输级恢复（两臂，同构语义）：
+    /// - 会话过期恢复（Streamable HTTP）：server 侧会话已终止（重启/TTL
+    ///   过期，transport 报 session_expired）→ 重置传输 + 重新 initialize
+    ///   建新会话 + 原请求重试一次。
+    /// - 传输死亡恢复（stdio 族，BUG-20261129-012）：连接已死但 client
+    ///   还活着（transport 自报 `!is_connected`——EOF/写失败/脏帧/写超时
+    ///   四种断链形态）→ 同款恢复链。
+    ///
+    /// 恢复逻辑只在本层——握手内部走 [`Self::send_request_raw`]（无恢复
+    /// 臂），结构上不可能递归；恢复失败 → 诚实返回根因链错误（warn 留痕），
+    /// 绝不静默吞。
     async fn send_request(
         &mut self,
         method: &str,
@@ -435,6 +441,41 @@ impl McpClient {
                 };
                 self.send_request_raw(retry).await
             }
+            // BUG-20261129-012：传输死亡恢复（stdio 族）。子进程崩溃
+            // （stdout EOF）、stdin 写失败（管道破裂）、脏帧断链
+            // （BUG-20261107-012）、写超时断链（BUG-20261105-037）都会让
+            // transport 自报 `!is_connected`——与 session_expired（HTTP 404）
+            // 同类：「连接死了但 client 还活着」。旧实现恢复臂只认
+            // session_expired 形态（恢复纪律挂在单一到达路径上，其余死亡
+            // 形态漏网）：挂载 adapter 共享同一 client，stdio server 崩溃后
+            // 全部工具永久报 "transport is not connected" 直到 gateway 重启。
+            // 恢复纪律以「连接已死」的语义为准，不以「哪种传输报的死」为准。
+            // 恢复 = 重连（stdio：重 spawn 子进程）+ 重握手 + 原请求换新 id
+            // 重试一次；握手走 send_request_raw（无恢复臂），结构上不可能
+            // 递归。失败 → 诚实上抛根因链（warn 留痕），绝不静默吞。
+            Err(ClientError::Transport(e)) if !self.transport.is_connected() => {
+                tracing::warn!(
+                    method = %method,
+                    error = %e,
+                    "[McpClient] transport dead; reconnecting and re-initializing"
+                );
+                if let Err(re) = self.reinitialize().await {
+                    tracing::warn!("[McpClient] transport recovery failed: {re}");
+                    return Err(ClientError::Transport(TransportError::new(
+                        e.code,
+                        format!("{e}; transport recovery also failed: {re}"),
+                    )));
+                }
+                // 重试一次（恢复成功后原请求照常重发）。
+                let id2 = self.alloc_id();
+                let retry = TransportRequest {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: Some(serde_json::Value::Number(id2.into())),
+                    method: method.to_string(),
+                    params,
+                };
+                self.send_request_raw(retry).await
+            }
             Err(e) => Err(e),
         }
     }
@@ -452,9 +493,10 @@ impl McpClient {
         Ok(transport::from_transport_response(&transport_resp))
     }
 
-    /// 会话恢复：重置传输（HttpTransport close 清会话 id + 解析头现查重取），
-    /// 重新 initialize 握手（含 initialized 通知）。仅由 send_request 的
-    /// session_expired 恢复臂调用。
+    /// 会话恢复：重置传输（HttpTransport close 清会话 id + 解析头现查重取；
+    /// StdioTransport close 杀子进程 + 清管道字段，已自报断链时幂等），
+    /// 重新 initialize 握手（含 initialized 通知）。由 send_request 的
+    /// session_expired / 传输死亡两恢复臂调用（BUG-20261129-012）。
     async fn reinitialize(&mut self) -> ClientResult<()> {
         self.transport.close().await?;
         self.initialized = false;
