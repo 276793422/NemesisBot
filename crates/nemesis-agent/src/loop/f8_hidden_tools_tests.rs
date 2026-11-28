@@ -254,3 +254,56 @@ async fn runtime_flip_unhides_without_restart() {
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
     assert_eq!(out, "echo_ok", "解除隐藏后必须真正执行，实际: {out}");
 }
+
+// ---------------------------------------------------------------------------
+// ⑥ BUG-20261129-002：已解锁 schema 注记节与隐藏联动
+// （schema_unlock_section 渲染前过 hidden 匹配器现读——注记是 schema
+// 的第三供给面，会话中途隐藏后不得继续渲染被隐藏工具的 schema）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unlock_section_drops_runtime_hidden_tools() {
+    let mut agent_loop = f8_loop();
+    agent_loop.register_tool("echo_alpha".to_string(), Box::new(EchoTool));
+    agent_loop.register_tool("echo_beta".to_string(), Box::new(EchoTool));
+
+    // 解锁两把工具（账面 append-only）。
+    agent_loop.record_schema_unlock("sess-f8b", "echo_alpha");
+    agent_loop.record_schema_unlock("sess-f8b", "echo_beta");
+
+    // 正面基线：无隐藏 → 两名都在注记节。
+    let section = agent_loop.schema_unlock_section(Some("sess-f8b"));
+    assert!(
+        section.contains("echo_alpha") && section.contains("echo_beta"),
+        "未隐藏时已解锁名必须在注记节，实际: {section}"
+    );
+
+    // 会话中途隐藏 echo_alpha（精确名）→ 该名当轮从注记节消失，
+    // echo_beta 幸存（其余内容不受牵连）。
+    agent_loop.set_extra_hidden_tools(vec!["echo_alpha".to_string()]);
+    let section = agent_loop.schema_unlock_section(Some("sess-f8b"));
+    assert!(
+        !section.contains("echo_alpha"),
+        "隐藏后注记节不得继续渲染其 schema，实际: {section}"
+    );
+    assert!(
+        section.contains("echo_beta"),
+        "未隐藏的已解锁名必须继续渲染，实际: {section}"
+    );
+
+    // 通配命中同样过滤；全部名字被过滤 → 空节（零字节，调用方不 push）。
+    agent_loop.set_extra_hidden_tools(vec!["echo_*".to_string()]);
+    let section = agent_loop.schema_unlock_section(Some("sess-f8b"));
+    assert!(
+        section.is_empty(),
+        "全部已解锁名被隐藏 → 空节，实际: {section}"
+    );
+
+    // 解除隐藏 → 渲染自动恢复（对称热生效；账面 append-only 未回写）。
+    agent_loop.set_extra_hidden_tools(Vec::new());
+    let section = agent_loop.schema_unlock_section(Some("sess-f8b"));
+    assert!(
+        section.contains("echo_alpha") && section.contains("echo_beta"),
+        "解除隐藏后注记节必须恢复，实际: {section}"
+    );
+}

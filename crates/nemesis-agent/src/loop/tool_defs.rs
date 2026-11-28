@@ -645,6 +645,13 @@ impl AgentLoop {
     /// 活过 compaction，新增解锁只失效 cache 尾部。无解锁 / session_key
     /// None/空 = 空串（零字节，调用方还须以 lazy 旗标门控）。registry
     /// 缺名（重装/改名后）跳过该名——账面与供给面诚实解耦。
+    ///
+    /// BUG-20261129-002：渲染前过 `agents.hidden_tools` 同一匹配器现读
+    /// （fresh-read 双闸契约）——注记是 schema 的**第三供给面**（每轮持续
+    /// 供给内容并指示「直接调用」），会话中途隐藏后若继续渲染，与 dispatch
+    /// 拒绝文案（do NOT retry unless they un-hide it）正面矛盾，形成
+    /// BUG-20261118-095 同族误导循环。隐藏当轮消失、解除隐藏自动恢复
+    /// （账面保持 append-only 不回写——与其他闸同一「渲染时刻真相」模式）。
     pub(crate) fn schema_unlock_section(&self, session_key: Option<&str>) -> String {
         let key = match session_key {
             Some(k) if !k.is_empty() => k,
@@ -655,6 +662,7 @@ impl AgentLoop {
             _ => return String::new(),
         };
         let tools_guard = self.tools.read();
+        let hidden = self.current_hidden_tools();
         let mut out = String::from(
             "# Unlocked Tool Schemas\n\n以下工具的完整参数 schema 已按需取回（惰性供给模式），持续有效——直接按参数形态调用即可，无需重复取回。\n",
         );
@@ -663,6 +671,12 @@ impl AgentLoop {
             let Some(tool) = tools_guard.get(name.as_str()) else {
                 continue;
             };
+            // BUG-20261129-002：被 hidden_tools 隐藏（含 `mcp_*` 通配命中
+            // meta 名）的已解锁名字跳过渲染——供给/分发双闸已将该工具从
+            // 模型面摘除，注记面不得再供给其 schema。
+            if tool_name_matches_hidden(&hidden, name) {
+                continue;
+            }
             out.push_str(&format!(
                 "\n## `{}`\n- **description**: {}\n- **parameters**: {}\n",
                 name,
