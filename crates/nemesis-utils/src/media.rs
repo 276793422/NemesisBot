@@ -7,6 +7,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// 媒体下载响应体上限（BUG-20261128-030）：BUG-20261101-273 /
+/// BUG-20261107-005 下载加固横扫的漏网面——本模块 download 家族此前
+/// `resp.bytes()` 无帽全量读入，恶意/失控源可把任意大响应灌进内存。
+/// 300MB 对齐 selfupdate 资产档（二进制资产族：skills ZIP 50MB <
+/// selfupdate 300MB < 模型 2GiB）；IM 媒体附件合法上限远低于此
+/// （Telegram 下载侧 20MB 级），帽只防内存放大不伤合法面。
+const MAX_MEDIA_DOWNLOAD_BYTES: u64 = 300 * 1024 * 1024;
+
 /// Options for downloading files.
 ///
 /// Mirrors the Go `DownloadOptions` struct from `module/utils/media.go`.
@@ -124,13 +132,41 @@ pub async fn download_file(
     filename: &str,
     timeout: std::time::Duration,
 ) -> Result<String, String> {
+    download_file_inner(
+        url,
+        filename,
+        timeout,
+        &HashMap::new(),
+        MAX_MEDIA_DOWNLOAD_BYTES,
+    )
+    .await
+}
+
+/// 下载内核（BUG-20261128-030 单一实现）：带帽读体（[`crate::http_cap`]
+/// 读入中途超限即断，替代旧 `resp.bytes()` 无帽全量）+ 不跨主机跟随
+/// 重定向（[`crate::http_redirect`] 单一真相源——extra_headers 可含
+/// Authorization 类凭据头，reqwest 默认策略跨主机只剥标准四头，自定义
+/// 凭据头会随 302 流向第三方主机；同源跟随保留）。`max_bytes` 显式
+/// 传入（测试缝：小帽实跑帽闸；公开入口恒 [`MAX_MEDIA_DOWNLOAD_BYTES`]）。
+async fn download_file_inner(
+    url: &str,
+    filename: &str,
+    timeout: Duration,
+    extra_headers: &HashMap<String, String>,
+    max_bytes: u64,
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
+        .redirect(crate::http_redirect::no_cross_host_redirect_policy())
         .build()
         .map_err(|e| format!("create client: {}", e))?;
 
-    let resp = client
-        .get(url)
+    let mut request = client.get(url);
+    for (key, value) in extra_headers {
+        request = request.header(key.as_str(), value.as_str());
+    }
+
+    let resp = request
         .send()
         .await
         .map_err(|e| format!("download: {}", e))?;
@@ -139,10 +175,9 @@ pub async fn download_file(
         return Err(format!("HTTP {}", resp.status()));
     }
 
-    let bytes = resp
-        .bytes()
+    let bytes = crate::http_cap::read_body_capped(resp, max_bytes)
         .await
-        .map_err(|e| format!("read body: {}", e))?;
+        .map_err(|e| format!("read body: {e}"))?;
 
     let media_dir = std::env::temp_dir().join("nemesisbot_media");
     std::fs::create_dir_all(&media_dir).map_err(|e| format!("mkdir: {}", e))?;
@@ -181,63 +216,24 @@ pub async fn download_file_with_opts(url: &str, filename: &str, opts: DownloadOp
         &opts.logger_prefix
     };
 
-    let client = match reqwest::Client::builder().timeout(timeout).build() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(prefix = logger_prefix, error = %e, "Failed to create download client");
-            return String::new();
+    match download_file_inner(
+        url,
+        filename,
+        timeout,
+        &opts.extra_headers,
+        MAX_MEDIA_DOWNLOAD_BYTES,
+    )
+    .await
+    {
+        Ok(path) => {
+            tracing::debug!(prefix = logger_prefix, path = %path, "File downloaded successfully");
+            path
         }
-    };
-
-    let mut request = client.get(url);
-    for (key, value) in &opts.extra_headers {
-        request = request.header(key.as_str(), value.as_str());
-    }
-
-    let resp = match request.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(prefix = logger_prefix, error = %e, url = url, "Failed to download file");
-            return String::new();
+        Err(stage) => {
+            tracing::error!(prefix = logger_prefix, url = url, stage = %stage, "Failed to download file");
+            String::new()
         }
-    };
-
-    if !resp.status().is_success() {
-        tracing::error!(
-            prefix = logger_prefix,
-            status = resp.status().as_u16(),
-            url = url,
-            "File download returned non-200 status"
-        );
-        return String::new();
     }
-
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!(prefix = logger_prefix, error = %e, "Failed to read response body");
-            return String::new();
-        }
-    };
-
-    let media_dir = std::env::temp_dir().join("nemesisbot_media");
-    if let Err(e) = std::fs::create_dir_all(&media_dir) {
-        tracing::error!(prefix = logger_prefix, error = %e, "Failed to create media directory");
-        return String::new();
-    }
-
-    let safe_name = sanitize_filename(filename);
-    let id = crate::string_utils::random_short_id();
-    let local_path = media_dir.join(format!("{}_{}", id, safe_name));
-
-    if let Err(e) = std::fs::write(&local_path, &bytes) {
-        tracing::error!(prefix = logger_prefix, error = %e, "Failed to write file");
-        return String::new();
-    }
-
-    tracing::debug!(prefix = logger_prefix, path = %local_path.display(), "File downloaded successfully");
-
-    local_path.to_string_lossy().to_string()
 }
 
 /// Download a file from a URL with default options.

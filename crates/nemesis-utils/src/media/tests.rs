@@ -888,3 +888,128 @@ async fn test_s1_download_with_opts_write_failure_nul_filename() {
     });
     assert_eq!(out, "");
 }
+
+// ============================================================
+// BUG-20261128-030 回归锁：下载内核带帽读体 + 不跨主机跟随重定向
+// （经 download_file_inner 测试缝直测：max_bytes 显式传入，小帽实跑
+// 帽闸，避免 300MB 流量测试；公开入口恒 MAX_MEDIA_DOWNLOAD_BYTES）
+// ============================================================
+
+#[tokio::test]
+async fn test_download_over_cap_fails_midread_with_limit_error() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let big = "x".repeat(100_000);
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(big))
+        .mount(&server)
+        .await;
+
+    let err = download_file_inner(
+        &format!("{}/f.bin", server.uri()),
+        "f.bin",
+        Duration::from_secs(5),
+        &HashMap::new(),
+        1024, // 测试缝小帽
+    )
+    .await
+    .expect_err("超帽必须中途断开报错（旧实现 resp.bytes() 无帽全量读入）");
+    assert!(
+        err.contains("exceeds limit"),
+        "错误必须是读体帽形态（http_cap 单一真相源消息），实际: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_download_under_cap_success_writes_body() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("media-bytes"))
+        .mount(&server)
+        .await;
+
+    let path = download_file_inner(
+        &format!("{}/f.bin", server.uri()),
+        "f.bin",
+        Duration::from_secs(5),
+        &HashMap::new(),
+        MAX_MEDIA_DOWNLOAD_BYTES,
+    )
+    .await
+    .expect("帽内正常下载应成功");
+    let content = std::fs::read_to_string(&path).expect("落盘文件可读");
+    assert_eq!(content, "media-bytes");
+}
+
+#[tokio::test]
+async fn test_download_cross_host_redirect_is_stopped_not_followed() {
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // 两台独立 MockServer = 两个 origin（host 同、端口不同——origin 键含
+    // 端口，跨端口即跨源）。目标主机若被跟随会拿到 200/leaked，旧实现
+    // （reqwest 默认策略，跨主机只剥标准四头，Authorization 类自定义凭据
+    // 头原样随 302 流出）此处会成功——Err("HTTP 302") 即判别性断言。
+    let target = MockServer::start().await;
+    Mock::given(path("/stolen"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("leaked"))
+        .mount(&target)
+        .await;
+
+    let origin = MockServer::start().await;
+    Mock::given(path("/f"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/stolen", target.uri())),
+        )
+        .mount(&origin)
+        .await;
+
+    let err = download_file_inner(
+        &format!("{}/f", origin.uri()),
+        "f.bin",
+        Duration::from_secs(5),
+        &HashMap::new(),
+        MAX_MEDIA_DOWNLOAD_BYTES,
+    )
+    .await
+    .expect_err("跨主机 302 必须终停（凭据头不流向第三方主机）");
+    // stop() 透传：302 即最终响应 → 非 2xx → Err("HTTP 302 ...")。
+    assert!(err.contains("HTTP 302"), "实际: {err}");
+}
+
+#[tokio::test]
+async fn test_download_same_host_redirect_still_follows() {
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // 同源重定向保留（CDN/网关合规场景不断链）。
+    let origin = MockServer::start().await;
+    Mock::given(path("/a"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", format!("{}/b", origin.uri())),
+        )
+        .mount(&origin)
+        .await;
+    Mock::given(path("/b"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("final"))
+        .mount(&origin)
+        .await;
+
+    let path = download_file_inner(
+        &format!("{}/a", origin.uri()),
+        "f.bin",
+        Duration::from_secs(5),
+        &HashMap::new(),
+        MAX_MEDIA_DOWNLOAD_BYTES,
+    )
+    .await
+    .expect("同源 302 应跟随到最终 200");
+    let content = std::fs::read_to_string(&path).expect("落盘文件可读");
+    assert_eq!(content, "final");
+}
