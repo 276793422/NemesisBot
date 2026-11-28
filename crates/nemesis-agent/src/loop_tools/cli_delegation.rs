@@ -35,6 +35,9 @@ pub struct CliDelegationSpec<'a> {
     pub timeout_secs: u64,
     /// Working directory for the child.
     pub cwd: &'a Path,
+    /// 会话键（SESSION_TREES 注册；estop sweep 按会话收树，超时臂
+    /// 显式 terminate）。与 exec 族 family discipline 同源。
+    pub session_key: &'a str,
 }
 
 /// Unified CLI delegation runner: spawn → collect output → timeout with
@@ -73,20 +76,36 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
         );
     }
 
+    // 树杀前提（家族纪律，同 `make_piped_shell_command` /
+    // `build_platform_shell`）：Unix 子进程自成一进程组（pgid == pid），
+    // 守卫组杀（`exec_tree::kill_tree_now` 的 `kill(-PGID, SIGKILL)`）与
+    // 兜底 `tree_kill` 才能一锅端 CLI 派生的 worker 树——缺此设置时记录的
+    // pgid 不是真实组号，组杀静默 ESRCH 落空。
+    #[cfg(not(windows))]
+    {
+        cmd.process_group(0);
+    }
+
     // Spawn explicitly so a timeout KILLS THE PROCESS TREE: killing
     // only the direct child (bat wrapper) leaves grandchildren holding
     // the inherited stdout/stderr pipes open, and output() futures hang
     // on pipe close until every holder exits (Windows inheritance
     // classic — this is why kill_on_drop alone did not shorten the
     // timeout path).
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("Error: failed to spawn {}: {}", spec.cli_label, e))?;
-    // Capture the pid BEFORE moving `child` into wait_with_output (the
-    // timeout arm needs it for the tree kill — Windows only; POSIX arm above
-    // relies on kill_on_drop, hence the cfg_attr to keep non-Windows builds
-    // warning-free).
-    #[cfg_attr(not(windows), allow(unused_variables))]
+    //
+    // spawn 即挂会话进程树守卫（exec 族 family discipline，BUG
+    // 横扫对齐）：Windows Job Object / Unix 进程组（attach 内含
+    // `process_group(0)` spawn 前提）+ SESSION_TREES 注册——超时臂显式
+    // terminate 收整棵树、gateway estop sweep 可达（exec 族在飞树同轨道，
+    // 此前委派树不在册 = 急停扫不到）、守卫 Drop RAII 兜底（正常完成
+    // mark_complete 后 Drop 无操作，零行为变化）。此前 POSIX 超时臂只剩
+    // kill_on_drop 直杀 CLI 本体，CLI 派生的 worker 树孤儿化存活——委派
+    // 对象是编码 agent（claude/codex），孤儿面比 cargo 树更重。
+    let (guard, child) =
+        crate::exec_tree::ExecTreeGuard::attach_and_register(&mut cmd, Some(spec.session_key))
+            .map_err(|e| format!("Error: failed to spawn {}: {}", spec.cli_label, e))?;
+    // pid spawn 后即捕获：超时臂的兜底树杀需要 pid（守卫挂载降级
+    // job=0/pgid=0 时 terminate 不杀；`child` 已移入 wait_with_output）。
     let child_pid = child.id();
     let out = match tokio::time::timeout(
         // BUG-20261117-061 纵深：0 不允许（tokio timeout(0) 立即超时 =
@@ -97,31 +116,23 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
     )
     .await
     {
-        Ok(r) => r.map_err(|e| format!("Error: {} output wait failed: {}", spec.cli_label, e))?,
+        Ok(r) => {
+            // 正常退出（含非零退出码 / estop sweep 中途收树后 wait 返回）：
+            // 摘守卫（Drop 不再杀），原因已由守卫记录可查。
+            guard.mark_complete();
+            r.map_err(|e| format!("Error: {} output wait failed: {}", spec.cli_label, e))?
+        }
         Err(_) => {
-            #[cfg(windows)]
-            {
-                // Tree-kill (the CLI may spawn workers that inherit the
-                // pipes).
-                use std::os::windows::process::CommandExt;
-                let _ = std::process::Command::new("taskkill")
-                    .args([
-                        "/PID",
-                        &child_pid.unwrap_or_default().to_string(),
-                        "/T",
-                        "/F",
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .creation_flags(0x0800_0000)
-                    .status();
-            }
-            #[cfg(not(windows))]
-            {
-                // POSIX: `child` was moved into wait_with_output;
-                // kill_on_drop(true) (set at spawn) kills it when the
-                // dropped future's Child reaper runs. Worker reaping is
-                // the CLI's own responsibility on POSIX.
+            // 超时：守卫先记超时原因（estop sweep 后到来的超时不得降级其
+            // 标注）再收整棵树（Job Object 单内核调用 / 进程组 SIGKILL）；
+            // 随后无条件补一轮共享树杀兜底（挂载降级 job=0 时守卫不杀，
+            // 本步是真正的收树；挂载成功时对已死树诚实 no-op——与 exec 族
+            // 同款 belt-and-suspenders，见 `background_registry::tree_kill`）。
+            // kill_on_drop 随 wait_with_output future 取消仍直杀 CLI 本体
+            // （第三层防御）。指令丢失一律忽略——超时报错即权威出口。
+            guard.terminate(crate::exec_tree::TerminationReason::Timeout);
+            if let Some(pid) = child_pid {
+                crate::background_registry::tree_kill(pid).await;
             }
             return Err(format!(
                 "Error: {} delegation timed out after {}s",

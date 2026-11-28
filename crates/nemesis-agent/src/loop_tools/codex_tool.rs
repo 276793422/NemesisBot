@@ -125,6 +125,7 @@ impl Tool for CodexTool {
             args,
             timeout_secs: self.timeout_secs,
             cwd: &cwd,
+            session_key: &context.session_key,
         })
         .await
     }

@@ -203,6 +203,7 @@ async fn test_run_cli_delegation_nonzero_exit_returns_structured_ok() {
         args: vec![],
         timeout_secs: 30,
         cwd: dir.path(),
+        session_key: "test-deleg-fail",
     };
     let out = run_cli_delegation(spec).await.unwrap();
     assert!(out.starts_with("Error: fake-fail exited with"), "{out}");
@@ -224,6 +225,7 @@ async fn test_run_cli_delegation_spawn_failure_is_err() {
         args: vec![],
         timeout_secs: 30,
         cwd: std::path::Path::new("."),
+        session_key: "test-deleg-spawn-fail",
     };
     let err = run_cli_delegation(spec).await.unwrap_err();
     assert!(err.contains("failed to spawn ghost-cli"), "{err}");
@@ -281,6 +283,7 @@ async fn test_run_cli_delegation_env_narrow_sanitize() {
         args: vec![],
         timeout_secs: 30,
         cwd: dir.path(),
+        session_key: "test-deleg-env-probe",
     };
     let out = run_cli_delegation(spec).await.unwrap();
 
@@ -325,10 +328,81 @@ async fn test_run_cli_delegation_timeout_zero_not_instant_kill() {
         args: vec![],
         timeout_secs: 0,
         cwd: dir.path(),
+        session_key: "test-deleg-timeout-zero",
     };
     let out = run_cli_delegation(spec).await.unwrap();
     assert!(
         out.contains("cli-delegation-ok"),
         "timeout=0 must not insta-kill the delegation: {out}"
     );
+}
+
+/// POSIX 树杀回归锁：CLI 委派超时必须收整棵进程树——spawn 未设
+/// `process_group(0)` 时超时臂只剩 kill_on_drop 直杀 CLI 本体，CLI 派生的
+/// worker（脚本 fork 的孙进程）孤儿化存活（exec 族「cargo 树超时后继续跑」
+/// 同族缺陷；委派对象是编码 agent，孤儿面更重）。`sh -c 'echo $$ >
+/// leader; sleep 120 & echo $! > worker; wait'`：leader 记自身 pid、fork
+/// worker 记 worker pid、wait 挂住；超时后断言 worker 死亡（组杀生效）。
+/// Windows 形态由 taskkill /T /F 承担（已有行为），本模块仅 POSIX 编译
+/// （Linux nightly 兜底全量跑）。
+#[cfg(all(test, not(windows)))]
+mod posix_tree_kill_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// kill -0 探活（ESRCH = 死）。
+    fn posix_alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_worker_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let leader_marker = dir.path().join("leader.pid");
+        let worker_marker = dir.path().join("worker.pid");
+        let script = format!(
+            "echo $$ > {}; sleep 120 & echo $! > {}; wait",
+            leader_marker.display(),
+            worker_marker.display()
+        );
+        let spec = CliDelegationSpec {
+            cli: "sh",
+            cli_label: "sh-tree-kill-probe",
+            args: vec!["-c".into(), script],
+            timeout_secs: 2,
+            cwd: dir.path(),
+            session_key: "test-deleg-tree-kill",
+        };
+        let started = Instant::now();
+        let result = run_cli_delegation(spec).await;
+        // 超时路径 = Err（超时报错文案）；总时长有界（不允许测试挂 120s）。
+        assert!(result.is_err(), "expected timeout error, got {result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "timeout path must return promptly, took {:?}",
+            started.elapsed()
+        );
+        let worker_pid: u32 = std::fs::read_to_string(&worker_marker)
+            .expect("worker marker written before timeout")
+            .trim()
+            .parse()
+            .expect("worker marker holds a pid");
+        // 组杀生效 → worker 死亡；直杀-only 旧行为 → worker 存活至 120s。
+        let mut dead = false;
+        for _ in 0..30 {
+            if !posix_alive(worker_pid) {
+                dead = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            dead,
+            "worker pid {worker_pid} survived delegation timeout — tree kill missing"
+        );
+    }
 }
