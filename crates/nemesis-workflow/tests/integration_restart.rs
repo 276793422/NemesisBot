@@ -808,35 +808,55 @@ async fn restore_after_resume_finds_no_incomplete_executions() {
 
 #[tokio::test]
 async fn cancelled_workflow_writes_terminal_checkpoint() {
-    // Gap 2 variant: cancelled workflows must also write a terminal
-    // checkpoint so they don't get resurrected.
+    // 取消臂的 terminal checkpoint 契约（engine.rs cancel_execution 尾段）：
+    // 取消 Running/Waiting 执行必须落 terminal=true 的 checkpoint——
+    // restore_incomplete_executions 只跳过 `terminal || all_completed`，被
+    // 取消的 Waiting 执行若不翻转旗标（waiting_node=Some 不满足
+    // all_completed），重启恢复会把已取消的执行复活成 Waiting/resumable。
+    // 旧版本测试名叫 cancelled 但实际只跑一个短 delay 到 Completed（注释
+    // 自认「If it had been cancelled...」）——completed 路径已有
+    // completed_workflow_writes_terminal_checkpoint 覆盖，取消臂零覆盖。
+    // 本测试钉 Waiting 取消臂（human_review 可靠挂起，无 mid-run cancel
+    // 竞态）：latest checkpoint 必须 terminal=true，且新引擎 restore 必须
+    // 找到零个未完成执行（不复活）。
     let tmp = tempfile::tempdir().unwrap();
-    let store_root = tmp.path().to_path_buf();
-    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(&store_root).unwrap());
+    let store: Arc<dyn CheckpointStore> = Arc::new(FileCheckpointStore::new(tmp.path()).unwrap());
 
+    // Engine A: run to Waiting, then cancel.
     let engine = build_engine("ok", store.clone());
-    // Use a delay node we can cancel mid-flight. The default executor's
-    // delay is short enough that cancellation needs to be immediate.
-    engine
-        .register_workflow(workflow_with_nodes(
-            "cancel_wf",
-            vec![node("only", "delay", &[])],
-        ))
+    register_pause_workflow(&engine, "wf");
+    let exec = engine
+        .run("wf", HashMap::new(), Some(TriggerSource::Cli))
+        .await
         .unwrap();
-    let exec = engine.run("cancel_wf", HashMap::new(), None).await.unwrap();
-    // The workflow completes because delay is short — but it still writes a
-    // terminal checkpoint. If it had been cancelled, the terminal flag
-    // would still be set. We verify the on-disk flag here.
-    let exec_dir = store_root.join("checkpoints").join(&exec.id);
-    let has_terminal = std::fs::read_dir(&exec_dir)
+    assert_eq!(exec.state, ExecutionState::Waiting);
+
+    let cancelled = engine.cancel_execution(&exec.id).await.unwrap();
+    assert_eq!(cancelled.state, ExecutionState::Cancelled);
+    drop(engine);
+
+    // 取消必须落 terminal checkpoint（restore 跳过的权威信号）。
+    let latest = store
+        .latest(&exec.id)
+        .await
         .unwrap()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .any(|content| {
-            content.contains("\"terminal\":true") || content.contains("\"terminal\": true")
-        });
+        .expect("cancelled execution must still have a checkpoint on disk");
     assert!(
-        has_terminal,
-        "expected at least one terminal checkpoint on disk"
+        latest.terminal,
+        "latest checkpoint after cancel must be terminal (else restore resurrects it)"
+    );
+
+    // 反复活主断言：新引擎（模拟重启，workflow 同 hash 注册在位——排除
+    // 「hash 不匹配跳过」的偶然通过路径）restore 必须找到零个未完成执行。
+    let engine_b = build_engine("ok", store);
+    register_pause_workflow(&engine_b, "wf");
+    let restored = engine_b.restore_incomplete_executions().await.unwrap();
+    assert_eq!(
+        restored, 0,
+        "cancelled Waiting execution must not be resurrected by restore"
+    );
+    assert!(
+        engine_b.list_executions(None).await.is_empty(),
+        "cancelled execution must not appear in the fresh engine's memory"
     );
 }
