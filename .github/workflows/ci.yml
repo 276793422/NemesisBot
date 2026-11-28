@@ -557,18 +557,23 @@ jobs:
           New-Item -ItemType Directory -Force $dest | Out-Null
           $tmp = Join-Path $env:RUNNER_TEMP 'nextest.zip'
           $hdr = @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'nemesisbot-ci' }
-          $rel = $null
-          for ($i = 0; $i -lt 3 -and -not $rel; $i++) {
+          $rels = $null
+          for ($i = 0; $i -lt 3 -and -not $rels; $i++) {
             try {
-              $rel = Invoke-RestMethod -Headers $hdr -Uri 'https://api.github.com/repos/nextest-rs/nextest/releases?per_page=20' |
-                Where-Object { $_.tag_name -like 'cargo-nextest-*' } | Select-Object -First 1
+              $rels = @(Invoke-RestMethod -Headers $hdr -Uri 'https://api.github.com/repos/nextest-rs/nextest/releases?per_page=20' |
+                Where-Object { $_.tag_name -like 'cargo-nextest-*' })
             } catch { Start-Sleep -Seconds (5 * ($i + 1)) }
           }
-          if (-not $rel) { throw 'nextest release lookup failed after retries' }
-          $asset = $rel.assets | Where-Object { $_.name -eq 'cargo-nextest-x86_64-pc-windows-msvc.zip' } | Select-Object -First 1
-          if (-not $asset) { throw "asset cargo-nextest-x86_64-pc-windows-msvc.zip not found in $($rel.tag_name)" }
+          $rel = if ($rels -and $rels.Count -gt 0) { $rels[0] } else { $null }
+          if (-not $rel) { throw 'no cargo-nextest release found after retries' }
+          # 资产名带版本号（如 cargo-nextest-0.9.152-x86_64-pc-windows-msvc.zip），
+          # 精确名不成立，用通配
+          $asset = $rel.assets | Where-Object { $_.name -like 'cargo-nextest-*-x86_64-pc-windows-msvc.zip' } | Select-Object -First 1
+          if (-not $asset) { throw "x86_64-pc-windows-msvc zip asset not found in $($rel.tag_name)" }
           for ($i = 0; $i -lt 3; $i++) {
-            try { Invoke-WebRequest -Headers $hdr -Uri $asset.browser_download_url -OutFile $tmp; break }
+            # 无鉴权下载：browser_download_url 302 到 S3 预签 URL，带
+            # Authorization 头有被 S3 拒收风险；资产公开无需 token
+            try { Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tmp; break }
             catch { if ($i -eq 2) { throw }; Start-Sleep -Seconds (5 * ($i + 1)) }
           }
           Expand-Archive -Path $tmp -DestinationPath (Join-Path $env:RUNNER_TEMP 'nextest-x') -Force
