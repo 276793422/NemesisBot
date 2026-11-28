@@ -107,3 +107,9 @@ pub mod vault;
 pub mod voice;
 #[cfg(feature = "workflow")]
 pub mod workflow;
+
+// cli_reference 静态目录漂移守卫（clap 内省 vs nemesis-agent 手写目录）：
+// 新增/改名命令漏更新 cli_overview/cli_detail 时红——BUG-20261110 漂移
+// 事故（worker 被「CLI 没有 vault 命令」假阴性误导）的机器闸。
+#[cfg(test)]
+mod cli_reference_drift_tests;

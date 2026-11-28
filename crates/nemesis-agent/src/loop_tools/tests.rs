@@ -3910,13 +3910,21 @@ async fn test_cli_reference_tool_overview() {
         result.contains("scanner"),
         "overview should contain 'scanner'"
     );
+    // 概览必须覆盖真实顶层命令（BUG-20261128-023 漂移修复换版：旧断言钉
+    // 「不含 gateway/shutdown」的 16 命令残缺目录——正是漂移事故要修的形态；
+    // 机器闸在 nemesisbot 侧 cli_reference_drift_tests.rs，这里只钉关键成员）。
     assert!(
-        !result.contains("gateway"),
-        "overview should NOT contain 'gateway'"
+        result.contains("gateway"),
+        "overview should contain 'gateway'"
     );
     assert!(
-        !result.contains("shutdown"),
-        "overview should NOT contain 'shutdown'"
+        result.contains("shutdown"),
+        "overview should contain 'shutdown'"
+    );
+    assert!(result.contains("vault"), "overview should contain 'vault'");
+    assert!(
+        result.contains("本目录由漂移守卫测试与真实 CLI 枚举对齐"),
+        "overview should carry the drift caveat"
     );
 }
 

@@ -159,7 +159,15 @@ impl Tool for McpDiscoverTool {
 ///
 /// Without parameters returns a compact overview of all commands.
 /// With a `command` parameter returns detailed help for that command area.
-/// Keep data in sync with `nemesisbot/src/commands/*.rs`.
+///
+/// Sync is machine-enforced, not convention: the drift test
+/// `nemesisbot/src/commands/cli_reference_drift_tests.rs` introspects the
+/// real clap `Cli` command tree and fails red when this hand-written
+/// catalog misses a command, misses a direct subcommand, or lacks a
+/// `cli_detail` arm (BUG-20261110 drift incident: 16-arm catalog vs 40+
+/// real commands produced a "CLI has no vault command" false negative).
+/// Adding/renaming a command in `nemesisbot/src/main.rs` must come with
+/// the matching arm here — the test is the reminder.
 pub struct CliReferenceTool;
 
 impl Default for CliReferenceTool {
@@ -274,35 +282,74 @@ impl Tool for HistorySearchTool {
     }
 }
 
-pub(super) fn cli_overview() -> String {
+/// CLI 命令概览（`cli_reference` 无参形态）。`pub`：nemesisbot 侧漂移守卫
+/// 测试（`cli_reference_drift_tests`）消费同一真相——概览文本必须含全部
+/// 非 hidden 顶层命令名。
+pub fn cli_overview() -> String {
     r#"## NemesisBot CLI 命令概览
 
 | 命令 | 说明 | 关键子命令 |
 |------|------|-----------|
-| model | 管理 LLM 模型 | add, list, remove, default |
-| mcp | 管理 MCP 服务器 | list, add, remove, test, tools, resources, prompts, discover |
-| channel | 管理通信通道 | list, enable, disable, status, web, websocket, external |
-| cluster | 管理集群 | status, config, info, peers, token, init, enable, disable, reset |
-| skills | 管理技能 | list, search, install, remove, source, add-source, install-builtin |
-| forge | 管理自学习模块 | status, enable, disable, reflect, list, evaluate, export, learning |
+| onboard | 初始化配置与工作空间 | default (--local) |
+| gateway | 启动网关服务（Web UI + 全部子系统） | --local |
+| run | headless 单任务（跑完即退，无端口） | --format json, --mode plan |
+| acp | ACP 编辑器接入（stdio JSON-RPC） | — |
+| mcp-serve | 把本 bot 暴露为 stdio MCP 服务器 | — |
+| agent | Agent 配置管理 | set |
+| status | 显示系统状态 | — |
+| assets | 资产盘点快照 / AI-BOM（只读） | inventory, bom |
+| history | 会话历史全文搜索 | search, reindex |
+| session | 会话管理（轮次边界分叉） | list, show, fork |
+| channel | 管理通信通道 | list, enable, disable, status, web, web-socket, external |
+| cluster | 管理集群 | status, config, info, peers, pair, token, init, enable, disable, reset, identity, firewall, node, roaming |
+| cors | 管理 CORS 配置 | list, add, remove, dev-mode, show, validate |
+| model | 管理 LLM 模型 | add, list, remove, default, set-tier, probe, prices |
 | cron | 管理定时任务 | list, add, remove, enable, disable |
-| security | 管理安全设置 | status, enable, disable, config, audit, rules, test, approve, deny, pending |
+| mcp | 管理 MCP 服务器 | list, add, remove, test, tools, resources, prompts, discover |
+| security | 管理安全设置 | status, enable, disable, config, audit, rules, approvals, scanner, test, approve, deny, pending |
 | scanner | 管理病毒扫描引擎 | list, add, remove, check, install, clamav |
 | log | 管理日志配置 | llm (enable/disable/status/config/type), general (enable/disable/level/file/console) |
 | auth | 管理认证 | login, logout, status |
-| memory | 管理增强内存 | enable, disable, status |
+| credentials | 模型 API key 迁移 credentials.yaml | import |
+| vault | 凭据 vault（加密秘密存储，list 永不见值） | set, list, remove, migrate, bind, unbind, bindings |
+| skills | 管理技能 | list, search, install, verify, remove, source, add-source, learn |
+| forge | 管理自学习模块 | status, enable, disable, reflect, list, learn, test, replay-extract, replay-run, optimize |
+| profile | 用户习惯画像 | list, enable, disable, veto, forget, pin, move |
+| connector | 连接器注册表 / 回执 / 台账 | list, receipts, ledger, demo, sign, keygen, trust |
+| issue | 看板 issue 管理 | create, list, get, assign, status, reopen, comment, stats |
+| mail | 邮件基础设施 | status, list, send, addr |
+| autopilot | 看板定时建单规则（cron） | list, create, update, enable, disable, remove, run, runs |
+| dossier | 任务档案导出（自包含目录） | export |
 | workflow | 管理工作流 | list, run, status, template, validate |
-| cors | 管理 CORS 配置 | list, add, remove, dev-mode, show, validate |
-| status | 显示系统状态 | — |
+| sandbox | Sandboxie 沙盒管理（执行体隔离） | install, start, stop, status, pending, commit, clear, kill |
+| quic | QUIC 漫游管理（与集群解耦） | relay, keygen, status |
+| system | 系统集成（安装器契约面） | register, unregister, status, cert |
+| vm | VM 环境自举（QEMU） | install, enable-accel, status, build-image |
+| eval | 沙盒安全评估（风险三分类） | prompt, skill, rules |
+| ziwei | 紫微系统（三方程序受控接管） | list, show, setup, attach, detach, invoke |
+| voice | 本地语音管线 | status, setup, tts, stt, chat, devices |
+| memory | 管理增强内存 | enable, disable, status |
+| loop | 自配速 durable loop（别名 loops） | create, list, show, pause, resume, remove |
+| persona | AI 人格管理 | list, search, install, activate, remove, current, restore |
+| plugin | WASM 插件管理 | install, upgrade, enable, disable, list, sign, trust |
+| estop | 急停开关（冻结全部 agent 活动） | --release, --status |
+| selfupdate | 版本自切换通道 | check, apply, status |
+| migrate | OpenClaw 数据迁移 | --dry-run |
+| dashboard | 打开 Dashboard UI | — |
+| shutdown | 优雅关机 | — |
 | version | 显示版本信息 | — |
 
 使用方式: `nemesisbot <命令> <子命令> [参数]`
 示例: `nemesisbot model add --model zhipu/glm-4.7 --key YOUR_KEY --default`
 
-查询具体命令的详细用法请传入 command 参数。"#.to_string()
+查询具体命令的详细用法请传入 command 参数。
+本目录由漂移守卫测试与真实 CLI 枚举对齐；如仍疑有滞后，请以 `nemesisbot --help` 实测为准。"#.to_string()
 }
 
-pub(super) fn cli_detail(command: &str) -> Result<String, String> {
+/// CLI 命令详情（`cli_reference {"command": name}` 形态）。`pub`：同
+/// [`cli_overview`]——漂移守卫测试对每个非 hidden 顶层命令断言本函数
+/// Ok（match 臂在场）且详情文本含全部直接子命令名。
+pub fn cli_detail(command: &str) -> Result<String, String> {
     match command.to_lowercase().as_str() {
         "model" => Ok(r#"## model — 管理 LLM 模型
 
@@ -322,6 +369,16 @@ pub(super) fn cli_detail(command: &str) -> Result<String, String> {
             <name>                 模型名称
             --force                跳过确认
   default   显示当前默认模型
+  set-tier <name> <tier>    设能力档位（auto/mini/normal/big，覆盖自动检测）
+  set-size <name> <量>      设参数量（如 30B，辅助 auto 检测）
+  set-real-name <name> <名> 设真实模型名（opaque 别名辅助检测）
+  set-stream <name> <auto|yes|no>  per-model 流式开关
+  set-compact-context <name> <N>   per-model 绝对压缩点（token）
+  set-effort <name> <档位>  设推理努力档位（off 清除）
+  probe <name>              能力探针（8 题实测写回 tier + vision_probe）
+  catalog-update            拉取 models.dev 目录缓存（窗口/输出上限）
+  prices <操作>             价目表管理:
+    list / update / import / add / remove
 
 示例:
   nemesisbot model add --model openai/gpt-4o --key sk-xxx --default
@@ -374,7 +431,7 @@ pub(super) fn cli_detail(command: &str) -> Result<String, String> {
     port <端口>                 设置端口
     status / config / clear     状态/配置/清除令牌
 
-  websocket <操作>              WebSocket 通道管理:
+  web-socket <操作>            WebSocket 通道管理:
     setup / config              设置/查看配置
     set <key> <value>           设置配置项
     get <key>                   获取配置项
@@ -404,6 +461,18 @@ pub(super) fn cli_detail(command: &str) -> Result<String, String> {
     --name / --role / --category / --tags / --address / --capabilities
   enable / disable / start / stop   启用/禁用集群
   reset --hard                  重置集群配置
+
+  pair <地址>                   配对新对端（自动探测 UDP/RPC 端口，经 RPC 取真实 ID 写入 peers.toml）
+
+  identity <操作>               节点身份管理:
+    show                        显示运行时身份（peers.toml [node] 段 + 覆盖态）
+
+  firewall <操作>               集群端口防火墙规则管理
+
+  node                          启动轻量集群节点（发现+RPC，无 LLM）
+    --id / --port / --name / --role / --category
+
+  roaming <操作>                iroh 跨网漫游管理（身份密钥归 `quic keygen`）
 
   peers <操作>                  管理对等节点:
     list / add / remove / enable / disable
@@ -435,6 +504,9 @@ pub(super) fn cli_detail(command: &str) -> Result<String, String> {
   add-source <url>              添加技能源（GitHub）
   install-builtin [名称]        安装内置技能
   list-builtin                  列出可用的内置技能
+  verify [名称]                 lockfile 漂移检测（缺省全量）
+  install-clawhub <技能>        从 openclaw/skills 走统一漏斗安装（旧命令名保留）
+  learn <来源>                  从目录/URL/对话/笔记学习并生成技能
 
   source <操作>                 管理技能源:
     list / add <url> / remove <名称>
@@ -463,6 +535,15 @@ pub(super) fn cli_detail(command: &str) -> Result<String, String> {
   learning <操作>               学习管理:
     status / enable / disable
     history --limit <N>
+
+  learn [话题]                  学习对话（扫描→组包→四阶段对话→沉淀）
+  test <技能> [--test 名]       技能行为回归测试（A 线回归网；无 tests 段诚实跳过）
+  replay-extract                turn WAL 失败记录提取为重放用例（C 线）
+  replay-list                   列出重放用例（pending/confirmed）
+  replay-confirm [名]           确认 pending 用例入回归集
+  replay-run                    重放已确认失败用例（断言零错误）
+  optimize <技能> --op <算子>   微优化候选生成（D 线；reorder_constraints/add_example/clarify_constraints/inject_failure_case）
+  insights <操作>               洞察台账管理
 
 示例:
   nemesisbot forge status
@@ -521,6 +602,12 @@ pub(super) fn cli_detail(command: &str) -> Result<String, String> {
   approve <id>                  批准待审批操作
   deny <id> [原因]              拒绝待审批操作
   pending                       列出待审批操作
+
+  scanner <操作>                病毒扫描引擎管理（独立 `scanner` 命令更全）
+  approvals <操作>              审批记忆规则表:
+    list / clear                「总是允许」落盘规则（approval_rules.json）
+
+  calibrate                     安全校准：样本批量重放过规则管线（永不执行）
 
 示例:
   nemesisbot security status
@@ -663,8 +750,359 @@ LLM 日志:
 显示 NemesisBot 版本号和构建信息。"#
             .to_string()),
 
+        "onboard" => Ok(r#"## onboard — 初始化配置与工作空间
+
+用法: `nemesisbot onboard default [--local]`
+
+释放默认配置模板与工作空间模板（不覆盖已有文件）。`--local` 使用当前目录 `./.nemesisbot` 而不是 `~/.nemesisbot`。"#
+            .to_string()),
+
+        "gateway" => Ok(r#"## gateway — 启动网关服务
+
+用法: `nemesisbot gateway [--local]`
+
+装配并运行 Web UI + 消息通道 + Agent 引擎 + 安全管线等全部子系统。`--local` 配置落当前目录 `./.nemesisbot`（多实例部署）。"#
+            .to_string()),
+
+        "run" => Ok(r#"## run — headless 单任务（跑完即退）
+
+用法: `nemesisbot run [任务文本|-] [--format text|json] [--mode plan|build] [--workspace DIR] [--max-turns N] [--model ALIAS]`
+
+无端口、无 gateway。`-` 或缺省读 stdin。`--format json` 输出 NDJSON 事件流（tool_start/tool_end/turn/final/error）；stdout 只承载最终回复，日志一律 stderr。`--mode plan` 只读模式（写类拦截，仅 plans/ 放行）。退出码 0=final / 1=装配失败或仅 error。安全 8 层与 gateway 同源。"#
+            .to_string()),
+
+        "acp" => Ok(r#"## acp — ACP 编辑器接入
+
+用法: `nemesisbot acp`
+
+以 stdio ndjson JSON-RPC 提供 ACP server（Zed 等编辑器客户端接入）。审批桥接到编辑器 permission 请求（超时/断连=拒绝）。"#
+            .to_string()),
+
+        "mcp-serve" => Ok(r#"## mcp-serve — stdio MCP 服务器形态
+
+用法: `nemesisbot mcp-serve`
+
+把 NemesisBot 能力暴露为 stdio MCP 服务器（Claude Code / Cursor 等零改动接入；安全管线同源生效）。"#
+            .to_string()),
+
+        "agent" => Ok(r#"## agent — Agent 配置管理
+
+用法: `nemesisbot agent <子命令>`
+
+子命令:
+  set    设置 agent 配置项"#
+            .to_string()),
+
+        "assets" => Ok(r#"## assets — 资产盘点快照 / AI-BOM（只读）
+
+用法: `nemesisbot assets <子命令>`
+
+子命令:
+  inventory    打印资产盘点快照原文（gateway 落盘的 inventory.json）
+  bom          打印 AI-BOM 视图（framework/model/skill/tool_plugin/mcp 五类投影）"#
+            .to_string()),
+
+        "history" => Ok(r#"## history — 会话历史全文搜索
+
+用法: `nemesisbot history <子命令>`
+
+子命令:
+  search <查询>    全文搜索全部会话聊天日志（FTS）
+  reindex          强制全量重建索引（常规为按 mtime 增量）"#
+            .to_string()),
+
+        "session" => Ok(r#"## session — 会话管理（轮次边界分叉）
+
+用法: `nemesisbot session <子命令>`
+
+子命令:
+  list               列出本 home 的会话（key / turns / messages / updated）
+  show <key>         显示某会话的轮次边界表（选 fork --at 用）
+  fork <key> --at <N>  在轮次边界分叉出新会话 key"#
+            .to_string()),
+
+        "credentials" => Ok(r#"## credentials — 模型 API key 迁移 credentials.yaml
+
+用法: `nemesisbot credentials <子命令>`
+
+子命令:
+  import    把 config.json 明文模型 key 迁移到 workspace/config/credentials.yaml（0600）并改写为 `yaml:<别名>` 引用（幂等）
+
+注意: 此处的 credentials 是模型 API key；与 `auth` 的 OAuth 凭据存储、`vault` 的通用秘密存储是三回事。"#
+            .to_string()),
+
+        "vault" => Ok(r#"## vault — 凭据 vault（通用加密秘密存储）
+
+用法: `nemesisbot vault <子命令>`
+
+子命令:
+  set <别名>                     写入/轮换别名（secret 隐藏输入不回显）
+  list                           列出全部别名与元数据（永不显示值）
+  remove <别名>                  删除别名（需确认）
+  migrate                        模型 API key 迁入 vault（配置回写 `vault:<别名>`，幂等）
+  bind <别名> --tool <T> --slot <S>  绑定域白名单（该工具槽位免审批卡使用；出域审计拒绝）
+  unbind <别名>                  解除绑定（--tool/--slot 可选，缺省批量删）
+  bindings                       列出全部域绑定"#
+            .to_string()),
+
+        "profile" => Ok(r#"## profile — 用户习惯画像（自进化 B 线）
+
+用法: `nemesisbot profile <子命令>`
+
+子命令:
+  list                 显示习惯条目与开关状态
+  enable               启用画像（记录 enabled_at 仅向前锚点）
+  disable              停用画像（既有条目保留）
+  veto <子串>          否决含子串的习惯（负样本）
+  forget <子串>        遗忘含子串的习惯（可重生）
+  pin <子串> [--unpin] 钉住/解除钉住（不衰减）
+  move <子串>          在对话/项目画像间移动习惯条目"#
+            .to_string()),
+
+        "connector" => Ok(r#"## connector — 连接器注册表 / 回执 / 台账
+
+用法: `nemesisbot connector <子命令>`
+
+子命令:
+  list                       列出已注册连接器
+  receipts                   最近回执（新→旧）
+  ledger                     纸经纪台账（cash/positions/orders）
+  demo                       30 秒零账号零网络信任承诺演示
+  sign <目录>                签名 connector.toml（Ed25519 分离签名）
+  keygen                     生成 Ed25519 密钥对
+  trust / trust-list / trust-revoke    信任库管理（与 skills 共享）
+  add-source / remove-source / sources  远程源管理（git clone 本地缓存）
+  search <查询>              跨远程源搜索连接器
+  install <源/名>            从远程源安装进工作区注册表
+  add                        在工作区注册表创建连接器（先验证后落盘）
+  enable / disable <名>      启用/禁用（sidecar 位，manifest 不动）
+  remove <名>                删除连接器目录（回执/台账保留）"#
+            .to_string()),
+
+        "issue" => Ok(r#"## issue — 看板 issue 管理（托管 agent 看板）
+
+用法: `nemesisbot issue <子命令>`
+
+子命令:
+  create <标题> [--priority N]    建单（NB-N 自动编号）
+  list / get <编号>               列出 / 查看单据
+  assign <编号> --assignee <a>    指派（typed `type:id` 形态；--clear 解除）
+  status <编号> <状态>            状态机转移（backlog/todo/in_progress/in_review/done/cancelled）
+  reopen <编号>                   取消单重开回 backlog
+  comment <编号> <内容>           评论
+  projects                        列出项目
+  stats                           按状态统计"#
+            .to_string()),
+
+        "mail" => Ok(r#"## mail — 邮件基础设施
+
+用法: `nemesisbot mail <子命令>`
+
+子命令:
+  status            DLL 在场/总闸/名册/句柄（只读）
+  list              列出邮件（可过滤）
+  send              发送邮件（正文来自 --body 或 --stdin）
+  addr <操作>       地址簿管理"#
+            .to_string()),
+
+        "autopilot" => Ok(r#"## autopilot — 看板定时建单规则（cron 触发）
+
+用法: `nemesisbot autopilot <子命令>`
+
+子命令:
+  list                            列出全部规则
+  create <名> --cron <表达式> --title <模板>   建规则（{date} 模板变量；--target 定向；--auto-plan 建单即拆解）
+  update <id>                     更新规则字段（只改提供的字段）
+  enable / disable <id>           启用/禁用规则
+  remove <id>                     删除规则
+  run <id>                        手动触发一次（定向规则需运行中集群，CLI 诚实拒绝）
+  runs <id>                       运行历史（产出的 issue，新→旧）"#
+            .to_string()),
+
+        "dossier" => Ok(r#"## dossier — 任务档案导出（自包含目录）
+
+用法: `nemesisbot dossier export <NB-N 或 --project-id N> [--out DIR]`
+
+子命令:
+  export    导出单据树（全部后代记录）或整项目记录到 logs/dossiers/（README/timeline/audit jsonl/records/inbox-unplaced/usage.csv）"#
+            .to_string()),
+
+        "plugin" => Ok(r#"## plugin — WASM 插件管理
+
+用法: `nemesisbot plugin <子命令>`
+
+子命令:
+  install <目录> [--yes]              安装（九步装配漏斗；--allow-unsigned 显式豁免）
+  upgrade <目录> [--yes]              升级（重跑漏斗，数据目录保留）
+  uninstall <slug>                    卸载（删载荷留数据目录）
+  enable / disable <slug>             启用/禁用（改实例配置，gateway 重启后生效）
+  list / info [slug]                  已装列表 / 详情（磁盘只读）
+  sign <manifest> --key <hex64>       签名 plugin.toml（Ed25519）
+  keygen                              生成 Ed25519 密钥对
+  trust / trust-list / trust-revoke / trust-remove    信任库管理
+  panel-llm [on|off]                  面板 LLM 总闸（无参=查看）"#
+            .to_string()),
+
+        "sandbox" => Ok(r#"## sandbox — Sandboxie 沙盒管理（执行体隔离 Layer 2）
+
+用法: `nemesisbot sandbox <子命令>`
+
+子命令:
+  install                        下载+校验+解压 Sandboxie 运行时（无 UAC）
+  start                          激活引擎（装驱动+服务+ini+启动 SbieSvc；触发 UAC）
+  stop [--purge]                 停止+卸载引擎（--purge 连文件删）
+  status                         安装/服务状态
+  pending [--box-name N]         列出盒里待提交工作区文件
+  commit [--all|<子串>...]       待提交文件回真盘（镜像写是「写盘即生效」承诺本体）
+  clear [--force]                清空盒内容（丢弃待提交）
+  kill [--box-name N]            强杀盒内全部进程并弃内容（eval/executor 失控用）"#
+            .to_string()),
+
+        "quic" => Ok(r#"## quic — QUIC 漫游管理（与集群解耦）
+
+用法: `nemesisbot quic <子命令>`
+
+子命令:
+  relay             启动自建 QUIC 中继服务器（内网穿透；运行面在 plugin_roaming 插件）
+  keygen            生成本机 iroh 漫游身份密钥
+  status            查看配置解析产物与证书状态（只读）"#
+            .to_string()),
+
+        "system" => Ok(r#"## system — 系统集成（安装器契约面）
+
+用法: `nemesisbot system <子命令>`
+
+子命令:
+  register           注册系统集成（ARP 卸载面板/开机自启/快捷方式；逐项 best-effort）
+  unregister         注销系统集成（幂等）
+  status             查看集成状态（ARP/自启/快捷方式各条目）
+  cert               信任根证书库管理（独立操作，默认永不安装）"#
+            .to_string()),
+
+        "vm" => Ok(r#"## vm — VM 环境自举（QEMU）
+
+用法: `nemesisbot vm <子命令>`
+
+子命令:
+  install            安装 QEMU 环境（平台矩阵配置分派；幂等）
+  enable-accel       硬件加速引导（Windows=WHPX 一键；Linux=打印引导命令）
+  status             环境自举状态全量（只读探针）
+  build-image        构建基础镜像（前台等待）
+  sync-status        项目工作副本同步状态（只读）
+  commit             工作副本一键提交（VM 修改回拉宿主；冲突指向 Dashboard）
+  resync             强制重同步（VM 未回传改动将丢失；交互确认）"#
+            .to_string()),
+
+        "eval" => Ok(r#"## eval — 沙盒安全评估（风险三分类）
+
+用法: `nemesisbot eval <子命令>`
+
+子命令:
+  prompt <文本> [--fail-on-risk]    沙盒内跑 agent 评估提示词（有风险/安全/未知）
+  skill <名称>                      评估已安装技能（workspace→global→builtin 解析）
+  rules <操作>                      评估规则管理（new/list/show/add/edit/remove/enable/disable/reset）"#
+            .to_string()),
+
+        "ziwei" => Ok(r#"## ziwei — 紫微系统（三方程序受控接管）
+
+用法: `nemesisbot ziwei <子命令>`
+
+config `ziwei.enabled` 运行闸默认关。
+
+子命令:
+  list / show <名>           Profile 列表 / 详情
+  setup                      进入配置期（步骤化子命令）
+  attach                     使用期附加（经 gateway 转发）
+  detach                     卸载会话（降险动作）
+  status                     活动会话列表
+  invoke                     手动触发子工具
+  verify                     手动触发附加验证链
+  refresh / refresh-confirm  stale Profile 找回 / 找回确认
+  revoke                     吊销 profile（终态不可复活）
+  remove                     删除 profile（含确认）"#
+            .to_string()),
+
+        "voice" => Ok(r#"## voice — 本地语音管线
+
+用法: `nemesisbot voice <子命令>`
+
+子命令:
+  status            语音环境状态
+  setup             环境部署（下载库+模型）
+  download          下载全部语音模型
+  tts <文本>        TTS 测试
+  stt               STT 听写测试（麦克风→VAD→STT→文本）
+  chat              完整语音对话环（麦克风→VAD→STT→TTS→播放）
+  devices           列出音频设备"#
+            .to_string()),
+
+        "loop" | "loops" => Ok(r#"## loop — 自配速 durable loop（别名 loops）
+
+用法: `nemesisbot loop <子命令>`
+
+子命令:
+  create            创建 loop（绑定已有会话；不静默建会话）
+  list              列出全部 loop
+  show <id>         单个 loop 详情（含 progress_log）
+  pause <id>        暂停（人操作；驱动器停止投递）
+  resume <id>       恢复（paused/parked → active）
+  remove <id>       删除 loop 状态文件"#
+            .to_string()),
+
+        "persona" => Ok(r#"## persona — AI 人格管理
+
+用法: `nemesisbot persona <子命令>`
+
+子命令:
+  list              列出已装人格
+  search <关键词>   搜索人格市场
+  install <名>      从市场安装人格
+  activate <名>     激活人格（Agent 用新 system_prompt 重启，不重启进程）
+  remove <名>       移除已装人格
+  current           显示当前激活人格
+  restore           恢复默认人格"#
+            .to_string()),
+
+        "estop" => Ok(r#"## estop — 急停开关（Kill Switch）
+
+用法: `nemesisbot estop [--release] [--status]`
+
+一键冻结全部 agent 活动（CLI/托盘/Dashboard/WSAPI 四入口同一状态）。裸 `estop` 触发；`--release` 释放恢复；`--status` 查询。"#
+            .to_string()),
+
+        "selfupdate" => Ok(r#"## selfupdate — 版本自切换通道
+
+用法: `nemesisbot selfupdate <子命令>`
+
+子命令:
+  check             对照当前构建 commit 检查最新 Release 资产（离线可用）
+  apply             经运行中 gateway 应用更新（无待发包则下载；v4 签名验证在 gateway 侧）
+  status            当前身份 + 待处理 journal / 本地待发包（离线可用）"#
+            .to_string()),
+
+        "migrate" => Ok(r#"## migrate — OpenClaw 数据迁移
+
+用法: `nemesisbot migrate [--dry-run] [--config-only] [--workspace-only]`
+
+从 OpenClaw 迁移配置与工作空间数据。`--dry-run` 仅预览；`--config-only`/`--workspace-only` 只迁移对应部分。"#
+            .to_string()),
+
+        "dashboard" => Ok(r#"## dashboard — 打开 Dashboard UI
+
+用法: `nemesisbot dashboard`
+
+自动启动网关（未运行时）并打开 Dashboard 界面。"#
+            .to_string()),
+
+        "shutdown" => Ok(r#"## shutdown — 优雅关机
+
+用法: `nemesisbot shutdown`
+
+触发运行中服务的优雅停机协议（不硬杀）。"#
+            .to_string()),
+
         _ => Err(format!(
-            "Unknown command '{}'. Call cli_reference without parameters to see all commands.",
+            "Unknown command '{}'. Call cli_reference without parameters to see all commands. 注意：此目录可能滞后于实际 CLI，请以 `nemesisbot --help` 实测为准。",
             command
         )),
     }

@@ -49,7 +49,9 @@ fn test_cli_detail_channel_arm() {
     let s = cli_detail("channel").unwrap();
     assert!(s.contains("channel"));
     assert!(s.contains("enable"));
-    assert!(s.contains("websocket"));
+    // 真实 clap 子命令名是 `web-socket`（BUG-20261128-023 漂移修复：旧目录
+    // 写 `websocket`，worker 按目录拼命令会假阴性）。
+    assert!(s.contains("web-socket"));
     assert!(s.contains("external"));
 }
 
