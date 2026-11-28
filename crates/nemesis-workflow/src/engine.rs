@@ -33,6 +33,25 @@ fn path_dbg(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// BUG-20261129-004：取消后的孤儿检测延时。活收口尾段（run_async/
+/// resume）在 cancel token fire 后毫秒级完成摘 token；超窗 token 仍在
+/// = run future 已死（孤儿）→ 兜底补账本收口 + 终态事件。取值宽于
+/// 收口慢路径（persist IO / 事件分发）的合理上界，不追求精确。
+const WORKFLOW_ORPHAN_CANCEL_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Extract the parent execution id from a `TriggerSource::SubWorkflow`
+/// trigger, if present. Other trigger kinds have no engine-visible parent
+/// link（AgentTool 的递归深度走 call_stack，与级联无关）。
+fn subworkflow_parent_of(trigger: &Option<TriggerSource>) -> Option<String> {
+    match trigger {
+        Some(TriggerSource::SubWorkflow {
+            parent_execution_id,
+            ..
+        }) => Some(parent_execution_id.clone()),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Workflow summary types (UI API response shape)
 // ---------------------------------------------------------------------------
@@ -3032,6 +3051,81 @@ impl WorkflowEngine {
                 None,
             );
             self.emit_terminal_event(&updated).await;
+        } else {
+            // BUG-20261129-004 孤儿检测兜底：token 在场臂的判别前提是
+            // 「有活的 run_async/resume future 会在收口尾段摘 token +
+            // settle + emit」——但该 future 可能已死（sub_workflow 节点
+            // 内联 await `engine.run`，父执行取消时 scheduler 的 select
+            // 臂丢 executor future → 内层 run future 连带 drop → 子执行
+            // 无人收口：状态被本方法翻 Cancelled、token 永滞、settle/
+            // emit 被本臂跳过，workflow_chat 互斥守卫等不到 Cancelled
+            // 事件永久滞留）。延时复查：活收口尾段必摘 token
+            // （BUG-20261120-038 语义），超窗 token 仍在 = 孤儿 → 补
+            // settle + 终态事件 + 摘 token。摘除同时是「至多补一次」的
+            // 栅栏（活收口先到先摘，本任务看到缺席即退）。非 Arc 构造
+            // （CLI bare engine）upgrade 不到 → 诚实跳过（cron spawn
+            // 同款纪律：无常驻运行时则无此兜底面）。
+            if let Some(engine) = self.self_weak.get().and_then(|w| w.upgrade()) {
+                let orphan_id = id.to_string();
+                tokio::spawn(async move {
+                    tokio::time::sleep(WORKFLOW_ORPHAN_CANCEL_CHECK_DELAY).await;
+                    if engine.cancel_tokens.remove(&orphan_id).is_some() {
+                        warn!(
+                            target: "nemesis_workflow::engine",
+                            execution_id = %orphan_id,
+                            "orphaned execution detected: run future was dropped without \
+                             settling (parent cancel dropped the executor future); \
+                             settling ledger + emitting Cancelled event retroactively"
+                        );
+                        let exec = engine.executions.read().await.get(&orphan_id).cloned();
+                        if let Some(exec) = exec {
+                            nemesis_taskstore::ledger::settle_run(
+                                &nemesis_taskstore::ledger::workflow_run_id(&orphan_id),
+                                "cancelled",
+                                None,
+                            );
+                            engine.emit_terminal_event(&exec).await;
+                        }
+                    }
+                });
+            }
+        }
+
+        // BUG-20261129-004 级联取消：父执行取消时，进行中/挂起的
+        // sub_workflow 子执行已注定孤儿——父 scheduler 收口路径会丢弃
+        // sub_workflow 节点的 executor future（select 臂），子执行的
+        // run future 从此无人收口（见上方孤儿检测兜底）。逐层连带取消
+        // 把每个子送回同一完整取消路径（Waiting 子走 token 缺席臂的
+        // settle+emit；Running 子的滞留 token 由孤儿检测兜底回收）。
+        // 工作队列迭代而非递归 await（sub_workflow 链无深度上限，深链
+        // 递归 future 会膨胀）；seen 防环（注册期环闸之外的双保险）。
+        // cancel_all_running 与本级联并存幂等：级联已取消的子再被逐个
+        // cancel 时状态检查拒绝，只是 estop 返回列表少记子 id（日志面，
+        // 无功能影响）。
+        let mut cascade_queue = vec![id.to_string()];
+        let mut cascade_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(parent_id) = cascade_queue.pop() {
+            let children: Vec<String> = {
+                let execs = self.executions.read().await;
+                execs
+                    .iter()
+                    .filter(|(_, e)| {
+                        matches!(e.state, ExecutionState::Running | ExecutionState::Waiting)
+                            && subworkflow_parent_of(&e.trigger_source).as_deref()
+                                == Some(parent_id.as_str())
+                    })
+                    .map(|(cid, _)| cid.clone())
+                    .collect()
+            };
+            for child_id in children {
+                // Box::pin 断 async fn 递归（级联再经 cancel_execution 的
+                // 级联段回到此处；resume_subworkflow_node 同款先例）。
+                if cascade_seen.insert(child_id.clone())
+                    && Box::pin(self.cancel_execution(&child_id)).await.is_ok()
+                {
+                    cascade_queue.push(child_id);
+                }
+            }
         }
 
         Ok(updated)

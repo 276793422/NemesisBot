@@ -7278,3 +7278,214 @@ async fn test_start_gate_none_allows_executions() {
     assert_eq!(execution.state, ExecutionState::Running);
     assert_eq!(engine.list_executions(None).await.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261129-004 回归锁：sub_workflow 运行期孤儿化（三面联合）
+//   loop_sub.rs 内联 await engine.run + scheduler 取消臂丢 executor future
+//   + cancel_execution 的 had_inflight_token 判别器对「future 已死」失效
+//   → 子执行永停 Running（被 cancel_execution 翻 Cancelled 后无人补
+//   settle/emit）、token 永滞、workflow_chat 互斥守卫等不到 Cancelled。
+// 修复 = ①级联取消（parent_execution_id 精确随行）②孤儿检测兜底
+//   （延时复查 token，活收口先摘 = exactly-once 栅栏）。
+// ---------------------------------------------------------------------------
+
+/// 本地副本（engine.rs 私有常量——修复被 stash 时测试仍需可编译以证红）。
+const WORKFLOW_ORPHAN_CANCEL_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 拉起一个孤儿子执行的最小夹具：注册一个哑 workflow，手工 create + 装
+/// cancel token（模拟「future 已死但 token 还在」的孤儿形态——真实路径
+/// 是 sub_workflow 节点的内联 run future 被 select 臂 drop，这里直接
+/// 构造等价状态，不经 10s delay 的慢链路）。
+async fn make_orphan(
+    engine: &std::sync::Arc<WorkflowEngine>,
+    trigger: Option<crate::types::TriggerSource>,
+) -> String {
+    let exec = engine
+        .create_execution("orphan_wf", HashMap::new(), trigger)
+        .await
+        .unwrap();
+    engine
+        .cancel_tokens
+        .insert(exec.id.clone(), tokio_util::sync::CancellationToken::new());
+    exec.id
+}
+
+/// T1：级联取消——cancel_execution(P) 必须沿 SubWorkflow.parent_execution_id
+/// 链把 Running/Waiting 的后代一并取消（孙子层也到，transitivity），
+/// 且所有在途 token 在复查窗后摘净（兜底任务收口）。
+#[tokio::test]
+async fn test_bug_20261129_004_cascade_cancel_reaches_subworkflow_descendants() {
+    use crate::types::TriggerSource;
+    use std::time::Duration;
+
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "orphan_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+
+    // P ← C ← GC 三层链（手动建账，不经真实 sub_workflow 节点慢链路）。
+    let parent = make_orphan(&engine, None).await;
+    let child = make_orphan(
+        &engine,
+        Some(TriggerSource::SubWorkflow {
+            parent_execution_id: parent.clone(),
+            session_key: String::new(),
+            chat_id: String::new(),
+            sender_id: String::new(),
+        }),
+    )
+    .await;
+    let grandchild = make_orphan(
+        &engine,
+        Some(TriggerSource::SubWorkflow {
+            parent_execution_id: child.clone(),
+            session_key: String::new(),
+            chat_id: String::new(),
+            sender_id: String::new(),
+        }),
+    )
+    .await;
+
+    engine.cancel_execution(&parent).await.unwrap();
+
+    // 修复前：只翻 P 的状态，C/GC 永停 Running。修复后：级联立刻到齐。
+    for id in [&parent, &child, &grandchild] {
+        let state = engine.executions.read().await.get(id).map(|e| e.state);
+        assert_eq!(
+            state,
+            Some(ExecutionState::Cancelled),
+            "descendant {id} must be cascade-cancelled, not orphaned in Running"
+        );
+    }
+
+    // 复查窗（WORKFLOW_ORPHAN_CANCEL_CHECK_DELAY=2s）后：三个孤儿形态
+    // 的 token（无活 future 摘）都由兜底任务收走；活收口不存在于本测试。
+    tokio::time::sleep(WORKFLOW_ORPHAN_CANCEL_CHECK_DELAY + Duration::from_millis(700)).await;
+    for id in [&parent, &child, &grandchild] {
+        assert!(
+            !engine.cancel_tokens.contains_key(id),
+            "stale cancel token for {id} must be reaped by the orphan check"
+        );
+    }
+}
+
+/// T2：孤儿检测兜底——token 在场但 run future 已死时，cancel_execution
+/// 跳过即时 settle/emit（判别器语义），兜底任务必须在复查窗后补发恰好
+/// 一次 Cancelled 事件（观察者面）并摘 token。
+#[tokio::test]
+async fn test_bug_20261129_004_orphaned_cancel_gets_retro_settle_and_event() {
+    use std::time::Duration;
+
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "orphan_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+    let recorder = Arc::new(RecordingObserver::new("r3293_orphan"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+
+    let id = make_orphan(&engine, None).await;
+    engine.cancel_execution(&id).await.unwrap();
+
+    // 即刻：token 在场臂跳过 settle/emit（exactly-once 契约——此时只有
+    // create_execution 的 Started），没有活收口补事件。
+    let kinds_now = recorder.event_kinds();
+    assert!(
+        !kinds_now.contains(&"cancelled"),
+        "token-present arm must not emit immediately (exactly-once); got {kinds_now:?}"
+    );
+
+    // 复查窗后：兜底任务补发恰好一次 Cancelled + 摘 token。
+    tokio::time::sleep(WORKFLOW_ORPHAN_CANCEL_CHECK_DELAY + Duration::from_millis(700)).await;
+    let cancelled: Vec<_> = recorder
+        .snapshot()
+        .into_iter()
+        .filter(|e| matches!(e, WorkflowEvent::Cancelled { .. }))
+        .collect();
+    assert_eq!(
+        cancelled.len(),
+        1,
+        "orphan must get exactly one retro Cancelled event, got {}",
+        cancelled.len()
+    );
+    if let WorkflowEvent::Cancelled { execution_id, .. } = &cancelled[0] {
+        assert_eq!(execution_id, &id);
+    }
+    assert!(
+        !engine.cancel_tokens.contains_key(&id),
+        "orphan fallback must reap the stale token"
+    );
+}
+
+/// T3：exactly-once 栅栏——真活 run_async future 被取消时走正常收口尾段
+/// （终态 insert → 摘 token → emit），兜底任务复查时 token 已缺席 →
+/// 必须零补发（活收口先摘先赢）。同时钉死「活收口不延迟」：Cancelled
+/// 事件在复查窗之前就到达（run 尾段即时 emit）。
+#[tokio::test]
+async fn test_bug_20261129_004_live_run_tail_preempts_orphan_fallback() {
+    use std::time::Duration;
+
+    let engine = WorkflowEngine::new_arc();
+    let mut slow = make_node("slow", "delay", vec![]);
+    slow.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("orphan_wf", vec![slow]))
+        .unwrap();
+    let recorder = Arc::new(RecordingObserver::new("r3293_live"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+
+    let id = engine
+        .clone()
+        .start_async("orphan_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    // 等 token 装载（run_async 真正起飞），避免撞「cancel 先于 insert」
+    // 的走 token 缺席臂竞态——本测试只考 token 在场臂。
+    loop {
+        if engine.cancel_tokens.contains_key(&id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    engine.cancel_execution(&id).await.unwrap();
+
+    // 活收口：run_async 的取消臂即时 emit（不等复查窗）。
+    let cancelled_after_live_tail = |r: &RecordingObserver| {
+        r.snapshot()
+            .into_iter()
+            .filter(|e| matches!(e, WorkflowEvent::Cancelled { .. }))
+            .count()
+    };
+    tokio::time::timeout(Duration::from_millis(1500), async {
+        loop {
+            if cancelled_after_live_tail(&recorder) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("live run tail must emit Cancelled promptly, not after the orphan check window");
+
+    // 复查窗过后：仍恰好一次——兜底任务见到 token 已被活收口摘走，
+    // 不得重复 settle/emit。
+    tokio::time::sleep(WORKFLOW_ORPHAN_CANCEL_CHECK_DELAY + Duration::from_millis(700)).await;
+    assert_eq!(
+        cancelled_after_live_tail(&recorder),
+        1,
+        "orphan fallback must not double-emit after the live tail already settled"
+    );
+    assert!(!engine.cancel_tokens.contains_key(&id));
+}
