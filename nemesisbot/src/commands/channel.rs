@@ -819,8 +819,12 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                                 .creation_flags(0x0800_0000)
                                 .output();
                         }
+                        // BUG-20261128-035：std Child::id() 恒返 u32（tokio 的
+                        // 才是 Option<u32>）——if let Some 形态在 cfg(not(windows))
+                        // 下 E0308，作者 Windows 本地编译不到此臂故漏。
                         #[cfg(not(target_os = "windows"))]
-                        if let Some(pid) = child.id() {
+                        {
+                            let pid = child.id();
                             let _ = std::process::Command::new("kill")
                                 .args(["-TERM", "--", &format!("-{pid}")])
                                 .output();

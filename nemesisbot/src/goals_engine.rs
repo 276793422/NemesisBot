@@ -25,8 +25,13 @@
 //! 二分）装进 WorkspaceBoundary（主 agent / 集群 worker / executor 子
 //! 进程）；非 goals feature 构建 = None（不设防）。
 
+// BUG-20261128-035：HashMap/PathBuf 仅 goals feature 门内使用，无条件
+// use 在关 feature 构建（ET 裁剪矩阵等）产生 unused_imports 警告——按门拆分。
+#[cfg(feature = "goals")]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "goals")]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// 目标系统文件保护闭包（WorkspaceBoundary.goals_guard 供给面）。
