@@ -340,6 +340,51 @@ fn test_migration_corrupt_old_file_warns_loudly() {
     );
 }
 
+/// (BUG-20261129-014 回归锁) 迁移臂：旧位置读入成功但**落盘失败**必须
+/// loud——此前 `let _ = mgr.save_atomic()` 静默吞错 + info 无条件宣称
+/// 「migrated」（磁盘满/权限/state 段被文件占位等落盘失败时日志谎报迁移
+/// 成功、失败零痕迹）。数据面：读入成功 ⇒ 内存态保留旧值；旧文件保留
+/// 现场（重启迁移重试路径）。
+#[test]
+fn test_migration_save_failure_warns_loudly() {
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path();
+    // 旧位置合法可读；新位置「state」段被普通文件占位 ⇒ mkdir 失败
+    // ⇒ 迁移落盘必败（确定性制造，不依赖注入钩子）。
+    let old_state = WorkspaceState {
+        last_channel: "rpc:node1".to_string(),
+        last_chat_id: "old_chat".to_string(),
+        timestamp: Local::now(),
+    };
+    fs::write(
+        workspace.join("state.json"),
+        serde_json::to_string_pretty(&old_state).unwrap(),
+    )
+    .unwrap();
+    fs::write(workspace.join("state"), "not a directory").unwrap();
+
+    let (buf, _guard) = warn_capture_setup_w26();
+    let mgr = WorkspaceStateManager::new(workspace);
+    // 数据面：读入成功 ⇒ 内存态保留旧值（落盘失败不回滚内存）。
+    assert_eq!(mgr.get_last_channel(), "rpc:node1");
+    assert_eq!(mgr.get_last_chat_id(), "old_chat");
+    // 落盘失败 ⇒ 新位置不得存在（info 谎报「migrated」的物证缺失）。
+    assert!(
+        !workspace.join("state/state.json").exists(),
+        "落盘失败时新位置 state.json 不应存在"
+    );
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("迁移读入成功但落盘失败"),
+        "迁移落盘失败必须 loud 警告，实际日志：{log}"
+    );
+    // 旧文件保留现场（下次保存覆盖 / 重启迁移重试）。
+    assert!(workspace.join("state.json").exists());
+}
+
 #[test]
 fn test_new_manager_with_valid_state_file() {
     let tmp = TempDir::new().unwrap();

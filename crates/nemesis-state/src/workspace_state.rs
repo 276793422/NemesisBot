@@ -92,13 +92,24 @@ impl WorkspaceStateManager {
                 match loaded {
                     Ok(state) => {
                         *mgr.state.write() = state;
-                        // Migrate to new location
-                        let _ = mgr.save_atomic();
-                        tracing::info!(
-                            "state: migrated state from {:?} to {:?}",
-                            old_state_file,
-                            mgr.state_file
-                        );
+                        // Migrate to new location.（BUG-20261129-014）落盘
+                        // 失败必须 loud——读/解析失败臂（BUG-20261114-026）
+                        // 已 loud，落盘臂此前 `let _ =` 静默吞错 + info 无条件
+                        // 宣称「migrated」：磁盘满/权限/state 段被文件占位等
+                        // 落盘失败时日志谎报迁移成功、失败零痕迹。失败时内存
+                        // 态仍保留旧值（数据有效，下次 set_* 照常落新位置），
+                        // 旧文件保留现场（重启迁移重试路径不变）。
+                        match mgr.save_atomic() {
+                            Ok(()) => tracing::info!(
+                                "state: migrated state from {:?} to {:?}",
+                                old_state_file,
+                                mgr.state_file
+                            ),
+                            Err(e) => tracing::warn!(
+                                error = %e,
+                                "state: 迁移读入成功但落盘失败，按内存态继续（旧文件保留现场，下次保存/重启迁移重试）"
+                            ),
+                        }
                     }
                     Err(e) => tracing::warn!(
                         error = %e,
