@@ -491,3 +491,54 @@ fn l_loop_mode_valid_values_no_warning() {
         assert!(lint(&w).is_empty(), "config={config}: {:?}", lint(&w));
     }
 }
+
+// BUG-20261129-007（F4）：NodeDef.timeout 契约是 Go 形态，parse_duration 是
+// 真子集（复数/复合/毫秒/天全拒），timeout_duration() 对解析失败静默落
+// None = 节点无限超时零预警。草稿期点名让作者当轮自纠。
+
+#[test]
+fn l_timeout_unparsable_forms_warn() {
+    for t in ["1.5s", "2m30s", "500ms", "30d", "abc"] {
+        let mut n = node("n1", "http", serde_json::json!({"url": "https://x"}));
+        n.timeout = Some(t.into());
+        let w = wf(
+            vec![n],
+            vec![TriggerConfig {
+                trigger_type: "cron".into(),
+                config: HashMap::new(),
+            }],
+        );
+        let warnings = lint(&w);
+        assert_eq!(warnings.len(), 1, "timeout={t:?}: {warnings:?}");
+        assert!(
+            warnings[0].contains("n1") && warnings[0].contains(t) && warnings[0].contains("不限时"),
+            "warning 必须点名节点、原文值并说明静默不限时后果: {}",
+            warnings[0]
+        );
+    }
+}
+
+#[test]
+fn l_timeout_parsable_and_zero_stay_silent() {
+    // 可解析形态（"30s"/"90"）与零时长（"0"/"0s"——成功解析 + 刻意不限
+    // 语义，types 消费缝 doc 钉定）都不预警；timeout 缺席同样不预警。
+    // 反向锚：修复不得把合法/零时长形态误伤。
+    for t in [
+        None,
+        Some("30s".to_string()),
+        Some("90".to_string()),
+        Some("0".to_string()),
+        Some("0s".to_string()),
+    ] {
+        let mut n = node("n1", "http", serde_json::json!({"url": "https://x"}));
+        n.timeout = t.clone();
+        let w = wf(
+            vec![n],
+            vec![TriggerConfig {
+                trigger_type: "cron".into(),
+                config: HashMap::new(),
+            }],
+        );
+        assert!(lint(&w).is_empty(), "timeout={t:?}: {:?}", lint(&w));
+    }
+}

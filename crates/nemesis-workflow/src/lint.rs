@@ -26,6 +26,7 @@ pub fn lint(wf: &Workflow) -> Vec<String> {
             _ => {}
         }
         lint_output_placeholder(node, &mut warnings);
+        lint_node_timeout(node, &mut warnings);
     }
     if wf.triggers.is_empty() {
         warnings.push(
@@ -146,6 +147,27 @@ fn lint_loop_mode(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
              0 轮即「正常完成」的静默空转。items 填节点引用（如 {{{{上游节点id.字段}}}}）\
              或字面量数组",
             node.id
+        ));
+    }
+}
+
+/// 节点 `timeout` 字段解析失败预警（BUG-20261129-007，F4 消费缝面）：
+/// parse_duration 是 Go 全量形态的**真子集**（复数 "1.5s"/复合 "2m30s"/
+/// 毫秒 "500ms"/天 "30d" 均不接受，子集语义被 types 测试钉死），而
+/// `NodeDef::timeout_duration()` 对解析失败静默落 None——节点**无限超时**
+/// 运行，零报错。手写 YAML / Go 共享定义文件 / 生成器幻觉都可能带进
+/// 不可解析形态，草稿期点名让作者当轮自纠。零时长（"0"/"0s"）是成功
+/// 解析 + 刻意不限语义（types.rs 消费缝 doc），不预警。
+fn lint_node_timeout(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
+    if let Some(t) = node.timeout.as_deref()
+        && crate::types::parse_duration(t).is_none()
+    {
+        warnings.push(format!(
+            "节点 {}（{}）timeout=\"{t}\" 无法解析——超时会被静默忽略，节点不限时运行。\
+             接受的形态：纯数字秒（\"90\"）或 \"30s\"/\"5m\"/\"1h\"；不支持小数 \
+             （\"1.5s\"）、复合（\"2m30s\"）、毫秒（\"500ms\"）与天/周单位（\"30d\"）\
+             ——亚秒/高精度需求用节点自身的时间配置（delay 的 seconds 支持小数）",
+            node.id, node.node_type
         ));
     }
 }
