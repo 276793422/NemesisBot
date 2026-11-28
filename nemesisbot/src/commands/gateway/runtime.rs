@@ -185,6 +185,26 @@ pub(crate) struct RuntimeHandoff {
     pub enabled_channels: Vec<String>,
 }
 
+/// 通道管理器停机槽（BUG-20261128-033）：Step 24 teardown 的同步通道停机臂
+/// 取数槽。init_services 装配通道时注册（services.rs），进程单例、只写一次
+/// ——gateway 装配一次、teardown 一次，OnceLock 语义足够（幂等重启路径
+/// 不重建通道管理器）。此前 gateway 唯一的通道停机路径在 svc_mgr.shutdown()
+/// → bot_service.stop() → stop_all() 第 6 步，但 ChannelManagerAdapter.stop
+/// 是 fire-and-forget（tokio::spawn 不等完成）——spawn 的 stop_all 与
+/// teardown 及进程退出赛跑，各通道 stop() 近乎从不真正执行，持有 OS 子进程
+/// 树的通道随之孤儿化（R3258 实证：graceful 停机后 external input 链 3 个
+/// python 进程残留，孤儿链还会抢下一个实例的消息）。
+static TEARDOWN_CHANNEL_MANAGER: std::sync::OnceLock<
+    Arc<nemesis_channels::manager::ChannelManager>,
+> = std::sync::OnceLock::new();
+
+/// init_services 装配通道后注册（Step 24 停机臂取数用）。
+pub(crate) fn register_teardown_channel_manager(
+    cm: Arc<nemesis_channels::manager::ChannelManager>,
+) {
+    let _ = TEARDOWN_CHANNEL_MANAGER.set(cm);
+}
+
 /// Step 18–24 运行期与关停（计划 §4.2 B7）。
 #[cfg_attr(
     not(any(feature = "security", feature = "health", feature = "cluster")),
@@ -2002,6 +2022,29 @@ pub(crate) async fn run_runtime(
         }
     } else {
         info!("[Gateway] shutdown_drain_secs=0：跳过停机 drain");
+    }
+
+    // 通道停机臂（BUG-20261128-033）：同步有界等待通道收尾。此前唯一停机
+    // 路径 svc_mgr.shutdown() → bot_service.stop() → stop_all() 第 6 步的
+    // ChannelManagerAdapter.stop 是 fire-and-forget——spawn 的 stop_all 与
+    // 本 teardown 及进程退出赛跑，通道 stop() 近乎从不真正执行，external
+    // 等持有 OS 子进程树的通道孤儿化（R3258 实证 3 个 python 残留）。时序
+    // 在 drain 之后：在途 turn 的出站回复不受影响；10s 上限——个别通道
+    // 卡死不绑架整个停机链，超时诚实 warn 继续。先于 svc_mgr.shutdown()
+    // 的兜底臂（stop_all 幂等：shutdown flag 重入安全、通道 stop 二次
+    // 调用 no-op）。所有停机源（Ctrl+C / 托盘 / /api/internal / selfupdate）
+    // 都汇流到 Step 24，本臂是唯一权威 await 点。
+    if let Some(channel_manager) = TEARDOWN_CHANNEL_MANAGER.get() {
+        let channel_stop = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            channel_manager.stop_all(),
+        )
+        .await;
+        match channel_stop {
+            Ok(Ok(())) => info!("[Gateway] Channel manager stopped (awaited)"),
+            Ok(Err(e)) => warn!("[Gateway] Channel manager stop error: {e}"),
+            Err(_) => warn!("[Gateway] Channel manager stop timed out (10s), continuing teardown"),
+        }
     }
 
     svc_mgr.shutdown();

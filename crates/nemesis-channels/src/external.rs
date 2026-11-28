@@ -42,6 +42,46 @@ const INPUT_STABLE_SECS: u64 = 60;
 const INPUT_MAX_CONSECUTIVE_FAST_DEATHS: u32 = 5;
 /// 死亡诊断日志携带的 stderr 尾部行数上限。
 const INPUT_STDERR_TAIL_LINES: usize = 8;
+/// stop() 对 input reader task 收尾的有界等待（秒）——超时/异常升级为直接
+/// 树杀当前记录的子进程（停机不被个别卡死的收尾绑架）。
+const INPUT_STOP_WAIT_SECS: u64 = 5;
+/// output EXE stdin 写入超时（秒）——挂死/不消费 stdin 的 output 脚本此前
+/// 把 send 任务无限挂住。
+const OUTPUT_WRITE_TIMEOUT_SECS: u64 = 30;
+/// output EXE 退出等待超时（秒）——超时树杀（停机治理面：进程终态 =
+/// 收杀一切执行体，先例 LSP C5 / PTY BUG-20261126-098）。
+const OUTPUT_WAIT_TIMEOUT_SECS: u64 = 30;
+
+/// 树杀（对齐 nemesis-agent `background_registry::tree_kill` 同款语义；
+/// 该真身 pub(crate) 跨 crate 不可达，与本仓 security middleware / tools
+/// shell / guest tools 各持副本同约定）：干掉 pid 及其整棵子树。
+///
+/// - Windows：`taskkill /T /F /PID`（OS 级树遍历——cmd 包装层杀掉时脚本
+///   派生的孙进程不孤儿化，BUG-20261128-033）。
+/// - Unix：`kill -TERM -- -pid`（进程组杀；前提 spawn 时 `process_group(0)`，
+///   本模块两侧 spawn 已接）。
+///
+/// 指令失败（进程已退/PID 复用/kill 不存在）一律忽略——调用方随后的
+/// wait 收尸才是权威依据。
+async fn tree_kill(pid: u32) {
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        // CREATE_NO_WINDOW（BUG-20261122-017 同款）：gateway 以 windows
+        // 子系统构建，控制台子进程缺旗标会弹黑窗。
+        c.creation_flags(0x0800_0000);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("kill");
+        c.args(["-TERM", "--", &format!("-{}", pid)]);
+        c
+    };
+    // 2s 上限：树杀指令本身不该卡住停机链（与 background_registry 同纪律）。
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), cmd.output()).await;
+}
 
 /// External channel configuration.
 #[derive(Debug, Clone)]
@@ -74,6 +114,16 @@ pub struct ExternalChannel {
     bus_sender: broadcast::Sender<InboundMessage>,
     /// Cancellation channel for the input read loop.
     cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// input reader task 句柄（BUG-20261128-033：stop() 有界等待收尾用——
+    /// 此前 stop 发完 cancel 即返回，进程退出时 kill 可能根本没执行）。
+    input_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// 当前 input 子进程 pid（reader task 每次 spawn 成功后写入；stop()
+    /// 超时升级树杀的靶点）。None = 从未成功 spawn / 已收尾。
+    input_child_pid: Arc<parking_lot::Mutex<Option<u32>>>,
+    /// 在飞 output 子进程 pid 登记表（BUG-20261128-033：send 面任务在
+    /// gateway 停机时随进程退出被 drop，child 无父收尸——登记表是 stop 面
+    /// 唯一收尸通路）。
+    output_children: Arc<parking_lot::Mutex<Vec<u32>>>,
 }
 
 impl ExternalChannel {
@@ -100,6 +150,9 @@ impl ExternalChannel {
             running: Arc::new(AtomicBool::new(false)),
             bus_sender,
             cancel_tx: parking_lot::Mutex::new(None),
+            input_task: parking_lot::Mutex::new(None),
+            input_child_pid: Arc::new(parking_lot::Mutex::new(None)),
+            output_children: Arc::new(parking_lot::Mutex::new(Vec::new())),
         })
     }
 
@@ -162,11 +215,12 @@ impl ExternalChannel {
         let running = self.running.clone();
         let base = Arc::clone(&self.base);
         let bus_sender = self.bus_sender.clone();
+        let input_child_pid = Arc::clone(&self.input_child_pid);
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         *self.cancel_tx.lock() = Some(cancel_tx);
 
-        tokio::spawn(async move {
+        let reader_task = tokio::spawn(async move {
             let mut cancel_rx = cancel_rx;
             let mut backoff_secs: u64 = 1;
             let mut consecutive_fast_deaths: u32 = 0;
@@ -185,6 +239,11 @@ impl ExternalChannel {
                     .stderr(std::process::Stdio::piped());
                 #[cfg(target_os = "windows")]
                 cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                // Unix 组杀前提（tree_kill 对齐 background_registry 纪律）：
+                // 子进程自成一进程组（pgid == pid），树杀才能 -pgid 一锅端
+                // 脚本派生的孙进程。
+                #[cfg(unix)]
+                cmd.process_group(0);
                 // env 窄版闸（家族闸纪律：三方进程 spawn 点显式接闸——
                 // BUG-20261123-012 横向修齐）：用户脚本不继承 bot 内部命名
                 // 空间变量（NEMESISBOT_VAULT_PASSPHRASE 主口令通道等）；
@@ -218,6 +277,11 @@ impl ExternalChannel {
                         continue;
                     }
                 };
+                // BUG-20261128-033：登记当前子进程 pid（stop() 超时升级树杀
+                // 的靶点；每次重启覆盖旧值，旧进程死亡后对死 pid 树杀无害）。
+                if let Some(pid) = child.id() {
+                    *input_child_pid.lock() = Some(pid);
+                }
 
                 let stdout = match child.stdout.take() {
                     Some(s) => s,
@@ -319,10 +383,15 @@ impl ExternalChannel {
                 };
 
                 // 停机路径：stop() 先翻 running=false 再发 cancel——收到 cancel
-                // 即停机意愿，kill 收尸后直接退出（不重启）。
+                // 即停机意愿，树杀收尸后直接退出（不重启）。
                 if let Death::Cancelled = death {
-                    info!("[ExternalChannel] input reader cancelled, killing process");
-                    let _ = child.kill().await;
+                    info!("[ExternalChannel] input reader cancelled, killing process tree");
+                    // BUG-20261128-033：树杀替代裸 kill——Windows 上 .cmd 经
+                    // cmd.exe 包装起动，裸 kill 只死 cmd 本体，脚本派生的孙
+                    // 进程（python 等）孤儿化残留（R3258 实证 3 个 python）。
+                    if let Some(pid) = child.id() {
+                        tree_kill(pid).await;
+                    }
                     let _ = child.wait().await;
                     return;
                 }
@@ -365,8 +434,11 @@ impl ExternalChannel {
                     },
                     Ok(None) => {
                         // 进程活着但关了自己的 stdout——协议面已死，留着进程
-                        // 无意义（孤儿占资源），kill 收尸。
-                        let _ = child.kill().await;
+                        // 无意义（孤儿占资源），树杀收尸（BUG-20261128-033：
+                        // 裸 kill 会漏脚本派生的孙进程）。
+                        if let Some(pid) = child.id() {
+                            tree_kill(pid).await;
+                        }
                         let _ = child.wait().await;
                         DeathClass::AliveStdoutClosed(format!(
                             "进程仍存活但关闭了 stdout（已收尸）{stderr_tail_dump}"
@@ -434,6 +506,8 @@ impl ExternalChannel {
                 backoff_secs = (backoff_secs * 2).min(INPUT_RESTART_BACKOFF_CAP_SECS);
             }
         });
+        // BUG-20261128-033：句柄落槽——stop() 有界等待收尾用。
+        *self.input_task.lock() = Some(reader_task);
     }
 }
 
@@ -496,12 +570,53 @@ impl Channel for ExternalChannel {
         self.base.set_running(false);
         self.base.set_enabled(false);
 
-        // Cancel the input reader（重启循环在任意 select 点收到后 kill 当前
+        // Cancel the input reader（重启循环在任意 select 点收到后树杀当前
         // 子进程并退出；input_child 字段已删——spawn 后 child 生命周期全程
-        // 在 reader task 内，字段从未被写入过，stop 里的 kill 死路径由
-        // cancel 臂承担）。
+        // 在 reader task 内，stop 里的 kill 死路径由 cancel 臂承担）。
         if let Some(tx) = self.cancel_tx.lock().take() {
             let _ = tx.send(());
+        }
+
+        // BUG-20261128-033：有界等待 reader task 收尾完成——此前 stop 发完
+        // cancel 即返回，gateway 侧通道停机又是 fire-and-forget，进程退出
+        // 时 reader 的 kill 可能根本没执行（通道子进程树孤儿化）。超时/异常
+        // 升级为对当前记录 pid 的直接树杀兜底（reader 若随后醒来自己再收
+        // 一次是幂等 no-op）。
+        // 先取 owned 再用（parking_lot guard 不得活过 await）。
+        let reader_handle = self.input_task.lock().take();
+        if let Some(handle) = reader_handle {
+            match tokio::time::timeout(std::time::Duration::from_secs(INPUT_STOP_WAIT_SECS), handle)
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    warn!(
+                        error = %join_err,
+                        "[ExternalChannel] input reader task ended abnormally, escalating tree kill"
+                    );
+                    let pid_opt = *self.input_child_pid.lock();
+                    if let Some(pid) = pid_opt {
+                        tree_kill(pid).await;
+                    }
+                }
+                Err(_) => {
+                    warn!(
+                        wait_secs = INPUT_STOP_WAIT_SECS,
+                        "[ExternalChannel] input reader did not exit in time, escalating tree kill"
+                    );
+                    let pid_opt = *self.input_child_pid.lock();
+                    if let Some(pid) = pid_opt {
+                        tree_kill(pid).await;
+                    }
+                }
+            }
+        }
+
+        // send 面在飞 output 子进程 sweep（登记表——stop 面唯一收尸通路；
+        // 已退出进程上树杀无害）。锁内只快照、杀在锁外。
+        let pending_output: Vec<u32> = std::mem::take(&mut *self.output_children.lock());
+        for pid in pending_output {
+            tree_kill(pid).await;
         }
 
         info!("[ExternalChannel] channel stopped");
@@ -529,6 +644,7 @@ impl Channel for ExternalChannel {
         let output_exe = self.config.output_exe.clone();
         let working_dir = self.config.working_dir.clone();
         let content = self.format_output(&msg.content);
+        let output_children = Arc::clone(&self.output_children);
 
         tokio::spawn(async move {
             // 同 input EXE：压掉 console 子进程弹窗（stdin 走管道）。
@@ -542,6 +658,10 @@ impl Channel for ExternalChannel {
             cmd.stdin(std::process::Stdio::piped());
             #[cfg(target_os = "windows")]
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            // Unix 组杀前提（tree_kill 对齐 background_registry 纪律，
+            // 同 input EXE）。
+            #[cfg(unix)]
+            cmd.process_group(0);
             // env 窄版闸（家族闸纪律——BUG-20261123-012 横向修齐，
             // 同 input EXE：脚本不继承 bot 内部命名空间变量）。
             let _stripped_env =
@@ -554,19 +674,81 @@ impl Channel for ExternalChannel {
                 }
             };
 
-            if let Some(ref mut stdin) = child.stdin
-                && let Err(e) = stdin.write_all(content.as_bytes()).await
-            {
-                error!(error = %e, "[ExternalChannel] failed to write to output EXE stdin");
+            // 登记表（BUG-20261128-033）：gateway 停机时 send 任务随进程
+            // 退出被 drop、child 无父收尸——stop() sweep 是唯一收尸通路，
+            // spawn 成功即登记。
+            let child_pid = child.id();
+            if let Some(pid) = child_pid {
+                output_children.lock().push(pid);
             }
 
-            match child.wait().await {
-                Ok(status) => {
+            // stdin 写入有界（BUG-20261128-033）：挂死/不消费 stdin 的
+            // output 脚本此前把 send 任务无限挂住；超时树杀收尸 + 登记表
+            // 除名。stdin 先 take 再写（写毕显式 drop 恢复 EOF 语义——旧
+            // 形态 tokio wait 内部 take+drop stdin，读至 EOF 的脚本才不会
+            // 在 wait 上假挂；超时臂要动 child，必须先解除借用）。
+            let mut stdin_pipe = child.stdin.take();
+            let write_result = if let Some(ref mut stdin) = stdin_pipe {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(OUTPUT_WRITE_TIMEOUT_SECS),
+                    stdin.write_all(content.as_bytes()),
+                )
+                .await
+            } else {
+                Ok(Ok(()))
+            };
+            drop(stdin_pipe);
+            match write_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    error!(error = %e, "[ExternalChannel] failed to write to output EXE stdin");
+                }
+                Err(_) => {
+                    error!(
+                        exe = %output_exe,
+                        timeout_secs = OUTPUT_WRITE_TIMEOUT_SECS,
+                        "[ExternalChannel] output EXE stdin write timed out, killing process tree"
+                    );
+                    if let Some(pid) = child_pid {
+                        tree_kill(pid).await;
+                    }
+                    let _ = child.wait().await;
+                    if let Some(pid) = child_pid {
+                        output_children.lock().retain(|&p| p != pid);
+                    }
+                    return;
+                }
+            }
+
+            // 退出等待有界 + 超时树杀（BUG-20261128-033）：output 脚本挂死
+            // 时 send 任务此前永久悬挂，gateway 停机时任务随进程退出被
+            // drop、子进程孤儿化。超时树杀收尸 + 登记表除名。
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(OUTPUT_WAIT_TIMEOUT_SECS),
+                child.wait(),
+            )
+            .await
+            {
+                Ok(Ok(status)) => {
                     debug!(status = %status, "[ExternalChannel] output EXE exited");
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(error = %e, "[ExternalChannel] failed to wait for output EXE");
                 }
+                Err(_) => {
+                    warn!(
+                        exe = %output_exe,
+                        timeout_secs = OUTPUT_WAIT_TIMEOUT_SECS,
+                        "[ExternalChannel] output EXE did not exit in time, killing process tree"
+                    );
+                    if let Some(pid) = child_pid {
+                        tree_kill(pid).await;
+                    }
+                    let _ = child.wait().await;
+                }
+            }
+            if let Some(pid) = child_pid {
+                output_children.lock().retain(|&p| p != pid);
             }
         });
 

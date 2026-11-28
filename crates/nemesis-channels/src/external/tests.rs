@@ -1477,3 +1477,232 @@ async fn b032_input_exe_abnormal_death_is_restarted_unix() {
         "input EXE 异常死亡后必须自动重启：ready2 未到达说明重启未发生（BUG-20261128-032）"
     );
 }
+
+// ===========================================================================
+// BUG-20261128-034 回归锁：stop() 必须整树收尸——旧实现两段缺口：
+// ① stop() 发完 cancel 即返回（不等 reader kill 执行完），gateway 侧通道
+//    停机又是 fire-and-forget（adapter stop 是 tokio::spawn）——进程退出时
+//    子进程树孤儿化（R3258 实证：graceful 停机后 3 个 python 残留）；
+// ② reader cancel 臂裸 child.kill() 只杀 cmd 包装层本体，脚本派生的孙进程
+//    （python 等）必残留。
+// 修复后：stop() 有界等 reader 退出 + 树杀（taskkill /T /F）；send 面在飞
+// output 子进程经登记表 stop sweep 收尸。
+// 探针 fixture：ping.exe 复制为唯一名（image name 级隔离——并行测试/其它
+// 实例的 ping 不串扰）。timeout.exe 在 stdin 重定向下直接报错（ERROR: Input
+// redirection is not supported），ping 对 stdin 无要求，故选 ping。
+// ===========================================================================
+
+/// tasklist 按 image name 查进程在位（Windows 探针断言用）。
+#[cfg(target_os = "windows")]
+async fn b034_tasklist_has_image(image: &str) -> bool {
+    let mut cmd = tokio::process::Command::new("tasklist");
+    cmd.args(["/FI", &format!("IMAGENAME eq {image}"), "/NH", "/FO", "CSV"]);
+    cmd.creation_flags(0x0800_0000);
+    match cmd.output().await {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).contains(image),
+        Err(_) => false,
+    }
+}
+
+/// pgrep -f 按命令行查进程在位（Unix 探针断言用）。
+#[cfg(not(target_os = "windows"))]
+async fn b034_pgrep_has(pattern: &str) -> bool {
+    match tokio::process::Command::new("pgrep")
+        .args(["-f", pattern])
+        .output()
+        .await
+    {
+        Ok(out) => !out.stdout.is_empty(),
+        Err(_) => false,
+    }
+}
+
+/// 复制 ping.exe 为唯一名探针（每次调用独立名，测试间零串扰）。
+#[cfg(target_os = "windows")]
+fn b034_make_ping_probe(tag: &str) -> std::path::PathBuf {
+    let probe = std::env::temp_dir().join(format!("b034_{tag}_{}.exe", std::process::id()));
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
+    std::fs::copy(format!("{windir}\\System32\\ping.exe"), &probe)
+        .expect("copy ping.exe as tree probe");
+    probe
+}
+
+/// 回归锁 ①：input 树（cmd 包装层 → 探针孙进程）stop() 后必须整树死亡。
+/// 旧实现：裸 kill 只死 cmd，探针残留（旧红）。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn b034_stop_kills_input_tree_windows() {
+    let probe = b034_make_ping_probe("in");
+    let image = probe.file_name().unwrap().to_string_lossy().to_string();
+    let in_bat = w4c_write_bat(
+        "w4c_b034_tree_in",
+        format!(
+            "@echo off\r\n\"{}\" -n 60 127.0.0.1 >nul\r\n",
+            probe.to_string_lossy()
+        )
+        .as_str(),
+    );
+    let out_bat = w4c_write_bat("w4c_b034_tree_out", "@echo off\r\n");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: in_bat.to_string_lossy().to_string(),
+        output_exe: out_bat.to_string_lossy().to_string(),
+        chat_id: "b034-tree".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+        working_dir: None,
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    // 等 cmd 包装层把探针孙进程拉起来（≤10s）。
+    let mut seen = false;
+    for _ in 0..50 {
+        if b034_tasklist_has_image(&image).await {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    ch.stop().await.unwrap();
+    // 树杀后探针消失（≤10s）；残留 = 树杀未生效。
+    let mut gone = false;
+    for _ in 0..50 {
+        if !b034_tasklist_has_image(&image).await {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let _ = std::fs::remove_file(&in_bat);
+    let _ = std::fs::remove_file(&out_bat);
+    let _ = std::fs::remove_file(&probe); // 探针运行中删除会失败（Windows 文件锁）——尽力清理
+
+    assert!(seen, "探针孙进程未拉起（fixture 失效：{image}）");
+    assert!(
+        gone,
+        "stop() 后探针孙进程残留——input 树杀未生效（BUG-20261128-034）"
+    );
+}
+
+/// 回归锁 ②：send 面在飞 output 子进程（登记表）stop() sweep 收尸。
+/// 旧实现：send 任务 fire-and-forget，stop 对 output 子进程零收尸（旧红）。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn b034_stop_sweeps_pending_output_tree_windows() {
+    let probe = b034_make_ping_probe("out");
+    let image = probe.file_name().unwrap().to_string_lossy().to_string();
+    let in_bat = w4c_write_bat("w4c_b034_sweep_in", "@echo off\r\n");
+    let out_bat = w4c_write_bat(
+        "w4c_b034_sweep_out",
+        format!(
+            "@echo off\r\n\"{}\" -n 60 127.0.0.1 >nul\r\n",
+            probe.to_string_lossy()
+        )
+        .as_str(),
+    );
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: in_bat.to_string_lossy().to_string(),
+        output_exe: out_bat.to_string_lossy().to_string(),
+        chat_id: "b034-sweep".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+        working_dir: None,
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    ch.send(OutboundMessage::new("external", "b034-sweep", "hi"))
+        .await
+        .unwrap();
+
+    // 等 output EXE 拉起（≤10s）。
+    let mut seen = false;
+    for _ in 0..50 {
+        if b034_tasklist_has_image(&image).await {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    ch.stop().await.unwrap();
+    let mut gone = false;
+    for _ in 0..50 {
+        if !b034_tasklist_has_image(&image).await {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let _ = std::fs::remove_file(&in_bat);
+    let _ = std::fs::remove_file(&out_bat);
+    let _ = std::fs::remove_file(&probe);
+
+    assert!(seen, "output 探针进程未拉起（fixture 失效：{image}）");
+    assert!(
+        gone,
+        "stop() 后 output 子进程残留——登记表 sweep 未生效（BUG-20261128-034）"
+    );
+}
+
+/// 回归锁 ① Unix 臂（Linux nightly 兜底）：进程组杀覆盖脚本派生的孙进程。
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn b034_stop_kills_input_tree_unix() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let script = tmp.path().join("input_tree.sh");
+    // 孙进程探针：子 shell exec 改名（pgrep -f 可寻址），脚本 wait 保持存活
+    // ——gateway(spawn, process_group(0)) → script → probe 三代同进程组。
+    std::fs::write(
+        &script,
+        "#!/bin/bash\n( exec -a b034_unix_input_probe sleep 60 ) &\nwait\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: script.to_string_lossy().to_string(),
+        output_exe: "true".to_string(),
+        chat_id: "b034-tree".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+        working_dir: None,
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    let mut seen = false;
+    for _ in 0..50 {
+        if b034_pgrep_has("b034_unix_input_probe").await {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    ch.stop().await.unwrap();
+    let mut gone = false;
+    for _ in 0..50 {
+        if !b034_pgrep_has("b034_unix_input_probe").await {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    assert!(seen, "探针孙进程未拉起（fixture 失效）");
+    assert!(
+        gone,
+        "stop() 后探针孙进程残留——进程组树杀未生效（BUG-20261128-034）"
+    );
+}

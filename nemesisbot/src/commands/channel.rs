@@ -805,21 +805,49 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         return Ok(());
                     }
 
+                    // BUG-20261128-034 横向排查：probe 收尸必须整树——裸
+                    // child.kill() 只杀 cmd 包装层，脚本派生的孙进程（如
+                    // input.cmd→python 链）残留成孤儿，每次 test 泄漏一条链。
+                    // 同根修复见 crates/nemesis-channels/src/external.rs
+                    // tree_kill；副本约定对齐 background_registry 等四处。
+                    fn kill_probe_tree(child: &mut std::process::Child) {
+                        #[cfg(target_os = "windows")]
+                        {
+                            use std::os::windows::process::CommandExt;
+                            let _ = std::process::Command::new("taskkill")
+                                .args(["/T", "/F", "/PID", &child.id().to_string()])
+                                .creation_flags(0x0800_0000)
+                                .output();
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        if let Some(pid) = child.id() {
+                            let _ = std::process::Command::new("kill")
+                                .args(["-TERM", "--", &format!("-{pid}")])
+                                .output();
+                        }
+                    }
+
                     // Test input program
                     if !input_exe.is_empty() {
                         print!("  Input program ({}): ", input_exe);
                         let path = std::path::Path::new(&input_exe);
                         if path.exists() {
                             // Try to run it briefly
-                            match std::process::Command::new(&input_exe)
+                            let mut probe = std::process::Command::new(&input_exe);
+                            probe
                                 .stdin(std::process::Stdio::piped())
                                 .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::piped())
-                                .spawn()
+                                .stderr(std::process::Stdio::piped());
+                            // Unix 组杀前提：子进程自成一进程组（pgid == pid）
+                            #[cfg(not(target_os = "windows"))]
                             {
+                                use std::os::unix::process::CommandExt;
+                                probe.process_group(0);
+                            }
+                            match probe.spawn() {
                                 Ok(mut child) => {
                                     // Kill immediately, we just wanted to verify it starts
-                                    let _ = child.kill();
+                                    kill_probe_tree(&mut child);
                                     let _ = child.wait();
                                     println!("OK (starts successfully)");
                                 }
@@ -837,13 +865,19 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         print!("  Output program ({}): ", output_exe);
                         let path = std::path::Path::new(&output_exe);
                         if path.exists() {
-                            match std::process::Command::new(&output_exe)
+                            let mut probe = std::process::Command::new(&output_exe);
+                            probe
                                 .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::piped())
-                                .spawn()
+                                .stderr(std::process::Stdio::piped());
+                            // Unix 组杀前提：子进程自成一进程组（pgid == pid）
+                            #[cfg(not(target_os = "windows"))]
                             {
+                                use std::os::unix::process::CommandExt;
+                                probe.process_group(0);
+                            }
+                            match probe.spawn() {
                                 Ok(mut child) => {
-                                    let _ = child.kill();
+                                    kill_probe_tree(&mut child);
                                     let _ = child.wait();
                                     println!("OK (starts successfully)");
                                 }

@@ -470,6 +470,10 @@ pub(crate) async fn init_services(
     if let Err(e) = channel_manager.start_all().await {
         warn!("[Gateway] ChannelManager start_all note: {} (non-fatal)", e);
     }
+    // Step 24 停机臂取数槽（BUG-20261128-033）：把通道管理器句柄移交
+    // run_runtime 的 teardown——同步有界等待通道收尾（svc_mgr.shutdown()
+    // 链路的 adapter stop 是 fire-and-forget，不能作为唯一停机通路）。
+    super::runtime::register_teardown_channel_manager(channel_manager.clone());
 
     // Step 15: Print agent startup info
     print_agent_startup_info(&home, initial_tool_count);
