@@ -1772,13 +1772,39 @@ pub(super) fn spawn_rpc_cache_cleanup(mgr: Arc<nemesis_agent::ContinuationManage
     });
 }
 
+/// 每日午夜 spill retention 现读（BUG-20261128-019：删除面 fail-closed）。
+///
+/// config **读失败**（并发改写窗口 / 坏 JSON / 权限抖动）= `None` 跳过
+/// 今夜，下夜重读——与 `logs_sweeper::read_logs_ttl`（BUG-20261127-034
+/// 同一裁决）语义分层一致：读失败意味着用户策略**存在但此刻不可读**，
+/// 按「猜的策略」（默认 7 天）删除会把用户显式设置的长保留
+/// （如 `spill_retention_days: 3650`）降维成一晚清空——fail-open 方向；
+/// 跳一夜只是延迟 24h，代价不对称。缺文件走 `load_config` 的 Ok 默认
+/// Config 分支（用户无覆盖 = 默认语义，非读失败）。`Some(0)` = 用户关。
+///
+/// 返回：`None` = 本夜跳过；`Some(0)` = 永不清扫；`Some(n)` = 保留 n 天。
+pub(super) fn read_spill_retention(config_path: &std::path::Path) -> Option<u64> {
+    match nemesis_config::load_config(config_path) {
+        Ok(c) => Some(c.agents.defaults.spill_retention_days.max(0) as u64),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "[AgentFactory] spill retention config read failed — skip tonight's sweep (retry tomorrow)"
+            );
+            None
+        }
+    }
+}
+
 /// daily-midnight spill retention sweep (mirrors `spawn_daily_cleanup`).
 ///
 /// Retention days are re-read from config.json on EVERY run, so a dashboard
 /// edit of `agents.spill_retention_days` applies at the next midnight without
-/// a restart; `0` skips that night's sweep. Once-guard: `build_agent_loop`
-/// runs again on agent rebuilds (persona activate etc.) — only the first
-/// spawn survives for the process lifetime (one home per process).
+/// a restart; `0` skips that night's sweep; a config **read failure** skips
+/// that night too (BUG-20261128-019 fail-closed — see [`read_spill_retention`]).
+/// Once-guard: `build_agent_loop` runs again on agent rebuilds (persona
+/// activate etc.) — only the first spawn survives for the process lifetime
+/// (one home per process).
 pub(super) fn spawn_daily_spill_cleanup(
     spill_root: std::path::PathBuf,
     config_path: std::path::PathBuf,
@@ -1803,11 +1829,11 @@ pub(super) fn spawn_daily_spill_cleanup(
                 break;
             }
 
-            // Live-read retention (default 7 on unreadable config; negative -> 0 -> skip).
-            let retention = nemesis_config::load_config(&config_path)
-                .map(|c| c.agents.defaults.spill_retention_days)
-                .unwrap_or(7)
-                .max(0) as u64;
+            // 每晚现读（热生效语义）；读失败 = 跳过今夜（BUG-20261128-019
+            // fail-closed，见 `read_spill_retention` 文档），0 = 用户关。
+            let Some(retention) = read_spill_retention(&config_path) else {
+                continue;
+            };
             if retention == 0 {
                 continue;
             }

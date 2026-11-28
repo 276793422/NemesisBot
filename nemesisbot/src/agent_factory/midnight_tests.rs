@@ -71,3 +71,45 @@ async fn daily_cleanup_once_guard_is_per_label() {
         "不同 label 必须各自放行——Main/Cluster 分桶互不吞并"
     );
 }
+
+/// BUG-20261128-019 回归锁：spill 每日清扫 retention 现读的删除面
+/// fail-closed——config **读失败**必须跳过今夜（`None`），不得回落默认
+/// 7 天删除（用户设 `spill_retention_days: 3650` 时，一次并发改写窗口/
+/// 坏 config 就会让当晚按 7 天清掉全部长保留 spill——fail-open 方向）。
+/// 语义分层与 `logs_sweeper::read_logs_ttl`（BUG-20261127-034 同一裁决）
+/// 一致：缺文件走 `load_config` 的 Ok 默认 Config 分支 = 用户无覆盖
+/// （Some(默认 7)，非读失败）；坏 JSON = 策略存在但不可读（None）。
+#[test]
+fn spill_retention_read_fails_closed_on_broken_config() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // 坏 JSON：读失败 → None（跳夜；fail-open 旧行为 = Some(7)）。
+    let bad = dir.path().join("bad.json");
+    std::fs::write(&bad, "{ not json").unwrap();
+    assert_eq!(
+        super::shared::read_spill_retention(&bad),
+        None,
+        "读失败必须 None（跳过今夜），不得默认 7 天兜底删除"
+    );
+
+    // 缺文件：Ok 分支（默认 Config）→ Some(默认 7)——语义不变。
+    let missing = dir.path().join("absent.json");
+    assert_eq!(super::shared::read_spill_retention(&missing), Some(7));
+
+    // 合法 config：显式长保留直通（不因兜底逻辑降维）；0 = 用户关也直通。
+    let ok = dir.path().join("ok.json");
+    std::fs::write(
+        &ok,
+        r#"{"agents": {"defaults": {"spill_retention_days": 3650}}}"#,
+    )
+    .unwrap();
+    assert_eq!(super::shared::read_spill_retention(&ok), Some(3650));
+
+    let off = dir.path().join("off.json");
+    std::fs::write(
+        &off,
+        r#"{"agents": {"defaults": {"spill_retention_days": 0}}}"#,
+    )
+    .unwrap();
+    assert_eq!(super::shared::read_spill_retention(&off), Some(0));
+}
