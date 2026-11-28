@@ -287,6 +287,16 @@ impl ExternalChannel {
                     Some(s) => s,
                     None => {
                         error!("[ExternalChannel] input EXE has no stdout");
+                        // BUG-20261128-048：此处此前裸 return——已 spawn 成功的
+                        // 子进程无人读无人杀（孤儿化）、base 旗标仍 true（半死
+                        // 对 manager status 不可见）。Stdio::piped() 下本臂实践
+                        // 不可达（防御臂），一旦触达按孤儿收尸 + 诚实翻旗标
+                        // （不给重启——防御臂语义收敛优先，不留半死态）。
+                        if let Some(pid) = child.id() {
+                            tree_kill(pid).await;
+                        }
+                        let _ = child.wait().await;
+                        base.set_running(false);
                         return;
                     }
                 };
@@ -584,6 +594,11 @@ impl Channel for ExternalChannel {
         // 一次是幂等 no-op）。
         // 先取 owned 再用（parking_lot guard 不得活过 await）。
         let reader_handle = self.input_task.lock().take();
+        // BUG-20261128-048：升级树杀靶点必须在 await **之前**定格——await
+        // 之后读槽可能拿到并发 start()/新 reader 重启写入的新 pid，树杀
+        // 误伤新子进程、卡死的旧子进程反而孤儿化（与上方 parking_lot
+        // guard「先取 owned 再用」同一纪律：await 前快照）。
+        let escalate_pid = *self.input_child_pid.lock();
         if let Some(handle) = reader_handle {
             match tokio::time::timeout(std::time::Duration::from_secs(INPUT_STOP_WAIT_SECS), handle)
                 .await
@@ -594,8 +609,7 @@ impl Channel for ExternalChannel {
                         error = %join_err,
                         "[ExternalChannel] input reader task ended abnormally, escalating tree kill"
                     );
-                    let pid_opt = *self.input_child_pid.lock();
-                    if let Some(pid) = pid_opt {
+                    if let Some(pid) = escalate_pid {
                         tree_kill(pid).await;
                     }
                 }
@@ -604,8 +618,7 @@ impl Channel for ExternalChannel {
                         wait_secs = INPUT_STOP_WAIT_SECS,
                         "[ExternalChannel] input reader did not exit in time, escalating tree kill"
                     );
-                    let pid_opt = *self.input_child_pid.lock();
-                    if let Some(pid) = pid_opt {
+                    if let Some(pid) = escalate_pid {
                         tree_kill(pid).await;
                     }
                 }
