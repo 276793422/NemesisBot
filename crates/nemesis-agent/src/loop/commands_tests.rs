@@ -417,3 +417,16 @@ async fn mtime_reload_picks_up_table_edits_without_rebuild() {
     let out = msg_content_after(&al, "/daily").await;
     assert_eq!(out, "新模板");
 }
+
+/// BUG-20261128-035 回归锁：`build_agent_main_session_key` 委托
+/// nemesis-routing 权威实现（normalize_agent_id + 整体 lowercase）。
+/// 历史本地副本裸拼接——非规范 id（大写/空白/全非法）产出与路由侧
+/// 不同键形 → 会话分裂漂移雷；本锁对旧实现必红（"Main" →
+/// "agent:Main:main"）。
+#[test]
+fn build_main_session_key_normalizes_agent_id() {
+    assert_eq!(build_agent_main_session_key("Main"), "agent:main:main");
+    assert_eq!(build_agent_main_session_key("main"), "agent:main:main");
+    // 空串回落 default agent id（routing normalize 契约）
+    assert_eq!(build_agent_main_session_key(""), "agent:main:main");
+}

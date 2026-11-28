@@ -264,3 +264,17 @@ fn set_subagent_allow_overwrites() {
     assert!(!registry.can_spawn_subagent("parent", "child_a"));
     assert!(registry.can_spawn_subagent("parent", "child_b"));
 }
+
+/// BUG-20261128-035 回归锁：registry id 归一收编 nemesis-routing 权威
+/// 实现（trim+lowercase+sanitize）。旧本地副本只 lowercase——
+/// register("My Agent") 落键 "my agent"，按 sanitize 形态 "my-agent"
+/// 查询必脱靶（同一 agent 两种写法注册/查询两套归一）。
+#[test]
+fn register_uses_routing_normalize_for_id_keys() {
+    let registry = AgentRegistry::new();
+    registry.register("My Agent".to_string(), AgentInstance::new(test_config("a")));
+    // 落盘键经 routing normalize = "my-agent"（旧实现落 "my agent"，此断言必红）
+    assert!(registry.contains_agent("my-agent"));
+    // 同 id 两种写法命中同一键（两侧同走 normalize，幂等）
+    assert!(registry.contains_agent("My Agent"));
+}

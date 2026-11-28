@@ -7055,7 +7055,16 @@ fn test_build_agent_main_session_key_various() {
         build_agent_main_session_key("worker-1"),
         "agent:worker-1:main"
     );
-    assert_eq!(build_agent_main_session_key(""), "agent::main");
+    // BUG-20261128-035：委托 nemesis-routing 权威实现——空串回落默认
+    // agent id "main"（旧本地副本裸拼接产 "agent::main" 畸形键段，与
+    // 路由侧键域脱钩）。
+    assert_eq!(build_agent_main_session_key(""), "agent:main:main");
+    // 非规范 id 走 normalize + lowercase（与路由侧同形）
+    assert_eq!(build_agent_main_session_key("Main"), "agent:main:main");
+    assert_eq!(
+        build_agent_main_session_key("Worker 1"),
+        "agent:worker-1:main"
+    );
 }
 
 #[test]

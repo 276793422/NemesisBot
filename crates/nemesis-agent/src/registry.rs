@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use nemesis_routing::normalize_agent_id;
+
 use crate::instance::AgentInstance;
 use crate::types::AgentConfig;
 
@@ -150,10 +152,12 @@ impl AgentRegistry {
     }
 }
 
-/// Normalize an agent ID to lowercase for consistent lookups.
-fn normalize_agent_id(id: &str) -> String {
-    id.to_lowercase()
-}
+// normalize_agent_id 已收编 nemesis-routing 权威实现（顶部 use 导入）：
+// 旧本地副本只 lowercase（无 trim/sanitize/长度帽/空回落），与路由侧
+// 同名函数语义分叉——registry 键域与路由 agent_id 域同源（default_agent_id
+// 供给 admission standalone 路由），两套归一必然漂移（BUG-20261128-035，
+// BUG-20261025-46 同族「同名异义误统一」）。生产键当前仅 "main"（行为
+// 零变化），非规范 id 键域自此与路由侧一致。
 
 impl Default for AgentRegistry {
     fn default() -> Self {

@@ -591,9 +591,12 @@ impl AgentLoop {
 
 /// Build an agent-scoped main session key.
 ///
-/// Format: `agent:{agent_id}:main`
+/// Format: `agent:{agent_id}:main`。委托 [`nemesis_routing`] 权威实现
+/// （单一真相源）：历史本地副本裸拼接，缺 `normalize_agent_id` + 整体
+/// lowercase，与 nemesis-routing 同名函数语义分叉（非规范 id 两种键形
+/// → 会话分裂漂移雷，BUG-20261128-035 同族 BUG-20261025-46 误统一）。
 pub fn build_agent_main_session_key(agent_id: &str) -> String {
-    format!("agent:{}:main", agent_id)
+    nemesis_routing::build_agent_main_session_key(agent_id)
 }
 
 // ---------------------------------------------------------------------------
