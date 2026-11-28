@@ -2451,3 +2451,202 @@ async fn b019_start_stop_maintain_base_running_flag_and_guard_duplicate_start() 
         "stop 后 trait is_running 必须为 false"
     );
 }
+
+// ===========================================================================
+// BUG-20261128-020 回归锁：reply token 失效 → push 全量回落
+// 旧形态：reply 失败 `?` 上抛 → send 返回 Err 且 push 从未触发（本地桩
+// 可证：push 端点零请求，整条回复经 manager 一次性分发永久丢失）。修复后：
+// reply Err 臂 warn + 落入 push 全量块；reply Ok 臂行为不变（首块 reply、
+// 其余块 push、首块不重复）。
+// ===========================================================================
+
+/// 本地 LINE Messaging API 桩：reply 端点恒回 `reply_status`（400=模拟
+/// token 过期/失效，200=reply 成功），push 端点 200 并把收到的
+/// `messages[0].text` 记入共享缓冲（先记录后应答——send() await 到应答时
+/// 记录必然已落）。返回 (api_base, push 记录句柄)。
+async fn b020_line_api_stub(reply_status: u16) -> (String, Arc<tokio::sync::Mutex<Vec<String>>>) {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let pushes: Arc<tokio::sync::Mutex<Vec<String>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+    let pushes_task = Arc::clone(&pushes);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let pushes = Arc::clone(&pushes_task);
+            tokio::spawn(async move {
+                let Ok(bytes) = crate::http_min::read_request_bounded(&mut stream).await else {
+                    return;
+                };
+                let path = String::from_utf8_lossy(&bytes)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
+                let body: &[u8] = match bytes.windows(4).position(|w| w == *b"\r\n\r\n") {
+                    Some(idx) => &bytes[idx + 4..],
+                    None => &[],
+                };
+
+                if path.ends_with("/v2/bot/message/push") {
+                    let text = serde_json::from_slice::<serde_json::Value>(body)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("messages")
+                                .and_then(|m| m.get(0))
+                                .and_then(|m| m.get("text"))
+                                .and_then(|t| t.as_str())
+                                .map(str::to_string)
+                        });
+                    if let Some(text) = text {
+                        pushes.lock().await.push(text);
+                    }
+                    let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                } else {
+                    // reply 端点（及桩未识别的路径）：按配置回状态码。
+                    let (reason, payload) = if reply_status == 200 {
+                        ("200 OK", "{}")
+                    } else {
+                        ("400 Bad Request", r#"{"message":"Invalid reply token"}"#)
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                }
+            });
+        }
+    });
+
+    (format!("http://127.0.0.1:{}", addr.port()), pushes)
+}
+
+/// 两块切分的固定内容：4900 预算下切成 ["A"×4800, "B"×1000]。
+fn b020_two_chunk_content() -> String {
+    format!("{}{}", "A".repeat(4800), "B".repeat(1000))
+}
+
+/// 场景①（主锁）：token 失效（reply 400）+ 单块内容 → send 必须 Ok 且
+/// push 收到完整内容。旧形态：reply `?` 上抛 → send Err + push 零请求。
+#[tokio::test]
+async fn b020_stale_reply_token_falls_back_to_push() {
+    let (api_base, pushes) = b020_line_api_stub(400).await;
+    let config = LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
+        allow_from: Vec::new(),
+    };
+    let mut ch = LineChannel::new(config, test_bus()).unwrap();
+    ch.api_base = api_base;
+    ch.start().await.unwrap();
+    ch.store_reply_token("chat-stale".into(), "rt-expired".into());
+
+    let msg = OutboundMessage {
+        channel: "line".to_string(),
+        chat_id: "chat-stale".to_string(),
+        content: "这条回复不能丢".to_string(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+    let result = ch.send(msg).await;
+    assert!(
+        result.is_ok(),
+        "reply token 失效（400）必须回落 push 成功，不得整条丢失: {result:?}"
+    );
+    let got = pushes.lock().await.clone();
+    assert_eq!(
+        got,
+        vec!["这条回复不能丢".to_string()],
+        "push 必须收到完整回复内容（旧形态 push 端点零请求）"
+    );
+    // token 已消费不复活（失效 token 留着也只会再败）
+    assert!(ch.reply_tokens.get("chat-stale").is_none());
+    ch.stop().await.unwrap();
+}
+
+/// 场景②：token 失效 + 多块内容 → 回落必须 push **全部**块（含首块），
+/// 顺序不变。
+#[tokio::test]
+async fn b020_reply_failure_multi_chunk_pushes_all_chunks() {
+    let (api_base, pushes) = b020_line_api_stub(400).await;
+    let config = LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
+        allow_from: Vec::new(),
+    };
+    let mut ch = LineChannel::new(config, test_bus()).unwrap();
+    ch.api_base = api_base;
+    ch.start().await.unwrap();
+    ch.store_reply_token("chat-stale-multi".into(), "rt-expired".into());
+
+    let msg = OutboundMessage {
+        channel: "line".to_string(),
+        chat_id: "chat-stale-multi".to_string(),
+        content: b020_two_chunk_content(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+    let result = ch.send(msg).await;
+    assert!(result.is_ok(), "回落必须成功: {result:?}");
+    let got = pushes.lock().await.clone();
+    // 期望块直接由切分函数派生（切分边界有自己的测试；此处钉投递行为：
+    // 全部块、按序、含首块）。
+    let expected = split_message_utf16(&b020_two_chunk_content(), 4900);
+    assert_eq!(expected.len(), 2, "前置：测试内容必须切成两块");
+    assert_eq!(got, expected, "回落必须 push 全部块（含首块），顺序不变");
+    ch.stop().await.unwrap();
+}
+
+/// 场景③（行为钉）：reply 成功（200）→ 行为与修复前一致：首块走 reply
+/// 不重复 push，只补后续块。
+#[tokio::test]
+async fn b020_reply_success_pushes_only_remaining_chunks() {
+    let (api_base, pushes) = b020_line_api_stub(200).await;
+    let config = LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
+        allow_from: Vec::new(),
+    };
+    let mut ch = LineChannel::new(config, test_bus()).unwrap();
+    ch.api_base = api_base;
+    ch.start().await.unwrap();
+    ch.store_reply_token("chat-ok".into(), "rt-fresh".into());
+
+    let msg = OutboundMessage {
+        channel: "line".to_string(),
+        chat_id: "chat-ok".to_string(),
+        content: b020_two_chunk_content(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+    let result = ch.send(msg).await;
+    assert!(result.is_ok(), "reply 成功路径必须 Ok: {result:?}");
+    let got = pushes.lock().await.clone();
+    let expected = split_message_utf16(&b020_two_chunk_content(), 4900);
+    assert_eq!(expected.len(), 2, "前置：测试内容必须切成两块");
+    assert_eq!(
+        got,
+        expected[1..],
+        "reply 成功时首块不重复 push，只补后续块"
+    );
+    ch.stop().await.unwrap();
+}

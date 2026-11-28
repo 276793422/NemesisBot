@@ -23,6 +23,9 @@ type HmacSha256 = Hmac<Sha256>;
 /// Webhook 请求路径默认值（与 config 模板 `channels.line.webhook_path` 同值）。
 pub const DEFAULT_WEBHOOK_PATH: &str = "/webhook/line";
 
+/// Messaging API 基址（reply/push 端点共用单一来源；测试注入本地桩覆盖）。
+const DEFAULT_API_BASE: &str = "https://api.line.me";
+
 /// LINE channel configuration.
 /// SEC-002（BUG-20261111-068）：channel_access_token / channel_secret 脱敏。
 #[derive(Clone)]
@@ -144,6 +147,9 @@ pub struct LineChannel {
     running: Arc<parking_lot::RwLock<bool>>,
     reply_tokens: Arc<dashmap::DashMap<String, String>>,
     bus_sender: broadcast::Sender<InboundMessage>,
+    /// Messaging API 基址（new() 置 [`DEFAULT_API_BASE`]；reply/push 单一
+    /// 来源，测试注入本地桩）。
+    api_base: String,
 }
 
 impl LineChannel {
@@ -162,6 +168,7 @@ impl LineChannel {
             running: Arc::new(parking_lot::RwLock::new(false)),
             reply_tokens: Arc::new(dashmap::DashMap::new()),
             bus_sender,
+            api_base: DEFAULT_API_BASE.to_string(),
         })
     }
 
@@ -221,7 +228,7 @@ impl LineChannel {
 
         let resp = self
             .http
-            .post("https://api.line.me/v2/bot/message/reply")
+            .post(format!("{}/v2/bot/message/reply", self.api_base))
             .header(
                 "Authorization",
                 format!("Bearer {}", self.config.channel_access_token),
@@ -251,7 +258,7 @@ impl LineChannel {
 
         let resp = self
             .http
-            .post("https://api.line.me/v2/bot/message/push")
+            .post(format!("{}/v2/bot/message/push", self.api_base))
             .header(
                 "Authorization",
                 format!("Bearer {}", self.config.channel_access_token),
@@ -583,11 +590,27 @@ impl Channel for LineChannel {
 
         // Prefer reply token if available
         if let Some((_, reply_token)) = self.reply_tokens.remove(&msg.chat_id) {
-            self.reply(&reply_token, &chunks[0]).await?;
-            for chunk in &chunks[1..] {
-                self.push_message(&msg.chat_id, chunk).await?;
+            // BUG-20261128-020：reply token 一次性且短时效（LINE 官方语义）
+            // ——agent 处理耗时超过 token 时效后 reply 必 400（invalid reply
+            // token）。旧形态 `?` 直接上抛：manager 的 dispatch_outbound 是
+            // 一次性分发无重试 → 整条回复永久丢失，下方 push 回落在它设计
+            // 针对的失败路径上不可达（死回落）。改为 Err 臂 warn + 落入
+            // push 全量块：token 失效场景消息救回；真网络故障则 push 同样
+            // 失败诚实 Err（qq.rs send_with_fresh_token 同族「发送被拒 →
+            // 回落机制接管」先例）。token 已被上方 remove 消费，回落路径
+            // 不重试 reply（失效 token 重试必然再败）。
+            match self.reply(&reply_token, &chunks[0]).await {
+                Ok(()) => {
+                    for chunk in &chunks[1..] {
+                        self.push_message(&msg.chat_id, chunk).await?;
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(error = %e, chat_id = %msg.chat_id,
+                        "[LineChannel] reply 失败（token 过期/已消费等），回落 push 全量块");
+                }
             }
-            return Ok(());
         }
 
         // Fall back to push message
