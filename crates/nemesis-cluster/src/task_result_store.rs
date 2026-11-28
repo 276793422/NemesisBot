@@ -306,8 +306,14 @@ impl TaskResultStore {
 
     fn store(&self, result: TaskResult) {
         let mut results = self.results.lock();
-        // Evict oldest if at capacity
+        // Evict oldest if at capacity——但仅「新键」才需要逐出：替换已存在键
+        // 不改变容量（B 端每任务固定两段写：set_running 占位 → set_result
+        // 换真结果，同 task_id 重入是常态路径）。旧实现满容量时对重存也
+        // 逐出最旧者 = 积压场景（A 端离线累积满 1000 条未投递）下每次
+        // set_result 白白销毁一条无辜待投递结果及其盘文件，A 端恢复轮询
+        // 永远 not_found（BUG-20261128-031）。
         if results.len() >= self.max_size
+            && !results.contains_key(&result.task_id)
             && let Some(key) = oldest_stored_key(&results)
         {
             let evicted = results.remove(&key);
@@ -552,11 +558,14 @@ impl AsyncTaskResultStore {
         //    deleted AFTER the lock scope — the parking_lot guard must not
         //    cross the async fs call (the old drop-guard/re-lock dance around
         //    the await was both hard to read and a clippy false-positive trap).
-        //    LOW-6：逐出选 stored_at 最旧者（与同步版同源 oldest_stored_key）。
+        //    LOW-6：逐出选 stored_at 最旧者（与同步版同源 oldest_stored_key）；
+        //    同步版 BUG-20261128-031 的「仅新键才逐出」条件在此对称生效
+        //    （替换已存在键不增长容量，逐出=误杀无辜待投递结果）。
         let evicted_path = {
             let mut results = self.inner.results.lock();
             let mut evicted_path = None;
             if results.len() >= self.inner.max_size
+                && !results.contains_key(&result.task_id)
                 && let Some(key) = oldest_stored_key(&results)
                 && let Some(evicted) = results.remove(&key)
                 && let Some(dir) = self.inner.cache_dir.clone()

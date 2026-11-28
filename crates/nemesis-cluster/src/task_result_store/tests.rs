@@ -1298,3 +1298,89 @@ fn oldest_stored_key_anchors_on_stored_at() {
     // 空表 → None（调用方 no-op 分支）。
     assert!(oldest_stored_key(&HashMap::new()).is_none());
 }
+
+// ---- BUG-20261128-031 回归：满容量重存已存在键不得逐出无辜条目 ----
+
+#[test]
+fn test_replace_existing_key_at_capacity_does_not_evict() {
+    // B 端每任务固定两段写：set_running 占位 → set_result 换真结果
+    // （同 task_id 重入）。替换不改变容量——旧实现在满容量时对重存也逐出
+    // 最旧者 = 积压场景下每次 set_result 白白销毁一条无辜待投递结果。
+    // 判别性设计：重存**最新**键（t2），使最旧键（t1）是无辜旁观者——
+    // 旧代码在此逐出 t1 必红；若重存最旧键自身，旧代码逐出自己再重插
+    // （自愈形态）测试假绿。
+    let store = TaskResultStore::new(2);
+    store.store_success("t1", "a", serde_json::json!("v1"));
+    store.store_success("t2", "b", serde_json::json!("v2"));
+    assert_eq!(store.len(), 2);
+    // 同 task_id 重存最新键（占位换真结果）。
+    store.store_success("t2", "b", serde_json::json!("v2-final"));
+    assert_eq!(store.len(), 2, "替换重存不得减少条目数");
+    assert_eq!(
+        store.get("t2").unwrap().result,
+        serde_json::json!("v2-final"),
+        "重存必须换入新载荷"
+    );
+    assert!(store.get("t1").is_some(), "无辜最旧条目不得被逐出");
+}
+
+#[test]
+fn test_new_key_at_capacity_still_evicts_one() {
+    // 防过度修复：新键满容量仍须逐出保持上界（与 test_max_size_eviction
+    // 互补——这里断言恰逐出一个旧条目且新键在册）。
+    let store = TaskResultStore::new(2);
+    store.store_success("k1", "a", serde_json::json!(1));
+    store.store_success("k2", "b", serde_json::json!(2));
+    store.store_success("k3", "c", serde_json::json!(3));
+    assert_eq!(store.len(), 2, "新键满容量仍须逐出保持上界");
+    assert!(store.get("k3").is_some(), "新键必须入册");
+    let survivors = store.get("k1").is_some() as u8 + store.get("k2").is_some() as u8;
+    assert_eq!(survivors, 1, "恰逐出一个旧条目");
+}
+
+#[test]
+fn test_replace_at_capacity_keeps_other_disk_file() {
+    // 盘面同样不得被误删（逐出臂会删盘文件——被误逐出的无辜条目盘上
+    // 也消失，A 端重启恢复轮询将永远 not_found）。重存最新键 d2，
+    // 最旧键 d1 = 无辜旁观者（判别性同 test_replace_existing_key_*）。
+    let tmp = tempfile::tempdir().unwrap();
+    let store = TaskResultStore::with_disk_persistence(2, tmp.path());
+    store.store_success("d1", "a", serde_json::json!("v1"));
+    store.store_success("d2", "b", serde_json::json!("v2"));
+    store.store_success("d2", "b", serde_json::json!("v2-final"));
+    assert!(
+        tmp.path().join("d1.json").exists(),
+        "无辜最旧条目盘文件不得被删"
+    );
+    assert!(store.get("d1").is_some());
+    assert_eq!(
+        store.get("d2").unwrap().result,
+        serde_json::json!("v2-final")
+    );
+}
+
+#[tokio::test]
+async fn test_async_replace_at_capacity_does_not_evict() {
+    // 异步包装对称生效（同一缺陷形态、同一修复条件）；重存最新键 a2，
+    // 最旧键 a1 = 无辜旁观者。
+    let tmp = tempfile::tempdir().unwrap();
+    let store = AsyncTaskResultStore::with_disk_persistence(2, tmp.path());
+    store
+        .store_success_async("a1", "a", serde_json::json!("v1"))
+        .await;
+    store
+        .store_success_async("a2", "b", serde_json::json!("v2"))
+        .await;
+    store
+        .store_success_async("a2", "b", serde_json::json!("v2-final"))
+        .await;
+    assert!(store.get_async("a1").is_some(), "无辜最旧条目不得被逐出");
+    assert_eq!(
+        store.get_async("a2").unwrap().result,
+        serde_json::json!("v2-final")
+    );
+    assert!(
+        tmp.path().join("a1.json").exists(),
+        "无辜条目盘文件不得被删"
+    );
+}
