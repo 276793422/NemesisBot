@@ -79,6 +79,7 @@ fn l19_ctx() -> RequestContext {
         chat_id: "c1".to_string(),
         user: "u1".to_string(),
         session_key: "agent:test/l19pb".to_string(),
+        root_session_key: "agent:test/l19pb".to_string(),
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,

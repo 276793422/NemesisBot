@@ -32,6 +32,15 @@ pub struct RequestContext {
     pub user: String,
     /// Session key for this conversation.
     pub session_key: String,
+    /// 根会话键（2026-11-28 所有权批，堵洞①；详见交付报告
+    /// 2026-11-28_host-browser会话级四动作交付报告 §2）：血统
+    /// 身份——主会话恒 = session_key；子代理在 spawn 下发点（turn.rs
+    /// run_detached_events 的 RequestContext 构造）直接盖父的 root，套娃
+    /// 一路继承，零运行时查注册表。所有权类工具（host_browser 等）绑与查
+    /// 两侧同用此键：子代理开的浏览器，父会话同样可以关。空值（旧快照
+    /// 反序列化）经 [`Self::root_key`] 回落 session_key。
+    #[serde(default)]
+    pub root_session_key: String,
     /// Correlation ID for RPC request-response matching.
     pub correlation_id: Option<String>,
     /// Optional async callback for tools that complete asynchronously
@@ -78,6 +87,7 @@ impl std::fmt::Debug for RequestContext {
             .field("chat_id", &self.chat_id)
             .field("user", &self.user)
             .field("session_key", &self.session_key)
+            .field("root_session_key", &self.root_session_key)
             .field("correlation_id", &self.correlation_id)
             .field(
                 "async_callback",
@@ -102,6 +112,7 @@ impl RequestContext {
             chat_id: chat_id.to_string(),
             user: user.to_string(),
             session_key: session_key.to_string(),
+            root_session_key: session_key.to_string(),
             correlation_id: None,
             async_callback: None,
             tool_path_base: None,
@@ -124,6 +135,7 @@ impl RequestContext {
             chat_id: chat_id.to_string(),
             user: user.to_string(),
             session_key: session_key.to_string(),
+            root_session_key: session_key.to_string(),
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
             tool_path_base: None,
@@ -143,12 +155,24 @@ impl RequestContext {
             chat_id: chat_id.to_string(),
             user: user.to_string(),
             session_key: session_key.to_string(),
+            root_session_key: session_key.to_string(),
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
             tool_path_base: None,
             approval_ref: None,
             secrets: Arc::new(Vec::new()),
             tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+
+    /// 根会话键读取口（所有权类工具的唯一消费面）：血统键为空（旧快照
+    /// `#[serde(default)]` 反序列化形态）回落 session_key——绑与查两侧
+    /// 同用此方法，永不直接读字段。
+    pub fn root_key(&self) -> &str {
+        if self.root_session_key.is_empty() {
+            &self.session_key
+        } else {
+            &self.root_session_key
         }
     }
 

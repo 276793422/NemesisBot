@@ -539,6 +539,7 @@ async fn precompute_parallel_batch_validation_arms() {
         chat_id: "c1".to_string(),
         user: "u1".to_string(),
         session_key: "agent:test/s9d".to_string(),
+        root_session_key: "agent:test/s9d".to_string(),
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,

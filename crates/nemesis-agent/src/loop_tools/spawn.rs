@@ -86,18 +86,19 @@ pub fn detached_role_for_profile(profile: &str) -> Option<crate::prompt::Subagen
 /// 校验），模式开关在 SpawnTool 侧闸（闭包不再验策略——单一裁决点）。
 pub type SpawnFn = Arc<
     dyn Fn(
-            &str,
-            &str,
-            &str,
-            &str,
-            &str,
-            &str,
-            usize,
-            bool,
-            &str,
-            &str,
-            &str,
-            &str,
+            &str,  // agent_id
+            &str,  // task
+            &str,  // model（信息性）
+            &str,  // channel（信息性）
+            &str,  // chat_id（连接级回推）
+            &str,  // tools_profile
+            usize, // depth
+            bool,  // background
+            &str,  // role slug（"" = 自动）
+            &str,  // parent_session_key（注册表台账 + 回灌路由）
+            &str,  // expert slug（"" = 默认子代理）
+            &str,  // prompt（自拟提示词降级第二跳；"" = 非）
+            &str,  // parent_root（所有权血统：父根会话键，所有权批堵洞①）
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
         + Send
@@ -605,6 +606,9 @@ impl Tool for SpawnTool {
             &context.session_key,
             expert,
             prompt,
+            // 所有权血统（2026-11-28 堵洞①）：父根会话键（子代理开的
+            // 浏览器等所有权对象，父会话同权处置）。
+            context.root_key(),
         )
         .await
     }

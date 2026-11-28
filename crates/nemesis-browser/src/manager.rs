@@ -5,7 +5,7 @@
 //! 到 = 用户主动安装的偏好信号）> 平台保底（Windows=Edge 系统组件必在；
 //! Linux=chromium）。Firefox 二期（D14）：选中即诚实报错，不进默认序。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,6 +19,10 @@ use crate::session::BrowserSession;
 
 /// 操作事件环形缓冲容量（日志页初始加载回放窗口）。
 const EVENT_RING_CAP: usize = 500;
+
+/// 人面哨兵（实例级所有权台账）：Dashboard/WSAPI 无会话身份，统一记
+/// "human"——bot 面检查时视为「非本会话」（不可代关），人面自身免检。
+pub(crate) const HUMAN_OWNER: &str = "human";
 
 /// 浏览器偏好（config `browser` 段投影；gateway 侧闭包实时读 config——
 /// 设置页改完下次 spawn 即生效）。
@@ -65,6 +69,10 @@ pub struct BrowserManager {
     /// home 目录（profile 根 = `<home>/browser/`，计划 Q9）。
     home: PathBuf,
     sessions: Mutex<Vec<Arc<BrowserSession>>>,
+    /// 实例级所有权台账（实例 id → 启动者根会话键；2026-11-28 所有权批，
+    /// 详见交付报告 2026-11-28_host-browser会话级四动作交付报告 §2）：
+    /// 「只能关自己开的」——close_browser 双闸的实例半闸数据源。
+    owners: Mutex<HashMap<String, String>>,
     seq: AtomicUsize,
     events: Mutex<VecDeque<BrowserEvent>>,
     /// 实时事件出口（gateway 接 EventHub.publish("browser_event") → SSE）。
@@ -82,6 +90,7 @@ impl BrowserManager {
         Self {
             home,
             sessions: Mutex::new(Vec::new()),
+            owners: Mutex::new(HashMap::new()),
             seq: AtomicUsize::new(0),
             events: Mutex::new(VecDeque::with_capacity(EVENT_RING_CAP)),
             sink,
@@ -173,10 +182,14 @@ impl BrowserManager {
     }
 
     /// spawn 浏览器会话（编排操作路；事件全留痕）。
+    ///
+    /// `owner`：Some(根会话键) = bot 面（实例 + 初始 tab 绑定到该会话）；
+    /// None = 人面（Dashboard/WSAPI，记 "human" 哨兵，免检语义不变）。
     pub async fn spawn(
         &self,
         kind_override: Option<&str>,
         executable_override: Option<&str>,
+        owner: Option<&str>,
     ) -> Result<Arc<BrowserSession>, String> {
         let t0 = std::time::Instant::now();
         let (kind, executable) = self.resolve_browser(kind_override, executable_override)?;
@@ -192,7 +205,7 @@ impl BrowserManager {
         for s in self.sessions() {
             if s.kind == kind && s.is_alive().await {
                 return Err(format!(
-                    "已有 {} 实例（{}）在运行：浏览器 profile 按类型单实例，请先关闭它（Dashboard 实例卡「关闭」）再开新的",
+                    "已有 {} 实例（{}）在运行：浏览器 profile 按类型单实例，请先关闭它（Dashboard 实例卡「关闭」，或由启动它的会话 close_browser 收尾）再开新的",
                     kind.display_name(),
                     s.id
                 ));
@@ -200,23 +213,32 @@ impl BrowserManager {
         }
         let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let id = format!("b{n}");
+        let owner_norm = owner
+            .map(str::to_string)
+            .unwrap_or_else(|| HUMAN_OWNER.to_string());
         let result = BrowserSession::spawn(
             id.clone(),
             n as u32,
             kind,
             executable.clone(),
             &self.profile_root(),
+            &owner_norm,
         )
         .await;
         match result {
             Ok(session) => {
+                self.owners.lock().insert(id.clone(), owner_norm.clone());
                 self.sessions.lock().push(session.clone());
                 self.record_event(
                     &id,
                     "spawn",
                     kind.slug(),
                     true,
-                    &format!("{} @ 127.0.0.1:{}", executable.display(), session.port),
+                    &format!(
+                        "{} @ 127.0.0.1:{}（owner: {owner_norm}）",
+                        executable.display(),
+                        session.port
+                    ),
                     t0.elapsed().as_millis() as u64,
                 );
                 Ok(session)
@@ -235,13 +257,29 @@ impl BrowserManager {
         }
     }
 
-    /// 会话列表快照（列表子页签实例卡）。
+    /// 会话列表快照（列表子页签实例卡；行带 owner——实例启动者投影）。
     pub fn sessions_snapshot(&self) -> Vec<Value> {
-        self.sessions.lock().iter().map(|s| s.summary()).collect()
+        let owners = self.owners.lock();
+        self.sessions
+            .lock()
+            .iter()
+            .map(|s| {
+                let mut v = s.summary();
+                if let Some(o) = owners.get(&s.id) {
+                    v["owner"] = json!(o);
+                }
+                v
+            })
+            .collect()
     }
 
     pub fn session(&self, id: &str) -> Option<Arc<BrowserSession>> {
         self.sessions.lock().iter().find(|s| s.id == id).cloned()
+    }
+
+    /// 实例启动者查询（None = 台账无条目——重启前的旧会话或测试构造）。
+    pub fn owner_of(&self, id: &str) -> Option<String> {
+        self.owners.lock().get(id).cloned()
     }
 
     /// 全部会话（注册表序；工具侧「缺省 = 第一个活会话」选择面）。
@@ -254,31 +292,144 @@ impl BrowserManager {
     /// 统一走这里——此前 handler 缺省臂取注册表第一个、死活不论，用户手
     /// 关窗口后撞死会话报传输层错误，与工具侧「均已退出」文案分裂）。
     pub async fn pick_default_session(&self) -> Result<Arc<BrowserSession>, String> {
+        self.pick_default_session_for(None).await.map(|(s, _)| s)
+    }
+
+    /// 带所有者偏好的缺省挑选（2026-11-28 所有权批堵洞④；挑选策略是
+    /// 浏览器域策略，收进 manager 单一真相——工具面与 WSAPI handler 同源）。
+    ///
+    /// - `None`（人面）：旧行为 = 第一个活会话。
+    /// - `Some(根会话键)`（bot 面）：偏好序 **本会话所启 > human/无主 >
+    ///   他会话所启**；落到他会话实例时带诚实注记（调用方应把注记并入
+    ///   结果投影）。同 kind 单实例是 profile 架构约束，驾驶层只能共享，
+    ///   偏好序是缓解不是隔离。
+    pub async fn pick_default_session_for(
+        &self,
+        caller: Option<&str>,
+    ) -> Result<(Arc<BrowserSession>, Option<String>), String> {
+        let Some(root) = caller else {
+            // 人面：维持旧行为（第一个活会话）。
+            let sessions = self.sessions();
+            for s in &sessions {
+                if s.is_alive().await {
+                    return Ok((s.clone(), None));
+                }
+            }
+            return Err(self.no_alive_session_err(&sessions));
+        };
         let sessions = self.sessions();
-        for s in &sessions {
+        // guard 作用域块（生成器布局分析对 drop-before-await 的误报解法：
+        // 内层块封死 guard 逃逸路径，await 全在块外）。
+        let (own, neutral, others) = {
+            let owners = self.owners.lock();
+            let mut own = Vec::new();
+            let mut neutral = Vec::new();
+            let mut others = Vec::new();
+            for s in sessions {
+                let holder = owners.get(&s.id).map(String::as_str);
+                if holder == Some(root) {
+                    own.push(s);
+                } else if holder.is_none() || holder == Some(HUMAN_OWNER) {
+                    neutral.push(s);
+                } else {
+                    others.push((s, holder.unwrap_or(HUMAN_OWNER).to_string()));
+                }
+            }
+            (own, neutral, others)
+        };
+        for s in own.into_iter().chain(neutral) {
             if s.is_alive().await {
-                return Ok(s.clone());
+                return Ok((s, None));
             }
         }
+        // 末选：他会话所启的活实例（带诚实注记；none = 该序全死/为空）。
+        for (s, holder) in &others {
+            if s.is_alive().await {
+                return Ok((
+                    s.clone(),
+                    Some(format!(
+                        "默认接管了会话 {holder} 启动的实例 {}（非本会话启动：操作前建议先用 tabs 确认现场）",
+                        s.id
+                    )),
+                ));
+            }
+        }
+        Err(self.no_alive_session_err(&self.sessions()))
+    }
+
+    /// 空/全死两臂的诚实报错（双向指路：bot 自 spawn 或人面 Dashboard）。
+    fn no_alive_session_err(&self, sessions: &[Arc<BrowserSession>]) -> String {
         if sessions.is_empty() {
-            Err(
-                "无浏览器会话：请在 Dashboard（执行单元 → 浏览器）先启动浏览器，再调用本工具"
-                    .to_string(),
-            )
+            "无浏览器会话：可用 host_browser 的 spawn 动作自行启动（实例与初始标签页自动绑到本会话），或请用户在 Dashboard（执行单元 → 浏览器）手动启动"
+                .to_string()
         } else {
-            Err("浏览器会话均已退出：请在 Dashboard（执行单元 → 浏览器）重新启动后再试".to_string())
+            "浏览器会话均已退出：可用 host_browser 的 spawn 动作重新启动，或请用户在 Dashboard（执行单元 → 浏览器）重启"
+                .to_string()
         }
     }
 
     /// 关闭会话并从注册表摘除（Dashboard 关闭按钮；estop/gateway 退出不走）。
-    pub async fn close_session(&self, id: &str) -> Result<Value, String> {
+    ///
+    /// `caller`：Some(根会话键) = bot 面，**双闸**（2026-11-28 所有权批
+    /// 堵洞③）——① caller 是实例启动者；② 实例内全部活 tab 均为 caller
+    /// 所有（防关 A 的实例连带扫掉窗口里别人的页面）。任一不满足 → 拒绝
+    /// + 异己清单 + Dashboard 指路。None = 人面免检（Dashboard 语义不变）。
+    pub async fn close_session(&self, id: &str, caller: Option<&str>) -> Result<Value, String> {
         let t0 = std::time::Instant::now();
         let session = self
             .session(id)
             .ok_or_else(|| format!("会话 {id} 不存在"))?;
+        if let Some(root) = caller {
+            // ① 实例半闸：caller 是启动者（台账 human/无条目都算异己）。
+            let holder = self.owner_of(id);
+            if holder.as_deref() != Some(root) {
+                let err = format!(
+                    "浏览器实例 {id} 由 {} 启动，本会话无权关闭：只关自己开的；请对方自行 close_browser 收尾，或由人在 Dashboard 关闭",
+                    holder.as_deref().unwrap_or("未知会话"),
+                );
+                self.record_event(
+                    id,
+                    "close",
+                    "",
+                    false,
+                    &err,
+                    t0.elapsed().as_millis() as u64,
+                );
+                return Err(err);
+            }
+            // ② 连坐半闸：全部活 tab 归 caller；异己清单进报错。
+            let foreign = session.foreign_tabs(caller).await;
+            if !foreign.is_empty() {
+                let rows = foreign
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "「{}」{}（owner: {}）",
+                            f["title"].as_str().unwrap_or(""),
+                            f["url"].as_str().unwrap_or(""),
+                            f["owner"].as_str().unwrap_or("无主"),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("；");
+                let err = format!(
+                    "浏览器实例 {id} 内还有非本会话的标签页，关闭会连带扫掉它们，已拒绝：{rows}；请对方自行处理，或由人在 Dashboard 关闭",
+                );
+                self.record_event(
+                    id,
+                    "close",
+                    "",
+                    false,
+                    &err,
+                    t0.elapsed().as_millis() as u64,
+                );
+                return Err(err);
+            }
+        }
         let result = session.close().await;
-        // 摘除 + 收缩序号占用（不重用 id——序号单调递增）。
+        // 摘除 + 收缩序号占用（不重用 id——序号单调递增）；台账同步摘条目。
         self.sessions.lock().retain(|s| s.id != id);
+        self.owners.lock().remove(id);
         match &result {
             Ok(v) => self.record_event(
                 id,

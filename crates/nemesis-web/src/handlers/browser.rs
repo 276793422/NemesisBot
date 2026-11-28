@@ -40,8 +40,9 @@ fn browser_manager() -> Result<Arc<nemesis_browser::BrowserManager>, String> {
 pub struct BrowserHandler;
 
 /// 会话选择（显式 session_id 优先；缺省 = 第一个**活**会话——F28，
-/// 2026-11-15 五审：统一走 manager.pick_default_session 与工具侧同源同
-/// 语义，旧实现取注册表第一个、死活不论，手关窗口后缺省臂撞死会话）。
+/// 2026-11-15 五审：统一走 manager.pick_default_session_for(None)（人面）
+/// 与工具侧同源同语义，旧实现取注册表第一个、死活不论，手关窗口后缺省臂
+/// 撞死会话）。
 async fn pick_session(
     manager: &nemesis_browser::BrowserManager,
     data: Option<&serde_json::Value>,
@@ -63,7 +64,10 @@ async fn pick_session(
             }
             Ok(s)
         }
-        None => manager.pick_default_session().await,
+        None => manager
+            .pick_default_session_for(None) // 人面恒可信（human 哨兵语义）
+            .await
+            .map(|(s, _)| s),
     }
 }
 
@@ -119,7 +123,7 @@ impl ModuleHandler for BrowserHandler {
                 let kind = opt_str(data.as_ref(), "kind");
                 let executable = opt_str(data.as_ref(), "executable");
                 let session = manager
-                    .spawn(kind.as_deref(), executable.as_deref())
+                    .spawn(kind.as_deref(), executable.as_deref(), None) // 人面 = human 哨兵
                     .await?;
                 Ok(Some(serde_json::json!({ "session": session.summary() })))
             }
@@ -158,7 +162,7 @@ impl ModuleHandler for BrowserHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("缺 session_id")?
                     .to_string();
-                let result = manager.close_session(&session_id).await?;
+                let result = manager.close_session(&session_id, None).await?; // 人面免检
                 Ok(Some(result))
             }
             "logs" => {

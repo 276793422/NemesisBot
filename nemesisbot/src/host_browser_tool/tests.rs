@@ -22,9 +22,10 @@ fn tool_for_screenshot(workspace: PathBuf) -> HostBrowserTool {
 }
 
 #[test]
-fn schema_declares_twelve_actions_and_required_action() {
-    // 通道：schema 面是模型唯一可见合同——十二动作枚举缺一即模型盲区
-    // （2026-11-18 计划：九动作 + DOM 只读三动作 inspect/snapshot/get_dom）。
+fn schema_declares_sixteen_actions_and_required_action() {
+    // 通道：schema 面是模型唯一可见合同——十六动作枚举缺一即模型盲区
+    // （2026-11-18 计划：九动作 + DOM 只读三动作 inspect/snapshot/get_dom；
+    // 2026-11-28 会话级四动作批：spawn/tabs/close_tab/close_browser）。
     let t = tool_for_screenshot(std::env::temp_dir());
     let schema = t.parameters();
     let actions = schema
@@ -48,7 +49,11 @@ fn schema_declares_twelve_actions_and_required_action() {
             "inspect",
             "snapshot",
             "get_dom",
-            "run_script"
+            "run_script",
+            "spawn",
+            "tabs",
+            "close_tab",
+            "close_browser"
         ]
     );
     // DOM 三动作的参数在 schema 面可发现（frame/钳制参数缺一 = 模型盲区）。
@@ -57,6 +62,10 @@ fn schema_declares_twelve_actions_and_required_action() {
         .and_then(|p| p.as_object())
         .expect("properties missing");
     for k in ["frame", "max_depth", "max_nodes", "max_chars"] {
+        assert!(props.contains_key(k), "schema 缺 {k} 参数");
+    }
+    // 会话级四动作的参数在 schema 面可发现（2026-11-28 批）。
+    for k in ["target", "kind", "executable"] {
         assert!(props.contains_key(k), "schema 缺 {k} 参数");
     }
     let frame_desc = props
@@ -167,6 +176,74 @@ fn operation_override_malformed_args_is_none() {
         t.operation_override(r#"{"action":"unknown_action"}"#)
             .is_none()
     );
+}
+
+// --- 会话级四动作（2026-11-28 批）：override 早臂 + 编排拒绝 + 注记合并 ---
+
+#[test]
+fn operation_override_session_level_actions_project_slugs() {
+    // §2.4 陷阱锁：四动作必须在 WebAction 反序列化**之前**早臂投影（serde
+    // 不认它们 = 漏早臂则 fail-closed CRITICAL / 「参数不合法」假错）。
+    // spawn = network_request（开浏览器进程 + profile 网络面）；其余三个
+    // 会话簿记 = internal（免审批卡）。
+    let t = tool_for_screenshot(std::env::temp_dir());
+    let cases = [
+        (json!({"action": "spawn"}), "network_request"),
+        (
+            json!({"action": "spawn", "kind": "edge"}),
+            "network_request",
+        ),
+        (json!({"action": "tabs"}), "internal"),
+        (
+            json!({"action": "close_tab", "target": "/text"}),
+            "internal",
+        ),
+        (json!({"action": "close_browser"}), "internal"),
+    ];
+    for (args, expect) in cases {
+        let ov = t
+            .operation_override(&args.to_string())
+            .unwrap_or_else(|| panic!("override missing for {args}"));
+        assert_eq!(ov.op_type, expect, "slug mismatch for {args}");
+        assert!(
+            ov.force_approval.is_none(),
+            "会话级动作不强制审批卡: {args}"
+        );
+    }
+}
+
+#[test]
+fn validate_script_plan_rejects_session_level_actions() {
+    // 会话簿记不是页面动作：进 run_script 编排 = 可读文案拒绝 +「未执行任何
+    // 步骤」（模型可直接改发独立调用，无需核实页面状态）。
+    for a in ["spawn", "tabs", "close_tab", "close_browser"] {
+        let args = json!({ "steps": [ {"action": a} ] });
+        let err = HostBrowserTool::validate_script_plan(&args).unwrap_err();
+        assert!(err.contains("会话级动作不进 run_script 编排"), "{a}: {err}");
+        assert!(err.contains("脚本未执行任何步骤"), "{a}: {err}");
+    }
+    // 合法编排照常过校验（拒绝臂没有误伤基础动作）。
+    let ok = json!({
+        "steps": [
+            {"action": "navigate", "url": "https://example.com"},
+            {"action": "extract_text", "selector": "body"}
+        ]
+    });
+    assert!(HostBrowserTool::validate_script_plan(&ok).is_ok());
+}
+
+#[test]
+fn attach_note_merges_into_object_and_prefixes_text() {
+    // 注记是提示面：JSON 对象结果并 note 键（不改写本体字段）；非对象结果
+    // 前缀文本行；None = 原样透传。
+    assert_eq!(attach_note(r#"{"a":1}"#.to_string(), None), r#"{"a":1}"#);
+    let merged = attach_note(r#"{"a":1,"b":2}"#.to_string(), Some("接管注记".into()));
+    let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+    assert_eq!(v["a"], json!(1));
+    assert_eq!(v["b"], json!(2));
+    assert_eq!(v["note"], json!("接管注记"));
+    let prefixed = attach_note("纯文本回执".to_string(), Some("注记".into()));
+    assert_eq!(prefixed, "【注记】\n纯文本回执");
 }
 
 #[test]
@@ -410,7 +487,7 @@ async fn run_script_live_orchestrates_type_click_extract() {
     // SUID sandbox 配置不合法（msedge-sandbox 须 root:4755）→ spawn 即
     // FATAL 自杀。与「无 Edge 诚实 SKIP」同纪律扩一位：sandbox 不可用 =
     // 环境不能跑活体，诚实跳过；非 sandbox 死因仍硬红（不许遮真实回归）。
-    let session = match manager.spawn(Some("edge"), None).await {
+    let session = match manager.spawn(Some("edge"), None, None).await {
         Ok(s) => s,
         Err(e) => {
             let msg = e.to_string();
@@ -447,7 +524,7 @@ async fn run_script_live_orchestrates_type_click_extract() {
     // （validate → pick_alive → run_script）在此镜像。
     let plan = HostBrowserTool::validate_script_plan(&args).expect("plan validation failed");
     let out = t
-        .run_script(&session, plan)
+        .run_script(&session, plan, None)
         .await
         .expect("run_script failed");
     let summary: serde_json::Value = serde_json::from_str(&out).expect("receipts not json");
@@ -498,6 +575,6 @@ async fn run_script_live_orchestrates_type_click_extract() {
         "get_dom 编排回执不应携带 html: {out}"
     );
 
-    let _ = manager.close_session(&session.id).await;
+    let _ = manager.close_session(&session.id, None).await;
     let _ = std::fs::remove_dir_all(&home);
 }

@@ -123,6 +123,7 @@ async fn spawn_adopts_orphan_browser_via_live_port_file() {
         DriverKind::Edge,
         std::path::PathBuf::from("Z:/no/such/browser.exe"),
         &profile_root,
+        "human",
     )
     .await
     .expect("活端口文件应触发收养而非 spawn");
@@ -159,6 +160,7 @@ async fn spawn_with_dead_port_file_falls_through_to_launch() {
         DriverKind::Edge,
         std::path::PathBuf::from("Z:/no/such/browser.exe"),
         &profile_root,
+        "human",
     )
     .await
     else {
@@ -250,9 +252,16 @@ async fn spawn_process_exit_with_fresh_port_file_is_adopted() {
     std::fs::create_dir_all(&profile_dir).unwrap();
     let bat = write_relay_bat(&profile_dir, port, "");
 
-    let s = super::BrowserSession::spawn("bR".to_string(), 1, DriverKind::Edge, bat, &profile_root)
-        .await
-        .expect("进程退出但 fresh 端口文件在 = relaunch 接力成功，应收养");
+    let s = super::BrowserSession::spawn(
+        "bR".to_string(),
+        1,
+        DriverKind::Edge,
+        bat,
+        &profile_root,
+        "human",
+    )
+    .await
+    .expect("进程退出但 fresh 端口文件在 = relaunch 接力成功，应收养");
     assert_eq!(s.port, port, "收养端口来自接力进程写的端口文件");
     assert_eq!(s.pid, 0, "接力进程 pid 未知 = 0（F36 禁杀守卫）");
     assert!(s.is_alive().await, "端点活 = 会话活");
@@ -274,9 +283,16 @@ async fn spawn_process_exit_after_ready_same_port_stays_alive() {
     // 写文件（轮询 ~250ms 读到 → 装配）→ ping ~2s（装配后才退出）。
     let bat = write_relay_bat(&profile_dir, port, "ping -n 3 127.0.0.1 > nul");
 
-    let s = super::BrowserSession::spawn("bK".to_string(), 1, DriverKind::Edge, bat, &profile_root)
-        .await
-        .expect("端口文件在且端点活 = 装配成功");
+    let s = super::BrowserSession::spawn(
+        "bK".to_string(),
+        1,
+        DriverKind::Edge,
+        bat,
+        &profile_root,
+        "human",
+    )
+    .await
+    .expect("端口文件在且端点活 = 装配成功");
     // 等 bat 退出 + wait task 终裁探端口（bat ~2s + 终裁即时）。
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
     assert!(
@@ -304,6 +320,7 @@ async fn spawn_process_exit_without_port_file_fails_fast() {
         DriverKind::Edge,
         std::path::PathBuf::from("cmd"),
         &profile_root,
+        "human",
     )
     .await
     else {
@@ -331,9 +348,15 @@ async fn spawn_exit_with_fresh_port_but_dead_endpoint_fails_and_cleans() {
     // 死端口（1 无监听）：bat 写出 fresh 文件后立即退出。
     let bat = write_relay_bat(&profile_dir, 1, "");
 
-    let Err(err) =
-        super::BrowserSession::spawn("bD".to_string(), 1, DriverKind::Edge, bat, &profile_root)
-            .await
+    let Err(err) = super::BrowserSession::spawn(
+        "bD".to_string(),
+        1,
+        DriverKind::Edge,
+        bat,
+        &profile_root,
+        "human",
+    )
+    .await
     else {
         panic!("端口文件在但端点死 = 必须失败");
     };
@@ -407,4 +430,81 @@ fn process_alive_self_pid_is_alive() {
     // 守卫不被误扩的端到端锚：本进程 pid 必须可达（Windows 走 tasklist，
     // Unix 走 kill(pid, 0)）。
     assert!(process_alive(std::process::id()));
+}
+
+// --- 会话级四动作（2026-11-28 所有权批）：close_tab 匹配裁决 + foreign_tabs ---
+
+use super::{MatchOutcome, match_tab, tab_list_row};
+use crate::cdp::TargetInfo;
+
+fn tab(id: &str, title: &str, url: &str) -> TargetInfo {
+    TargetInfo {
+        id: id.to_string(),
+        target_type: "page".to_string(),
+        title: title.to_string(),
+        url: url.to_string(),
+        attached: false,
+    }
+}
+
+#[test]
+fn match_tab_three_states_case_insensitive() {
+    // 三态 + 大小写不敏感子串（target_id/url/title 三字段都参与；0/多命中
+    // 绝不猜——与跨域 iframe「URL 子串 + 清单即发现机制」同款纪律）。
+    let tabs = vec![
+        tab("AAA111", "文本页", "http://127.0.0.1:1/text"),
+        tab("BBB222", "表单页", "http://127.0.0.1:1/form"),
+    ];
+    // 唯一命中：URL 子串（含路径）/title/id 三路都可命中。
+    match match_tab(&tabs, "/form") {
+        MatchOutcome::Unique(t) => assert_eq!(t.id, "BBB222"),
+        _ => panic!("/form 必须唯一命中"),
+    }
+    match match_tab(&tabs, "表单页") {
+        MatchOutcome::Unique(t) => assert_eq!(t.id, "BBB222"),
+        _ => panic!("title 命中失败"),
+    }
+    match match_tab(&tabs, "bbb") {
+        MatchOutcome::Unique(t) => assert_eq!(t.id, "BBB222"),
+        _ => panic!("id 大小写不敏感命中失败"),
+    }
+    // 大写 needle 打小写 URL（不敏感双向）。
+    match match_tab(&tabs, "/TEXT") {
+        MatchOutcome::Unique(t) => assert_eq!(t.id, "AAA111"),
+        _ => panic!("大写 needle 命中失败"),
+    }
+    // 0 命中。
+    assert!(matches!(
+        match_tab(&tabs, "no-such-page"),
+        MatchOutcome::NotFound
+    ));
+    // 多命中：同域前缀两个 tab 都含。
+    match match_tab(&tabs, "127.0.0.1") {
+        MatchOutcome::Ambiguous(hits) => assert_eq!(hits.len(), 2),
+        _ => panic!("同域前缀必须判多命中"),
+    }
+}
+
+#[test]
+fn tab_list_row_carries_all_three_fields() {
+    // 错误清单行 = title + url + 完整 target_id（同标题同址时模型需要 id
+    // 才能拼出唯一子串）。
+    let row = tab_list_row(&tab("XYZ789", "标题", "http://h/p"));
+    assert!(row.contains("标题"), "{row}");
+    assert!(row.contains("http://h/p"), "{row}");
+    assert!(row.contains("XYZ789"), "{row}");
+}
+
+/// foreign_tabs 三臂（close_browser 连坐半闸的 tab 半闸）：
+/// ① 人面（None）恒空清单（免检，不触 driver）；② list_tabs 失败（实例
+/// 死透）= 空清单半闸放行（实例闸仍由 manager 把守）；③ 有 caller 时
+/// 无主 tab 也算异己（用户手动开的不能被 bot 连坐扫掉）——③ 需要 list_tabs
+/// 活体，归 edge_live 所有权闭环；此处锁 ①② 两臂。
+#[tokio::test]
+async fn foreign_tabs_human_face_empty_and_dead_driver_fail_open() {
+    let s = super::BrowserSession::test_with("bFT", crate::detect::DriverKind::Edge, true, 0);
+    // ① 人面：免检（不触 driver——死实例也不拦人面）。
+    assert!(s.foreign_tabs(None).await.is_empty());
+    // ② bot 面 + 死 driver：list_tabs Err → 空清单放行（fail-open 半闸）。
+    assert!(s.foreign_tabs(Some("root-a")).await.is_empty());
 }

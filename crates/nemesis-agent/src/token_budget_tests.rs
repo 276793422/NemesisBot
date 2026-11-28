@@ -66,6 +66,7 @@ fn test_context(session_key: &str) -> crate::RequestContext {
         chat_id: "c1".to_string(),
         user: "u1".to_string(),
         session_key: session_key.to_string(),
+        root_session_key: session_key.to_string(),
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,

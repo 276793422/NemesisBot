@@ -11,6 +11,7 @@ fn test_ctx() -> RequestContext {
         chat_id: "chat".to_string(),
         user: "u".to_string(),
         session_key: "agent:test/session".to_string(),
+        root_session_key: "agent:test/session".to_string(),
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,
@@ -94,6 +95,7 @@ async fn test_codex_tool_timeout_structured_error() {
     let run_dir = tempfile::tempdir().unwrap();
     let ctx = RequestContext {
         session_key: run_dir.path().join("session").to_string_lossy().to_string(),
+        root_session_key: run_dir.path().join("session").to_string_lossy().to_string(),
         ..test_ctx()
     };
     let res = t.execute(r#"{"prompt":"do it"}"#, &ctx).await;

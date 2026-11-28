@@ -106,7 +106,8 @@ pub(super) fn inject_project_spawn_fn(
               role: &str,
               parent_session_key: &str,
               expert: &str,
-              prompt: &str| {
+              prompt: &str,
+              parent_root: &str| {
             let weak = weak.clone();
             let bus = bus.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
@@ -125,6 +126,8 @@ pub(super) fn inject_project_spawn_fn(
             // 子代理可见性：连接级 chat_id + 父会话键（同主 spawn）。
             let chat_id = chat_id.to_string();
             let parent_session_key = parent_session_key.to_string();
+            // 所有权血统（2026-11-28 堵洞①）：项目子代理同盖父根键。
+            let parent_root = parent_root.to_string();
             // 宿主形态标识 per-call 本地化（外层 Fn 闭包捕获变量不可 move）。
             let loop_origin = loop_origin.clone();
             // 显式角色覆盖（语义与主 spawn 同源）。
@@ -296,6 +299,10 @@ pub(super) fn inject_project_spawn_fn(
                                 session_key_override: Some(registry_id.clone()),
                                 cancel_token: Some(cancel_token.clone()),
                                 registry_id: Some(registry_id.clone()),
+                                // 所有权血统（2026-11-28 堵洞①）：项目会话
+                                // 子代理继承父 root——子代理开的浏览器，父
+                                // 会话同权关闭。
+                                root_session_key: Some(parent_root.as_str()),
                                 ..Default::default()
                             },
                         )
@@ -424,6 +431,8 @@ pub(super) fn inject_project_spawn_fn(
                                         session_key_override: Some(bg_registry_id.clone()),
                                         cancel_token: Some(bg_cancel_token.clone()),
                                         registry_id: Some(bg_registry_id.clone()),
+                                        // 所有权血统（堵洞①，后台臂同前台）。
+                                        root_session_key: Some(parent_root.as_str()),
                                         ..Default::default()
                                     },
                                 )

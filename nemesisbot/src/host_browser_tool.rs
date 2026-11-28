@@ -5,7 +5,9 @@
 //! 职责形态（计划 §5）：单动作十一种（navigate/click/type/key/scroll/
 //! extract_text/screenshot/wait_for + DOM 只读三动作 inspect/snapshot/
 //! get_dom，2026-11-18 计划）+ `run_script` 编排（逐步展开基础动作，不进
-//! Driver trait）。screenshot 的 b64 结果落盘
+//! Driver trait）+ **会话级四动作**（spawn/tabs/close_tab/close_browser，
+//! 2026-11-28 所有权批——本工具只做胶水转发，所有权策略全在 nemesis-browser
+//! 的 manager/session 层单一真相）。screenshot 的 b64 结果落盘
 //! `<workspace>/uploads/browser/`，只回路径不回字节（LLM 上下文塞不进
 //! 图像字节——generate_image 同纪律）。
 //!
@@ -122,6 +124,22 @@ fn dom_action_summary(action: &WebAction, result: &serde_json::Value) -> Option<
     }
 }
 
+/// 结果注记合并（纯函数面）：默认挑选落到别人实例时的诚实注记并进结果
+/// JSON（对象形态注 `note` 键；非对象结果前缀文本行）。注记是提示面，
+/// 永不改写结果本体。
+fn attach_note(result: String, note: Option<String>) -> String {
+    let Some(note) = note else {
+        return result;
+    };
+    match serde_json::from_str::<serde_json::Value>(&result) {
+        Ok(serde_json::Value::Object(mut m)) => {
+            m.insert("note".to_string(), serde_json::json!(note));
+            serde_json::Value::Object(m).to_string()
+        }
+        _ => format!("【{note}】\n{result}"),
+    }
+}
+
 /// 截图序号（进程级单调；毫秒时间戳会撞名——run_script 连续两步
 /// screenshot 可在同一毫秒内完成，后者覆盖前者——序号后缀保证唯一，
 /// 2026-11-15 复审 F12）。
@@ -165,19 +183,21 @@ impl HostBrowserTool {
         }
     }
 
-    /// 会话选择：显式 session_id 优先；缺省 = 第一个活会话（注册表序）。
-    /// 缺省臂统一走 manager.pick_default_session（F28，2026-11-15 五审：
-    /// 与 WSAPI handler 同源同语义，此前两处各自实现）。
+    /// 会话选择：显式 session_id 优先；缺省 = 所有权偏好挑选（2026-11-28
+    /// 会话级四动作批堵洞④：bot 面偏爱自己 spawn 的实例，落到别人实例时
+    /// 带诚实注记——调用方应把注记并入结果投影）。人面（None）维持旧行为。
     async fn pick_session(
         &self,
         session_id: Option<&str>,
-    ) -> Result<Arc<nemesis_browser::BrowserSession>, String> {
+        caller: Option<&str>,
+    ) -> Result<(Arc<nemesis_browser::BrowserSession>, Option<String>), String> {
         if let Some(id) = session_id.map(str::trim).filter(|s| !s.is_empty()) {
-            return self.manager.session(id).ok_or_else(|| {
+            let s = self.manager.session(id).ok_or_else(|| {
                 format!("浏览器会话 {id} 不存在（browser.sessions 可查当前会话清单）")
-            });
+            })?;
+            return Ok((s, None));
         }
-        self.manager.pick_default_session().await
+        self.manager.pick_default_session_for(caller).await
     }
 
     /// 凭据守卫三条件（type 动作文本槽为 vault 别名时；任一不符拒绝，
@@ -278,8 +298,9 @@ impl HostBrowserTool {
     async fn failure_screenshot(
         &self,
         session: &nemesis_browser::BrowserSession,
+        caller: Option<&str>,
     ) -> Option<String> {
-        let shot = session.act(&WebAction::Screenshot).await.ok()?;
+        let shot = session.act(&WebAction::Screenshot, caller).await.ok()?;
         let meta = self.save_screenshot(session.id.as_str(), &shot).ok()?;
         meta.get("path")
             .and_then(|v| v.as_str())
@@ -292,6 +313,7 @@ impl HostBrowserTool {
         session: &Arc<nemesis_browser::BrowserSession>,
         action: WebAction,
         bindings: &CredentialBindings,
+        caller: Option<&str>,
     ) -> Result<String, String> {
         // type 动作 + 凭据绑定 → 三守卫（别名取自 sidecar，明文已在槽内）。
         if let WebAction::Type { selector, text } = &action
@@ -302,7 +324,7 @@ impl HostBrowserTool {
                 .await?;
         }
 
-        let result = session.act(&action).await?;
+        let result = session.act(&action, caller).await?;
 
         match &action {
             WebAction::Screenshot => {
@@ -327,15 +349,16 @@ impl HostBrowserTool {
     async fn pick_alive_session(
         &self,
         session_id: Option<&str>,
-    ) -> Result<Arc<nemesis_browser::BrowserSession>, String> {
-        let session = self.pick_session(session_id).await?;
+        caller: Option<&str>,
+    ) -> Result<(Arc<nemesis_browser::BrowserSession>, Option<String>), String> {
+        let (session, note) = self.pick_session(session_id, caller).await?;
         if !session.is_alive().await {
             return Err(format!(
-                "浏览器会话 {} 已退出（窗口被手关或崩溃）：请在 Dashboard 重新打开浏览器后再操作",
+                "浏览器会话 {} 已退出（窗口被手关或崩溃）：可用 host_browser 的 spawn 动作重新打开，或请用户在 Dashboard 启动后再操作",
                 session.id
             ));
         }
-        Ok(session)
+        Ok((session, note))
     }
 
     /// 脚本级前置校验（F42，2026-11-16 八审）：所有步骤先解析再执行任何
@@ -368,6 +391,16 @@ impl HostBrowserTool {
                     "第 {i} 步是 run_script：编排不允许嵌套（步骤只允许基础动作；脚本未执行任何步骤）"
                 ));
             }
+            // 会话级四动作不进编排（会话簿记不是页面动作；serde 也会拒，
+            // 这里给可读文案）。
+            if matches!(
+                action_name.as_str(),
+                "spawn" | "tabs" | "close_tab" | "close_browser"
+            ) {
+                return Err(format!(
+                    "第 {i} 步是 {action_name}：会话级动作不进 run_script 编排，请作为独立工具调用（脚本未执行任何步骤）"
+                ));
+            }
             let action: WebAction = serde_json::from_value(step_raw.clone()).map_err(|e| {
                 format!("第 {i} 步参数不合法（{action_name}）: {e}（脚本未执行任何步骤）")
             })?;
@@ -397,6 +430,7 @@ impl HostBrowserTool {
         &self,
         session: &Arc<nemesis_browser::BrowserSession>,
         plan: ScriptPlan,
+        caller: Option<&str>,
     ) -> Result<String, String> {
         let mut receipts: Vec<serde_json::Value> = Vec::with_capacity(plan.steps.len());
         // F17：executed 只数真执行步（estop 伪回执不进计数——estop 停车时
@@ -441,7 +475,7 @@ impl HostBrowserTool {
                         "index": i, "action": step.action_name, "ok": false,
                         "error": format!("安全闸拒绝: {summary}"),
                     }));
-                    let shot = self.failure_screenshot(session).await;
+                    let shot = self.failure_screenshot(session, caller).await;
                     let stopped = serde_json::json!({
                         "ok": false,
                         "total": plan.steps.len(),
@@ -493,7 +527,7 @@ impl HostBrowserTool {
             }
 
             let t0 = std::time::Instant::now();
-            let outcome = session.act(&wa_step).await;
+            let outcome = session.act(&wa_step, caller).await;
             let duration_ms = t0.elapsed().as_millis() as u64;
             match outcome {
                 Ok(mut result) => {
@@ -537,7 +571,7 @@ impl HostBrowserTool {
                                 "error": err,
                             }));
                             if !plan.continue_on_error {
-                                let shot = self.failure_screenshot(session).await;
+                                let shot = self.failure_screenshot(session, caller).await;
                                 let stopped = serde_json::json!({
                                     "ok": false,
                                     "total": plan.steps.len(),
@@ -559,7 +593,7 @@ impl HostBrowserTool {
                         "error": e,
                     }));
                     if !plan.continue_on_error {
-                        let shot = self.failure_screenshot(session).await;
+                        let shot = self.failure_screenshot(session, caller).await;
                         let stopped = serde_json::json!({
                             "ok": false,
                             "total": plan.steps.len(),
@@ -589,12 +623,15 @@ impl Tool for HostBrowserTool {
          and geometry), snapshot (bounded DOM tree outline), get_dom (sanitized \
          subtree HTML) — these three accept frame=<URL substring> to read inside \
          iframes; or run_script with a steps array to chain basic actions in \
-         order (no nesting). Screenshots are saved under the workspace \
-         uploads/browser/ directory and returned as a path. For password fields, \
-         pass vault:browser/<domain>/<name> as type text — the credential is \
-         domain-bound and only accepted on input[type=password] fields of the \
-         matching site. Requires a running browser session: start one in the \
-         Dashboard (Executors → Browser) if none exists."
+         order (no nesting). Session lifecycle: spawn opens a browser bound to \
+         YOUR session, tabs lists pages (with owners), close_tab closes a page \
+         you opened, close_browser closes a session you spawned — the ownership \
+         ledger refuses closing anything opened by the user or another session, \
+         so clean up only what you opened. Screenshots are saved under the \
+         workspace uploads/browser/ directory and returned as a path. For \
+         password fields, pass vault:browser/<domain>/<name> as type text — the \
+         credential is domain-bound and only accepted on input[type=password] \
+         fields of the matching site."
             .to_string()
     }
 
@@ -606,12 +643,12 @@ impl Tool for HostBrowserTool {
                     "type": "string",
                     "enum": ["navigate","click","type","key","scroll","extract_text",
                              "screenshot","wait_for","inspect","snapshot","get_dom",
-                             "run_script"],
-                    "description": "The browser action to perform"
+                             "run_script","spawn","tabs","close_tab","close_browser"],
+                    "description": "The browser action to perform. Session lifecycle (spawn/tabs/close_tab/close_browser) is ownership-tracked: only close sessions/tabs YOUR session opened — the ledger refuses closing ones opened by the user or other sessions"
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Target browser session id (optional; defaults to the first live session)"
+                    "description": "Target browser session id (optional; defaults preferred to a session your chat spawned, falling back to unowned/human ones with an honest note)"
                 },
                 "url": {"type": "string", "description": "navigate: absolute URL to open"},
                 "selector": {"type": "string", "description": "CSS selector (click/type/key/extract_text/wait_for/inspect/get_dom; for key it focuses the element first; snapshot: optional — defaults to body)"},
@@ -634,13 +671,20 @@ impl Tool for HostBrowserTool {
                     "items": {"type": "object"},
                     "maxItems": 32
                 },
-                "continue_on_error": {"type": "boolean", "description": "run_script: keep executing after a failed step (default false)"}
+                "continue_on_error": {"type": "boolean", "description": "run_script: keep executing after a failed step (default false)"},
+                "target": {"type": "string", "description": "close_tab: case-insensitive substring matched against target_id/url/title; 0 hits returns the full tab list, >1 hits returns the hit list (never guesses); the last remaining tab is refused — use close_browser for the whole window"},
+                "kind": {"type": "string", "description": "spawn: browser kind edge/chrome/brave/vivaldi/chromium (optional; default = configured preference)"},
+                "executable": {"type": "string", "description": "spawn: absolute path to browser executable (optional; overrides kind)"}
             },
             "required": ["action"]
         })
     }
 
     /// per-op 风险投影（dispatch 8 层管线 per-op 分档通道）：
+    /// **会话级四动作先于 WebAction 反序列化**（2026-11-28 所有权批 §2.4
+    /// 陷阱：它们不是 WebAction 变体，落进下方 from_value 返 None = dispatch
+    /// fail-closed CRITICAL）——spawn=network_request（拉起外部进程访问
+    /// 网络）、tabs/close_tab/close_browser=internal（会话簿记面）。
     /// navigate=network_request / click·type·key·scroll=network_upload /
     /// extract·screenshot·wait + DOM 只读三动作=internal /
     /// run_script=process_exec + **强制人工审批**（卡片展示完整脚本，跳过
@@ -648,6 +692,18 @@ impl Tool for HostBrowserTool {
     fn operation_override(&self, args: &str) -> Option<OperationOverride> {
         let v: serde_json::Value = serde_json::from_str(args).ok()?;
         let action = v.get("action").and_then(|a| a.as_str())?;
+        let session_level = match action {
+            "spawn" => "network_request",
+            "tabs" | "close_tab" | "close_browser" => "internal",
+            _ => "",
+        };
+        if !session_level.is_empty() {
+            return Some(OperationOverride {
+                op_type: session_level.to_string(),
+                force_approval: None,
+                receipt_ctx: None,
+            });
+        }
         if action == "run_script" {
             let n = v
                 .get("steps")
@@ -682,7 +738,7 @@ impl Tool for HostBrowserTool {
         Some("big")
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let mut parsed: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("args 非 JSON: {e}"))?;
         // sidecar 剥离：dispatch 注入层合入的绑定清单（field/alias 对）。
@@ -709,6 +765,10 @@ impl Tool for HostBrowserTool {
             return Err("⛔ 急停激活中：浏览器操作已冻结（释放急停后重试）".to_string());
         }
 
+        // 所有权主体（2026-11-28 会话级四动作批）：根会话键——spawn 绑定/
+        // act 归因/关关闸都用它。空键回落 session_key（RequestContext::root_key）。
+        let root = context.root_key().to_string();
+
         let session_id = parsed
             .get("session_id")
             .and_then(|v| v.as_str())
@@ -719,19 +779,111 @@ impl Tool for HostBrowserTool {
             .ok_or("missing 'action' argument")?
             .to_string();
 
+        // ==== 会话级四动作（2026-11-28 所有权批，计划 §2）====
+        // 早臂在 WebAction 反序列化**之前**——四动作不是 WebAction 变体，
+        // 落进下方 from_value 会假「参数不合法」。
+        match action_str.as_str() {
+            // spawn：bot 面启动浏览器（kind/executable 可选覆盖），实例 +
+            // 初始 tab 绑定到本会话根键；收尾由本会话 close_browser。
+            "spawn" => {
+                let kind = parsed.get("kind").and_then(|v| v.as_str());
+                let executable = parsed.get("executable").and_then(|v| v.as_str());
+                let session = self
+                    .manager
+                    .spawn(kind, executable, Some(root.as_str()))
+                    .await?;
+                let mut v = session.summary();
+                v["owner"] = serde_json::json!(root);
+                v["hint"] = serde_json::json!(
+                    "实例与初始标签页已绑定到本会话；用完后由本会话 close_browser 收尾（所有权台账只允许关闭自己启动的实例）"
+                );
+                return Ok(v.to_string());
+            }
+            // tabs：页签清单（谁都能读；行带 owner 投影）。缺省挑选走
+            // 所有权偏好（偏爱自己 spawn 的实例）。
+            "tabs" => {
+                let (session, note) = self
+                    .pick_alive_session(session_id.as_deref(), Some(root.as_str()))
+                    .await?;
+                let tabs = session.tabs_snapshot().await?;
+                let mut v = serde_json::json!({
+                    "session_id": session.id,
+                    "working_tab_id": session.working_tab_id(),
+                    "tabs": tabs,
+                });
+                if let Some(n) = note {
+                    v["note"] = serde_json::json!(n);
+                }
+                return Ok(v.to_string());
+            }
+            // close_tab：关单页——target 子串匹配 + 所有权闸（只关自己
+            // 打开的；无主/他人 → 诚实拒绝）在 session 层裁决。
+            "close_tab" => {
+                let target = parsed
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or(
+                        "close_tab 缺 target：要关闭的标签页用 target 指定（target_id/url/title 的大小写不敏感子串；先用 tabs 动作查看清单）",
+                    )?;
+                let (session, note) = self
+                    .pick_alive_session(session_id.as_deref(), Some(root.as_str()))
+                    .await?;
+                let result = session.close_tab(target, Some(root.as_str())).await?;
+                return Ok(attach_note(result.to_string(), note));
+            }
+            // close_browser：关实例——双闸（实例启动者 + 实例内全部活 tab
+            // 均归本会话）在 manager 层裁决；人开的实例 bot 恒拒（人面
+            // Dashboard 关闭按钮兜底）。显式 session_id 优先；缺省 = 所有权
+            // 偏好挑选。死会话允许关（清卡动作，与 Dashboard 语义一致）。
+            "close_browser" => {
+                let explicit = session_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let (id, note) = match explicit {
+                    Some(id) => {
+                        let s = self.manager.session(id).ok_or_else(|| {
+                            format!("浏览器会话 {id} 不存在（browser.sessions 可查当前会话清单）")
+                        })?;
+                        (s.id.clone(), None)
+                    }
+                    None => {
+                        let (s, n) = self
+                            .manager
+                            .pick_default_session_for(Some(root.as_str()))
+                            .await?;
+                        (s.id.clone(), n)
+                    }
+                };
+                let result = self.manager.close_session(&id, Some(root.as_str())).await?;
+                return Ok(attach_note(result.to_string(), note));
+            }
+            _ => {}
+        }
+
         if action_str == "run_script" {
             // F42：前置校验先于会话解析——畸形脚本零副作用失败，也不需要
             // 活浏览器才能发现脚本写错了。
             let plan = Self::validate_script_plan(&parsed)?;
-            let session = self.pick_alive_session(session_id.as_deref()).await?;
-            return self.run_script(&session, plan).await;
+            let (session, note) = self
+                .pick_alive_session(session_id.as_deref(), Some(root.as_str()))
+                .await?;
+            let result = self.run_script(&session, plan, Some(root.as_str())).await?;
+            return Ok(attach_note(result, note));
         }
 
         // 单动作：同样先解析再解析会话（畸形参数不需要浏览器就能发现）。
         let action: WebAction = serde_json::from_value(parsed)
             .map_err(|e| format!("动作参数不合法（{action_str}）: {e}"))?;
-        let session = self.pick_alive_session(session_id.as_deref()).await?;
-        self.run_single(&session, action, &bindings).await
+        let (session, note) = self
+            .pick_alive_session(session_id.as_deref(), Some(root.as_str()))
+            .await?;
+        let result = self
+            .run_single(&session, action, &bindings, Some(root.as_str()))
+            .await?;
+        Ok(attach_note(result, note))
     }
 }
 

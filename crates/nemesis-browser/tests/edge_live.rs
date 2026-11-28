@@ -54,6 +54,23 @@ async fn serve_site(
         )
     }
 
+    async fn linkout_page() -> axum::response::Html<&'static str> {
+        // 所有权闭环（2026-11-28 批）专用页：target=_blank 锚点 = 新 tab
+        // 生成器。**必须走 trusted 坐标点击**：合成 el.click() 无 user
+        // activation，Chromium 弹窗拦截器把无激活的 target=_blank 导航当
+        // popup 吞掉（活体实证：点后无第二个 tab）；trusted 输入 = 真
+        // user activation，开 tab 放行（生产故事同源：游戏反作弊认这个）。
+        // 固定绝对坐标 200x40 大块 → 坐标点击 (100,60) 稳定命中。
+        axum::response::Html(
+            r##"<html><head><title>链接页</title></head><body style="margin:0">
+<p id="p1" style="position:absolute;left:40px;top:100px">NEMESIS_LINKOUT_OK</p>
+<a id="newtab" href="/text" target="_blank"
+   style="position:absolute;left:40px;top:40px;width:200px;height:40px;
+          display:block;background:#ccc;line-height:40px;text-align:center">新窗口打开文本页</a>
+</body></html>"##,
+        )
+    }
+
     async fn form_page() -> axum::response::Html<&'static str> {
         axum::response::Html(
             r##"<html><head><title>表单页</title></head><body>
@@ -299,6 +316,7 @@ setTimeout(function(){ alert('NEMESIS_IFRAME_DIALOG'); }, 2000);
     let app = Router::new()
         .route("/", get(index))
         .route("/text", get(text_page))
+        .route("/linkout", get(linkout_page))
         .route("/form", get(form_page))
         .route("/click", get(click_page))
         .route("/coords", get(coords_page))
@@ -457,7 +475,7 @@ async fn spawn_edge_session(
         }
     };
     let _ = edge;
-    match manager.spawn(Some("edge"), None).await {
+    match manager.spawn(Some("edge"), None, None).await {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("SKIP：Edge spawn 失败（{e}）——SAC 拦截/端口受限等环境原因");
@@ -541,17 +559,23 @@ async fn edge_live_full_matrix() {
     // --- navigate + extract_text（查找） ---
     step("navigate /text + extract");
     let r = session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/text"),
-            timeout_ms: Some(15_000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/text"),
+                timeout_ms: Some(15_000),
+            },
+            None,
+        )
         .await
         .expect("navigate /text");
     assert_eq!(r["ok"], json!(true));
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#p1".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#p1".into()),
+            },
+            None,
+        )
         .await
         .expect("extract #p1");
     let text = r["text"].as_str().unwrap();
@@ -571,45 +595,60 @@ async fn edge_live_full_matrix() {
     // --- click selector（点击页计数） ---
     step("click selector + 坐标 + type + key");
     let r = session
-        .act(&WebAction::Click {
-            selector: Some("#btn".into()),
-            x: None,
-            y: None,
-        })
+        .act(
+            &WebAction::Click {
+                selector: Some("#btn".into()),
+                x: None,
+                y: None,
+            },
+            None,
+        )
         .await
         .expect("click #btn");
     assert_eq!(r["ok"], json!(true));
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#count".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#count".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(r["text"].as_str().unwrap().trim(), "1", "点击后计数应为 1");
 
     // --- click 坐标（trusted 输入） ---
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/coords"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/coords"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     // F55 回归见证（2026-11-23）：导航后首次 trusted 坐标点击。修复前
     // press+release 被输入管线静默吞（6/6 挂，coordlog 恒空）；driver 侧
     // mouseMoved 暖场后此断言必须稳定通过。
     session
-        .act(&WebAction::Click {
-            selector: None,
-            x: Some(120.0),
-            y: Some(80.0),
-        })
+        .act(
+            &WebAction::Click {
+                selector: None,
+                x: Some(120.0),
+                y: Some(80.0),
+            },
+            None,
+        )
         .await
         .expect("click x+y");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#coordlog".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#coordlog".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -620,39 +659,54 @@ async fn edge_live_full_matrix() {
 
     // --- type（表单输入 + 提交回显；密码框只是形态，明文走守卫前的直通路径） ---
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/form"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/form"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     let r = session
-        .act(&WebAction::Type {
-            selector: "#username".into(),
-            text: "nemesis".into(),
-        })
+        .act(
+            &WebAction::Type {
+                selector: "#username".into(),
+                text: "nemesis".into(),
+            },
+            None,
+        )
         .await
         .expect("type username");
     assert_eq!(r["chars"], json!(7));
     session
-        .act(&WebAction::Type {
-            selector: "#password".into(),
-            text: "hunter2secret".into(),
-        })
+        .act(
+            &WebAction::Type {
+                selector: "#password".into(),
+                text: "hunter2secret".into(),
+            },
+            None,
+        )
         .await
         .expect("type password");
     session
-        .act(&WebAction::Click {
-            selector: Some("#submit".into()),
-            x: None,
-            y: None,
-        })
+        .act(
+            &WebAction::Click {
+                selector: Some("#submit".into()),
+                x: None,
+                y: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#greeting".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#greeting".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -665,18 +719,24 @@ async fn edge_live_full_matrix() {
     // 聚焦；合成 click 不聚焦）→ Key 派发到焦点元素 → 冒泡被 document 捕获。
     // 无 selector 路径 = 焦点依赖前置 trusted 点击（模型先点后按的编排）。 ---
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/key"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/key"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     session
-        .act(&WebAction::Click {
-            selector: None,
-            x: Some(110.0),
-            y: Some(95.0),
-        })
+        .act(
+            &WebAction::Click {
+                selector: None,
+                x: Some(110.0),
+                y: Some(95.0),
+            },
+            None,
+        )
         .await
         .expect("trusted 点击聚焦 #kb");
     // F49（2026-11-16 十二审）：能力闸显式前置断言——v1 ChromiumCdpDriver
@@ -689,18 +749,24 @@ async fn edge_live_full_matrix() {
         "Edge 活体要求 trusted_input 能力（v1 恒真；若为 false 说明能力位被改，先修 capabilities）"
     );
     session
-        .act(&WebAction::Key {
-            key: "a".into(),
-            phase: Default::default(),
-            hold_ms: None,
-            selector: None,
-        })
+        .act(
+            &WebAction::Key {
+                key: "a".into(),
+                phase: Default::default(),
+                hold_ms: None,
+                selector: None,
+            },
+            None,
+        )
         .await
         .expect("Key 动作失败——Edge 活体上 Key Err = 真缺陷（F49 禁静默跳过）");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#keylog".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#keylog".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -717,19 +783,25 @@ async fn edge_live_full_matrix() {
     // 修复前该路径整包被渲染器静默丢弃（文档警告的陷阱），修复后应到达。 ---
     step("key+selector 焦点承接（无前置点击）");
     let r = session
-        .act(&WebAction::Key {
-            key: "b".into(),
-            phase: Default::default(),
-            hold_ms: None,
-            selector: Some("#kb".into()),
-        })
+        .act(
+            &WebAction::Key {
+                key: "b".into(),
+                phase: Default::default(),
+                hold_ms: None,
+                selector: Some("#kb".into()),
+            },
+            None,
+        )
         .await
         .expect("Key+selector 失败——Edge 活体上 Key Err = 真缺陷（F49 禁静默跳过）");
     assert_eq!(r["focused"], json!(true), "focused 投影应=selector 路径");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#keylog".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#keylog".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -748,25 +820,34 @@ async fn edge_live_full_matrix() {
     // 诚实拒绝（不猜按住语义）。 ---
     step("key 大写字母 shift 包裹（F41）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/key"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/key"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     session
-        .act(&WebAction::Key {
-            key: "A".into(),
-            phase: Default::default(),
-            hold_ms: None,
-            selector: Some("#kb".into()),
-        })
+        .act(
+            &WebAction::Key {
+                key: "A".into(),
+                phase: Default::default(),
+                hold_ms: None,
+                selector: Some("#kb".into()),
+            },
+            None,
+        )
         .await
         .expect("Key 大写失败——Edge 活体上 Key Err = 真缺陷（F49 禁静默跳过）");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#keylog".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#keylog".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     let log = r["text"].as_str().unwrap();
@@ -784,12 +865,15 @@ async fn edge_live_full_matrix() {
     );
     // Down 相位遇大写 = 诚实拒绝。
     let r = session
-        .act(&WebAction::Key {
-            key: "A".into(),
-            phase: KeyPhase::Down,
-            hold_ms: None,
-            selector: None,
-        })
+        .act(
+            &WebAction::Key {
+                key: "A".into(),
+                phase: KeyPhase::Down,
+                hold_ms: None,
+                selector: None,
+            },
+            None,
+        )
         .await;
     match r {
         Err(e) => assert!(
@@ -805,10 +889,13 @@ async fn edge_live_full_matrix() {
     // 跨帧缺失（a 帧 ctrl=false）在此坐实。 ---
     step("key Ctrl 组合键修饰状态（F52）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/key"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/key"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     for (key, phase) in [
@@ -818,19 +905,25 @@ async fn edge_live_full_matrix() {
         ("ctrl", KeyPhase::Up),
     ] {
         session
-            .act(&WebAction::Key {
-                key: key.into(),
-                phase,
-                hold_ms: None,
-                selector: None,
-            })
+            .act(
+                &WebAction::Key {
+                    key: key.into(),
+                    phase,
+                    hold_ms: None,
+                    selector: None,
+                },
+                None,
+            )
             .await
             .unwrap_or_else(|e| panic!("Ctrl 组合序列 {key}/{phase:?} 失败: {e}"));
     }
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#keylog".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#keylog".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     let log = r["text"].as_str().unwrap();
@@ -844,25 +937,34 @@ async fn edge_live_full_matrix() {
     // （跨帧缺失由组合位补齐；显式按住路径的 a 帧 ctrl=false 是无状态边界，
     // 由上方现状锁钉死）。
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/key"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/key"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     session
-        .act(&WebAction::Key {
-            key: "ctrl+a".into(),
-            phase: Default::default(),
-            hold_ms: None,
-            selector: Some("#kb".into()),
-        })
+        .act(
+            &WebAction::Key {
+                key: "ctrl+a".into(),
+                phase: Default::default(),
+                hold_ms: None,
+                selector: Some("#kb".into()),
+            },
+            None,
+        )
         .await
         .expect("复合键 ctrl+a 失败");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#keylog".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#keylog".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     let log = r["text"].as_str().unwrap();
@@ -879,12 +981,15 @@ async fn edge_live_full_matrix() {
     // ——focus() 是 no-op，诚实报错而非静默丢键。 ---
     step("key+selector 不可聚焦元素拒绝");
     let r = session
-        .act(&WebAction::Key {
-            key: "c".into(),
-            phase: Default::default(),
-            hold_ms: None,
-            selector: Some("#keylog".into()),
-        })
+        .act(
+            &WebAction::Key {
+                key: "c".into(),
+                phase: Default::default(),
+                hold_ms: None,
+                selector: Some("#keylog".into()),
+            },
+            None,
+        )
         .await;
     match r {
         Err(e) => assert!(e.contains("不可聚焦"), "负路径错误应说明不可聚焦: {e}"),
@@ -896,25 +1001,34 @@ async fn edge_live_full_matrix() {
     // keylog 有帧、但 textarea 静默不换行（无 ta-input 事件）。 ---
     step("key Enter textarea 换行（F46）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/key"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/key"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     session
-        .act(&WebAction::Key {
-            key: "enter".into(),
-            phase: Default::default(),
-            hold_ms: None,
-            selector: Some("#ta".into()),
-        })
+        .act(
+            &WebAction::Key {
+                key: "enter".into(),
+                phase: Default::default(),
+                hold_ms: None,
+                selector: Some("#ta".into()),
+            },
+            None,
+        )
         .await
         .expect("Key Enter 失败——Edge 活体上 Key Err = 真缺陷（F49 禁静默跳过）");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#keylog".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#keylog".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     let log = r["text"].as_str().unwrap();
@@ -927,26 +1041,35 @@ async fn edge_live_full_matrix() {
     // --- scroll（滚动指示器） ---
     step("scroll");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/scroll"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/scroll"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     session
-        .act(&WebAction::Scroll {
-            x: None,
-            y: None,
-            dx: 0.0,
-            dy: 500.0,
-        })
+        .act(
+            &WebAction::Scroll {
+                x: None,
+                y: None,
+                dx: 0.0,
+                dy: 500.0,
+            },
+            None,
+        )
         .await
         .expect("scroll dy=500");
     tokio::time::sleep(Duration::from_millis(300)).await;
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#scroll-indicator".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#scroll-indicator".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     let scrolled = r["text"]
@@ -960,25 +1083,34 @@ async fn edge_live_full_matrix() {
     // --- wait_for（延迟出现元素）+ 未命中超时形态 ---
     step("wait_for");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/delay"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/delay"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     let r = session
-        .act(&WebAction::WaitFor {
-            selector: "#late-btn".into(),
-            timeout_ms: Some(5_000),
-        })
+        .act(
+            &WebAction::WaitFor {
+                selector: "#late-btn".into(),
+                timeout_ms: Some(5_000),
+            },
+            None,
+        )
         .await
         .expect("wait_for");
     assert_eq!(r["found"], json!(true));
     let r = session
-        .act(&WebAction::WaitFor {
-            selector: "#nonexistent".into(),
-            timeout_ms: Some(600),
-        })
+        .act(
+            &WebAction::WaitFor {
+                selector: "#nonexistent".into(),
+                timeout_ms: Some(600),
+            },
+            None,
+        )
         .await
         .expect("wait_for 未命中也 Ok");
     assert_eq!(
@@ -990,7 +1122,7 @@ async fn edge_live_full_matrix() {
     // --- screenshot（PNG 字节面 + F32 坐标系元数据） ---
     step("screenshot");
     let r = session
-        .act(&WebAction::Screenshot)
+        .act(&WebAction::Screenshot, None)
         .await
         .expect("screenshot");
     let b64 = r["png_base64"].as_str().expect("png_base64");
@@ -1014,30 +1146,39 @@ async fn edge_live_full_matrix() {
     // --- F33：JS 对话框探测-自动关闭（trusted 输入前置探针） ---
     step("F33 对话框自动关闭");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/dialog"),
-            timeout_ms: Some(10_000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/dialog"),
+                timeout_ms: Some(10_000),
+            },
+            None,
+        )
         .await
         .unwrap();
     // selector 点击触发 50ms 延迟 alert（click 本身先返回，对话框随后开着
     // 暂停页面 JS——trusted 输入从此被渲染器静默吞）。
     session
-        .act(&WebAction::Click {
-            selector: Some("#dlg".into()),
-            x: None,
-            y: None,
-        })
+        .act(
+            &WebAction::Click {
+                selector: Some("#dlg".into()),
+                x: None,
+                y: None,
+            },
+            None,
+        )
         .await
         .expect("click #dlg");
     tokio::time::sleep(Duration::from_millis(500)).await;
     // 坐标点击前置探针应自动关闭对话框并在回执注明；页面 JS 随后恢复。
     let r = session
-        .act(&WebAction::Click {
-            selector: None,
-            x: Some(150.0),
-            y: Some(200.0),
-        })
+        .act(
+            &WebAction::Click {
+                selector: None,
+                x: Some(150.0),
+                y: Some(200.0),
+            },
+            None,
+        )
         .await
         .expect("对话框场景点击应自愈（F33）");
     assert_eq!(
@@ -1047,9 +1188,12 @@ async fn edge_live_full_matrix() {
     );
     // 恢复验证：evaluate 不再被暂停（extract 正常返回，页面 JS 已复活）。
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#after".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#after".into()),
+            },
+            None,
+        )
         .await
         .expect("对话框关闭后页面 JS 应恢复");
     assert_eq!(r["text"].as_str().unwrap().trim(), "BEFORE");
@@ -1059,9 +1203,12 @@ async fn edge_live_full_matrix() {
     // 当前工作 tab = t2（多 tab 段点名）；用户手关（Target.closeTarget 模拟）。
     session.driver().close_tab(&t2.id).await.unwrap();
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#h".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#h".into()),
+            },
+            None,
+        )
         .await;
     match r {
         Err(e) => {
@@ -1080,7 +1227,7 @@ async fn edge_live_full_matrix() {
     // 重新点名存活 tab 后恢复正常（恢复路径可用性）。
     session.set_working_tab(&first).await.unwrap();
     let r = session
-        .act(&WebAction::ExtractText { selector: None })
+        .act(&WebAction::ExtractText { selector: None }, None)
         .await
         .expect("重新点名后 act 应恢复");
     assert_eq!(r["ok"], json!(true));
@@ -1092,31 +1239,37 @@ async fn edge_live_full_matrix() {
     // 而是内容真的变了）。 ---
     step("F38 截图滚动词域");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/tall"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/tall"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     let shot_a = {
         let r = session
-            .act(&WebAction::Screenshot)
+            .act(&WebAction::Screenshot, None)
             .await
             .expect("F38 shotA");
         r["png_base64"].as_str().unwrap().to_string()
     };
     session
-        .act(&WebAction::Scroll {
-            x: None,
-            y: None,
-            dx: 0.0,
-            dy: 800.0,
-        })
+        .act(
+            &WebAction::Scroll {
+                x: None,
+                y: None,
+                dx: 0.0,
+                dy: 800.0,
+            },
+            None,
+        )
         .await
         .expect("F38 scroll");
     tokio::time::sleep(Duration::from_millis(500)).await;
     let r = session
-        .act(&WebAction::Screenshot)
+        .act(&WebAction::Screenshot, None)
         .await
         .expect("F38 shotB");
     assert_eq!(
@@ -1126,7 +1279,7 @@ async fn edge_live_full_matrix() {
     );
     let shot_b = r["png_base64"].as_str().unwrap().to_string();
     let r2 = session
-        .act(&WebAction::Screenshot)
+        .act(&WebAction::Screenshot, None)
         .await
         .expect("F38 shotB2");
     let shot_b2 = r2["png_base64"].as_str().unwrap().to_string();
@@ -1146,10 +1299,13 @@ async fn edge_live_full_matrix() {
     // ，命中断言 = 坐标系一致性闭环成立。 ---
     step("F54 坐标闭环（截图→量坐标→点击→命中）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/coord"),
-            timeout_ms: None,
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/coord"),
+                timeout_ms: None,
+            },
+            None,
+        )
         .await
         .unwrap();
     // 页面 rect 自报「DOC:x,y VIEW:x,y」（scroll 时实时刷新）。
@@ -1170,9 +1326,12 @@ async fn edge_live_full_matrix() {
         )
     };
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#rectinfo".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#rectinfo".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     let rect_text = r["text"].as_str().unwrap();
@@ -1188,19 +1347,25 @@ async fn edge_live_full_matrix() {
     // 滚 500px：wheel 是 trusted 输入，页面随动——按钮视口位置由页面自报
     // （模拟「截图上量出来的像素」，不硬算 scrollY）。
     session
-        .act(&WebAction::Scroll {
-            x: None,
-            y: None,
-            dx: 0.0,
-            dy: 500.0,
-        })
+        .act(
+            &WebAction::Scroll {
+                x: None,
+                y: None,
+                dx: 0.0,
+                dy: 500.0,
+            },
+            None,
+        )
         .await
         .expect("F54 scroll");
     tokio::time::sleep(Duration::from_millis(300)).await;
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#rectinfo".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#rectinfo".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     let (_, (vx, vy)) = parse_rect(r["text"].as_str().unwrap());
@@ -1210,17 +1375,23 @@ async fn edge_live_full_matrix() {
     );
     // 「截图上按钮中心像素」= (vx+60, vy+20)，直发坐标点击（trusted 输入）。
     session
-        .act(&WebAction::Click {
-            selector: None,
-            x: Some(vx + 60.0),
-            y: Some(vy + 20.0),
-        })
+        .act(
+            &WebAction::Click {
+                selector: None,
+                x: Some(vx + 60.0),
+                y: Some(vy + 20.0),
+            },
+            None,
+        )
         .await
         .expect("F54 坐标点击");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#hits".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#hits".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1232,17 +1403,23 @@ async fn edge_live_full_matrix() {
     // 反向对照：坐标空间混淆形态——未换算的文档 y（dy0=900 → 中心 920）直发
     // 视口 = 文档 1420（空白垫高区），必不命中；命中即说明坐标系断言被架空。
     session
-        .act(&WebAction::Click {
-            selector: None,
-            x: Some(vx + 60.0),
-            y: Some(dy0 + 20.0),
-        })
+        .act(
+            &WebAction::Click {
+                selector: None,
+                x: Some(vx + 60.0),
+                y: Some(dy0 + 20.0),
+            },
+            None,
+        )
         .await
         .expect("F54 反向坐标点击（应落空）");
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#hits".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#hits".into()),
+            },
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1302,7 +1479,7 @@ async fn act_in_frame_with_retry(
     };
     let mut last = String::new();
     for _ in 0..tries {
-        match session.act(action).await {
+        match session.act(action, None).await {
             Ok(v) => return Ok(v),
             Err(e) => {
                 if !stale(&e) {
@@ -1366,17 +1543,23 @@ async fn edge_live_dom_read_actions() {
     // ---- 主 frame inspect：property/attribute 分层 + 白名单 ----
     step("navigate /dom + inspect details");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/dom"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/dom"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate /dom");
     let r = session
-        .act(&WebAction::Inspect {
-            selector: "#details".into(),
-            frame: None,
-        })
+        .act(
+            &WebAction::Inspect {
+                selector: "#details".into(),
+                frame: None,
+            },
+            None,
+        )
         .await
         .expect("inspect #details");
     assert_eq!(r["ok"], json!(true), "{r}");
@@ -1391,10 +1574,13 @@ async fn edge_live_dom_read_actions() {
 
     step("inspect disabled/aria/data 白名单分层");
     let r = session
-        .act(&WebAction::Inspect {
-            selector: "#btndis".into(),
-            frame: None,
-        })
+        .act(
+            &WebAction::Inspect {
+                selector: "#btndis".into(),
+                frame: None,
+            },
+            None,
+        )
         .await
         .expect("inspect #btndis");
     assert_eq!(r["disabled"], json!(true), "disabled property（动态态面）");
@@ -1416,10 +1602,13 @@ async fn edge_live_dom_read_actions() {
 
     step("inspect 密码框 value 恒缺");
     let r = session
-        .act(&WebAction::Inspect {
-            selector: "#pw".into(),
-            frame: None,
-        })
+        .act(
+            &WebAction::Inspect {
+                selector: "#pw".into(),
+                frame: None,
+            },
+            None,
+        )
         .await
         .expect("inspect #pw");
     assert!(
@@ -1435,19 +1624,25 @@ async fn edge_live_dom_read_actions() {
 
     step("inspect 未命中诚实报错 + extract 缺口对照");
     let r = session
-        .act(&WebAction::Inspect {
-            selector: "#nonexistent".into(),
-            frame: None,
-        })
+        .act(
+            &WebAction::Inspect {
+                selector: "#nonexistent".into(),
+                frame: None,
+            },
+            None,
+        )
         .await;
     assert!(
         matches!(&r, Err(e) if e.contains("未找到元素")),
         "inspect 未命中应诚实报错: {r:?}"
     );
     let r = session
-        .act(&WebAction::ExtractText {
-            selector: Some("#btndis".into()),
-        })
+        .act(
+            &WebAction::ExtractText {
+                selector: Some("#btndis".into()),
+            },
+            None,
+        )
         .await
         .expect("extract #btndis");
     assert_eq!(
@@ -1458,18 +1653,24 @@ async fn edge_live_dom_read_actions() {
 
     step("property 实时性锁：click checkbox → checked=true");
     session
-        .act(&WebAction::Click {
-            selector: Some("#cb".into()),
-            x: None,
-            y: None,
-        })
+        .act(
+            &WebAction::Click {
+                selector: Some("#cb".into()),
+                x: None,
+                y: None,
+            },
+            None,
+        )
         .await
         .expect("click #cb");
     let r = session
-        .act(&WebAction::Inspect {
-            selector: "#cb".into(),
-            frame: None,
-        })
+        .act(
+            &WebAction::Inspect {
+                selector: "#cb".into(),
+                frame: None,
+            },
+            None,
+        )
         .await
         .expect("inspect #cb");
     assert_eq!(
@@ -1481,12 +1682,15 @@ async fn edge_live_dom_read_actions() {
     // ---- snapshot：shadow 穿透 / 叶子 text / 双闸钳制 ----
     step("snapshot 全页");
     let r = session
-        .act(&WebAction::SnapshotDom {
-            selector: None,
-            frame: None,
-            max_depth: None,
-            max_nodes: None,
-        })
+        .act(
+            &WebAction::SnapshotDom {
+                selector: None,
+                frame: None,
+                max_depth: None,
+                max_nodes: None,
+            },
+            None,
+        )
         .await
         .expect("snapshot body");
     assert_eq!(r["ok"], json!(true));
@@ -1513,12 +1717,15 @@ async fn edge_live_dom_read_actions() {
 
     step("snapshot 钳制：depth 下限 / nodes 上限");
     let r = session
-        .act(&WebAction::SnapshotDom {
-            selector: None,
-            frame: None,
-            max_depth: Some(0),
-            max_nodes: None,
-        })
+        .act(
+            &WebAction::SnapshotDom {
+                selector: None,
+                frame: None,
+                max_depth: Some(0),
+                max_nodes: None,
+            },
+            None,
+        )
         .await
         .expect("snapshot depth=0");
     assert!(
@@ -1527,12 +1734,15 @@ async fn edge_live_dom_read_actions() {
     );
     assert_eq!(r["truncated"], json!(true), "深层被剪=截断语义");
     let r = session
-        .act(&WebAction::SnapshotDom {
-            selector: None,
-            frame: None,
-            max_depth: None,
-            max_nodes: Some(3),
-        })
+        .act(
+            &WebAction::SnapshotDom {
+                selector: None,
+                frame: None,
+                max_depth: None,
+                max_nodes: Some(3),
+            },
+            None,
+        )
         .await
         .expect("snapshot nodes=3");
     assert_eq!(r["nodes_emitted"], json!(3), "节点闸生效: {r}");
@@ -1541,11 +1751,14 @@ async fn edge_live_dom_read_actions() {
     // ---- get_dom：脱敏 + 截断 + 钳制 ----
     step("get_dom body 脱敏");
     let r = session
-        .act(&WebAction::GetDom {
-            selector: "body".into(),
-            frame: None,
-            max_chars: None,
-        })
+        .act(
+            &WebAction::GetDom {
+                selector: "body".into(),
+                frame: None,
+                max_chars: None,
+            },
+            None,
+        )
         .await
         .expect("get_dom body");
     let html = r["html"].as_str().expect("html str");
@@ -1565,11 +1778,14 @@ async fn edge_live_dom_read_actions() {
 
     step("get_dom 钳制 + 截断注记");
     let r = session
-        .act(&WebAction::GetDom {
-            selector: "body".into(),
-            frame: None,
-            max_chars: Some(200),
-        })
+        .act(
+            &WebAction::GetDom {
+                selector: "body".into(),
+                frame: None,
+                max_chars: Some(200),
+            },
+            None,
+        )
         .await
         .expect("get_dom cap=200");
     assert_eq!(r["truncated"], json!(true), "超 cap 截断");
@@ -1583,11 +1799,14 @@ async fn edge_live_dom_read_actions() {
         "截断注记在场: {r}"
     );
     let r_low = session
-        .act(&WebAction::GetDom {
-            selector: "body".into(),
-            frame: None,
-            max_chars: Some(100),
-        })
+        .act(
+            &WebAction::GetDom {
+                selector: "body".into(),
+                frame: None,
+                max_chars: Some(100),
+            },
+            None,
+        )
         .await
         .expect("get_dom cap=100");
     assert!(
@@ -1596,11 +1815,14 @@ async fn edge_live_dom_read_actions() {
         r_low["html"].as_str().unwrap_or("").chars().count()
     );
     let r_hi = session
-        .act(&WebAction::GetDom {
-            selector: "body".into(),
-            frame: None,
-            max_chars: Some(999_999),
-        })
+        .act(
+            &WebAction::GetDom {
+                selector: "body".into(),
+                frame: None,
+                max_chars: Some(999_999),
+            },
+            None,
+        )
         .await
         .expect("get_dom cap=999999");
     assert_eq!(r_hi["truncated"], json!(false), "上限钳 50000 内页面不截断");
@@ -1608,10 +1830,13 @@ async fn edge_live_dom_read_actions() {
     // ---- 同进程 iframe（§3.7 路径 A）----
     step("同源 iframe 三动作");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/iframe-host"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/iframe-host"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate /iframe-host");
     let r = act_in_frame_with_retry(
@@ -1665,10 +1890,13 @@ async fn edge_live_dom_read_actions() {
     step("跨域 OOPIF 三动作");
     let frame_x = format!(":{port2}/x-inner");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/x-host"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/x-host"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate /x-host");
     let r = act_in_frame_with_retry(
@@ -1719,10 +1947,13 @@ async fn edge_live_dom_read_actions() {
     // ---- frame 清单诚实报错 ----
     step("虚构 frame 诚实报错带清单");
     let r = session
-        .act(&WebAction::Inspect {
-            selector: "#x-title".into(),
-            frame: Some("no-such-frame-xyz".into()),
-        })
+        .act(
+            &WebAction::Inspect {
+                selector: "#x-title".into(),
+                frame: Some("no-such-frame-xyz".into()),
+            },
+            None,
+        )
         .await;
     match r {
         Err(e) => {
@@ -1738,17 +1969,23 @@ async fn edge_live_dom_read_actions() {
     // ---- 导航走开再走回：frame 缓存自愈 ----
     step("导航往返后 frame 自愈");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/text"),
-            timeout_ms: Some(10000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/text"),
+                timeout_ms: Some(10000),
+            },
+            None,
+        )
         .await
         .expect("navigate /text");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/x-host"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/x-host"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate /x-host again");
     let r = act_in_frame_with_retry(
@@ -1775,10 +2012,13 @@ async fn edge_live_dom_read_actions() {
     // 调用绕过了它）。iframe 的 URL 子串匹配 /iframe-dialog-inner。
     step("iframe 内对话框 route 路径自愈");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/iframe-dialog-host"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/iframe-dialog-host"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate /iframe-dialog-host");
     // 2s 定时器已触发：弹框开着、页面 JS 暂停。
@@ -1787,7 +2027,7 @@ async fn edge_live_dom_read_actions() {
         selector: "#d-title".into(),
         frame: Some("/iframe-dialog-inner".into()),
     };
-    let r = session.act(&dialog_act).await;
+    let r = session.act(&dialog_act, None).await;
     let Err(e) = &r else {
         panic!("对话框阻塞期间 inspect 应报错，却返回: {r:?}");
     };
@@ -1797,7 +2037,7 @@ async fn edge_live_dom_read_actions() {
     );
     // 自愈证明：同一动作再来一次——弹框已被按拒绝关闭，frame 恢复可用。
     let r = session
-        .act(&dialog_act)
+        .act(&dialog_act, None)
         .await
         .expect("自愈后同 frame inspect 应恢复");
     assert_eq!(r["id"], json!("d-title"), "自愈后 inspect 应命中目标元素");
@@ -1811,10 +2051,13 @@ async fn edge_live_dom_read_actions() {
     // 被真对话框打到；同进程场景 resolve 先死（三轮实测），走不到本臂。
     step("OOPIF 内对话框 route 路径自愈");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/x-dialog-host"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/x-dialog-host"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate /x-dialog-host");
     // 2s 定时器已触发：弹框开着、OOPIF 渲染器暂停。
@@ -1823,7 +2066,7 @@ async fn edge_live_dom_read_actions() {
         selector: "#xd-title".into(),
         frame: Some(format!(":{port2}/x-dialog-inner")),
     };
-    let r = session.act(&x_dialog_act).await;
+    let r = session.act(&x_dialog_act, None).await;
     let Err(e) = &r else {
         panic!("OOPIF 对话框阻塞期间 inspect 应报错，却返回: {r:?}");
     };
@@ -1833,7 +2076,7 @@ async fn edge_live_dom_read_actions() {
     );
     // 自愈证明：同一动作再来一次——弹框已按拒绝关闭，OOPIF 恢复可用。
     let r = session
-        .act(&x_dialog_act)
+        .act(&x_dialog_act, None)
         .await
         .expect("自愈后 OOPIF inspect 应恢复");
     assert_eq!(r["id"], json!("xd-title"), "自愈后 OOPIF inspect 应命中");
@@ -1890,17 +2133,20 @@ async fn edge_live_dialog_probe_first_read_actions() {
     // ---- ① 截图撞框：入口探针关框 → css_px 归一保持 + 注记 ----
     step("截图撞框（/iframe-dialog-inner 直航主 frame）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/iframe-dialog-inner"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/iframe-dialog-inner"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate 弹框页");
     // 2s 定时器已触发：弹框开着。
     tokio::time::sleep(Duration::from_millis(3000)).await;
     let t0 = std::time::Instant::now();
     let r = session
-        .act(&WebAction::Screenshot)
+        .act(&WebAction::Screenshot, None)
         .await
         .expect("对话框场景截图应探针自愈成功");
     let elapsed = t0.elapsed();
@@ -1926,19 +2172,25 @@ async fn edge_live_dialog_probe_first_read_actions() {
     // ---- ② navigate 撞框：锚点探针关框 → F14 闸完整 + 注记 ----
     step("navigate 撞框（文档身份锚前探测）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/iframe-dialog-inner"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/iframe-dialog-inner"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("re-navigate 弹框页");
     tokio::time::sleep(Duration::from_millis(3000)).await;
     let t0 = std::time::Instant::now();
     let r = session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/text"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/text"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("对话框场景 navigate 应探针自愈成功");
     assert!(
@@ -1960,19 +2212,25 @@ async fn edge_live_dialog_probe_first_read_actions() {
     // ---- ③ wait_for 撞框（弹框先于等待）：入口探针 → 立即命中 + 注记 ----
     step("wait_for 撞框（弹框先于等待）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/iframe-dialog-inner"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/iframe-dialog-inner"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("re-navigate 弹框页");
     tokio::time::sleep(Duration::from_millis(3000)).await;
     let t0 = std::time::Instant::now();
     let r = session
-        .act(&WebAction::WaitFor {
-            selector: "#d-title".into(),
-            timeout_ms: Some(10000),
-        })
+        .act(
+            &WebAction::WaitFor {
+                selector: "#d-title".into(),
+                timeout_ms: Some(10000),
+            },
+            None,
+        )
         .await
         .expect("对话框场景 wait_for 应探针自愈成功");
     assert!(
@@ -1990,18 +2248,24 @@ async fn edge_live_dialog_probe_first_read_actions() {
     // ---- ④ wait_for 等待中途弹框：短轮询自愈 + deadline 顺延 → 命中 ----
     step("wait_for 等待中途弹框（元素后到）");
     session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/dialog-wait"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/dialog-wait"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("navigate dialog-wait");
     let t0 = std::time::Instant::now();
     let r = session
-        .act(&WebAction::WaitFor {
-            selector: "#late-btn".into(),
-            timeout_ms: Some(10000),
-        })
+        .act(
+            &WebAction::WaitFor {
+                selector: "#late-btn".into(),
+                timeout_ms: Some(10000),
+            },
+            None,
+        )
         .await
         .expect("中途弹框 wait_for 应自愈命中");
     let elapsed = t0.elapsed();
@@ -2024,10 +2288,13 @@ async fn edge_live_dialog_probe_first_read_actions() {
     step("navigate 加载期弹框（解析期 alert 阻塞 parser）");
     let t0 = std::time::Instant::now();
     let r = session
-        .act(&WebAction::Navigate {
-            url: format!("{base}/dialog-parse"),
-            timeout_ms: Some(15000),
-        })
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/dialog-parse"),
+                timeout_ms: Some(15000),
+            },
+            None,
+        )
         .await
         .expect("解析期弹框 navigate 应轮询自愈完成");
     let elapsed = t0.elapsed();
@@ -2046,5 +2313,264 @@ async fn edge_live_dialog_probe_first_read_actions() {
     let r = session.close().await.expect("close");
     assert_eq!(r["ok"], json!(true));
     // panic hook 不还原（同款纪律——残留 hook 只会对已关闭会话的 pid 空杀）。
+    step("全部通过 ✓");
+}
+
+// ---------------------------------------------------------------------------
+// 会话级四动作 · 所有权闭环（2026-11-28 批）
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edge_live_ownership_closed_loop() {
+    fn step(name: &str) {
+        eprintln!("[own_live] {name}");
+    }
+    let _serial = EDGE_LIVE_LOCK.lock().await;
+    step("本地站点启动");
+    let (base, _server) = serve_site(None, None).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let manager = BrowserManager::new(
+        tmp.path().to_path_buf(),
+        Box::new(BrowserPrefs::default),
+        None,
+    );
+
+    step("sess-A spawn（bot 面）");
+    // 先验 Edge 在场（诚实 SKIP 判据与全矩阵同源）。
+    let edge = match find_edge() {
+        Some(_) => true,
+        None => {
+            eprintln!("SKIP：本机未检测到 Edge——所有权闭环无法跑");
+            return;
+        }
+    };
+    let _ = edge;
+    let session = match manager.spawn(Some("edge"), None, Some("sess-A")).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("SKIP：Edge spawn 失败（{e}）——SAC 拦截/端口受限等环境原因");
+            return;
+        }
+    };
+    let id = session.id.clone();
+    // panic 兜底树杀（同全矩阵纪律）。prev_hook 用 Arc 共享——本测试收尾
+    // 要还原默认 hook（后续活体测试不受本 pid 的树杀 hook 污染）。
+    let spawned_pid = session.pid;
+    let prev_hook: std::sync::Arc<dyn Fn(&std::panic::PanicHookInfo) + Send + Sync> =
+        std::panic::take_hook().into();
+    let hook_for_panic = prev_hook.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        #[cfg(windows)]
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &spawned_pid.to_string()])
+            .output();
+        #[cfg(not(windows))]
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &spawned_pid.to_string()])
+            .output();
+        hook_for_panic(info);
+    }));
+
+    step("实例台账 + owner 投影");
+    assert_eq!(manager.owner_of(&id).as_deref(), Some("sess-A"));
+    let snap = manager.sessions_snapshot();
+    assert_eq!(snap[0]["id"], json!(id));
+    assert_eq!(snap[0]["owner"], json!("sess-A"));
+
+    step("初始 tab 全部绑 sess-A（spawn 时绑定）");
+    let tabs = session.tabs_snapshot().await.expect("tabs_snapshot");
+    assert!(!tabs.is_empty(), "spawn 后至少一个 tab");
+    let first = tabs[0]["target_id"].as_str().unwrap().to_string();
+    for t in &tabs {
+        assert_eq!(t["owner"], json!("sess-A"), "初始 tab 未绑定: {t}");
+    }
+
+    step("last-tab 守卫：唯一 tab 拒 close_tab");
+    let err = session.close_tab(&first, Some("sess-A")).await.unwrap_err();
+    assert!(err.contains("唯一标签页"), "{err}");
+    assert!(err.contains("close_browser"), "{err}");
+
+    step("act 归因（堵洞②）：A 点 target=_blank → 新 tab 记 sess-A");
+    session.set_working_tab(&first).await.expect("set_working");
+    let r = session
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/linkout"),
+                timeout_ms: Some(15_000),
+            },
+            Some("sess-A"),
+        )
+        .await
+        .expect("navigate /linkout");
+    assert_eq!(r["ok"], json!(true));
+    let r = session
+        .act(
+            // trusted 坐标点击（合成 el.click() 无 user activation，target=
+            // _blank 被弹窗拦截器吞——活体实证）。锚点固定绝对位 (40,40)
+            // 200x40 块，(100,60) 稳定命中。mouseMoved 暖场吸收首事件丢弃。
+            &WebAction::Click {
+                selector: None,
+                x: Some(100.0),
+                y: Some(60.0),
+            },
+            Some("sess-A"),
+        )
+        .await
+        .expect("trusted click 链接块");
+    assert_eq!(r["ok"], json!(true));
+    // 新 tab 异步出现 → 轮询（归因在 act 的收敛窗口内完成）。
+    let mut second = String::new();
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let tabs = session.tabs_snapshot().await.unwrap();
+        if tabs.len() >= 2 {
+            second = tabs
+                .iter()
+                .find(|t| t["target_id"].as_str() != Some(first.as_str()))
+                .and_then(|t| t["target_id"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            if !second.is_empty() {
+                break;
+            }
+        }
+    }
+    assert!(!second.is_empty(), "点 target=_blank 后未出现第二个 tab");
+    let tabs = session.tabs_snapshot().await.unwrap();
+    for t in &tabs {
+        assert_eq!(t["owner"], json!("sess-A"), "act 归因失败: {t}");
+    }
+
+    step("close_tab 匹配三态：未找到 / 多命中");
+    let err = session
+        .close_tab("no-such-page-xyz", Some("sess-A"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("未找到匹配"), "{err}");
+    assert!(err.contains("先用 tabs 动作查看"), "{err}");
+    let err = session
+        .close_tab("127.0.0.1", Some("sess-A"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("命中 2 个"), "{err}");
+
+    step("跨属主拒绝：B 关 A 的 tab");
+    let err = session
+        .close_tab("/linkout", Some("sess-B"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("sess-A") && err.contains("无权关闭"), "{err}");
+
+    step("close_browser 双闸①：B 关 A 的实例");
+    let err = manager
+        .close_session(&id, Some("sess-B"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("只关自己开的"), "{err}");
+    assert!(manager.session(&id).is_some(), "拒关后实例必须在注册表");
+
+    step("close_browser 双闸②：B 在 A 实例里留 tab → A 拒关（连坐闸）");
+    session
+        .set_working_tab(&second)
+        .await
+        .expect("set_working 2");
+    let r = session
+        .act(
+            &WebAction::Navigate {
+                url: format!("{base}/linkout"),
+                timeout_ms: Some(15_000),
+            },
+            Some("sess-B"),
+        )
+        .await
+        .expect("navigate 2 /linkout");
+    assert_eq!(r["ok"], json!(true));
+    let r = session
+        .act(
+            &WebAction::Click {
+                selector: None,
+                x: Some(100.0),
+                y: Some(60.0),
+            },
+            Some("sess-B"),
+        )
+        .await
+        .expect("trusted click 链接块 as B");
+    assert_eq!(r["ok"], json!(true));
+    // B 归因的新 tab（owner=sess-B）出现 → 轮询。
+    let mut third = String::new();
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let tabs = session.tabs_snapshot().await.unwrap();
+        if let Some(t) = tabs.iter().find(|t| t["owner"].as_str() == Some("sess-B")) {
+            third = t["target_id"].as_str().unwrap().to_string();
+            break;
+        }
+    }
+    assert!(!third.is_empty(), "B 点开后未出现 sess-B 名下 tab");
+    let err = manager
+        .close_session(&id, Some("sess-A"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("非本会话的标签页"), "{err}");
+    assert!(err.contains("sess-B"), "异己清单必须带 owner: {err}");
+    assert!(manager.session(&id).is_some(), "连坐闸拒后实例必须在注册表");
+
+    step("B 关自己的 tab（唯一命中 + working_cleared）");
+    session
+        .set_working_tab(&third)
+        .await
+        .expect("set_working 3");
+    let r = session
+        .close_tab(&third, Some("sess-B"))
+        .await
+        .expect("B close own tab");
+    assert_eq!(r["closed"]["target_id"], json!(third));
+    assert_eq!(r["working_cleared"], json!(true));
+    assert_eq!(session.working_tab_id(), None, "工作指针必须解除");
+
+    step("A 收尾 close_browser（全 tab 归 A，双闸全过）");
+    let r = manager
+        .close_session(&id, Some("sess-A"))
+        .await
+        .expect("A close_browser");
+    assert_eq!(r["ok"], json!(true));
+    assert!(manager.session(&id).is_none(), "关闭后摘出注册表");
+    assert_eq!(manager.owner_of(&id), None, "关闭后摘出台账");
+
+    step("人面哨兵：human spawn / B 拒 / None 免检");
+    let s2 = match manager.spawn(Some("edge"), None, None).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("SKIP：第二实例 spawn 失败（{e}）——人面臂无法跑");
+            return;
+        }
+    };
+    let id2 = s2.id.clone();
+    assert_eq!(manager.owner_of(&id2).as_deref(), Some("human"));
+    let tabs2 = s2.tabs_snapshot().await.expect("tabs 2");
+    let first2 = tabs2[0]["target_id"].as_str().unwrap().to_string();
+    for t in &tabs2 {
+        assert_eq!(t["owner"], json!("human"), "human 初始 tab: {t}");
+    }
+    // B 关 human 的 tab → 拒（human 哨兵 ≠ 任何会话键）。
+    let err = s2.close_tab(&first2, Some("sess-B")).await.unwrap_err();
+    assert!(err.contains("human") && err.contains("无权关闭"), "{err}");
+    // B 关 human 的实例 → 双闸① 拒。
+    let err = manager
+        .close_session(&id2, Some("sess-B"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("只关自己开的"), "{err}");
+    // 人面 None 免检（Dashboard 关闭语义不变）→ 收尾清理。
+    let r = manager
+        .close_session(&id2, None)
+        .await
+        .expect("human close");
+    assert_eq!(r["ok"], json!(true));
+    assert!(manager.session(&id2).is_none());
+
+    // 还原：set_hook 只收 Box——用新 Box 包一层 Arc 克隆（原 hook 行为不变）。
+    let restore = prev_hook.clone();
+    std::panic::set_hook(Box::new(move |info| restore(info)));
     step("全部通过 ✓");
 }

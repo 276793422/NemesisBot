@@ -155,7 +155,8 @@ fn recording_spawn(
               role: &str,
               _psk: &str,
               _expert: &str,
-              _prompt: &str|
+              _prompt: &str,
+              _parent_root: &str|
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'static>,
         > {

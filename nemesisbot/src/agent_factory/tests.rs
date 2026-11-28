@@ -1197,7 +1197,7 @@ async fn spawn_closure_foreground_refuse_and_stop_fires() {
     let (_loop_arc, slot) = spawn_fixture(&doc);
     let spawn = slot.get().expect("closure injected");
     let err = spawn(
-        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "",
+        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "", "",
     )
     .await
     .expect_err("exit 2 must refuse spawn");
@@ -1217,7 +1217,7 @@ async fn spawn_closure_foreground_refuse_and_stop_fires() {
     let spawn = slot.get().expect("closure injected");
     let _keep_alive = loop_arc; // Weak 升级需要 loop 活着
     let result = spawn(
-        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "",
+        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "", "",
     )
     .await;
     assert!(result.is_err(), "stub provider never chats: {result:?}");
@@ -1245,7 +1245,7 @@ async fn spawn_closure_background_fires_start_then_stop() {
     let spawn = slot.get().expect("closure injected");
     let _keep_alive = loop_arc;
     let marker = spawn(
-        "agent-1", "bg task", "", "", "", "readonly", 1, true, "", "", "", "",
+        "agent-1", "bg task", "", "", "", "readonly", 1, true, "", "", "", "", "",
     )
     .await
     .expect("background spawn returns marker");
@@ -1295,7 +1295,7 @@ async fn project_spawn_closure_refuses_on_start_exit_2() {
     );
     let spawn = slot.get().expect("closure injected");
     let err = spawn(
-        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "",
+        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "", "",
     )
     .await
     .expect_err("project spawn must refuse on exit 2");
@@ -1822,12 +1822,13 @@ async fn project_spawn_closure_rejects_unknown_profile_and_background() {
         "",
         "",
         "",
+        "",
     )
     .await
     .expect_err("unknown profile must be refused");
     assert!(err.contains("Unknown tools profile"), "err={err}");
     let marker = spawn(
-        "p-agent", "task", "", "", "", "readonly", 1, true, "", "", "", "",
+        "p-agent", "task", "", "", "", "readonly", 1, true, "", "", "", "", "",
     )
     .await
     .expect("background spawn returns marker in project mode (D7)");
@@ -1852,7 +1853,7 @@ async fn project_spawn_closure_foreground_runs_and_fires_stop() {
     let _keep_alive = loop_arc;
     let spawn = slot.get().expect("closure injected");
     let result = spawn(
-        "p-agent", "task", "", "", "", "readonly", 1, false, "", "", "", "",
+        "p-agent", "task", "", "", "", "readonly", 1, false, "", "", "", "", "",
     )
     .await;
     assert!(result.is_err(), "stub provider never chats: {result:?}");
@@ -1890,6 +1891,7 @@ async fn project_spawn_expert_dispatch_passes_gate_and_rewrites_agent_id() {
         "",
         "",
         "rust-guru",
+        "",
         "",
     )
     .await
@@ -1930,6 +1932,7 @@ async fn project_spawn_prompt_adhoc_passes_gate() {
         "",
         "",
         "你是资深数据工程师",
+        "",
     )
     .await
     .expect_err("stub provider never chats");
@@ -1959,6 +1962,7 @@ async fn project_spawn_expert_without_handle_honest_error() {
         "",
         "rust-guru",
         "",
+        "",
     )
     .await
     .expect_err("None handle must honestly refuse");
@@ -1987,6 +1991,7 @@ async fn project_spawn_expert_resolve_error_propagates() {
         "",
         "",
         "ghost-expert",
+        "",
         "",
     )
     .await
@@ -2028,7 +2033,7 @@ async fn background_spawn_publishes_error_continuation_to_bus() {
     let _keep_alive = loop_arc.clone();
     let spawn = slot.get().expect("closure injected");
     let marker = spawn(
-        "b-agent", "bg task", "", "", "", "readonly", 1, true, "", "", "", "",
+        "b-agent", "bg task", "", "", "", "readonly", 1, true, "", "", "", "", "",
     )
     .await
     .expect("background spawn returns marker");
@@ -2066,7 +2071,7 @@ async fn background_spawn_publishes_cancelled_when_loop_dropped() {
     let mut rx = bus.subscribe_inbound();
     let spawn = slot.get().expect("closure injected");
     let marker = spawn(
-        "c-agent", "bg task", "", "", "", "readonly", 1, true, "", "", "", "",
+        "c-agent", "bg task", "", "", "", "readonly", 1, true, "", "", "", "", "",
     )
     .await
     .expect("background spawn returns marker");

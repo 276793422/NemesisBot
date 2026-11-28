@@ -562,7 +562,8 @@ async fn test_spawn_tool_with_fn() {
          _r: &str,
          _psk: &str,
          _expert: &str,
-         _prompt: &str| {
+         _prompt: &str,
+         _root: &str| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -1698,7 +1699,8 @@ async fn test_spawn_tool_allowlist_allowed() {
          _r: &str,
          _psk: &str,
          _expert: &str,
-         _prompt: &str| {
+         _prompt: &str,
+         _root: &str| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -3284,7 +3286,8 @@ async fn test_spawn_tool_set_context() {
          _r: &str,
          _psk: &str,
          _expert: &str,
-         _prompt: &str| {
+         _prompt: &str,
+         _root: &str| {
             let ch = channel.to_string();
             let cid = chat_id.to_string();
             Box::pin(async move { Ok(format!("ch={}, cid={}", ch, cid)) })
@@ -5991,7 +5994,8 @@ fn stub_spawn_fn(tool: &mut SpawnTool) {
          _r: &str,
          _psk: &str,
          _expert: &str,
-         _prompt: &str| { Box::pin(async move { Ok("[Spawn] ok".to_string()) }) },
+         _prompt: &str,
+         _root: &str| { Box::pin(async move { Ok("[Spawn] ok".to_string()) }) },
     ));
 }
 
@@ -6130,7 +6134,8 @@ async fn test_expert_mutual_exclusion_and_prompt_passthrough() {
          _r: &str,
          _psk: &str,
          _expert: &str,
-         prompt: &str| {
+         prompt: &str,
+         _root: &str| {
             let prompt = prompt.to_string();
             Box::pin(async move { Ok(format!("PROMPT_WAS:{prompt}")) })
         },

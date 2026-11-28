@@ -621,6 +621,7 @@ impl DisciplineFalsificationHook {
             channel: "discipline".to_string(),
             chat_id: session_key.to_string(),
             user: "discipline-hook".to_string(),
+            root_session_key: "discipline-hook".to_string(),
             session_key: session_key.to_string(),
             correlation_id: None,
             async_callback: None,

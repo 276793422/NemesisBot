@@ -641,7 +641,8 @@ pub(super) fn inject_spawn_fn(
               role: &str,
               parent_session_key: &str,
               expert: &str,
-              prompt: &str| {
+              prompt: &str,
+              parent_root: &str| {
             let weak = weak.clone();
             let bus = bus.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
@@ -653,6 +654,9 @@ pub(super) fn inject_spawn_fn(
             // 父会话房间）+ 父会话键（注册表台账 + 后台回灌路由信号）。
             let chat_id = chat_id.to_string();
             let parent_session_key = parent_session_key.to_string();
+            // 所有权血统（2026-11-28 堵洞①）：父根会话键透传给子代理
+            // RequestContext（套娃继承；子代理开的浏览器父会话同权关闭）。
+            let parent_root = parent_root.to_string();
             // 专家点名（"" = 默认子代理，旧路径字节不变）；克隆进 async 块。
             let expert = expert.trim().to_string();
             // 自拟提示词（"" = 非降级流；非空 = ad-hoc 派发，见上注）。
@@ -835,6 +839,8 @@ pub(super) fn inject_spawn_fn(
                                 session_key_override: Some(registry_id.clone()),
                                 cancel_token: Some(cancel_token.clone()),
                                 registry_id: Some(registry_id.clone()),
+                                // 所有权血统（堵洞①）：子代理 root 盖父 root。
+                                root_session_key: Some(parent_root.as_str()),
                                 ..Default::default()
                             },
                         )
@@ -961,6 +967,8 @@ pub(super) fn inject_spawn_fn(
                                         session_key_override: Some(bg_registry_id.clone()),
                                         cancel_token: Some(bg_cancel_token.clone()),
                                         registry_id: Some(bg_registry_id.clone()),
+                                        // 所有权血统（堵洞①）：后台子代理同盖父 root。
+                                        root_session_key: Some(parent_root.as_str()),
                                         ..Default::default()
                                     },
                                 )

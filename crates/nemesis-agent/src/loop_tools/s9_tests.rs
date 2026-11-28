@@ -30,6 +30,7 @@ fn delegation_ctx() -> RequestContext {
         chat_id: "chat".to_string(),
         user: "u".to_string(),
         session_key: "agent:test/s9".to_string(),
+        root_session_key: "agent:test/s9".to_string(),
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,

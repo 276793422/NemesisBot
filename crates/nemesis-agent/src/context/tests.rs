@@ -40,6 +40,7 @@ fn format_rpc_message() {
         chat_id: "chat1".to_string(),
         user: "user1".to_string(),
         session_key: "sess1".to_string(),
+        root_session_key: "sess1".to_string(),
         correlation_id: Some(String::new()),
         async_callback: None,
         tool_path_base: None,

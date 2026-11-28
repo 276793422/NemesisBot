@@ -537,6 +537,7 @@ fn test_ctx() -> nemesis_agent::context::RequestContext {
         chat_id: String::new(),
         user: String::new(),
         session_key: String::new(),
+        root_session_key: String::new(),
         correlation_id: None,
         async_callback: None,
         tool_path_base: None,

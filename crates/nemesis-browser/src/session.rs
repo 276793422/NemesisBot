@@ -10,6 +10,7 @@
 //!   关闭只走显式 close()（Dashboard 按钮 / manager）。
 //! - 「工作 tab」指针：AI 只看被点名 tab（点名即授权，不做全浏览器扫描）。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,6 +44,11 @@ pub struct BrowserSession {
     driver: ChromiumCdpDriver,
     /// 工作 tab（AI 操作面；None = 未点名）。
     working_tab: Mutex<Option<String>>,
+    /// tab 所有权台账（target_id → 开启者根会话键；无条目 = 无主——用户
+    /// 手动打开或归因未捕获的页面自开 tab，bot 面不可关）。2026-11-28
+    /// 会话级四动作批（详见交付报告 2026-11-28_host-browser会话级四动作交付报告 §2）：
+    /// 「只能关自己开的」——绑与查两侧同用根键，A 关不了 B 的。
+    tab_owners: Mutex<HashMap<String, String>>,
     /// AI 操作中徽标（tabs.list 投影；浏览器内做不到——无扩展）。
     operating: AtomicBool,
     /// 进程已退出标记（reaper 任务置位；is_alive 双保险）。
@@ -51,12 +57,19 @@ pub struct BrowserSession {
 
 impl BrowserSession {
     /// 以调试旗标启动浏览器并探测就绪（阻塞至端点可用或超时诚实报错）。
+    ///
+    /// `owner`：调用方根会话键（已归一；人面 = "human" 哨兵，由 manager
+    /// 统一归一后下传）——spawn 时窗口内全部活 tab 绑到该所有者名下
+    /// （2026-11-28 所有权批：含 F37 收养臂重绑——重启后台账全丢，不重绑
+    /// 则收养窗口永远无人可关；重启后原会话 agent 已不存在，「B 忙着」
+    /// 前提不成立，语义成立）。
     pub async fn spawn(
         id: String,
         seq: u32,
         kind: DriverKind,
         executable: PathBuf,
         profile_root: &Path,
+        owner: &str,
     ) -> Result<Arc<Self>, String> {
         let profile_dir = profile_root.join(kind.slug());
         std::fs::create_dir_all(&profile_dir)
@@ -74,12 +87,15 @@ impl BrowserSession {
             && cdp::http_version(port).await.is_ok()
         {
             let driver = ChromiumCdpDriver::new(port, kind, ws_path);
-            // 初始工作 tab 与正常 spawn 同语义（首个 page target）。
-            let working = driver
-                .list_tabs()
-                .await
-                .ok()
-                .and_then(|tabs| tabs.first().map(|t| t.id.clone()));
+            // 初始工作 tab 与正常 spawn 同语义（首个 page target）；全部
+            // 活 tab 重绑到收养调用方（所有权批：重启后台账随进程蒸发，
+            // 不重绑则收养窗口永远无人可关——堵洞⑩）。
+            let tabs_now = driver.list_tabs().await.unwrap_or_default();
+            let working = tabs_now.first().map(|t| t.id.clone());
+            let tab_owners: HashMap<String, String> = tabs_now
+                .iter()
+                .map(|t| (t.id.clone(), owner.to_string()))
+                .collect();
             tracing::info!(
                 "[Browser] 收养孤儿浏览器会话（端口 {port}，profile {}）",
                 profile_dir.display()
@@ -111,6 +127,7 @@ impl BrowserSession {
                 pid: 0,
                 driver,
                 working_tab: Mutex::new(working),
+                tab_owners: Mutex::new(tab_owners),
                 operating: AtomicBool::new(false),
                 exited,
             }));
@@ -355,12 +372,15 @@ impl BrowserSession {
         let driver = ChromiumCdpDriver::new(port, kind, ws_path);
 
         // 初始工作 tab = 第一个 page target（spawn 开的 about:blank）；用户
-        // 之后随时重点名（D7：人先做，AI 后接管）。
-        let working = driver
-            .list_tabs()
-            .await
-            .ok()
-            .and_then(|tabs| tabs.first().map(|t| t.id.clone()));
+        // 之后随时重点名（D7：人先做，AI 后接管）。全部初始 tab 绑定到
+        // 调用方（所有权批：spawn 开出来的归 spawn 的人——含 relaunch
+        // 收养形态，两个构造路径同语义）。
+        let tabs_now = driver.list_tabs().await.unwrap_or_default();
+        let working = tabs_now.first().map(|t| t.id.clone());
+        let tab_owners: HashMap<String, String> = tabs_now
+            .iter()
+            .map(|t| (t.id.clone(), owner.to_string()))
+            .collect();
 
         // 收养裁决（2026-11-23 relaunch 修复 A）：装配前一刻读 wait 完成
         // 信号——置位 = 原始进程已退、CDP 由 relaunch 接力进程持有（pid
@@ -401,6 +421,7 @@ impl BrowserSession {
             pid: pid_final,
             driver,
             working_tab: Mutex::new(working),
+            tab_owners: Mutex::new(tab_owners),
             operating: AtomicBool::new(false),
             exited,
         }))
@@ -426,6 +447,7 @@ impl BrowserSession {
             pid: 0,
             driver: ChromiumCdpDriver::new(port, kind, String::new()),
             working_tab: Mutex::new(None),
+            tab_owners: Mutex::new(HashMap::new()),
             operating: AtomicBool::new(false),
             exited: Arc::new(AtomicBool::new(exited)),
         })
@@ -443,11 +465,11 @@ impl BrowserSession {
     /// tab 注册表快照 + 工作指针/附着/加载态徽标投影。
     pub async fn tabs_snapshot(&self) -> Result<Vec<Value>, String> {
         let tabs = self.driver.list_tabs().await?;
-        // F31（2026-11-15 五审）：死连接缓存 GC——用户手关 tab 是唯一关闭
-        // 路径（九动作工具面无 close_tab），其缓存 conn 永不触发 act 失败
-        // 摘除（tab 没了就不会再 act），长寿命会话反复开关 tab = 死 socket
-        // 堆积。快照心跳点 retain GC（摘除无害：摘后首次 act/attach 自动
-        // 重连几 ms）。
+        // F31（2026-11-15 五审）：死连接缓存 GC——close_tab 加入工具面后
+        // driver.close_tab 自摘连接，但用户手关 tab 不走工具面，其缓存
+        // conn 永不触发 act 失败摘除（tab 没了就不会再 act），长寿命会话
+        // 反复开关 tab = 死 socket 堆积。快照心跳点 retain GC 保留兜底
+        // （摘除无害：摘后首次 act/attach 自动重连几 ms）。
         self.driver
             .retain_conns(&tabs.iter().map(|t| t.id.clone()).collect::<Vec<_>>());
         let working = self.working_tab.lock().clone();
@@ -456,6 +478,107 @@ impl BrowserSession {
             out.push(tab_project(t, working.as_deref(), self).await);
         }
         Ok(out)
+    }
+
+    /// 关闭指定页面（2026-11-28 会话级四动作批；tab 关闭策略的 session 内
+    /// 单一真相：匹配 → 所有权 → last-tab 守卫 → driver 关闭 → 台账/工作
+    /// 指针清理）。
+    ///
+    /// - `needle`：对 target_id/url/title 的**大小写不敏感子串**；0 命中带
+    ///   全 tab 清单报错（清单即发现机制）、多命中带命中清单报错（绝不猜）。
+    /// - `caller`：Some(根会话键) = bot 面，只关自己打开的（无主/他人
+    ///   → 拒绝）；None = 人面免检（Dashboard 语义保持）。
+    pub async fn close_tab(&self, needle: &str, caller: Option<&str>) -> Result<Value, String> {
+        let tabs = self.driver.list_tabs().await?;
+        match match_tab(&tabs, needle) {
+            MatchOutcome::NotFound => {
+                let list = tabs.iter().map(tab_list_row).collect::<Vec<_>>().join("；");
+                Err(format!(
+                    "未找到匹配「{needle}」的标签页（当前 {} 个 tab：{list}）；可先用 tabs 动作查看后再试",
+                    tabs.len()
+                ))
+            }
+            MatchOutcome::Ambiguous(hits) => {
+                let list = hits.iter().map(tab_list_row).collect::<Vec<_>>().join("；");
+                Err(format!(
+                    "「{needle}」命中 {} 个标签页，请换更精确的子串：{list}",
+                    hits.len()
+                ))
+            }
+            MatchOutcome::Unique(tab) => {
+                // 所有权闸：bot 面只关自己开的（台账无条目 = 无主，同样拒）。
+                if let Some(root) = caller {
+                    let holder = self.tab_owners.lock().get(&tab.id).cloned();
+                    match holder {
+                        Some(o) if o == root => {}
+                        Some(o) => {
+                            return Err(format!(
+                                "标签页「{}」（{}）由会话 {} 打开，本会话无权关闭：只关自己开的",
+                                tab.title, tab.url, o
+                            ));
+                        }
+                        None => {
+                            return Err(format!(
+                                "标签页「{}」（{}）非本会话打开（用户手动打开或来源未捕获），AI 不代关；可由人在 Dashboard 手动关闭",
+                                tab.title, tab.url
+                            ));
+                        }
+                    }
+                }
+                // last-tab 守卫：关掉实例内唯一 page target 会留下空壳。
+                if tabs.len() <= 1 {
+                    return Err("唯一标签页：请用 close_browser 关闭整个浏览器实例".to_string());
+                }
+                let closed = json!({
+                    "target_id": tab.id,
+                    "url": tab.url,
+                    "title": tab.title,
+                });
+                let was_working = self.working_tab_id().as_deref() == Some(tab.id.as_str());
+                self.driver.close_tab(&tab.id).await?;
+                // 台账卫生：自关摘条目（防 target 表增长；target_id 不复用，
+                // 陈旧条目本无害，摘掉更干净）。
+                self.tab_owners.lock().remove(&tab.id);
+                // 工作指针清理：关掉的是被点名 tab → 解除点名，下次 act 走
+                // require_working_tab 的诚实报错自愈路。
+                let working_cleared = if was_working {
+                    self.clear_working_tab();
+                    true
+                } else {
+                    false
+                };
+                Ok(json!({
+                    "closed": closed,
+                    "working_cleared": working_cleared,
+                }))
+            }
+        }
+    }
+
+    /// close_browser 连坐闸的 tab 半闸：返回实例内**非 caller 所有**的活
+    /// tab 清单（含无主——用户手动开的也在内，关实例会连坐扫掉）。空清单
+    /// = 全归 caller 或人面免检（None）。list_tabs 失败返回空（半闸放行：
+    /// 实例闸仍由 manager 把守，close 主路径自会诚实失败）。
+    pub async fn foreign_tabs(&self, caller: Option<&str>) -> Vec<Value> {
+        let Some(root) = caller else {
+            return Vec::new();
+        };
+        let ledger = self.tab_owners.lock().clone();
+        match self.driver.list_tabs().await {
+            Ok(tabs) => tabs
+                .iter()
+                .filter(|t| ledger.get(&t.id).map(String::as_str) != Some(root))
+                .map(|t| {
+                    json!({
+                        "target_id": t.id,
+                        "title": t.title,
+                        "url": t.url,
+                        "owner": ledger.get(&t.id),
+                    })
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// 点名工作 tab（attach：附着 + 激活前置）。目标必须存在于列表（诚实报错）。
@@ -496,24 +619,34 @@ impl BrowserSession {
     }
 
     /// 在工作 tab 上执行单个动作（AI 操作面入口；operating 徽标包裹）。
-    pub async fn act(&self, action: &WebAction) -> Result<Value, String> {
+    ///
+    /// `caller`：归因主体（根会话键）——act 窗口内新出现的 tab（页面
+    /// target=_blank 自开等）记到调用方名下（2026-11-28 所有权批堵洞②：
+    /// bot 点出来的 tab 必须可被 bot 关，否则点开一个新 tab 就永远关不掉
+    /// 浏览器）。归因错过（异步晚开）落无主 = 安全方向（拒关 + 人面兜底）。
+    /// None（人面调用）不归因。
+    pub async fn act(&self, action: &WebAction, caller: Option<&str>) -> Result<Value, String> {
         let tab = self.require_working_tab()?;
         // F34（2026-11-15 六审）：工作 tab 被用户手关 = 死指针。act 撞死
         // target 报传输层错误（ws connect 404 / connection closed），而模型
         // 无自恢复面（attach 点名是 Dashboard 用户专属语义）——不预检则
         // 每次尝试都撞传输层错误死循环。tab 不在存活列表 = 清指针 + 诚实
         // 指引重新点名；list_tabs 自身失败（浏览器整死）不添噪，act 自会
-        // 诚实失败。
-        if let Ok(tabs) = self.driver.list_tabs().await
-            && !tabs.iter().any(|t| t.id == tab)
-        {
-            self.driver.evict_conn(&tab);
-            *self.working_tab.lock() = None;
-            return Err(
-                    "工作标签页已被关闭（窗口内手动关闭）：请让用户在 Dashboard 重新点选一个标签页（browser.attach）后重试"
-                        .to_string(),
-                );
-        }
+        // 诚实失败。存活列表同时充当归因 diff 的 before 基线。
+        let before = match self.driver.list_tabs().await {
+            Ok(tabs) => {
+                if !tabs.iter().any(|t| t.id == tab) {
+                    self.driver.evict_conn(&tab);
+                    *self.working_tab.lock() = None;
+                    return Err(
+                            "工作标签页已被关闭（窗口内手动关闭）：请让用户在 Dashboard 重新点选一个标签页（browser.attach）后重试"
+                                .to_string(),
+                        );
+                }
+                Some(tabs)
+            }
+            Err(_) => None,
+        };
         // F35（2026-11-15 六审）：operating 徽标 RAII——act 的 future 被
         // cancel（任务 abort）或 panic 时 set_operating(false) 恒执行，
         // 「AI 操作中」徽标不再永久卡死。
@@ -522,6 +655,52 @@ impl BrowserSession {
         if result.is_err() {
             // F13：失败摘连接缓存（tab 手关/半开死后不再每次撞 30s 超时）。
             self.driver.evict_conn(&tab);
+        }
+        // 归因 diff（堵洞②）：act 窗口内新增 target 归属调用方。bot 面
+        // （Some）才有归因；list 失败跳过（晚开 tab 落无主 = 安全方向）。
+        // 归因收敛窗口（2026-11-28 活体实证）：target=_blank 的 target
+        // 创建是 renderer→browser 的**异步**过程，mouseReleased ack 返回时
+        // 紧贴一次 list 大概率扑空——只有能开新 target 的动作（Click/Key）
+        // 才值得付这个窗口；短轮询新 target 落账即停，超窗仍未出现 = 落
+        // 无主（安全方向），不为它拖长每次动作时延。
+        let attribution_window = matches!(action, WebAction::Click { .. } | WebAction::Key { .. });
+        if let (Some(before), Some(root)) = (before.as_deref(), caller) {
+            // guard 不跨 await：先无锁收集 diff（新增 target id），再短锁
+            // 入账（await_holding_lock；ledger 是短临界区，别绑 list_tabs）。
+            if !attribution_window {
+                // 无窗口动作：单次即时 diff（旧行为）。
+                if let Ok(after) = self.driver.list_tabs().await {
+                    let new_ids: Vec<String> = after
+                        .iter()
+                        .filter(|t| !before.iter().any(|b| b.id == t.id))
+                        .map(|t| t.id.clone())
+                        .collect();
+                    let mut ledger = self.tab_owners.lock();
+                    for id in new_ids {
+                        ledger.insert(id, root.to_string());
+                    }
+                }
+            } else {
+                // 窗口动作：短轮询收敛，新 target 落账即停。
+                for wait_ms in [80u64, 120, 200, 300] {
+                    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                    if let Ok(after) = self.driver.list_tabs().await {
+                        let new_ids: Vec<String> = after
+                            .iter()
+                            .filter(|t| !before.iter().any(|b| b.id == t.id))
+                            .map(|t| t.id.clone())
+                            .collect();
+                        if new_ids.is_empty() {
+                            continue;
+                        }
+                        let mut ledger = self.tab_owners.lock();
+                        for id in new_ids {
+                            ledger.insert(id, root.to_string());
+                        }
+                        break;
+                    }
+                }
+            }
         }
         result
     }
@@ -638,6 +817,7 @@ async fn tab_project(t: &TabInfo, working: Option<&str>, session: &BrowserSessio
     } else {
         "detached".to_string()
     };
+    let owner = session.tab_owners.lock().get(&t.id).cloned();
     json!({
         "target_id": t.id,
         "title": t.title,
@@ -646,7 +826,45 @@ async fn tab_project(t: &TabInfo, working: Option<&str>, session: &BrowserSessio
         "working": is_working,
         "load_state": load_state,
         "operating": is_working && session.operating(),
+        // 所有权批（2026-11-28）：tab 开启者（根会话键；null = 无主——
+        // 用户手动打开或归因未捕获，bot 面不可关）。
+        "owner": owner,
     })
+}
+
+/// close_tab 匹配裁决（纯函数；2026-11-28 会话级四动作批）。needle 对
+/// target_id/url/title 做**大小写不敏感子串**匹配——与跨域 iframe 的
+/// 「URL 子串匹配 + 清单即发现机制」同款纪律：0/多命中绝不猜。
+pub(crate) enum MatchOutcome {
+    /// 唯一命中 → 执行关闭。
+    Unique(TabInfo),
+    /// 多命中 → 诚实报错（命中清单由调用方从返回值渲染）。
+    Ambiguous(Vec<TabInfo>),
+    /// 0 命中 → 诚实报错（全 tab 清单由调用方从入参渲染）。
+    NotFound,
+}
+
+pub(crate) fn match_tab(tabs: &[TabInfo], needle: &str) -> MatchOutcome {
+    let n = needle.to_lowercase();
+    let hits: Vec<&TabInfo> = tabs
+        .iter()
+        .filter(|t| {
+            t.id.to_lowercase().contains(&n)
+                || t.url.to_lowercase().contains(&n)
+                || t.title.to_lowercase().contains(&n)
+        })
+        .collect();
+    match hits.len() {
+        0 => MatchOutcome::NotFound,
+        1 => MatchOutcome::Unique(hits[0].clone()),
+        _ => MatchOutcome::Ambiguous(hits.into_iter().cloned().collect()),
+    }
+}
+
+/// 错误清单里的单行 tab 描述（title + url + 完整 target_id——同标题
+/// 同址时模型需要 id 才能拼出唯一子串）。
+pub(crate) fn tab_list_row(t: &TabInfo) -> String {
+    format!("「{}」{} ({})", t.title, t.url, t.id)
 }
 
 /// operating 徽标 RAII 守卫（F35，2026-11-15 六审）：析构恒摘旗标——

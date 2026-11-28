@@ -126,6 +126,14 @@ pub struct DetachedOpts<'a> {
     /// 注册表（Cancelled > Done > Failed 裁决 + 轮数/摘要摘录）；None =
     /// 零动作（/ headless 等无注册表路径行为不变）。
     pub registry_id: Option<String>,
+    /// 所有权血统（2026-11-28 所有权批堵洞①；详见交付报告
+    /// 2026-11-28_host-browser会话级四动作交付报告 §2）：父
+    /// 会话的根会话键。Some = 子代理 RequestContext.root_session_key 直接
+    /// 盖父 root（套娃继承——子代理开的浏览器，父会话同权关闭）；None =
+    /// 回落子会话键（board planner/评审、headless 等无主人格路径语义
+    /// 不变：root = 自己）。spawn 闭包经 SpawnFn 第 13 参透传
+    /// `context.root_key()`。
+    pub root_session_key: Option<&'a str>,
 }
 
 impl AgentLoop {
@@ -864,6 +872,13 @@ impl AgentLoop {
             channel: "subagent".to_string(),
             chat_id: session_key.clone(),
             user: "subagent".to_string(),
+            // 血统继承（所有权批堵洞①）：父 root 经 opts 透传（spawn 闭包
+            // 传 `context.root_key()`）；None = root=自己（board/headless
+            // 等无主人格路径，语义不变）。
+            root_session_key: opts
+                .root_session_key
+                .unwrap_or(session_key.as_str())
+                .to_string(),
             session_key: session_key.clone(),
             correlation_id: None,
             async_callback: None,
