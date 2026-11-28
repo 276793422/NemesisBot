@@ -644,7 +644,7 @@ def answer_hover(mid):
         # reaps the cmd shim, not python) exits on its own and lets the
         # test process terminate.
         time.sleep(20)
-    if MODE == "hang-once":
+    if MODE in ("hang-once", "die-then-hang"):
         # Only the FIRST process hangs on hover; every later process (the
         # fresh session after eviction) answers normally. The marker is
         # created by the first process at hover time — before any respawn
@@ -811,9 +811,11 @@ def handle(msg):
     if mid is not None:
         send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "method not found"}})
 
-if MODE == "die-once":
+if MODE in ("die-once", "die-then-hang"):
     # Only the FIRST process dies right after initialize; every later
-    # process (the respawned session) behaves normally.
+    # process (the respawned session) behaves normally — except that in
+    # die-then-hang the respawned process hangs on hover once (see
+    # answer_hover), so the respawn-retry request times out.
     died = os.path.exists(here("died_once.marker"))
     while True:
         m = read_msg()
@@ -1023,6 +1025,50 @@ async fn fake_server_death_mid_request_respawns_once() {
         "first session must actually have died (proves the respawn path ran)"
     );
     assert_eq!(mgr.session_count().await, 1);
+    let _ = mgr.shutdown_all().await;
+}
+
+/// BUG-20261129-011 红先（respawn 重试臂的毒化驱逐缺口，BUG-20261027-93
+/// 纪律同族）：第一进程 initialize 后即死 → transport 臂驱逐+重生；重生
+/// 会话的请求**超时中毒**（超时 future 可能已在中途消费 BufReader 字节
+/// = 帧失步）。主路径的 poisoning 臂会驱逐毒化会话（下一条查询全新
+/// 开始），respawn 臂此前把 fresh 请求结果直接返回、毒化会话滞留表——
+/// 下一次查询撞上半消费流响亮失败一整轮预算后才被主路径臂自愈。
+/// 修复前：错误返回但 session_count == 1（毒化会话滞留）、第二次查询
+/// 重新超时；修复后：毒化即驱逐（count == 0）、第二次查询落在全新健康
+/// 会话上成功。
+#[tokio::test]
+async fn fake_server_respawn_retry_poisoning_evicts_fresh_session() {
+    let (dir, _path) = plant_fake_gopls("die-then-hang");
+    let mgr = LspManager::new(Some(Duration::from_secs(1)), None);
+    // Query 1: process 1 dies post-initialize (transport death → respawn
+    // arm); process 2 hangs on hover → the fresh session's request times
+    // out (poisoning). The error surfaces honestly.
+    let err = mgr
+        .query(LspOp::Hover, &dir.path().join("main.go"), 0, 0)
+        .await
+        .unwrap_err();
+    assert!(err.contains("timed out"), "{err}");
+    assert!(
+        dir.path().join("died_once.marker").exists(),
+        "first session must actually have died (proves the respawn arm ran)"
+    );
+    assert!(
+        dir.path().join("hung_once.marker").exists(),
+        "respawned session must actually have hung (proves the poisoning ran on the fresh session)"
+    );
+    // The poisoned fresh session must be evicted, not left cached.
+    assert_eq!(
+        mgr.session_count().await,
+        0,
+        "poisoned respawned session must be evicted — leaving it cached costs the next query a full failed budget before the primary poisoning arm heals it"
+    );
+    // Query 2: must land on a fresh healthy session and succeed.
+    let hover = mgr
+        .query(LspOp::Hover, &dir.path().join("main.go"), 0, 0)
+        .await
+        .unwrap();
+    assert!(hover.contains("fake_hover_value"), "{hover}");
     let _ = mgr.shutdown_all().await;
 }
 

@@ -502,9 +502,31 @@ impl LspManager {
                 }
                 let fresh = self.get_or_spawn(lang, &root, &server_path).await?;
                 *fresh.last_used.lock().unwrap() = Instant::now();
-                fresh
+                let retry = fresh
                     .request(op.method(), params, self.request_timeout)
-                    .await
+                    .await;
+                // BUG-20261129-011（BUG-20261027-93 纪律同族横向补齐）：
+                // respawn 重试臂的新会话请求落**毒化**错误（超时/帧失步/
+                // 坏帧）时同样驱逐——超时 future 可能已在中途消费 BufReader
+                // 字节，毒化会话滞留表让下一次查询响亮失败一整轮预算后才
+                // 被主路径 poisoning 臂自愈。主路径臂早有此驱逐，本臂此前
+                // 把 fresh 结果直接返回、漏了同一纪律。transport 错误不驱
+                // 逐：死会话滞留表的代价是下次查询瞬时 write 失败走同一
+                // transport 臂自愈（设计语义），与毒化的整预算失败不同类。
+                if let Err(ref retry_err) = retry
+                    && is_session_poisoning(retry_err)
+                {
+                    tracing::warn!(
+                        "[LSP] {} respawned session for {} poisoned on retry ({retry_err}); evicting so the next query respawns",
+                        lang.label(),
+                        root.display()
+                    );
+                    self.sessions.lock().await.remove(&(lang, root.clone()));
+                    if let Ok(mut inner) = fresh.inner.try_lock() {
+                        kill_tree(&mut inner.child).await;
+                    }
+                }
+                retry
             }
             // Timeout / frame-desync: the session is untrustworthy but NOT
             // provably dead — the timeout future may have been dropped
