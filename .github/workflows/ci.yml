@@ -540,11 +540,40 @@ jobs:
         shell: powershell
         run: Set-MpPreference -ExclusionPath "${{ github.workspace }}\target"
 
-      # nextest prebuilt 直装（秒级，2026-09-29 提速 P3）
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+      # BUG-20261128-024：taiki-e/install-action 在 Windows 上靠 bash 解包，
+      # 坏 VM 波（partner-runner-images#169 家族，2026-11-28 全天 8+ 波）bash
+      # 启动即死=分片团灭单点——同舰队 ET UAT 腿与 windows-bin 不用
+      # install-action 全活，实证 bash 面是唯一死因。换 powershell 直拉
+      # prebuilt（同 repo 同 release 同资产），绕开 bash 依赖；
+      # api 带 GITHUB_TOKEN 防共享出口限流，下载/查询各带三次重试。
+      - name: Install cargo-nextest (bash-free prebuilt)
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $dest = "$env:USERPROFILE\.cargo\bin"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          $tmp = Join-Path $env:RUNNER_TEMP 'nextest.zip'
+          $hdr = @{ Authorization = "Bearer $env:GH_TOKEN"; 'User-Agent' = 'nemesisbot-ci' }
+          $rel = $null
+          for ($i = 0; $i -lt 3 -and -not $rel; $i++) {
+            try {
+              $rel = Invoke-RestMethod -Headers $hdr -Uri 'https://api.github.com/repos/nextest-rs/nextest/releases?per_page=20' |
+                Where-Object { $_.tag_name -like 'cargo-nextest-*' } | Select-Object -First 1
+            } catch { Start-Sleep -Seconds (5 * ($i + 1)) }
+          }
+          if (-not $rel) { throw 'nextest release lookup failed after retries' }
+          $asset = $rel.assets | Where-Object { $_.name -eq 'cargo-nextest-x86_64-pc-windows-msvc.zip' } | Select-Object -First 1
+          if (-not $asset) { throw "asset cargo-nextest-x86_64-pc-windows-msvc.zip not found in $($rel.tag_name)" }
+          for ($i = 0; $i -lt 3; $i++) {
+            try { Invoke-WebRequest -Headers $hdr -Uri $asset.browser_download_url -OutFile $tmp; break }
+            catch { if ($i -eq 2) { throw }; Start-Sleep -Seconds (5 * ($i + 1)) }
+          }
+          Expand-Archive -Path $tmp -DestinationPath (Join-Path $env:RUNNER_TEMP 'nextest-x') -Force
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'nextest-x\cargo-nextest.exe') $dest -Force
+          & (Join-Path $dest 'cargo-nextest.exe') --version
 
       - name: Setup Node.js (Vue 前端构建)
         uses: actions/setup-node@v5
