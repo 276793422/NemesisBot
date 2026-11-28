@@ -175,7 +175,7 @@ pub fn capabilities() -> GeneratorCapabilities {
             summary: "并行执行子节点（ParallelNodeExecutor）".into(),
             required_config: vec!["nodes".into()],
             optional_config: vec!["branches".into()],
-            config_notes: "nodes/branches 是内联 NodeDef 数组（每项含 id/node_type/config）；branches 仅作兜底，优先用 nodes".into(),
+            config_notes: "nodes/branches 是内联 NodeDef 数组（每项含 id/node_type/config）；branches 仅作兜底，优先用 nodes。输出契约（R3298 C2）：子分支结果按 branch_N 键合并进节点输出 JSON（N=nodes 数组下标从 0 起），下游用 {{本节点id.branch_N.字段}} 引用（如 {{par.branch_0.text}}）；子节点 id 不参与输出键（仅用于错误消息）；任一分支 Failed 整节点 Failed（首个错误保留在节点 error 字段）".into(),
         },
         NodeCapability {
             node_type: "loop".into(),
@@ -193,7 +193,7 @@ pub fn capabilities() -> GeneratorCapabilities {
                 "items".into(),
                 "item_var".into(),
             ],
-            config_notes: "mode ∈ counter/foreach：counter（缺省）按 max_iterations 固定次数跑（默认 10，上限 100），绑定 {{i}}/{{loop_index}}；foreach 迭代 items 列表（items 必填：节点引用 {{节点id.field}} 或字面量数组），当前元素绑定 {{item}}/{{item_index}}（item_var 可改元素变量名）；nodes 是内联子节点数组；可选 condition 是每轮（首轮后）复查的表达式，false 即停——引用的字段必须真实存在，幻觉字段（如 {{子节点id.passed}}）循环直接 Failed，不可证引用按不成立停止".into(),
+            config_notes: "mode ∈ counter/foreach：counter（缺省）按 max_iterations 固定次数跑（默认 10，上限 100），绑定 {{i}}/{{loop_index}}；foreach 迭代 items 列表（items 必填：节点引用 {{节点id.field}} 或字面量数组），当前元素绑定 {{item}}/{{item_index}}（item_var 可改元素变量名）；nodes 是内联子节点数组；可选 condition 是每轮（首轮后）复查的表达式，false 即停——引用的字段必须真实存在，幻觉字段（如 {{子节点id.passed}}）循环直接 Failed，不可证引用按不成立停止。下游引用（R3298 C2）：per-child 输出不单独暴露，最终输出只有 iterations/last_output/mode（foreach 另有 items_count/items_iterated），取最后一轮子节点输出用 {{本节点id.last_output}}；轮内兄弟节点互引用 {{子节点id.字段}}".into(),
         },
         NodeCapability {
             node_type: "sub_workflow".into(),

@@ -189,3 +189,47 @@ fn loop_capability_mode_vocabulary_matches_executor() {
         );
     }
 }
+
+/// R3298 C2 防漂移：复合节点的输出引用契约必须进能力表——生产执行器
+/// 的真实输出键形态与输入面暗示不同（parallel 输入面要求子节点 id、
+/// 输出面按 branch_N 下标合并，loop 的 per-child 输出不进最终输出）。
+/// 无承诺时作者/生成器照 id 习惯写 {{par.child_id.field}} 运行期解析
+/// 不到、字面量原样进下游（缺陷 15 同族静默形态）。这些文案是生成器
+/// 的第一道防线，删除/改写必须同步本测试。
+#[test]
+fn parallel_and_loop_output_contract_is_pinned() {
+    let caps = capabilities();
+
+    let par = caps
+        .node_types
+        .iter()
+        .find(|n| n.node_type == "parallel")
+        .expect("parallel capability");
+    assert!(
+        par.config_notes.contains("branch_"),
+        "parallel config_notes 必须承诺 branch_N 输出键形态（生产执行器真实形态），got: {:?}",
+        par.config_notes
+    );
+    assert!(
+        par.config_notes.contains("子节点 id 不参与输出键"),
+        "parallel config_notes 必须破除 id 引用误导（输入面要 id、输出面用下标），got: {:?}",
+        par.config_notes
+    );
+    assert!(
+        par.config_notes.contains("{{本节点id.branch_N.")
+            && par.config_notes.contains("branch_0.text"),
+        "parallel config_notes 必须给出具体下游引用形态（模板 + 示例），got: {:?}",
+        par.config_notes
+    );
+
+    let loop_cap = caps
+        .node_types
+        .iter()
+        .find(|n| n.node_type == "loop")
+        .expect("loop capability");
+    assert!(
+        loop_cap.config_notes.contains("last_output"),
+        "loop config_notes 必须承诺 last_output 下游引用（per-child 输出不单独暴露），got: {:?}",
+        loop_cap.config_notes
+    );
+}
