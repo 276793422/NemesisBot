@@ -1531,3 +1531,84 @@ while True:
     assert!(client.is_connected(), "恢复成功后 client 必须回到已连接态");
     client.close().await.unwrap();
 }
+
+// ===========================================================================
+// BUG-20261129-016：EOF 断链臂只翻 connected 标志（send 读锁段借用约束，
+// 不能调 &mut self 的 close 杀子进程）——半死形态（server 关 stdout 但
+// 进程未退）下旧子进程句柄滞留 child 字段。connect() 旧实现覆盖式
+// `self.child = Some(child)` 静默 drop 旧句柄（tokio Child 默认
+// kill_on_drop=false）= 孤儿进程泄漏；半死 server 系统性存在时每请求
+// 泄漏一个。修复：connect() spawn 前显式 kill+wait 残留旧句柄。
+// ===========================================================================
+
+#[tokio::test]
+async fn reconnect_reaps_leftover_child_from_eof_poisoning() {
+    // 1. 造残留活句柄形态（EOF 臂产物：标志已翻、句柄滞留、进程仍存活）。
+    #[cfg(target_os = "windows")]
+    let spawn_leftover = || {
+        tokio::process::Command::new("ping")
+            .arg("-t")
+            .arg("localhost")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn leftover ping")
+    };
+    #[cfg(not(target_os = "windows"))]
+    let spawn_leftover = || {
+        tokio::process::Command::new("sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn leftover sleep")
+    };
+    let leftover = spawn_leftover();
+    let leftover_pid = leftover.id().expect("leftover child must have a pid");
+
+    #[cfg(target_os = "windows")]
+    let mut t = StdioTransport::new(
+        "ping",
+        vec!["-t".to_string(), "localhost".to_string()],
+        vec![],
+    );
+    #[cfg(not(target_os = "windows"))]
+    let mut t = StdioTransport::new("sleep", vec!["60".to_string()], vec![]);
+
+    // 模拟 EOF 臂产物：connected 翻 false、child 句柄滞留（进程活着）。
+    t.child = Some(leftover);
+    t.connected = false;
+
+    // 2. 重连。修复前：覆盖句柄静默 drop（kill_on_drop=false）→ 孤儿；
+    //    修复后：spawn 前显式 kill+wait 回收。
+    t.connect().await.expect("重连必须成功");
+    assert!(t.is_connected());
+
+    // 3. 断言旧进程已被回收（connect 返回时 kill+wait 已完成）。
+    //    存在性探测不匹配平台语言文案，只看 PID 数字本身。
+    #[cfg(target_os = "windows")]
+    {
+        let out = tokio::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {leftover_pid}"), "/NH"])
+            .output()
+            .await
+            .expect("tasklist must run");
+        let s = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            !s.contains(&leftover_pid.to_string()),
+            "残留旧子进程（pid {leftover_pid}）在重连后仍存活 = 孤儿进程泄漏（BUG-20261129-016）"
+        );
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        assert!(
+            !std::path::Path::new(&format!("/proc/{leftover_pid}")).exists(),
+            "残留旧子进程（pid {leftover_pid}）在重连后仍存活 = 孤儿进程泄漏（BUG-20261129-016）"
+        );
+    }
+
+    // 4. 收尾：杀掉 connect 新起的 server 进程（测试不留活进程）。
+    let _ = t.close().await;
+}

@@ -175,7 +175,7 @@ pub fn capabilities() -> GeneratorCapabilities {
             summary: "并行执行子节点（ParallelNodeExecutor）".into(),
             required_config: vec!["nodes".into()],
             optional_config: vec!["branches".into()],
-            config_notes: "nodes/branches 是内联 NodeDef 数组（每项含 id/node_type/config）；branches 仅作兜底，优先用 nodes。输出契约（R3298 C2）：子分支结果按 branch_N 键合并进节点输出 JSON（N=nodes 数组下标从 0 起），下游用 {{本节点id.branch_N.字段}} 引用（如 {{par.branch_0.text}}）；子节点 id 不参与输出键（仅用于错误消息）；任一分支 Failed 整节点 Failed（首个错误保留在节点 error 字段）".into(),
+            config_notes: "nodes/branches 是内联 NodeDef 数组（每项含 id/node_type/config）；branches 仅作兜底，优先用 nodes。输出契约（R3298 C2）：子分支结果按 branch_N 键合并进节点输出 JSON（N=nodes 数组下标从 0 起），下游用 {{本节点id.branch_N.字段}} 引用（如 {{par.branch_0.text}}）；子节点 id 不参与输出键与错误消息（错误按 branch_N 下标归因，对照 nodes 数组定位失败分支）；任一分支 Failed 整节点 Failed（首个错误保留在节点 error 字段）".into(),
         },
         NodeCapability {
             node_type: "loop".into(),

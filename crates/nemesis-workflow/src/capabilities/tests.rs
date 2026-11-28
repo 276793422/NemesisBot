@@ -211,8 +211,12 @@ fn parallel_and_loop_output_contract_is_pinned() {
         par.config_notes
     );
     assert!(
-        par.config_notes.contains("子节点 id 不参与输出键"),
-        "parallel config_notes 必须破除 id 引用误导（输入面要 id、输出面用下标），got: {:?}",
+        par.config_notes
+            .contains("子节点 id 不参与输出键与错误消息")
+            && par.config_notes.contains("branch_N 下标归因"),
+        "parallel config_notes 必须破除 id 引用误导（输入面要 id、输出面用下标），\
+         且不得谎称 id 参与错误消息——执行器错误消息按 branch_N 下标归因，\
+         id 全程零消费（BUG-20261129-015），got: {:?}",
         par.config_notes
     );
     assert!(

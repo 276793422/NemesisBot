@@ -237,6 +237,20 @@ impl Transport for StdioTransport {
             return Ok(());
         }
 
+        // BUG-20261129-016：残留旧子进程回收。EOF 断链臂（send 读锁段借用
+        // 约束，见该臂注释）只翻 connected 标志、不杀子进程——半死形态
+        // （server 关 stdout 但进程未退）下旧句柄滞留 child 字段；下方
+        // 覆盖式 `self.child = Some(child)` 会把旧句柄静默 drop（tokio
+        // Child 默认 kill_on_drop=false = 孤儿进程泄漏，半死 server 系统
+        // 性存在时每请求泄漏一个）。spawn 前显式 kill+wait 回收残留
+        // （正常崩溃形态杀已死进程幂等无害），兜住所有「标志已翻、句柄
+        // 残留」的路径，connect 的「建新连接」语义 = 不带走旧进程。
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+        self.child = None;
+
         // profile 解析——显式覆盖（agent loop 装配注入）优先，回落进程
         // env 标记（执行体子进程上下文）；opt-in 闸不满足时恒 None（普通
         // MCP 零变化）。
