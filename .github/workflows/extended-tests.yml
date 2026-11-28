@@ -252,14 +252,15 @@ jobs:
       matrix:
         include:
           - name: default
-            # 全量默认 feature
-            flags: ''
+            # 全量默认 feature（不走预设派生）
+            preset: ''
           - name: minimal-iot
-            # scripts/customize/profiles/minimal-iot.config 的 [features] 开关集
-            flags: --no-default-features --features channels-web,channels-rpc
+            # 运行时派生（BUG-20261128-039 = BUG-20261124-021 修复重新落地：
+            # preset 文件是唯一真相源，flags 在 Derive 步从 profiles/*.config
+            # 现场派生，静态副本漂移结构性不可能）
+            preset: minimal-iot
           - name: desktop
-            # scripts/customize/profiles/desktop.config 的 [features] 开关集
-            flags: --no-default-features --features channels-web,channels-webhook,channels-rpc,migrate,devices,desktop,health,heartbeat,auth,voice,cluster,forge,memory,workflow,security
+            preset: desktop
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -295,9 +296,44 @@ jobs:
           rm -rf ../crates/nemesis-web/static/assets
           npm run build
 
-      # 编译级抽查（check 足以验证 feature 组合可编译；test 留给全量档）
+      # 防御性系统依赖（BUG-20261124-021 原案附带加固）：desktop 派生集含
+      # sandbox-mxc → mxc-sdk → ureq native-tls → openssl-sys 的 Linux 侧
+      # 代价链（同 ci.yml MXC 门注记），本 job 无其他 apt 步——ubuntu 镜像
+      # 演进翻脸时兜底。仅 desktop 腿（preset 派生集真含该链时才需要）。
+      - name: Install libssl-dev (desktop leg openssl-sys chain)
+        if: matrix.preset == 'desktop'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      # 派生 feature flags（BUG-20261128-039 = BUG-20261124-021 修复重新落地：
+      # 旧静态 flags 副本与 profiles 真相源漂移——desktop 落后 33 项、
+      # minimal-iot 漏 channels-mqtt，名义回归预设实际验证 2026-10 之前旧
+      # 组合 = 真实预设组合可编译性零覆盖。运行时派生让 profiles 演进自动
+      # 跟进，此类漂移结构性不可能）。load 把 preset 拷到
+      # scripts/customize/.config（未跟踪 + gitignore，CI 内改写无害）；
+      # export --features 打印 true 集逗号串（只读 .config，顺序=文件解析序）。
+      - name: Derive feature flags from preset (single source of truth)
+        if: matrix.preset != ''
+        shell: bash
+        run: |
+          cargo build -p nemesis-build-config
+          ./target/debug/nemesis-build-config load "${{ matrix.preset }}"
+          FEATURES="$(./target/debug/nemesis-build-config export --features)"
+          echo "derived features (${{ matrix.preset }}): $FEATURES"
+          echo "PROFILE_FEATURES=$FEATURES" >> "$GITHUB_ENV"
+
+      # 编译级抽查（check 足以验证 feature 组合可编译；test 留给全量档）。
+      # 非 default 腿消费 Derive 步派生的 PROFILE_FEATURES；default 腿
+      # （preset=''，变量未设）走全量默认 feature。
       - name: cargo check -p nemesisbot ${{ matrix.name }}
-        run: cargo check -p nemesisbot ${{ matrix.flags }}
+        shell: bash
+        run: |
+          if [ -n "$PROFILE_FEATURES" ]; then
+            cargo check -p nemesisbot --no-default-features --features "$PROFILE_FEATURES"
+          else
+            cargo check -p nemesisbot
+          fi
 
   integration-windows:
     name: Integration + cluster UAT (Windows, ${{ matrix.segment.name }})${{ inputs.seed_cache == true && ' 【SEED·仅构建落缓存·不跑测试·故意红】' || '' }}
