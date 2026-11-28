@@ -542,3 +542,87 @@ fn l_timeout_parsable_and_zero_stay_silent() {
         assert!(lint(&w).is_empty(), "timeout={t:?}: {:?}", lint(&w));
     }
 }
+
+// BUG-20261129-008（F5）：复合节点（loop/parallel）内联子节点的
+// retry_count/timeout/depends_on/is_terminal 是死配置——解析器接受、
+// validate 不拒，但全部内联执行路径不兑现。草稿期点名让作者当轮自纠。
+
+#[test]
+fn l_composite_child_dead_fields_warn() {
+    let loop_node = node(
+        "lp",
+        "loop",
+        serde_json::json!({
+            "mode": "counter",
+            "nodes": [
+                {"id": "c1", "node_type": "delay", "config": {"seconds": 0},
+                 "retry_count": 3, "timeout": "30s"},
+                {"id": "c2", "node_type": "delay", "config": {"seconds": 0}}
+            ]
+        }),
+    );
+    let par_node = node(
+        "pp",
+        "parallel",
+        serde_json::json!({
+            "branches": [
+                {"id": "b1", "node_type": "delay", "config": {"seconds": 0},
+                 "depends_on": ["x"], "is_terminal": true}
+            ]
+        }),
+    );
+    let w = wf(
+        vec![loop_node, par_node],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    let warnings = lint(&w);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    let loop_warn = warnings.iter().find(|x| x.contains("lp")).unwrap();
+    assert!(
+        loop_warn.contains("c1")
+            && loop_warn.contains("retry_count")
+            && loop_warn.contains("timeout"),
+        "loop 预警必须点名子节点与死字段: {loop_warn}"
+    );
+    let par_warn = warnings.iter().find(|x| x.contains("pp")).unwrap();
+    assert!(
+        par_warn.contains("b1")
+            && par_warn.contains("depends_on")
+            && par_warn.contains("is_terminal"),
+        "parallel 预警必须点名分支与死字段: {par_warn}"
+    );
+}
+
+#[test]
+fn l_composite_child_clean_and_toplevel_fields_no_warning() {
+    // 干净子节点（只有 id/node_type/config）零预警；顶层复合节点自身带
+    // retry_count/timeout 是 scheduler 生效的合法配置，不得误伤（反向锚）。
+    let mut lp = node(
+        "lp",
+        "loop",
+        serde_json::json!({
+            "mode": "counter",
+            "nodes": [{"id": "c1", "node_type": "delay", "config": {"seconds": 0}}]
+        }),
+    );
+    lp.retry_count = 2;
+    lp.timeout = Some("30s".into());
+    let par_node = node(
+        "pp",
+        "parallel",
+        serde_json::json!({
+            "nodes": [{"id": "b1", "node_type": "delay", "config": {"seconds": 0}}]
+        }),
+    );
+    let w = wf(
+        vec![lp, par_node],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    assert!(lint(&w).is_empty(), "{:?}", lint(&w));
+}

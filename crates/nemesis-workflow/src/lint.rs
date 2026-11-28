@@ -27,6 +27,7 @@ pub fn lint(wf: &Workflow) -> Vec<String> {
         }
         lint_output_placeholder(node, &mut warnings);
         lint_node_timeout(node, &mut warnings);
+        lint_composite_child_fields(node, &mut warnings);
     }
     if wf.triggers.is_empty() {
         warnings.push(
@@ -170,6 +171,72 @@ fn lint_node_timeout(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
             node.id, node.node_type
         ));
     }
+}
+
+/// 复合节点（loop/parallel）内联子节点的死字段预警（BUG-20261129-008，
+/// F5 死配置面）：解析器把 retry_count/timeout/depends_on/is_terminal 装
+/// 进子 NodeDef（形态被接受、validate 不拒），但全部内联执行路径
+/// （loop_sub 顺序迭代 / parallel JoinSet 并发 / 两个 stub）都直接
+/// execute 子节点——无重试循环、无超时包裹、无视 depends_on、不读
+/// is_terminal。作者写 retry_count=3 期待重试 → 静默零重试首败即终。
+/// 重试/超时的有效位置是复合节点自身（scheduler 只包顶层节点）。
+/// 容器语义对齐执行器：parallel 是 nodes 优先 branches 兜底，loop 只认
+/// nodes。
+fn lint_composite_child_fields(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
+    const DEAD_FIELDS: [&str; 4] = ["retry_count", "timeout", "depends_on", "is_terminal"];
+    if !matches!(node.node_type.as_str(), "loop" | "parallel") {
+        return;
+    }
+    let children = if node.node_type == "loop" {
+        node.config.get("nodes").and_then(|v| v.as_array())
+    } else {
+        node.config
+            .get("nodes")
+            .and_then(|v| v.as_array())
+            .or_else(|| node.config.get("branches").and_then(|v| v.as_array()))
+    };
+    let Some(children) = children else {
+        return;
+    };
+    let mut offenders: Vec<String> = Vec::new();
+    let mut fields_hit: Vec<&str> = Vec::new();
+    for child in children {
+        let Some(obj) = child.as_object() else {
+            continue;
+        };
+        let hit: Vec<&str> = DEAD_FIELDS
+            .iter()
+            .copied()
+            .filter(|f| obj.contains_key(*f))
+            .collect();
+        if hit.is_empty() {
+            continue;
+        }
+        offenders.push(
+            obj.get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(无id)")
+                .to_string(),
+        );
+        for f in hit {
+            if !fields_hit.contains(&f) {
+                fields_hit.push(f);
+            }
+        }
+    }
+    if offenders.is_empty() {
+        return;
+    }
+    warnings.push(format!(
+        "节点 {}（{}）内联子节点 {} 设置了在内联执行中不生效的字段（{}）——\
+         子节点在复合体内直接执行：没有重试循环与超时包裹，depends_on 不影响\
+         执行顺序（loop 按数组顺序、parallel 并发），is_terminal 不产生输出合并。\
+         需要重试/超时请配置在复合节点自身（外层调度器对该层生效）",
+        node.id,
+        node.node_type,
+        offenders.join("、"),
+        fields_hit.join("/")
+    ));
 }
 
 /// `{{节点id.output}}` 占位符——`output` 不是任何节点的输出字段名，
