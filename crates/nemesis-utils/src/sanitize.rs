@@ -305,6 +305,37 @@ pub fn escape_closing_tag(content: &str, tag: &str) -> String {
     out
 }
 
+/// 剥一层**包裹型** markdown 代码围栏（LLM 回复清理单一真相源，
+/// BUG-20261128-022）。
+///
+/// 语义：trim 后以三反引号（fence）开头 → 丢首行（裸 fence 或 fence +
+/// 语言标注）→ 剩余部分末尾恰为 fence 时剥外壳（`strip_suffix` 只动
+/// 结尾），否则原样返回首行之后的内容。**中间内容零触碰**——正文自带
+/// 的 fenced 代码块（其收尾 fence 是中间行）不受影响。
+///
+/// 为什么必须是「只动结尾」：skill_gate 旧实现按「首个独立 fence 行」
+/// 截断，修正稿正文含 fenced 代码块时内层收尾被当外壳——其后正文静默
+/// 丢失且截断稿照常过闸落盘（内容丢失无任何诊断）。三个消费点同源：
+/// nemesis-forge `skill_gate`（refine 修正稿剥壳）/ nemesis-web
+/// `cluster_persona_gen`（persona JSON 提取）/ nemesis-web `board plan
+/// sanitize_ac_draft`（验收标准起草；旧 `trim_start_matches` 形态还会把
+/// 语言标签泄漏进正文首行）。
+pub fn strip_outer_code_fence(s: &str) -> String {
+    let t = s.trim();
+    if !t.starts_with("```") {
+        return t.to_string();
+    }
+    let Some(i) = t.find('\n') else {
+        // 裸标记（"```json" 无换行）：无内容可剥，原样返回。
+        return t.to_string();
+    };
+    let after = t[i + 1..].trim_end();
+    match after.strip_suffix("```") {
+        Some(stripped) => stripped.trim().to_string(),
+        None => after.to_string(),
+    }
+}
+
 /// FNV-1a 64-bit（零依赖确定性哈希，仅供超长段的区分后缀）。
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;

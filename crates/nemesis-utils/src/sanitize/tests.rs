@@ -506,3 +506,35 @@ fn sanitize_agent_id_confines_and_keeps_uuid_identity() {
     // 常规带分隔符 id（agent_x-1）恒等。
     assert_eq!(sanitize_agent_id("agent_x-1"), "agent_x-1");
 }
+
+#[test]
+fn strip_outer_code_fence_strips_only_the_shell() {
+    use super::strip_outer_code_fence;
+    // 无围栏：trim 后原样。
+    assert_eq!(strip_outer_code_fence("  正文  "), "正文");
+    // 裸围栏包裹。
+    assert_eq!(strip_outer_code_fence("```\nX\n```"), "X");
+    // 语言标注围栏包裹。
+    assert_eq!(strip_outer_code_fence("```markdown\nX\n```"), "X");
+    // 未闭合（LLM 忘收尾）：返回首行后内容，不猜。
+    assert_eq!(strip_outer_code_fence("```json\n{\"a\":1}"), "{\"a\":1}");
+    // 孤标记无换行：原样。
+    assert_eq!(strip_outer_code_fence("```json"), "```json");
+    // 空包裹：剥壳后为空。
+    assert_eq!(strip_outer_code_fence("```\n\n```"), "");
+    // BUG-20261128-022 核心：正文自带 fenced 代码块（内层收尾 ``` 是
+    // 中间行）+ 外层包裹 + 内层之后还有正文——只动结尾，中间零触碰。
+    let wrapped = "```markdown\nHEAD\n```bash\nrun x\n```\nTAIL\n```";
+    assert_eq!(
+        strip_outer_code_fence(wrapped),
+        "HEAD\n```bash\nrun x\n```\nTAIL",
+        "内层代码块与其后正文必须原样保留"
+    );
+    // 正文以围栏起头且无外层包裹（无收尾 ```）：不把首行围栏当外壳猜——
+    // 返回首行后内容（首行围栏是正文一部分还是外壳本就二义，未闭合形态
+    // 诚实不剥）。
+    assert_eq!(
+        strip_outer_code_fence("```bash\nrun x\n```\nTAIL"),
+        "run x\n```\nTAIL"
+    );
+}

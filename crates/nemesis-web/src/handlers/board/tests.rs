@@ -8103,6 +8103,35 @@ async fn agt_issue_draft_ac_returns_draft_without_persisting() {
     let _ = std::fs::remove_dir_all(&dir2);
 }
 
+/// sanitize_ac_draft 直测（BUG-20261128-022：围栏剥壳接单一真相源
+/// strip_outer_code_fence——语言标签不得泄漏进正文首行；内层代码块与
+/// 其后正文零触碰）。
+#[cfg(feature = "cluster")]
+#[test]
+fn sanitize_ac_draft_strips_fence_without_leaking_language_tag() {
+    use super::plan::sanitize_ac_draft;
+    // 语言标注围栏：只剥壳，标签不泄漏。
+    assert_eq!(
+        sanitize_ac_draft("```markdown\n- 条目一\n- 条目二\n```").unwrap(),
+        "- 条目一\n- 条目二"
+    );
+    // 裸围栏。
+    assert_eq!(sanitize_ac_draft("```\n正文\n```").unwrap(), "正文");
+    // 无围栏 trim。
+    assert_eq!(sanitize_ac_draft("  正文  ").unwrap(), "正文");
+    // 内层代码块 + 其后正文：只动结尾。
+    let wrapped = "```markdown\nHEAD\n```bash\nrun x\n```\nTAIL\n```";
+    assert_eq!(
+        sanitize_ac_draft(wrapped).unwrap(),
+        "HEAD\n```bash\nrun x\n```\nTAIL",
+        "内层围栏与其后正文必须原样保留"
+    );
+    // JSON 形态拒绝（误入拆解角色）语义不变。
+    assert!(sanitize_ac_draft("```json\n[{\"a\":1}]\n```").is_err());
+    // 空产出拒绝。
+    assert!(sanitize_ac_draft("```markdown\n\n```").is_err());
+}
+
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn agt_issue_plan_stage_one_spawns_chain_when_agent_ready() {
@@ -11649,6 +11678,188 @@ async fn plan_chain_superseded_failure_path_is_silent() {
         "被取代链不得发失败评论: {comments:?}"
     );
     // 事件面：只允许链起点自己的 plan_started，无 plan_failed。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    while std::time::Instant::now() < deadline {
+        match rx.try_recv() {
+            Ok(evt) if evt.event_type == "board.plan_started" => continue,
+            Ok(evt) => panic!("被取代链不得再发事件: {}", evt.event_type),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(e) => panic!("事件通道异常: {e}"),
+        }
+    }
+    super::RUNNING_PLANS.lock().remove(&plan_id);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// superseded 双闸·规格蒸馏臂（有人值守 DistillWait）：蒸馏 LLM 返回前条目
+/// 被监视摘除（已被重拆链取代）→ 静默放弃：不挂规格卡、不转承载单状态、
+/// 不发事件。缺此哨 = 双规格卡（新旧两链并发蒸馏各挂一张）→ 双 settle →
+/// resume 钩子双发车 → confirm_plan 无「已有子单」闸 → 双子单重复派发。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn plan_chain_superseded_spec_wait_arm_skips_card() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("plan-sup-spec-wait");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "规格蒸馏被取代父单".to_string(),
+            quality: "experience".into(),
+            unattended: Some(false),
+            creator: nemesis_board::Actor::admin("tester"),
+            ..Default::default()
+        })
+        .unwrap();
+    let plan_id = "pl-sup-spec-wait".to_string();
+    super::RUNNING_PLANS.lock().insert(
+        plan_id.clone(),
+        super::RunningPlan {
+            issue_id: issue.id,
+            started_at: std::time::Instant::now(),
+            attempt: 1,
+            phase: "spec-distill",
+        },
+    );
+    // 蒸馏正常出稿（可解析 spec JSON）——证明「蒸馏成功但被取代」也放弃。
+    let agent_loop = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(SupersededMockProvider {
+            plan_id: plan_id.clone(),
+            content: Some(
+                r#"{"version":"v1","spec":"核心循环正文","assumptions":["鼠标操作"],"acceptance_checks":["棋盘可见"]}"#
+                    .to_string(),
+            ),
+        }),
+        nemesis_agent::AgentConfig::default(),
+    ));
+    let hub = Arc::new(EventHub::new());
+    let mut rx = hub.subscribe();
+    let out = super::execute_plan_chain(
+        &store,
+        None,
+        agent_loop,
+        issue.clone(),
+        nemesis_board::Actor::admin("tester"),
+        &plan_id,
+        Some(&dir),
+        Some(hub.as_ref()),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["status"], "superseded", "{out}");
+    assert!(
+        store
+            .list_touchpoints_by_issue(issue.id)
+            .unwrap()
+            .is_empty(),
+        "被取代链不得挂规格触点卡"
+    );
+    let after = store.get_issue(issue.id).unwrap();
+    assert_eq!(
+        after.status,
+        nemesis_board::models::IssueStatus::Backlog,
+        "被取代链不得转承载单状态"
+    );
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        !comments.iter().any(|c| c.content.contains("触点已挂卡")),
+        "被取代链不得发挂卡评论: {comments:?}"
+    );
+    // 事件面：只允许链起点自己的 plan_started。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    while std::time::Instant::now() < deadline {
+        match rx.try_recv() {
+            Ok(evt) if evt.event_type == "board.plan_started" => continue,
+            Ok(evt) => panic!("被取代链不得再发事件: {}", evt.event_type),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(e) => panic!("事件通道异常: {e}"),
+        }
+    }
+    super::RUNNING_PLANS.lock().remove(&plan_id);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// superseded 双闸·规格直通臂（无人值守 DistillProceed）：蒸馏返回后条目
+/// 已被监视摘除 → 静默放弃：不评论、不挂卡默认收口、不烧录规格——新链会
+/// 重走 DistillProceed 全程，旧链在此之后的一切副作用都是与新链重复的。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn plan_chain_superseded_spec_proceed_arm_skips_defaults() {
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+    let dir = unique_dir("plan-sup-spec-proceed");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无人值守规格被取代父单".to_string(),
+            quality: "experience".into(),
+            unattended: Some(true),
+            creator: nemesis_board::Actor::admin("tester"),
+            ..Default::default()
+        })
+        .unwrap();
+    let plan_id = "pl-sup-spec-proceed".to_string();
+    super::RUNNING_PLANS.lock().insert(
+        plan_id.clone(),
+        super::RunningPlan {
+            issue_id: issue.id,
+            started_at: std::time::Instant::now(),
+            attempt: 1,
+            phase: "spec-distill",
+        },
+    );
+    let agent_loop = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(SupersededMockProvider {
+            plan_id: plan_id.clone(),
+            content: Some(
+                r#"{"version":"v1","spec":"直通规格正文","assumptions":["假设甲"],"acceptance_checks":["条款一"]}"#
+                    .to_string(),
+            ),
+        }),
+        nemesis_agent::AgentConfig::default(),
+    ));
+    let hub = Arc::new(EventHub::new());
+    let mut rx = hub.subscribe();
+    let out = super::execute_plan_chain(
+        &store,
+        None,
+        agent_loop,
+        issue.clone(),
+        nemesis_board::Actor::admin("tester"),
+        &plan_id,
+        Some(&dir),
+        Some(hub.as_ref()),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["status"], "superseded", "{out}");
+    assert!(
+        store
+            .list_touchpoints_by_issue(issue.id)
+            .unwrap()
+            .is_empty(),
+        "被取代链不得挂规格触点（含默认收口卡）"
+    );
+    let after = store.get_issue(issue.id).unwrap();
+    assert!(
+        !after.description.contains("## 📐 规格"),
+        "被取代链不得烧录规格进描述: {}",
+        after.description
+    );
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("无人值守：规格已蒸馏")),
+        "被取代链不得发蒸馏完成评论: {comments:?}"
+    );
+    // 事件面：只允许链起点自己的 plan_started。
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
     while std::time::Instant::now() < deadline {
         match rx.try_recv() {

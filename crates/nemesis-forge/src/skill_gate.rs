@@ -283,23 +283,14 @@ async fn refine_once(
     Ok(stripped)
 }
 
-/// 剥一层 markdown 代码围栏（```/```markdown 开头 + 收尾 ```）。
-/// 无围栏 = 原样返回。
+/// 剥一层 markdown 代码围栏（```/```lang 包裹形态）；无围栏 = 原样返回。
+/// 实现单一真相源 = [`nemesis_utils::sanitize::strip_outer_code_fence`]
+/// （BUG-20261128-022：旧实现按「首个独立 ``` 行」截断——修正稿正文含
+/// fenced 代码块时内层收尾被当外壳，其后正文静默丢失且截断稿照常过闸
+/// 落盘；SKILL.md 合法形态首行恒为 frontmatter `---`，包裹歧义角落对
+/// 本消费点不可达）。
 fn strip_code_fence(raw: &str) -> String {
-    let t = raw.trim();
-    if !t.starts_with("```") {
-        return t.to_string();
-    }
-    let mut lines = t.lines();
-    lines.next(); // 丢弃 ``` 语言行
-    let mut out = Vec::new();
-    for line in lines {
-        if line.trim() == "```" {
-            break;
-        }
-        out.push(line);
-    }
-    out.join("\n")
+    nemesis_utils::sanitize::strip_outer_code_fence(raw)
 }
 
 /// 失败明细封顶记录。

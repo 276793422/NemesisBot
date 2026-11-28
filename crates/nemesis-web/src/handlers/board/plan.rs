@@ -878,23 +878,18 @@ pub async fn run_planner(
 
 /// 起草产物护栏：剥 markdown 代码围栏、拒绝 JSON 形态输出（模型误入
 /// 拆解/评审角色）、拒空、按字符截断上限。返回值直接可落库/回前端。
-fn sanitize_ac_draft(raw: &str) -> Result<String, String> {
-    let mut t = raw.trim();
-    // 剥 ``` 围栏：首行 ``` 开头则去掉首行；尾行 ``` 则去掉。
-    if t.starts_with("```") {
-        t = t.trim_start_matches("```");
-        if let Some(idx) = t.rfind("```") {
-            t = &t[..idx];
-        }
-        t = t.trim();
-    }
+pub(super) fn sanitize_ac_draft(raw: &str) -> Result<String, String> {
+    // 剥包裹型 ``` 围栏（单一真相源 nemesis_utils::sanitize::
+    // strip_outer_code_fence；BUG-20261128-022：旧 trim_start_matches 只
+    // 剥反引号不剥语言行——```markdown 的语言标签泄漏进正文首行）。
+    let t = nemesis_utils::sanitize::strip_outer_code_fence(raw);
     if t.is_empty() {
         return Err("AI 返回了空内容，无法起草".to_string());
     }
     if t.starts_with('[') || t.starts_with('{') {
         return Err("AI 输出疑似 JSON（误入拆解/评审形态），不是验收标准正文".to_string());
     }
-    Ok(nemesis_utils::truncate(t, 4000))
+    Ok(nemesis_utils::truncate(&t, 4000))
 }
 
 /// 预防层 user prompt：从子单计划合成父单整体验收标准的材料。
@@ -1885,6 +1880,22 @@ pub async fn execute_plan_chain(
                 }
                 let swap = board_plan_model_swap(home);
                 let spec = run_spec_distill(&agent_loop, &issue, swap).await;
+                // superseded 自检（双闸家族·规格蒸馏臂）：蒸馏 LLM future
+                // 不可取消，超时重拆监视可能在飞行中摘条目发起新链——旧链
+                // 返回后先验证自己仍在册，被取代 = 静默放弃：不挂卡、不转
+                // 承载单状态、不发事件。缺此哨 = 双规格卡（两链并发蒸馏各
+                // 挂一张）→ 双 settle → resume 钩子双发车 → 双拆解。
+                if !RUNNING_PLANS.lock().contains_key(plan_id) {
+                    tracing::info!(
+                        "[Board] plan chain superseded（已被超时重拆取代，规格蒸馏臂）issue={} plan={plan_id}，旧链静默放弃",
+                        issue.id
+                    );
+                    return Ok(serde_json::json!({
+                        "status": "superseded",
+                        "plan_id": plan_id,
+                        "issue_id": issue.id,
+                    }));
+                }
                 let tp_cfg = super::touchpoints::live_attendance_config();
                 let deadline = super::touchpoints::deadline_from_cfg(
                     super::touchpoints::now_ms(),
@@ -1918,6 +1929,20 @@ pub async fn execute_plan_chain(
             Some(SpecGateAction::DistillProceed) => {
                 let swap = board_plan_model_swap(home);
                 let spec = run_spec_distill(&agent_loop, &issue, swap).await;
+                // superseded 自检（同规格蒸馏臂，无人值守直通版）：被取代 =
+                // 不评论、不挂卡、不烧录、不进 planner——新链重走 DistillProceed
+                // 全程，旧链在这里之后做的一切都是与新链重复的副作用。
+                if !RUNNING_PLANS.lock().contains_key(plan_id) {
+                    tracing::info!(
+                        "[Board] plan chain superseded（已被超时重拆取代，无人值守规格直通臂）issue={} plan={plan_id}，旧链静默放弃",
+                        issue.id
+                    );
+                    return Ok(serde_json::json!({
+                        "status": "superseded",
+                        "plan_id": plan_id,
+                        "issue_id": issue.id,
+                    }));
+                }
                 // 假设清单落账（计划 §2 超时默认发车同款纪律：直通即默认
                 // 动作，假设清单必须可回查）。
                 let assumptions = if spec.assumptions.is_empty() {

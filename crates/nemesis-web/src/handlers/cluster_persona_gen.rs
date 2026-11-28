@@ -409,21 +409,11 @@ fn extract_json_span(s: &str) -> Option<&str> {
     }
 }
 
+/// 剥一层包裹型代码围栏。实现单一真相源 =
+/// [`nemesis_utils::sanitize::strip_outer_code_fence`]（BUG-20261128-022
+/// 同源收编，算法不变——本消费点原实现已是「只动结尾」的正确形态）。
 fn strip_code_fence(s: &str) -> String {
-    let t = s.trim();
-    if !t.starts_with("```") {
-        return t.to_string();
-    }
-    let after = match t.find('\n') {
-        Some(i) => t[i + 1..].to_string(),
-        None => return t.to_string(),
-    };
-    let after = after.trim_end();
-    if let Some(stripped) = after.strip_suffix("```") {
-        stripped.trim().to_string()
-    } else {
-        after.to_string()
-    }
+    nemesis_utils::sanitize::strip_outer_code_fence(s)
 }
 
 /// 通用：从 LLM 响应里提取首个 tool_call 的 JSON 参数，退化到文本里的 JSON。

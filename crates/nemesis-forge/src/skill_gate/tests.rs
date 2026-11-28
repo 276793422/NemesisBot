@@ -228,6 +228,42 @@ async fn test_gate_refine_then_install() {
 }
 
 #[tokio::test]
+async fn test_gate_refine_strip_preserves_inner_fence_and_tail() {
+    // BUG-20261128-022：修正稿正文自带 fenced 代码块（skill 常见形态）且
+    // 回复被外层围栏包裹时，旧剥壳按「首个独立 ``` 行」截断——内层代码块
+    // 收尾被当外壳收尾，其后正文（含 FIXED 标记与收尾段）静默丢失，截断
+    // 稿重跑必败 → refine 耗尽弃稿。剥外壳必须只动结尾：
+    // nemesis_utils::sanitize::strip_outer_code_fence。
+    let (_g, ws) = workspace();
+    let runner = Arc::new(ContentKeyedRunner::passing());
+    let fixed_body = "---\nname: gate-demo\ndescription: demo\nassert_marker: FIXED\ntests:\n  - name: smoke\n    turns:\n      - user: hi\n    expect:\n      contains: [\"ok\"]\n---\n## 用法示例\n\n```bash\nrun demo --help\n```\n\nbody FIXED\n\n## 收尾段\nTAIL-MARKER\n";
+    let fixed = format!("```markdown\n{fixed_body}\n```");
+    let fixer = Arc::new(ScriptedFixer::new(vec![Ok(fixed)]));
+    let records = gate_skill_drafts(
+        Some(&(runner.clone() as Arc<dyn SkillTestRunner>)),
+        Some(&(fixer.clone() as Arc<dyn LLMCaller>)),
+        &ws,
+        &[draft("demo", valid_md("BROKEN"))],
+        &stopped_fn(false),
+        8192,
+        0.7,
+    )
+    .await;
+    assert!(
+        matches!(records[0].verdict, GateVerdict::Installed),
+        "{:?}",
+        records[0]
+    );
+    let on_disk = std::fs::read_to_string(skill_file(&ws, &records[0].slug)).unwrap();
+    assert!(on_disk.contains("```bash"), "内层代码块必须原样保留");
+    assert!(
+        on_disk.contains("TAIL-MARKER"),
+        "内层围栏之后的正文不得被截断"
+    );
+    assert!(!on_disk.contains("```markdown"), "外层围栏必须剥净");
+}
+
+#[tokio::test]
 async fn test_gate_refine_exhausts_discards() {
     let (_g, ws) = workspace();
     let runner = Arc::new(ContentKeyedRunner::failing());
