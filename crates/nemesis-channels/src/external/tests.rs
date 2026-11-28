@@ -1462,6 +1462,13 @@ async fn b032_input_exe_abnormal_death_is_restarted_unix() {
             Err(_) => break,
         }
     }
+    // BUG-20261128-033：健康断言必须在 stop 之前——stop() 无条件翻 base
+    // 旗标为 false（见 Channel::stop 顺序纪律），stop 后断言 is_running()
+    // 恒假，Linux CI 首跑即确定性红。
+    assert!(
+        ch.base.is_running(),
+        "两条消息都到、重启循环存活时 base running 旗标必须为 true"
+    );
     ch.stop().await.unwrap();
 
     assert_eq!(
@@ -1469,5 +1476,4 @@ async fn b032_input_exe_abnormal_death_is_restarted_unix() {
         vec!["ready1".to_string(), "ready2".to_string()],
         "input EXE 异常死亡后必须自动重启：ready2 未到达说明重启未发生（BUG-20261128-032）"
     );
-    assert!(ch.base.is_running());
 }
