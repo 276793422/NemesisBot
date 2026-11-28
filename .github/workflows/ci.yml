@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
 
-      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+      - name: Install Rust toolchain (rust-toolchain.toml 钉链)
         uses: dtolnay/rust-toolchain@stable
 
       # cache-on-failure（2026-09-29 提速 P2）：红轮也保存编译缓存——否则连续修红
@@ -217,6 +217,18 @@ jobs:
         with:
           components: llvm-tools-preview
 
+      # dtolnay 的 components 同样只装到它选定的 stable 链——rust-toolchain.toml
+      # 钉链（1.95.0，目录 override）上只有 clippy+rustfmt，没有 llvm-tools。
+      # 本 job 实测绿是 ubuntu 镜像系统 LLVM 回落在兜底（cargo-llvm-cov 组件
+      # 缺位时回落系统 llvm-cov/llvm-profdata）——版本兼容靠镜像运气，镜像
+      # LLVM 漂移与 rustc coverage mapping 格式失配即翻脸。裸 rustup
+      # component add 落钉链 = llvm-tools 与钉链 rustc 的 mapping 格式严格
+      # 自洽（BUG-20261128-038 同族位点二；同 rust-test 的 wasm32-wasip2
+      # 修复模式）。cargo-llvm-cov 优先用 rustup 组件，系统 LLVM 退居兜底。
+      - name: Install llvm-tools on pinned toolchain
+        shell: bash
+        run: rustup component add llvm-tools-preview
+
       # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -290,10 +302,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+      # dtolnay 步不装 wasm32-wasip2：本 job 只构建 exe（最终链接产物），
+      # 不跑 wasm fixture（那是 rust-test job 的测试面）。且 dtolnay 的
+      # targets 装到它选定的 stable 链而 cargo 用 rust-toolchain.toml 钉链，
+      # 装了也不在 cargo 用的链上 = 纯无效死重（BUG-20261128-038 顺带摘除；
+      # 若未来本 job 需要该 target，照 extended-tests.yml 的裸 rustup
+      # target add 模式补在钉链上）。
+      - name: Install Rust toolchain (rust-toolchain.toml 钉链)
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-wasip2
 
       # 与 rust-test 同 shared-key（win-x64-r10）：bin job 建成即存（失败轮也存，
       # cache-on-failure），后续 run 大概率缓存命中走快路径
@@ -501,13 +517,25 @@ jobs:
           Get-PSDrive C | Select-Object @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
           exit 0
 
-      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+      - name: Install Rust toolchain (rust-toolchain.toml 钉链)
         uses: dtolnay/rust-toolchain@stable
         # wasm32-wasip2：nemesis-plugins-wasm 的对抗/e2e/sdk 测试在运行时真
         # 构建示例 wasm 组件做 fixture——无此 target = fixture 构建失败 =
         # 诚实 SKIP = 16 个安全测试在 CI 空转（2026-09-30 插件体系复查）。
         with:
           targets: wasm32-wasip2
+
+      # dtolnay action 的 targets 只装到它选定的默认链（最新 stable）；仓库
+      # rust-toolchain.toml 钉 1.95.0 后 cargo 实际用钉链——钉链上缺
+      # wasm32-wasip2 = wasm fixture 构建 E0463 = 诚实 SKIP = plugins-wasm
+      # 安全测试（对抗 6 + e2e_guest 8 + sdk_dogfood 2 + wit_drift 1）在
+      # Windows 全量 job 空转（BUG-20261128-038；2026-11-15 ET E0463 实录
+      # 同族，彼时只修了 extended-tests.yml 漏了本 job）。裸 rustup target
+      # add 落在 cwd 的 toolchain override（=钉链），不硬编码版本号（钉
+      # 升级无需改此处）。镜像 extended-tests.yml 同名步。
+      - name: Install wasm32-wasip2 on pinned toolchain
+        shell: bash
+        run: rustup target add wasm32-wasip2
 
       # cache-on-failure（2026-09-29 提速 P2，同 rust-check job 注释）
       # workspaces 收编三个示例插件（嵌套独立 workspace）：fixture 构建产物
@@ -781,7 +809,7 @@ jobs:
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
 
-      - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
+      - name: Install Rust toolchain (rust-toolchain.toml 钉链)
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo build
