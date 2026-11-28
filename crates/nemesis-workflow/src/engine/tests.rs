@@ -7489,3 +7489,173 @@ async fn test_bug_20261129_004_live_run_tail_preempts_orphan_fallback() {
     );
     assert!(!engine.cancel_tokens.contains_key(&id));
 }
+
+// -----------------------------------------------------------------------
+// BUG-20261129-009：墙钟看门狗 flag 与用户取消竞态——收口归属
+// -----------------------------------------------------------------------
+
+/// 回归锁：用户取消**先于**看门狗 fire 完成（cancel_execution 的
+/// 状态+ended_at 写锁段已落定），看门狗随后到点 fire（调度 unwind 后
+/// 收口读到 timed_out=true）→ 终态必须保持 **Cancelled**，不得被收口
+/// 覆盖成 Failed + 墙钟注记。测试直接翻 map 记录模拟 cancel_execution
+/// 已完成的写锁段（状态+ended_at 与真实路径逐字段同形，只是不 fire
+/// token——本场景调度 unwind 由看门狗到点驱动，等效竞态窗口）。
+#[tokio::test]
+async fn test_bug_20261129_009_user_cancel_landed_before_watchdog_stays_cancelled() {
+    let engine = WorkflowEngine::new_arc();
+    engine.set_wall_clock_budget_secs(2);
+
+    let mut slow = make_node("slow", "delay", vec![]);
+    slow.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("b009_wf", vec![slow]))
+        .unwrap();
+
+    let engine_bg = engine.clone();
+    tokio::spawn(async move {
+        let _ = engine_bg.run("b009_wf", HashMap::new(), None).await;
+    });
+
+    // 等进 Running，拿到 execution id。
+    let id = loop {
+        let execs = engine.list_executions(Some("b009_wf")).await;
+        if let Some(e) = execs.first()
+            && e.state == ExecutionState::Running
+        {
+            break e.id.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+
+    // 模拟 cancel_execution 已完成的写锁段：状态 + ended_at 落定
+    // （远早于看门狗 2s 的 fire 点）。记下翻转时刻——收口会把 ended_at
+    // 重写为更晚的 now，这是区分「翻转的中间态」与「收口终态」的观测点
+    // （保持 Cancelled 分支与翻转值同形，不能直接轮询 state）。
+    let flipped_at = chrono::Local::now();
+    {
+        let mut execs = engine.executions.write().await;
+        let e = execs.get_mut(&id).expect("execution must be in map");
+        e.state = ExecutionState::Cancelled;
+        e.ended_at = Some(flipped_at);
+    }
+
+    // 轮询到收口发生（ended_at 被重写为晚于翻转时刻；预算 2s + 收口，
+    // 上限 8s）。修复前此读点必为 Failed + 墙钟注记（红），修复后保持
+    // Cancelled。
+    let mut final_state = None;
+    let mut final_err = None;
+    for _ in 0..400 {
+        let execs = engine.list_executions(Some("b009_wf")).await;
+        if let Some(e) = execs.first()
+            && let Some(ended) = e.ended_at
+            && ended > flipped_at
+        {
+            final_state = Some(e.state);
+            final_err = e.error.clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        final_state.is_some(),
+        "收口必须在看门狗预算内重写终态（8s 上限）"
+    );
+    assert_eq!(
+        final_state,
+        Some(ExecutionState::Cancelled),
+        "用户取消先落定 → 收口必须保持 Cancelled，不得被墙钟改判 Failed（err={final_err:?}）"
+    );
+}
+
+/// 归属 helper `user_cancel_precedes_watchdog` 细分支单测（集成回归锁
+/// 覆盖不到的形态）：真值臂 = Cancelled + ended_at 不晚于戳（含平局，
+/// 平局归用户）；假值臂 = ended_at 晚于戳（看门狗先 → Failed 归属）、
+/// 非 Cancelled 态、Cancelled 无 ended_at、id 缺席。
+#[tokio::test]
+async fn test_bug_20261129_009_attribution_helper_branches() {
+    let engine = WorkflowEngine::new_arc();
+
+    let mut fast = make_node("fast", "delay", vec![]);
+    fast.config
+        .insert("seconds".to_string(), serde_json::json!(0));
+    engine
+        .register_workflow(make_workflow("b009_helper_wf", vec![fast]))
+        .unwrap();
+
+    // 同步跑完拿一条真实 map 记录（Completed 终态），逐用例翻成目标形态。
+    let exec = engine
+        .start_execution("b009_helper_wf", HashMap::new())
+        .await
+        .unwrap();
+    let id = exec.id.clone();
+    assert!(engine.executions.read().await.contains_key(&id));
+
+    async fn set_form(
+        engine: &WorkflowEngine,
+        id: &str,
+        state: ExecutionState,
+        ended: Option<chrono::DateTime<chrono::Local>>,
+    ) {
+        let mut execs = engine.executions.write().await;
+        let e = execs.get_mut(id).expect("record must exist");
+        e.state = state;
+        e.ended_at = ended;
+    }
+
+    // ① 用户先（ended 早于戳 500ms）→ true。
+    let early = Local::now() - chrono::Duration::milliseconds(500);
+    set_form(&engine, &id, ExecutionState::Cancelled, Some(early)).await;
+    assert!(
+        engine
+            .user_cancel_precedes_watchdog(&id, Local::now().timestamp_millis())
+            .await,
+        "Cancelled + ended 早于戳 → 用户先"
+    );
+
+    // ② 平局（ended 毫秒 == 戳）→ true（平局归用户）。
+    let tie = Local::now();
+    set_form(&engine, &id, ExecutionState::Cancelled, Some(tie)).await;
+    assert!(
+        engine
+            .user_cancel_precedes_watchdog(&id, tie.timestamp_millis())
+            .await,
+        "ended 毫秒 == 戳 → 平局归用户"
+    );
+
+    // ③ 看门狗先（ended 晚于戳 500ms）→ false → 收口改判 Failed。
+    let late = Local::now() + chrono::Duration::milliseconds(500);
+    set_form(&engine, &id, ExecutionState::Cancelled, Some(late)).await;
+    assert!(
+        !engine
+            .user_cancel_precedes_watchdog(&id, Local::now().timestamp_millis())
+            .await,
+        "ended 晚于戳 → 看门狗先 → Failed 归属"
+    );
+
+    // ④ 非 Cancelled 态（Running/Completed 等）→ false。
+    set_form(&engine, &id, ExecutionState::Running, Some(early)).await;
+    assert!(
+        !engine
+            .user_cancel_precedes_watchdog(&id, Local::now().timestamp_millis())
+            .await,
+        "无 Cancelled 终态 → 按看门狗改判"
+    );
+
+    // ⑤ Cancelled 但 ended_at 缺席 → false（形态不完整，保守按看门狗）。
+    set_form(&engine, &id, ExecutionState::Cancelled, None).await;
+    assert!(
+        !engine
+            .user_cancel_precedes_watchdog(&id, Local::now().timestamp_millis())
+            .await,
+        "无 ended_at → 无法比时，保守按看门狗改判"
+    );
+
+    // ⑥ id 缺席 → false。
+    assert!(
+        !engine
+            .user_cancel_precedes_watchdog("no_such_id", Local::now().timestamp_millis())
+            .await,
+        "map 无记录 → 按看门狗改判"
+    );
+}

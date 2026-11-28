@@ -2257,16 +2257,26 @@ impl WorkflowEngine {
         // resume path can detect config drift (1b step 5).
         execution.workflow_hash = Some(workflow.hash());
 
-        // 墙钟保险丝（A 批批 4）：budget>0 时挂看门狗，到点置 timed_out 旗标
-        // 并 fire cancel token——调度器按取消路径收口，run_async 下方把该
-        // 路径的终态落 **Failed + 原因注记**（PLAN 口径「超时 → cancel +
-        // 终态 Failed 带原因注记」），与用户主动取消（Cancelled）区分。
+        // 墙钟保险丝（A 批批 4）：budget>0 时挂看门狗，到点盖**毫秒戳**并
+        // fire cancel token——调度器按取消路径收口，run_async 下方按归属
+        // 裁决落终态：看门狗先于用户取消 → Failed + 原因注记（PLAN 口径
+        // 「超时 → cancel + 终态 Failed 带原因注记」），用户取消先落定 →
+        // 保持 Cancelled（BUG-20261129-009）。
         // 调度返回后立即 abort 看门狗（正常完成的执行不得被迟到触发误杀
         // ——abort 在调度返回后才可能触发竞态 fire，此时 token 仍在
         // cancel_tokens 表内（摘除已挪到终态 insert 之后，BUG-20261120-038），
-        // 迟到 fire 的旗标/信号无消费方，flag 在 abort 后读取只影响
+        // 迟到 fire 的旗标/信号无消费方，戳在 abort 后读取只影响
         // Cancelled 臂的改判；迟到触发但调度已返回 Completed 的工作照实记
         // Completed——工作真做完了，事后改判 Failed 才是造假）。0 = 关。
+        //
+        // 单原子承载「是否 fire + 何时 fire」两事实（BUG-20261129-009）：
+        // 0 = 未 fire，>0 = fire 的 Unix 毫秒戳。双原子（bool 旗标 + 时间戳）
+        // 有传播序窗口——Relaxed 下观察者可能见到旗标 true 而戳仍 0；单原子
+        // Release store（先于 token.cancel）+ 收口 Acquire load 一次读齐。
+        // 戳必须先于 token.cancel 落定：归属裁决按「map 终态时间戳 vs 戳」
+        // 比先后，若 token 先行、戳后落，收口可能读到已取消但戳为 0 的
+        // 幽灵窗口（归属退化为「看门狗没 fire」——用户取消场景恰巧正确，
+        // 看门狗场景漏改判）。store 先行则无此窗口。
         let wall_clock_watchdog = {
             let budget = self
                 .wall_clock_budget_secs
@@ -2274,12 +2284,15 @@ impl WorkflowEngine {
             if budget > 0 {
                 let token = cancel_token.clone();
                 let execution_id = execution.id.clone();
-                let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let flag = timed_out.clone();
+                let fired_at_ms = Arc::new(std::sync::atomic::AtomicI64::new(0));
+                let stamp = fired_at_ms.clone();
                 Some((
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(budget)).await;
-                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        stamp.store(
+                            Local::now().timestamp_millis(),
+                            std::sync::atomic::Ordering::Release,
+                        );
                         warn!(
                             target: "nemesis_workflow::engine",
                             execution_id = %execution_id,
@@ -2288,7 +2301,7 @@ impl WorkflowEngine {
                         );
                         token.cancel();
                     }),
-                    timed_out,
+                    fired_at_ms,
                     budget,
                 ))
             } else {
@@ -2328,11 +2341,11 @@ impl WorkflowEngine {
         if let Some((handle, _, _)) = &wall_clock_watchdog {
             handle.abort();
         }
-        // 看门狗是否已触发（含触发后调度才返回的竞态窗口）：true =
-        // Cancelled 收口改判 Failed + 原因注记。
-        let (wall_clock_timed_out, wall_clock_budget) = match &wall_clock_watchdog {
-            Some((_, flag, budget)) => (flag.load(std::sync::atomic::Ordering::Relaxed), *budget),
-            None => (false, 0),
+        // 看门狗是否已触发 + 触发时刻（含触发后调度才返回的竞态窗口）：
+        // fired_ms > 0 = Cancelled 收口走归属裁决（BUG-20261129-009）。
+        let (wall_clock_fired_ms, wall_clock_budget) = match &wall_clock_watchdog {
+            Some((_, stamp, budget)) => (stamp.load(std::sync::atomic::Ordering::Acquire), *budget),
+            None => (0, 0),
         };
 
         // BUG-20261120-038：token 摘除不得在此（早于终态 insert）——窗口内
@@ -2346,10 +2359,22 @@ impl WorkflowEngine {
         match schedule_result {
             Ok(ScheduleOutcome::Cancelled) => {
                 // 墙钟看门狗触发的取消 → Failed + 原因注记（PLAN 口径
-                // 「超时 → cancel + 终态 Failed 带原因注记」），与用户主动
-                // 取消（Cancelled）区分；下方账本 settle 同样按 failed 带
-                // 原因，审计面可辨。
-                if wall_clock_timed_out {
+                // 「超时 → cancel + 终态 Failed 带原因注记」），用户主动
+                // 取消（cancel_execution 路径）保持 Cancelled。归属裁决
+                // （BUG-20261129-009）：fired_ms 只证明看门狗 fire 过，
+                // 不证明它先于用户取消——cancel_execution 先在写锁内落
+                // map 终态（带 ended_at）再 fire token，其取消动作的
+                // happens-before 链在收口读点闭合（状态写 → token fire →
+                // 调度 unwind → 本收口）；时间戳比先后，平局归用户
+                // （Cancelled 是较少指控性的终态）。裁决结果同步决定
+                // 账本 settle（下方按 execution.state 入账，Cancelled →
+                // "cancelled"），审计面不再有「用户取消被记 failed」的
+                // 误归属。
+                if wall_clock_fired_ms > 0
+                    && !self
+                        .user_cancel_precedes_watchdog(&execution.id, wall_clock_fired_ms)
+                        .await
+                {
                     execution.state = ExecutionState::Failed;
                     execution.error = Some(format!(
                         "wall clock budget exceeded ({}s) — cancelled by watchdog",
@@ -2956,6 +2981,31 @@ impl WorkflowEngine {
         self.event_manager.emit(event).await;
     }
 
+    /// 归属裁决（BUG-20261129-009）：用户取消是否**不晚于**看门狗 fire。
+    /// 读 executions map 里 cancel_execution 落下的终态与 ended_at——
+    /// 单点取消 / estop 批量（cancel_all_running）/ 父级联全部汇入
+    /// cancel_execution，其「map 状态写 → token fire」在写锁内完成，
+    /// 收口读点（调度返回后）对导致本次取消的取消动作有完整的
+    /// happens-before（状态写 → token fire → 调度 unwind → 收口读），
+    /// 读到的 map 形态即取消落定的形态。时间戳比先后：`ended_at <=`
+    /// 看门狗毫秒戳 → true（平局归用户——Cancelled 是较少指控性的
+    /// 终态，cancel_execution 的状态写在 token fire 之前，同毫秒碰撞
+    /// 时用户先的概率占优）。map 无 Cancelled 终态 / 无 ended_at →
+    /// false（按看门狗改判处理）。只读不加状态槽。
+    async fn user_cancel_precedes_watchdog(&self, id: &str, watchdog_fired_ms: i64) -> bool {
+        let execs = self.executions.read().await;
+        let Some(e) = execs.get(id) else {
+            return false;
+        };
+        if e.state != ExecutionState::Cancelled {
+            return false;
+        }
+        match e.ended_at {
+            Some(t) => t.timestamp_millis() <= watchdog_fired_ms,
+            None => false,
+        }
+    }
+
     pub async fn cancel_execution(&self, id: &str) -> Result<Execution, EngineError> {
         let mut execs = self.executions.write().await;
         let execution = execs
@@ -3416,7 +3466,9 @@ impl WorkflowEngine {
 
         // 墙钟保险丝——resume 段同款（批 4）：恢复后再次挂死同样要被兜住；
         // 按调度段计时（human_review 的合法等待不占预算——罚的不是工作流的
-        // 锅）。语义与初始 run 一致：超时取消 → Failed + 原因注记。
+        // 锅）。语义与初始 run 一致：超时取消走收口归属裁决（超时 →
+        // Failed + 原因注记；用户取消先落定 → Cancelled，
+        // BUG-20261129-009）。戳先于 token.cancel 的序约束同 run 段。
         let wall_clock_watchdog = {
             let budget = self
                 .wall_clock_budget_secs
@@ -3424,12 +3476,15 @@ impl WorkflowEngine {
             if budget > 0 {
                 let token = cancel_token.clone();
                 let execution_id = execution.id.clone();
-                let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let flag = timed_out.clone();
+                let fired_at_ms = Arc::new(std::sync::atomic::AtomicI64::new(0));
+                let stamp = fired_at_ms.clone();
                 Some((
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(budget)).await;
-                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        stamp.store(
+                            Local::now().timestamp_millis(),
+                            std::sync::atomic::Ordering::Release,
+                        );
                         warn!(
                             target: "nemesis_workflow::engine",
                             execution_id = %execution_id,
@@ -3438,7 +3493,7 @@ impl WorkflowEngine {
                         );
                         token.cancel();
                     }),
-                    timed_out,
+                    fired_at_ms,
                     budget,
                 ))
             } else {
@@ -3496,17 +3551,22 @@ impl WorkflowEngine {
         if let Some((handle, _, _)) = &wall_clock_watchdog {
             handle.abort();
         }
-        let wall_clock_timed_out = match &wall_clock_watchdog {
-            Some((_, flag, _)) => flag.load(std::sync::atomic::Ordering::Relaxed),
-            None => false,
+        let wall_clock_fired_ms = match &wall_clock_watchdog {
+            Some((_, stamp, _)) => stamp.load(std::sync::atomic::Ordering::Acquire),
+            None => 0,
         };
 
         let now = Local::now();
         match schedule_result {
             Ok(ScheduleOutcome::Cancelled) => {
                 // 看门狗触发的取消 → Failed + 原因注记；用户主动取消
-                // （cancel_execution 路径）保持 Cancelled。
-                if wall_clock_timed_out {
+                // （cancel_execution 路径）保持 Cancelled——归属裁决同
+                // run 段（BUG-20261129-009）。
+                if wall_clock_fired_ms > 0
+                    && !self
+                        .user_cancel_precedes_watchdog(&execution.id, wall_clock_fired_ms)
+                        .await
+                {
                     let budget = match &wall_clock_watchdog {
                         Some((_, _, b)) => *b,
                         None => 0,
