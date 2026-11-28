@@ -164,13 +164,13 @@ impl Tool for McpAdapter {
 
         let args_value = serde_json::to_value(&args_map).unwrap_or(serde_json::json!({}));
 
-        // Execute with timeout.
-        let future = async {
-            let mut guard = self.client.lock().await;
-            guard.call_tool(&self.mcp_tool.name, args_value).await
-        };
-
-        let result = match timeout(self.timeout, future).await {
+        // Execute with timeout. 锁获取在超时窗外（BUG-20261128-028）：同
+        // server 的全部 adapter 共享一把 client 锁，并行批内前序调用逼近
+        // 超时会让后续调用在请求发出前就假报 "timed out"——排队等锁是
+        // 调度语义，不计入执行预算。
+        let mut guard = self.client.lock().await;
+        let call = guard.call_tool(&self.mcp_tool.name, args_value);
+        let result = match timeout(self.timeout, call).await {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => {
                 return ToolResult::err(format!("MCP tool '{}' error: {}", self.mcp_tool.name, e));
@@ -387,12 +387,11 @@ impl Tool for ArcClientAdapter {
 
         let args_value = serde_json::to_value(&args_map).unwrap_or(serde_json::json!({}));
 
-        let future = async {
-            let mut guard = self.client.lock().await;
-            guard.call_tool(&self.mcp_tool.name, args_value).await
-        };
-
-        let result = match timeout(self.timeout, future).await {
+        // 锁获取在超时窗外（BUG-20261128-028，与 McpAdapter::execute 同族）：
+        // 排队等锁是调度语义，不计入执行预算。
+        let mut guard = self.client.lock().await;
+        let call = guard.call_tool(&self.mcp_tool.name, args_value);
+        let result = match timeout(self.timeout, call).await {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => {
                 return ToolResult::err(format!("MCP tool '{}' error: {}", self.mcp_tool.name, e));

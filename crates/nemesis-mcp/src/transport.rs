@@ -421,6 +421,11 @@ impl SharedMockTransport {
         self.inner.lock().await.add_error(method, code, message);
     }
 
+    /// 一次消耗的发送失败脚本（委托内层 [`MockTransport::add_send_failure`]）。
+    pub async fn add_send_failure(&self, method: impl Into<String>, error: TransportError) {
+        self.inner.lock().await.add_send_failure(method, error);
+    }
+
     pub async fn take_requests(&self) -> Vec<RecordedRequest> {
         self.inner.lock().await.take_requests()
     }

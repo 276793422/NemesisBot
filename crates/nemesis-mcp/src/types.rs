@@ -441,6 +441,12 @@ pub struct PromptMessageContent {
     /// Base64-encoded data (for image/resource content).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// Embedded resource (for resource content, MCP spec 形态；
+    /// BUG-20261128-029：此前缺此字段——resource 形态的 prompt 消息
+    /// serde 静默丢键，text/data 双 None 空载。对齐
+    /// [`ToolContent::resource`] / [`EmbeddedResource`] 同族已修先例）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<EmbeddedResource>,
 }
 
 impl PromptMessageContent {
@@ -450,6 +456,7 @@ impl PromptMessageContent {
             content_type: "text".to_string(),
             text: Some(text.into()),
             data: None,
+            resource: None,
         }
     }
 }

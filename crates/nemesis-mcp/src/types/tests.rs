@@ -315,6 +315,7 @@ fn prompt_message_content_image() {
         content_type: "image".to_string(),
         text: None,
         data: Some("base64encodeddata".to_string()),
+        resource: None,
     };
     assert_eq!(content.content_type, "image");
     assert!(content.text.is_none());
@@ -515,6 +516,7 @@ fn prompt_message_content_resource() {
         content_type: "resource".into(),
         text: None,
         data: Some("base64data".into()),
+        resource: None,
     };
     let json = serde_json::to_string(&pmc).unwrap();
     let rt: PromptMessageContent = serde_json::from_str(&json).unwrap();

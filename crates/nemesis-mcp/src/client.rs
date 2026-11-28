@@ -462,6 +462,27 @@ impl McpClient {
         Ok(())
     }
 
+    /// 确保客户端处于已初始化状态；未初始化时重握手一次（BUG-20261128-027）。
+    ///
+    /// 此前各操作方法直接 `return Err(NotInitialized)`，而唯一的恢复臂住在
+    /// send_request 的 session_expired 分支内——`reinitialize()` 先翻 false
+    /// 再握手，一旦握手失败（服务器持续不可达 / 外层 adapter 超时把
+    /// do_initialize future 中途 drop），后续所有调用永久误报
+    /// "client is not initialized" 直到进程重启：误导性错误掩盖真实根因
+    /// （恢复臂的失败原因已被下一次调用丢弃），HTTP 传输可达（挂载 adapter
+    /// 全生命周期持同一 client，不会重发现重装）。
+    ///
+    /// 闸自愈化：任何 leaving `initialized=false` 的路径收敛为「下次调用
+    /// 重握手一次，失败诚实上抛根因」。与 `do_initialize` 的
+    /// already-initialized 拒绝臂兼容——本助手只在 false 时调用。
+    async fn ensure_initialized(&mut self) -> ClientResult<()> {
+        if !self.initialized {
+            tracing::debug!("[McpClient] not initialized; re-running handshake before operation");
+            self.do_initialize().await?;
+        }
+        Ok(())
+    }
+
     /// Send a JSON-RPC notification (no id, no response expected).
     async fn send_notification(
         &mut self,
@@ -575,9 +596,7 @@ impl Client for McpClient {
     }
 
     async fn list_tools(&mut self) -> ClientResult<Vec<McpTool>> {
-        if !self.initialized {
-            return Err(ClientError::NotInitialized);
-        }
+        self.ensure_initialized().await?;
         self.list_page("tools/list", "tools").await
     }
 
@@ -586,9 +605,7 @@ impl Client for McpClient {
         name: &str,
         arguments: serde_json::Value,
     ) -> ClientResult<ToolCallResult> {
-        if !self.initialized {
-            return Err(ClientError::NotInitialized);
-        }
+        self.ensure_initialized().await?;
 
         let params = serde_json::json!({
             "name": name,
@@ -614,16 +631,12 @@ impl Client for McpClient {
     }
 
     async fn list_resources(&mut self) -> ClientResult<Vec<Resource>> {
-        if !self.initialized {
-            return Err(ClientError::NotInitialized);
-        }
+        self.ensure_initialized().await?;
         self.list_page("resources/list", "resources").await
     }
 
     async fn read_resource(&mut self, uri: &str) -> ClientResult<ResourceContent> {
-        if !self.initialized {
-            return Err(ClientError::NotInitialized);
-        }
+        self.ensure_initialized().await?;
 
         let params = serde_json::json!({ "uri": uri });
 
@@ -642,6 +655,20 @@ impl Client for McpClient {
             Some(v) => v,
             None => return Ok(ResourceContent::default()),
         };
+        // BUG-20261128-029：多 content 时让丢弃可观测——ResourceContent 是
+        // 单条目形态，异构 contents 无法合并进单条目；此前恒取 contents[0]
+        // 静默丢余下条目，调用方会把「部分内容」当「全部内容」。
+        if result
+            .get("contents")
+            .and_then(|c| c.as_array())
+            .is_some_and(|a| a.len() > 1)
+        {
+            tracing::warn!(
+                uri = %uri,
+                "[McpClient] resources/read returned multiple content entries; \
+                 only the first is returned (ResourceContent holds a single entry)"
+            );
+        }
         let entry = result
             .get("contents")
             .and_then(|c| c.get(0))
@@ -658,9 +685,7 @@ impl Client for McpClient {
     }
 
     async fn list_prompts(&mut self) -> ClientResult<Vec<Prompt>> {
-        if !self.initialized {
-            return Err(ClientError::NotInitialized);
-        }
+        self.ensure_initialized().await?;
         self.list_page("prompts/list", "prompts").await
     }
 
@@ -669,9 +694,7 @@ impl Client for McpClient {
         name: &str,
         arguments: serde_json::Value,
     ) -> ClientResult<PromptResult> {
-        if !self.initialized {
-            return Err(ClientError::NotInitialized);
-        }
+        self.ensure_initialized().await?;
 
         let params = serde_json::json!({
             "name": name,

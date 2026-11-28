@@ -1686,6 +1686,73 @@ async fn session_expired_recovery_failure_returns_honest_error() {
     );
 }
 
+/// 恢复失败不得永久变砖（BUG-20261128-027）：`reinitialize()` 先翻
+/// initialized=false 再握手，握手失败一次后旧实现的六个操作闸
+/// `return Err(NotInitialized)`（恢复臂只住在 send_request 的
+/// session_expired 分支内，结构性不可达）——后续所有调用永久误报
+/// "client is not initialized" 直到进程重启，误导性错误掩盖真实根因。
+/// 修复后：闸自愈化（ensure_initialized），下次调用重握手一次。
+/// 判别性：旧实现第二次 call_tool 直接 NotInitialized，本测试第二段红。
+#[tokio::test]
+async fn recovery_failure_does_not_permanently_brick_client() {
+    // SharedMockTransport：client 持 clone 把手，本地把手给第二段补脚本
+    // （普通 MockTransport 被 move 进 client，无法中途加脚本）。
+    let mock = crate::transport::SharedMockTransport::new();
+    let init_result = serde_json::json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "serverInfo": { "name": "test-server", "version": "1.0" }
+    });
+    // 第一段：首次握手成功 → tools/call 会话过期 → 恢复重握手失败
+    // （本段无第二次 initialize 脚本）。
+    mock.add_success("initialize", init_result.clone()).await;
+    mock.add_success("notifications/initialized", serde_json::json!({}))
+        .await;
+    mock.add_send_failure(
+        "tools/call",
+        crate::transport::TransportError::session_expired(),
+    )
+    .await;
+
+    let mut client = McpClient::new(Box::new(mock.clone()));
+    client.initialize().await.unwrap();
+
+    let err = client
+        .call_tool("echo", serde_json::json!({}))
+        .await
+        .expect_err("恢复失败必须诚实报错");
+    let err_msg = err.to_string();
+    assert!(
+        matches!(err, crate::client::ClientError::Transport(_)),
+        "第一段必须是诚实传输层错误（恢复根因上抛），实际: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("session recovery also failed"),
+        "错误信息必须携带恢复失败的根因链，实际: {err_msg}"
+    );
+
+    // 第二段：服务器恢复在线（补握手 + tools/call 脚本）→ 旧实现此处
+    // 永久 NotInitialized；修复后自愈（重握手 + 原调用成功）。
+    mock.add_success("initialize", init_result).await;
+    mock.add_success("notifications/initialized", serde_json::json!({}))
+        .await;
+    mock.add_success(
+        "tools/call",
+        serde_json::json!({
+            "content": [{ "type": "text", "text": "healed" }],
+            "isError": false
+        }),
+    )
+    .await;
+
+    let result = client
+        .call_tool("echo", serde_json::json!({}))
+        .await
+        .expect("恢复失败后下次调用必须重握手自愈，而不是永久 NotInitialized");
+    assert!(!result.is_error);
+    assert_eq!(result.content[0].text.as_deref(), Some("healed"));
+}
+
 // =========================================================================
 // BUG-20261117-070：config `timeout` 巨值换算链不加闸——修复前
 // `as_millis() as u64 + 1_000` 裸加法 debug panic（溢出）/ release 静默
