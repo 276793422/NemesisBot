@@ -648,7 +648,7 @@ impl Tool for HostBrowserTool {
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Target browser session id (optional; defaults preferred to a session your chat spawned, falling back to unowned/human ones with an honest note)"
+                    "description": "Target browser session id (optional; defaults prefer a session your chat spawned, then human-started/unowned ones; as a last resort another chat's running instance is taken over and the result carries a note saying so)"
                 },
                 "url": {"type": "string", "description": "navigate: absolute URL to open"},
                 "selector": {"type": "string", "description": "CSS selector (click/type/key/extract_text/wait_for/inspect/get_dom; for key it focuses the element first; snapshot: optional — defaults to body)"},

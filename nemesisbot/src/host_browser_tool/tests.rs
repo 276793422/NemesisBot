@@ -79,6 +79,28 @@ fn schema_declares_sixteen_actions_and_required_action() {
             "frame 描述应含「{needle}」（清单发现机制/子串匹配语义）: {frame_desc}"
         );
     }
+    // BUG-20261128-040 回归锁：session_id 描述是模型唯一可见的缺省挑选策略
+    // 合同，必须与 manager 钉死语义（manager/tests.rs::
+    // pick_default_session_for_prefers_own_then_neutral_then_others）一致：
+    // ① own 优先；② human/无主回落**无注记**（旧文案承诺的注记不存在）；
+    // ③ 第三档他会话实例接管才是唯一带注记臂（旧文案整档漏写）。
+    let sid_desc = props
+        .get("session_id")
+        .and_then(|v| v.get("description"))
+        .and_then(|d| d.as_str())
+        .unwrap_or("");
+    assert!(
+        sid_desc.contains("a session your chat spawned"),
+        "session_id 描述须写明自有会话优先: {sid_desc}"
+    );
+    assert!(
+        !sid_desc.contains("unowned/human ones with an honest note"),
+        "human/无主回落无注记（manager 钉死语义），描述不得承诺注记: {sid_desc}"
+    );
+    assert!(
+        sid_desc.contains("another chat") && sid_desc.contains("note"),
+        "第三档他会话接管是唯一带注记臂，描述必须写明: {sid_desc}"
+    );
     let required = schema
         .get("required")
         .and_then(|r| r.as_array())
