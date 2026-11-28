@@ -1834,3 +1834,272 @@ fn test_bug_20261121026_real_guild_constraint_still_matches_guild_path() {
     );
     assert_eq!(route.agent_id, "guild-agent");
 }
+
+// ---------------------------------------------------------------------------
+// 复合约束 AND 语义（BUG-20261129-013）：config schema 的 BindingMatch
+// 三约束字段（peer / guild_id / team_id）独立可并存——复合绑定上任意一级
+// 命中都必须验证**全部**在场约束。旧实现四个 finder 各只比自己的主维度：
+// find_peer_match 忽略同绑定的 guild/team 约束、find_guild/find_team_match
+// 忽略 peer 约束 ⇒ peer+guild 复合绑定在任意 guild 都命中 peer 级、任意
+// peer 都命中 guild 级——双向过度匹配（消息被错误 agent 接管，matched_by
+// 谎报匹配面）。同文件内 find_account_match/find_channel_wildcard_match
+// 的排除式语义（带约束绑定不得落 account 级）早已是 AND 模型，三个
+// 漏验 finder 与之矛盾。
+// ---------------------------------------------------------------------------
+
+/// 复合绑定测试便捷构造：单绑定 + 双 agent（main 默认 + 绑定 agent，
+/// 避免 pick_agent 把绑定 agent 回退成 default 掩盖命中面断言）。
+fn bug013_resolver(binding: AgentBinding) -> RouteResolver {
+    let agent_id = binding.agent_id.clone();
+    RouteResolver::new(RouteConfig {
+        bindings: vec![binding],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: agent_id,
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    })
+}
+
+/// 复合绑定测试便捷输入：channel=discord/account=default 可覆盖。
+fn bug013_input(
+    peer: Option<(&str, &str)>,
+    parent_peer: Option<(&str, &str)>,
+    guild: Option<&str>,
+    team: Option<&str>,
+) -> RouteInput {
+    let (pk, pi) = match peer {
+        Some((k, i)) => (Some(k.to_string()), Some(i.to_string())),
+        None => (None, None),
+    };
+    let (ppk, ppi) = match parent_peer {
+        Some((k, i)) => (Some(k.to_string()), Some(i.to_string())),
+        None => (None, None),
+    };
+    RouteInput {
+        channel: "discord".to_string(),
+        account_id: "default".to_string(),
+        peer_kind: pk,
+        peer_id: pi,
+        parent_peer_kind: ppk,
+        parent_peer_id: ppi,
+        guild_id: guild.map(str::to_string),
+        team_id: team.map(str::to_string),
+        identity_links: HashMap::new(),
+    }
+}
+
+/// peer+guild 复合绑定：四象限全验证（两维满足命中；任一维漂移/缺席
+/// 都不得命中）。修复前 b/c/d 三臂全红（过度匹配）。
+#[test]
+fn test_bug_20261129013_composite_peer_guild_requires_both() {
+    let resolver = bug013_resolver(AgentBinding {
+        agent_id: "support".to_string(),
+        match_channel: "discord".to_string(),
+        match_account_id: "*".to_string(),
+        match_peer_kind: Some("user".to_string()),
+        match_peer_id: Some("alice".to_string()),
+        match_guild_id: Some("guild-111".to_string()),
+        match_team_id: None,
+    });
+
+    // a) 两维都满足 → 命中 binding.peer（AND 成立的基本面）。
+    let hit = resolver.resolve(&bug013_input(
+        Some(("user", "alice")),
+        None,
+        Some("guild-111"),
+        None,
+    ));
+    assert_eq!(hit.matched_by, "binding.peer", "复合绑定两维都满足必须命中");
+    assert_eq!(hit.agent_id, "support");
+
+    // b) peer 满足、guild 漂移 → 不得命中（旧实现 find_peer_match 忽略
+    //    guild 约束，binding.peer 过度匹配接管别的 guild 的消息）。
+    let miss_guild = resolver.resolve(&bug013_input(
+        Some(("user", "alice")),
+        None,
+        Some("guild-999"),
+        None,
+    ));
+    assert_eq!(
+        miss_guild.matched_by, "default",
+        "guild 约束漂移时 peer 级不得命中（旧实现过度匹配）"
+    );
+    assert_eq!(miss_guild.agent_id, "main");
+
+    // c) peer 不同、guild 满足 → 不得经 guild 级命中（旧实现
+    //    find_guild_match 忽略 peer 约束，binding.guild 过度匹配）。
+    let miss_peer = resolver.resolve(&bug013_input(
+        Some(("user", "bob")),
+        None,
+        Some("guild-111"),
+        None,
+    ));
+    assert_eq!(
+        miss_peer.matched_by, "default",
+        "peer 约束漂移时 guild 级不得命中（旧实现过度匹配）"
+    );
+    assert_eq!(miss_peer.agent_id, "main");
+
+    // d) guild 维度缺席（无 guild 元数据的消息）→ 不得命中（在场约束
+    //    要求输入侧维度在场才可验证）。
+    let miss_absent = resolver.resolve(&bug013_input(Some(("user", "alice")), None, None, None));
+    assert_eq!(
+        miss_absent.matched_by, "default",
+        "guild 维度缺席时复合绑定不得命中"
+    );
+}
+
+/// guild+team 复合绑定：任一维漂移都不得命中（旧实现 P3 忽略 team、
+/// P4 忽略 guild——b/c 两臂分别从 guild 级/team 级漏进来）。
+#[test]
+fn test_bug_20261129013_composite_guild_team_requires_both() {
+    let resolver = bug013_resolver(AgentBinding {
+        agent_id: "helper".to_string(),
+        match_channel: "discord".to_string(),
+        match_account_id: "*".to_string(),
+        match_peer_kind: None,
+        match_peer_id: None,
+        match_guild_id: Some("guild-111".to_string()),
+        match_team_id: Some("team-t1".to_string()),
+    });
+
+    // a) 两维都满足 → 命中 binding.guild（guild 在瀑布中先于 team）。
+    let hit = resolver.resolve(&bug013_input(
+        None,
+        None,
+        Some("guild-111"),
+        Some("team-t1"),
+    ));
+    assert_eq!(hit.matched_by, "binding.guild", "两维满足必须命中");
+    assert_eq!(hit.agent_id, "helper");
+
+    // b) guild 满足、team 漂移 → 不得命中（旧实现 binding.guild 命中）。
+    let miss_team = resolver.resolve(&bug013_input(
+        None,
+        None,
+        Some("guild-111"),
+        Some("team-t2"),
+    ));
+    assert_eq!(
+        miss_team.matched_by, "default",
+        "team 约束漂移时 guild 级不得命中（旧实现过度匹配）"
+    );
+
+    // c) guild 漂移、team 满足 → 不得经 team 级命中（旧实现 P4 忽略
+    //    guild 约束，binding.team 过度匹配）。
+    let miss_guild = resolver.resolve(&bug013_input(
+        None,
+        None,
+        Some("guild-999"),
+        Some("team-t1"),
+    ));
+    assert_eq!(
+        miss_guild.matched_by, "default",
+        "guild 约束漂移时 team 级不得命中（旧实现过度匹配）"
+    );
+
+    // d) team 维度缺席 → 不得命中。
+    let miss_absent = resolver.resolve(&bug013_input(None, None, Some("guild-111"), None));
+    assert_eq!(
+        miss_absent.matched_by, "default",
+        "team 维度缺席时复合绑定不得命中"
+    );
+}
+
+/// 复合绑定经 parent peer 维度满足：peer 约束在 P2 用 parent 值验证、
+/// guild 约束用输入 guild 验证——两维都满足时 binding.peer.parent 命中。
+/// （修复前后行为一致的非红测，锁「复合约束可经 parent 维度满足」形态，
+/// 防修复过宽把合法复合路由砍死。）
+#[test]
+fn test_bug_20261129013_composite_satisfied_via_parent_peer() {
+    let resolver = bug013_resolver(AgentBinding {
+        agent_id: "support".to_string(),
+        match_channel: "discord".to_string(),
+        match_account_id: "*".to_string(),
+        match_peer_kind: Some("user".to_string()),
+        match_peer_id: Some("alice".to_string()),
+        match_guild_id: Some("guild-111".to_string()),
+        match_team_id: None,
+    });
+    // 直接 peer 是 bob（P1 不中），parent peer 是 alice（P2 命中），
+    // guild 也在场且匹配 → binding.peer.parent。
+    let hit = resolver.resolve(&bug013_input(
+        Some(("user", "bob")),
+        Some(("user", "alice")),
+        Some("guild-111"),
+        None,
+    ));
+    assert_eq!(
+        hit.matched_by, "binding.peer.parent",
+        "peer 约束经 parent 维度满足 + guild 验证通过 → 复合命中"
+    );
+    assert_eq!(hit.agent_id, "support");
+
+    // 反证：parent peer 满足但 guild 漂移 → P2 不得命中（P3 的 guild 主
+    // 匹配也须带 peer 验证，同样不得命中）→ default。
+    let miss = resolver.resolve(&bug013_input(
+        Some(("user", "bob")),
+        Some(("user", "alice")),
+        Some("guild-999"),
+        None,
+    ));
+    assert_eq!(
+        miss.matched_by, "default",
+        "parent 维度满足但 guild 漂移 → 复合绑定任何一级都不得命中"
+    );
+}
+
+/// 单约束绑定行为零回归（修复的纯收窄面）：只带 peer 或只带 guild 的
+/// 绑定在各自维度命中照常——AND 验证只对**在场**约束生效，不波及
+/// 单约束绑定的既有瀑布语义。
+#[test]
+fn test_bug_20261129013_single_constraint_bindings_unchanged() {
+    // 只带 peer（无 guild/team）：任意 guild 环境下 peer 命中照常。
+    let peer_only = bug013_resolver(AgentBinding {
+        agent_id: "vip".to_string(),
+        match_channel: "discord".to_string(),
+        match_account_id: "*".to_string(),
+        match_peer_kind: Some("user".to_string()),
+        match_peer_id: Some("alice".to_string()),
+        match_guild_id: None,
+        match_team_id: None,
+    });
+    let hit = peer_only.resolve(&bug013_input(
+        Some(("user", "alice")),
+        None,
+        Some("guild-777"),
+        None,
+    ));
+    assert_eq!(
+        hit.matched_by, "binding.peer",
+        "单 peer 绑定不受 guild 环境影响（零回归锚）"
+    );
+
+    // 只带 guild（无 peer）：任意 peer 环境下 guild 命中照常。
+    let guild_only = bug013_resolver(AgentBinding {
+        agent_id: "guild-agent".to_string(),
+        match_channel: "discord".to_string(),
+        match_account_id: "*".to_string(),
+        match_peer_kind: None,
+        match_peer_id: None,
+        match_guild_id: Some("guild-111".to_string()),
+        match_team_id: None,
+    });
+    let hit2 = guild_only.resolve(&bug013_input(
+        Some(("user", "bob")),
+        None,
+        Some("guild-111"),
+        None,
+    ));
+    assert_eq!(
+        hit2.matched_by, "binding.guild",
+        "单 guild 绑定不受 peer 环境影响（零回归锚）"
+    );
+}

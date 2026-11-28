@@ -135,13 +135,34 @@ impl RouteResolver {
         // Pre-filter bindings to only those matching channel and account
         let bindings = self.filter_bindings(&channel, &account_id);
 
+        // 复合约束验证的输入侧投影（BUG-20261129-013）：维度缺席或 trim 空
+        // = None = 在场约束不可能满足。三个 finder 的次维验证共用。
+        let peer_in = match (&input.peer_kind, &input.peer_id) {
+            (Some(k), Some(i)) => {
+                let (kt, it) = (k.trim(), i.trim());
+                (!kt.is_empty() && !it.is_empty()).then_some((kt, it))
+            }
+            _ => None,
+        };
+        let guild_in = input
+            .guild_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|g| !g.is_empty());
+        let team_in = input
+            .team_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+
         // Priority 1: Peer binding
         if let (Some(kind), Some(id)) = (&input.peer_kind, &input.peer_id) {
             let kind_trimmed = kind.trim();
             let id_trimmed = id.trim();
             if !kind_trimmed.is_empty()
                 && !id_trimmed.is_empty()
-                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed)
+                && let Some(b) =
+                    self.find_peer_match(&bindings, kind_trimmed, id_trimmed, guild_in, team_in)
             {
                 return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.peer");
             }
@@ -153,7 +174,8 @@ impl RouteResolver {
             let id_trimmed = id.trim();
             if !kind_trimmed.is_empty()
                 && !id_trimmed.is_empty()
-                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed)
+                && let Some(b) =
+                    self.find_peer_match(&bindings, kind_trimmed, id_trimmed, guild_in, team_in)
             {
                 return self.build_route(
                     &b.agent_id,
@@ -169,7 +191,7 @@ impl RouteResolver {
         if let Some(guild_id) = &input.guild_id {
             let guild_trimmed = guild_id.trim();
             if !guild_trimmed.is_empty()
-                && let Some(b) = self.find_guild_match(&bindings, guild_trimmed)
+                && let Some(b) = self.find_guild_match(&bindings, guild_trimmed, peer_in, team_in)
             {
                 return self.build_route(
                     &b.agent_id,
@@ -185,7 +207,7 @@ impl RouteResolver {
         if let Some(team_id) = &input.team_id {
             let team_trimmed = team_id.trim();
             if !team_trimmed.is_empty()
-                && let Some(b) = self.find_team_match(&bindings, team_trimmed)
+                && let Some(b) = self.find_team_match(&bindings, team_trimmed, peer_in, guild_in)
             {
                 return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.team");
             }
@@ -226,11 +248,18 @@ impl RouteResolver {
     }
 
     /// Find a binding that matches a peer's kind and ID.
+    ///
+    /// 复合约束 AND 验证（BUG-20261129-013）：peer 主维度命中后，绑定上的
+    /// guild/team 在场约束仍须被输入满足——旧实现主命中即 return，peer+guild
+    /// 复合绑定的 guild 约束被静默忽略（任意 guild 的该 peer 消息都被接管）。
+    /// `guild`/`team` 是输入侧投影（缺席/空 = None = 在场约束不满足）。
     fn find_peer_match<'a>(
         &self,
         bindings: &[&'a AgentBinding],
         peer_kind: &str,
         peer_id: &str,
+        guild: Option<&str>,
+        team: Option<&str>,
     ) -> Option<&'a AgentBinding> {
         for b in bindings {
             let bk = match &b.match_peer_kind {
@@ -250,7 +279,10 @@ impl RouteResolver {
             // 让绑定静默脱靶落到 default agent；且会话键构建本就把 peer_id
             // lowercase（同 peer 不同大小写共享同一会话），CS 绑定区分在
             // 下游不可执行。
-            if bk == peer_kind.to_lowercase() && bid.to_lowercase() == peer_id.to_lowercase() {
+            if bk == peer_kind.to_lowercase()
+                && bid.to_lowercase() == peer_id.to_lowercase()
+                && all_constraints_match(b, Some((peer_kind, peer_id)), guild, team)
+            {
                 return Some(*b);
             }
         }
@@ -258,10 +290,16 @@ impl RouteResolver {
     }
 
     /// Find a binding that matches a guild ID.
+    ///
+    /// 复合约束 AND 验证（BUG-20261129-013）：guild 主维度命中后，绑定上的
+    /// peer/team 在场约束仍须被输入满足——旧实现 guild+peer 复合绑定的
+    /// peer 约束被静默忽略（guild 内任意成员都被接管）。
     fn find_guild_match<'a>(
         &self,
         bindings: &[&'a AgentBinding],
         guild_id: &str,
+        peer: Option<(&str, &str)>,
+        team: Option<&str>,
     ) -> Option<&'a AgentBinding> {
         for b in bindings {
             if let Some(g) = &b.match_guild_id {
@@ -272,6 +310,7 @@ impl RouteResolver {
                     // （Teams/平台 GUID 语义大小写不敏感）此前精确比较让绑定
                     // 静默脱靶。CI 是纯放宽（原精确命中在 CI 下照常命中）。
                     && g.to_lowercase() == guild_id.to_lowercase()
+                    && all_constraints_match(b, peer, Some(guild_id), team)
                 {
                     return Some(*b);
                 }
@@ -281,16 +320,24 @@ impl RouteResolver {
     }
 
     /// Find a binding that matches a team ID.
+    ///
+    /// 复合约束 AND 验证（BUG-20261129-013）：team 主维度命中后，绑定上的
+    /// peer/guild 在场约束仍须被输入满足（与 find_guild_match 同构）。
     fn find_team_match<'a>(
         &self,
         bindings: &[&'a AgentBinding],
         team_id: &str,
+        peer: Option<(&str, &str)>,
+        guild: Option<&str>,
     ) -> Option<&'a AgentBinding> {
         for b in bindings {
             if let Some(t) = &b.match_team_id {
                 let t = t.trim();
                 // CI 同 guild（族延伸）。
-                if !t.is_empty() && t.to_lowercase() == team_id.to_lowercase() {
+                if !t.is_empty()
+                    && t.to_lowercase() == team_id.to_lowercase()
+                    && all_constraints_match(b, peer, guild, Some(team_id))
+                {
                     return Some(*b);
                 }
             }
@@ -424,6 +471,69 @@ impl RouteResolver {
         }
         DEFAULT_AGENT_ID.to_string()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Constraint verification helpers
+// ---------------------------------------------------------------------------
+
+/// 复合约束 AND 验证（BUG-20261129-013）：绑定上**全部在场约束**必须被
+/// 输入满足。config schema（BindingMatch）的 peer/guild_id/team_id 三字段
+/// 独立可并存——复合绑定是「多约束同时成立才路由」的收窄语义，瀑布的
+/// 七个优先级只裁决主维度（谁更具体先试谁），不豁免其余维度。与
+/// find_account_match / find_channel_wildcard_match 的排除式语义（带约束
+/// 绑定不得落 account 级）同一模型。
+///
+/// `peer` = (kind, id) 输入值；`guild`/`team` = 输入值。维度缺席或 trim 空
+/// = None/空 = 该维度在场约束不可能满足（返回 false）。比较与各维度主
+/// 匹配同一 CI 纪律（渠道侧大小写漂移防护），trim 后空约束不命中（归一
+/// 后不应出现，防御臂保留）。
+fn all_constraints_match(
+    b: &AgentBinding,
+    peer: Option<(&str, &str)>,
+    guild: Option<&str>,
+    team: Option<&str>,
+) -> bool {
+    // peer 约束（kind/id 双 Some 为 new() 归一后形态；防御臂对缺席/空不命中）
+    if b.match_peer_kind.is_some() || b.match_peer_id.is_some() {
+        let ok = match peer {
+            Some((k, i)) => {
+                let bk = b
+                    .match_peer_kind
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .to_lowercase();
+                let bid = b
+                    .match_peer_id
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .to_lowercase();
+                !bk.is_empty()
+                    && !bid.is_empty()
+                    && bk == k.to_lowercase()
+                    && bid.to_lowercase() == i.to_lowercase()
+            }
+            None => false,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    if let Some(g) = &b.match_guild_id {
+        let g = g.trim();
+        if g.is_empty() || guild.is_none_or(|a| g.to_lowercase() != a.to_lowercase()) {
+            return false;
+        }
+    }
+    if let Some(t) = &b.match_team_id {
+        let t = t.trim();
+        if t.is_empty() || team.is_none_or(|a| t.to_lowercase() != a.to_lowercase()) {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
