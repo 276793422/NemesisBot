@@ -10,6 +10,13 @@
 #   E. #[cfg(any(test,…))] mod xxx { …带body… } —— 同 D（any 门控；2026-11-06
 #      补齐：正则此前只认 all(，any(test, feature) 形态的带 body mod 漏网
 #      ——实存实例 nemesis-memory lib.rs __test_fixture，已随本次同步迁独立文件）
+#   F. #[cfg(test)] mod xxx { …带body… } 同行形态（mod 头与 cfg 属性同一行；
+#      2026-11-28 BUG-20261128-037 补齐：旧判定只看 cfg 行的**后续**行，
+#      同行带体 mod 全量逃逸；同行分号声明 mod xxx; 仍合法不算违规）
+#   G. cfg(test) 系属性与 mod 头之间的「属性行带尾注释」/「单行块注释」
+#      （2026-11-28 BUG-20261128-037 补齐：旧跳过循环只认纯属性行与纯行注释，
+#      #[allow(dead_code)] // fixture 形态使跳过中断 → 后续 mod 头永不被检查；
+#      跨行属性/跨行块注释仍不覆盖——需真属性解析，留档边界）
 #
 # 合法形态（不算违规）：
 #   - `#[cfg(test)] mod xxx;`（分号结尾的声明，指向独立测试文件）
@@ -109,22 +116,30 @@ for my $f (@files) {
         if ($ln =~ /^\s*#\[\s*(::)?(tokio::)?test(\([^)]*\))?\s*\]/) {
             print "VIOLATION TESTFN $f:", $i + 1, ": ", $ln; $viol = 1;
         }
-        # 形态 A/D/E：cfg(test) 系属性后面紧跟「带 body 的 mod」（all/any 门控均计）
+        # 形态 A/D/E/F：cfg(test) 系属性后面紧跟「带 body 的 mod」（all/any 门控均计）
         if ($ln =~ /^\s*#\[\s*cfg\(\s*((?:all|any)\()?\s*test/) {
+            # 形态 F：mod 头与 cfg 属性同一行（mod 头必须带 { ；分号声明不算）
+            if ($ln =~ /^\s*#\[\s*cfg\(\s*((?:all|any)\()?\s*test.*?\)\]\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*\{/) {
+                print "VIOLATION MODBODY $f:", $i + 1, ": ", $ln; $viol = 1;
+            }
             my $j = $i + 1;
-            # 跳过空行、其他属性行、纯注释行
-            while ($j < @lines && $lines[$j] =~ /^\s*(#\[.*\]|\/\/.*)?\s*$/) { $j++ }
+            # 跳过空行、其他属性行（含行尾行/块注释）、纯行注释行、单行块注释行
+            # ——BUG-20261128-037：旧正则 (#\[.*\]|\/\/.*)? 对「属性行带尾注释」
+            # （#[allow(dead_code)] // fixture）与「单行块注释」不匹配 → 跳过中断
+            # → 后续 mod 头永不被检查（fixture 双形态逃逸实证）；跨行属性/跨行
+            # 块注释仍不覆盖（需真属性解析，留档边界）
+            while ($j < @lines && $lines[$j] =~ /^\s*(#\[.*\]\s*(\/\/.*|\/\*.*\*\/)?|\/\/.*|\/\*.*\*\/)?\s*$/) { $j++ }
         # 形态 A/D/E：cfg(test) 系属性后面紧跟「带 body 的 mod」（all/any 门控
         # 均计；mod 头可见性限定符 pub / pub(crate) / pub(super) / pub(in …)
         # 均计——BUG-20261126-083：旧正则 (pub\s+)? 吃不下 pub(crate) 形态，
         # 三个在库实存违规（security test_capture_sync / chat_dedup 与
         # chat_event_log 的 test_support）全部逃逸 = 门禁假绿，随本次正则加固
         # + 违规迁移一并修复）
-            if ($j < @lines && $lines[$j] =~ /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*\{/) {
+            if ($j < @lines && $lines[$j] =~ /^\s*(?:\/\*.*?\*\/\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*\{/) {
                 print "VIOLATION MODBODY $f:", $j + 1, ": ", $lines[$j]; $viol = 1;
             }
             # mod 名与 { 换行分开的形态
-            elsif ($j < @lines && $lines[$j] =~ /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*$/) {
+            elsif ($j < @lines && $lines[$j] =~ /^\s*(?:\/\*.*?\*\/\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+\w+\s*$/) {
                 my $k = $j + 1;
                 while ($k < @lines && $lines[$k] =~ /^\s*$/) { $k++ }
                 if ($k < @lines && $lines[$k] =~ /^\s*\{/) {
