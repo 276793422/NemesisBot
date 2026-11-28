@@ -181,8 +181,19 @@ pub fn capabilities() -> GeneratorCapabilities {
             node_type: "loop".into(),
             summary: "循环执行子节点（LoopNodeExecutor）".into(),
             required_config: vec!["nodes".into()],
-            optional_config: vec!["mode".into(), "max_iterations".into(), "condition".into()],
-            config_notes: "mode ∈ counter/list；max_iterations 默认 10（上限 100）；nodes 是内联子节点数组；可选 condition 是每轮（首轮后）复查的表达式，false 即停——引用的字段必须真实存在，幻觉字段（如 {{子节点id.passed}}）循环直接 Failed，不可证引用按不成立停止".into(),
+            // BUG-20261129-006：旧表承诺 `mode ∈ counter/list` 且无
+            // items/item_var——与执行器真实词表（counter/foreach，
+            // loop_sub.rs 精确匹配 "foreach"）漂移。生成器照旧表写
+            // `mode:"list"` + items 会静默走 counter 臂空转（items 不
+            // 解析、{{item}} 不绑定、跑满 max_iterations），零报错。
+            optional_config: vec![
+                "mode".into(),
+                "max_iterations".into(),
+                "condition".into(),
+                "items".into(),
+                "item_var".into(),
+            ],
+            config_notes: "mode ∈ counter/foreach：counter（缺省）按 max_iterations 固定次数跑（默认 10，上限 100），绑定 {{i}}/{{loop_index}}；foreach 迭代 items 列表（items 必填：节点引用 {{节点id.field}} 或字面量数组），当前元素绑定 {{item}}/{{item_index}}（item_var 可改元素变量名）；nodes 是内联子节点数组；可选 condition 是每轮（首轮后）复查的表达式，false 即停——引用的字段必须真实存在，幻觉字段（如 {{子节点id.passed}}）循环直接 Failed，不可证引用按不成立停止".into(),
         },
         NodeCapability {
             node_type: "sub_workflow".into(),

@@ -421,3 +421,73 @@ fn no_warnings_for_clean_workflow() {
     );
     assert!(lint(&w).is_empty(), "{:?}", lint(&w));
 }
+
+// BUG-20261129-006：loop mode 词表 lint（执行器只认 counter/foreach，
+// 旧能力表曾承诺 counter/list——非法值静默按 counter 空转，validate
+// 不校验 mode）。三条：非法值预警 / foreach 缺 items 预警 / 合法值零噪声。
+
+#[test]
+fn l_loop_mode_invalid_value_warns() {
+    let w = wf(
+        vec![node(
+            "n1",
+            "loop",
+            serde_json::json!({"mode": "list", "items": "{{up.list}}", "nodes": []}),
+        )],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    let warnings = lint(&w);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("n1")
+            && warnings[0].contains("list")
+            && warnings[0].contains("foreach"),
+        "warning 必须点名节点与非法值并给出合法词表: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn l_loop_mode_foreach_missing_items_warns() {
+    let w = wf(
+        vec![node(
+            "n1",
+            "loop",
+            serde_json::json!({"mode": "foreach", "nodes": []}),
+        )],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    let warnings = lint(&w);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("n1") && warnings[0].contains("items"),
+        "foreach 缺 items 必须预警静默 0 轮空转: {}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn l_loop_mode_valid_values_no_warning() {
+    // counter 缺省 / counter 显式 / foreach 带 items——三种合法形态都
+    // 不产生 mode 相关 warning。
+    for config in [
+        serde_json::json!({"nodes": []}),
+        serde_json::json!({"mode": "counter", "nodes": []}),
+        serde_json::json!({"mode": "foreach", "items": [1, 2], "nodes": []}),
+    ] {
+        let w = wf(
+            vec![node("n1", "loop", config.clone())],
+            vec![TriggerConfig {
+                trigger_type: "cron".into(),
+                config: HashMap::new(),
+            }],
+        );
+        assert!(lint(&w).is_empty(), "config={config}: {:?}", lint(&w));
+    }
+}

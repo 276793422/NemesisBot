@@ -150,3 +150,42 @@ fn honest_failure_and_credential_contract_text_is_pinned() {
     assert!(rules.contains("整值引用"), "{rules}");
     assert!(rules.contains("没有 .output 这个字段"), "{rules}");
 }
+
+/// BUG-20261129-006 防漂移：loop 节点的 mode 词表必须与执行器真实词表
+/// （counter/foreach，loop_sub.rs 精确匹配 "foreach"）一致——旧表曾承诺
+/// `counter/list` 且缺 items/item_var，生成器照表写 `mode:"list"` +
+/// items 会静默按 counter 空转（items 不解析、{{item}} 不绑定），零报错。
+/// 词表面与执行器演化的唯一契约就是这张表（render_for_prompt 进
+/// workflow create 工具提示词），漂移即生成质量缺陷。
+#[test]
+fn loop_capability_mode_vocabulary_matches_executor() {
+    let caps = capabilities();
+    let loop_cap = caps
+        .node_types
+        .iter()
+        .find(|n| n.node_type == "loop")
+        .expect("loop capability");
+
+    assert!(
+        loop_cap.config_notes.contains("counter/foreach"),
+        "mode 词表必须是 counter/foreach（执行器真实词表），got: {:?}",
+        loop_cap.config_notes
+    );
+    assert!(
+        !loop_cap.config_notes.contains("counter/list"),
+        "旧词表 counter/list 是与执行器漂移的假契约，不得回流，got: {:?}",
+        loop_cap.config_notes
+    );
+    for key in ["items", "item_var"] {
+        assert!(
+            loop_cap.optional_config.iter().any(|k| k == key),
+            "optional_config 必须列出 {key}（foreach 形态的必需/可选键），got: {:?}",
+            loop_cap.optional_config
+        );
+        assert!(
+            loop_cap.config_notes.contains(key),
+            "config_notes 必须说明 {key} 的语义，got: {:?}",
+            loop_cap.config_notes
+        );
+    }
+}

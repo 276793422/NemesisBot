@@ -22,6 +22,7 @@ pub fn lint(wf: &Workflow) -> Vec<String> {
                 &mut warnings,
             ),
             "http" => lint_http(node, &mut warnings),
+            "loop" => lint_loop_mode(node, &mut warnings),
             _ => {}
         }
         lint_output_placeholder(node, &mut warnings);
@@ -117,6 +118,35 @@ fn lint_http(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
                 scan(&format!("headers.{k}"), s);
             }
         }
+    }
+}
+
+/// loop 节点 mode 词表检查（BUG-20261129-006 同族运行期面）：执行器只认
+/// `counter`（缺省）/`foreach`（loop_sub.rs 精确匹配），validate 不校验
+/// mode 值——非法值（如旧能力表承诺过的 "list"）静默按 counter 空转：
+/// items 不解析、{{item}} 不绑定、跑满 max_iterations，零报错。另查
+/// foreach 缺 items（resolve 得空列表 → 每次 0 轮「正常完成」的静默空转）。
+fn lint_loop_mode(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
+    let mode = node
+        .config
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("counter");
+    if mode != "counter" && mode != "foreach" {
+        warnings.push(format!(
+            "节点 {}（loop）mode=\"{mode}\" 不被识别——只认 counter（缺省，固定次数跑 \
+             max_iterations）/ foreach（迭代 items 列表）；当前值会按 counter 空转，\
+             配置的 items 不会生效。请改为 counter 或 foreach 并重存",
+            node.id
+        ));
+    }
+    if mode == "foreach" && !node.config.contains_key("items") {
+        warnings.push(format!(
+            "节点 {}（loop）mode=\"foreach\" 但缺少 items——列表解析为空，每次运行 \
+             0 轮即「正常完成」的静默空转。items 填节点引用（如 {{{{上游节点id.字段}}}}）\
+             或字面量数组",
+            node.id
+        ));
     }
 }
 
