@@ -75,6 +75,51 @@ pub fn render_extract_prompt(orientation: &str) -> String {
     EXTRACT_PROMPT_TEMPLATE.replace("{orientation}", orientation)
 }
 
+/// 单遍模板展开（R2318 镜头纪律收口，BUG-20261128-041）：`{orientation}`/
+/// `{hint}` 一次扫描替换，替换值原样插入**不重扫**。顺序双 replace（
+/// `.replace("{orientation}", ..).replace("{hint}", ..)`）会让 orientation
+/// 值里的 `{hint}` 字面量被第二跳二次替换——首轮 hint 为空串时该字面量被
+/// 直接吞掉。R2318 在 `nemesis-skills/src/github_registry.rs::
+/// expand_path_pattern` 建立同款单遍纪律并做过全仓横扫，本位点当时漏网
+/// （orientation 恒为仓库常量故未暴露，属潜在正确性缺陷）。未知 `{...}`
+/// 段（如模板中字面 `{identity, soul, expertise}`、`{units, segments}`）
+/// 原样保留（不猜）；无闭合 `}` 的尾段原样保留。本 crate 零运行时依赖，
+/// 不外引工具 crate，walker 就地内联（与 github_registry 各自持有同族实现）；
+/// pub(crate) 供顶层 tests.rs 直接驱动边界分支（未知段/无闭合）。
+pub(crate) fn expand_author_placeholders(pattern: &str, orientation: &str, hint: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() + orientation.len() + hint.len());
+    let mut rest = pattern;
+    while let Some(brace) = rest.find('{') {
+        out.push_str(&rest[..brace]);
+        let after = &rest[brace..];
+        let Some(name_end) = after.find('}') else {
+            // 无闭合 `}`：花括号起全部原样保留。
+            out.push_str(after);
+            rest = "";
+            break;
+        };
+        let name = &after[1..name_end];
+        let value = match name {
+            "orientation" => Some(orientation),
+            "hint" => Some(hint),
+            _ => None,
+        };
+        match value {
+            Some(v) => {
+                out.push_str(v);
+                rest = &after[name_end + 1..];
+            }
+            None => {
+                // 未知占位符名：原样保留整段 `{name}`。
+                out.push_str(&after[..name_end + 1]);
+                rest = &after[name_end + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// 渲染 author 阶段提示词；`missing_hint` 为上一轮覆盖缺口清单（None/空 =
 /// 首轮，`{hint}` 占位替换为空串）。
 pub fn render_author_prompt(orientation: &str, missing_hint: Option<&str>) -> String {
@@ -82,7 +127,5 @@ pub fn render_author_prompt(orientation: &str, missing_hint: Option<&str>) -> St
         Some(h) if !h.is_empty() => format!("{AUTHOR_MISSING_HINT_PREFIX}{h}"),
         _ => String::new(),
     };
-    AUTHOR_PROMPT_TEMPLATE
-        .replace("{orientation}", orientation)
-        .replace("{hint}", &hint)
+    expand_author_placeholders(AUTHOR_PROMPT_TEMPLATE, orientation, &hint)
 }

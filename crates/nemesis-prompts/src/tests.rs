@@ -707,6 +707,53 @@ fn all_migrated_prompt_constants_are_nonempty() {
 }
 
 // ---------------------------------------------------------------------------
+// persona_gen author 模板单遍展开回归锁（BUG-20261128-041 / R2318 家族纪律
+// 收口）：顺序双 replace 会重扫插入值——orientation 值里的 `{hint}` 字面量
+// 在首轮（hint=""）被第二跳吞掉；单遍行走器下插入值不重扫、未知段保留。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn author_prompt_inserted_values_are_not_rescanned() {
+    // orientation 值携带 `{hint}` 字面量：首轮（None，hint 空串）旧实现
+    // 会被第二跳 `.replace("{hint}", "")` 吞掉；单遍展开后必须原样存活。
+    let first = persona_gen::render_author_prompt("前{hint}后", None);
+    assert!(
+        first.contains("前{hint}后"),
+        "orientation 值里的 {{hint}} 字面量被二次替换吞掉: {first}"
+    );
+
+    // 补齐轮（Some）：hint 在模板占位处正常替换，orientation 里的字面量不受影响。
+    let fixed = persona_gen::render_author_prompt("A{hint}B", Some("u1"));
+    assert!(fixed.contains(&format!("{}u1", persona_gen::AUTHOR_MISSING_HINT_PREFIX)));
+    assert!(
+        fixed.contains("A{hint}B"),
+        "hint 有值轮 orientation 字面量也被吞: {fixed}"
+    );
+
+    // 模板字面单大括号段（{identity, soul, expertise}）恒原样保留。
+    for out in [first, fixed] {
+        assert!(
+            out.contains("{identity, soul, expertise}"),
+            "模板字面大括号段被误改: {out}"
+        );
+    }
+}
+
+#[test]
+fn author_prompt_walker_preserves_unknown_and_unclosed_segments() {
+    // 未知占位符名（含空名）与无闭合 `}` 尾段：原样保留，不猜不删。
+    // 直接驱动内部 walker——模板常量本身不含这些形态，pub 渲染器不可达。
+    let out = persona_gen::expand_author_placeholders("x{nope}y{}z{tail", "O", "H");
+    assert_eq!(out, "x{nope}y{}z{tail");
+
+    // 已知占位符正常插值且互不串扰：orientation 值里的 `{hint}` 只在模板
+    // 占位处替换一次，插入值不重扫。
+    let out =
+        persona_gen::expand_author_placeholders("a{orientation}b{hint}c", "{hint}前缀", "提示");
+    assert_eq!(out, "a{hint}前缀b提示c");
+}
+
+// ---------------------------------------------------------------------------
 // 提示词纪律吸收（a）：拆解判据/依赖语义/UNKNOWN +
 // 两档评审 ANTI-LOOP——防误删关键词快照（本文件惯例：非字节快照）。
 // ---------------------------------------------------------------------------
