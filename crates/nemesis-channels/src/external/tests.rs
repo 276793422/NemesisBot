@@ -689,8 +689,9 @@ async fn test_stop_takes_cancel_tx_after_start() {
 
     // After stop, the cancel_tx sender has been taken out (None).
     assert!(ch.cancel_tx.lock().is_none());
-    // input_child slot stays None (spawn_input_reader never populated it).
-    assert!(ch.input_child.lock().is_none());
+    // BUG-20261128-032：input_child 死字段已删（spawn 后 child 生命周期全程
+    // 在 reader task 内，字段从未被写入过，stop 的 kill 死路径由 cancel 臂
+    // 承担）——残留引用同步清除。
 }
 
 #[tokio::test]
@@ -1297,4 +1298,176 @@ async fn b019_start_stop_maintain_base_running_flag_and_guard_duplicate_start() 
         !ch.base.is_running(),
         "stop 后 trait is_running 必须为 false"
     );
+}
+
+// ===========================================================================
+// BUG-20261128-032 回归锁：input EXE 意外死亡（非零退出码）曾被当正常关停
+// （INFO + break，无重启），通道 input 面静默死亡、后续消息全丢、base running
+// 旗标恒 true（半死状态无人知晓）。实证根因：Windows python 管道 stdout 默认
+// locale 编码，`print("你好")` 直接 UnicodeEncodeError 退出（rc=1）。
+// 修复后语义：非停机期死亡带退避自动重启；连续快速死亡达上限放弃并诚实翻转
+// base running 旗标。两则测试在旧实现上都红（重启永不发生 / 旗标永不翻）。
+// ===========================================================================
+
+/// 哨兵路径（测试进程 pid 隔离，防并行测试互踩）。
+#[cfg(target_os = "windows")]
+fn b032_win_sentinel(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("w4c_b032_{}_{}.flg", tag, std::process::id()))
+}
+
+/// 回归锁 ①：input EXE 第一次异常死亡（打印 ready1 后 exit 1）→ 框架自动
+/// 重启 → 第二次实例打印 ready2 后挂住 → 两条都必须到达 bus。
+/// 旧实现：ready1 后 EOF 即静默 break，ready2 永不到达（旧红）。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn b032_input_exe_abnormal_death_is_restarted_windows() {
+    let sentinel = b032_win_sentinel("restart");
+    let _ = std::fs::remove_file(&sentinel);
+    let in_bat = w4c_write_bat(
+        "w4c_b032_restart_in",
+        format!(
+            "@echo off\r\nif exist \"{}\" goto second\r\necho first> \"{}\"\r\necho ready1\r\nexit /b 1\r\n:second\r\necho ready2\r\nping -n 60 127.0.0.1 >nul\r\n",
+            sentinel.to_string_lossy(),
+            sentinel.to_string_lossy()
+        )
+        .as_str(),
+    );
+    let out_bat = w4c_write_bat("w4c_b032_restart_out", "@echo off\r\n");
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: in_bat.to_string_lossy().to_string(),
+        output_exe: out_bat.to_string_lossy().to_string(),
+        chat_id: "b032-restart".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+        working_dir: None,
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    // 收两条消息（ready1 + ready2），总窗口 20s（含 1s 重启退避 + spawn 开销）。
+    let mut got = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && got.len() < 2 {
+        match rx.try_recv() {
+            Ok(msg) => got.push(msg.content),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(_) => break,
+        }
+    }
+    // 重启自愈后通道全功能旗标保持 true（必须在 stop 前采样：stop 本身会翻 false）。
+    let still_running = ch.base.is_running();
+    let _ = std::fs::remove_file(&in_bat);
+    let _ = std::fs::remove_file(&out_bat);
+    let _ = std::fs::remove_file(&sentinel);
+    ch.stop().await.unwrap();
+
+    assert_eq!(
+        got,
+        vec!["ready1".to_string(), "ready2".to_string()],
+        "input EXE 异常死亡后必须自动重启：ready2 未到达说明重启未发生（BUG-20261128-032）"
+    );
+    assert!(
+        still_running,
+        "重启自愈后 base running 旗标必须保持 true（BUG-20261128-032）"
+    );
+}
+
+/// 回归锁 ②：input EXE 连续秒死（exit 1）达上限 → 放弃重启 + base running
+/// 旗标诚实翻转（manager status 上报可见）；`running` AtomicBool（出站 send
+/// 面）保持 true（半死通道出站语义独立）。旧实现旗标恒 true（旧红）。
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn b032_consecutive_fast_deaths_flip_running_flag_windows() {
+    let in_bat = w4c_write_bat("w4c_b032_giveup_in", "@echo off\r\nexit /b 1\r\n");
+    let out_bat = w4c_write_bat("w4c_b032_giveup_out", "@echo off\r\n");
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: in_bat.to_string_lossy().to_string(),
+        output_exe: out_bat.to_string_lossy().to_string(),
+        chat_id: "b032-giveup".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+        working_dir: None,
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    // 时序预算：5 次 spawn（秒死）+ 4 次退避 1+2+4+8 = 15s + spawn 开销。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if !ch.base.is_running() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let _ = std::fs::remove_file(&in_bat);
+    let _ = std::fs::remove_file(&out_bat);
+
+    assert!(
+        !ch.base.is_running(),
+        "连续快速死亡达上限后 base running 旗标必须翻转（放弃重启的诚实状态）"
+    );
+    assert!(
+        ch.running.load(Ordering::SeqCst),
+        "出站 send 面的 running AtomicBool 与 input 面语义独立，保持 true"
+    );
+    ch.stop().await.unwrap();
+}
+
+/// 回归锁 ① Unix 臂（Linux nightly 兜底）。
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn b032_input_exe_abnormal_death_is_restarted_unix() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let sentinel = tmp.path().join("sentinel.flg");
+    let script = tmp.path().join("input_restart.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ -f \"{}\" ]; then echo ready2; sleep 60; else echo first > \"{}\"; echo ready1; exit 1; fi\n",
+            sentinel.to_string_lossy(),
+            sentinel.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = ExternalConfig {
+        input_exe: script.to_string_lossy().to_string(),
+        output_exe: "true".to_string(),
+        chat_id: "b032-restart".to_string(),
+        sync_to: vec![],
+        allow_from: vec![],
+        working_dir: None,
+    };
+    let ch = ExternalChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+
+    let mut got = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && got.len() < 2 {
+        match rx.try_recv() {
+            Ok(msg) => got.push(msg.content),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(_) => break,
+        }
+    }
+    ch.stop().await.unwrap();
+
+    assert_eq!(
+        got,
+        vec!["ready1".to_string(), "ready2".to_string()],
+        "input EXE 异常死亡后必须自动重启：ready2 未到达说明重启未发生（BUG-20261128-032）"
+    );
+    assert!(ch.base.is_running());
 }
