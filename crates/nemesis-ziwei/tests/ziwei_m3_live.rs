@@ -49,18 +49,31 @@ fn dummy_exe(arch: &str, name: &str) -> Option<PathBuf> {
     }
 }
 
+/// panic 时也杀掉 dummy-draw（测试失败不留孤儿 tick 进程；同 m4 KillGuard
+/// 惯例，构造必须紧随 spawn——覆盖契约行解析 panic）。
+struct KillGuard(Child);
+
+impl Drop for KillGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// spawn dummy-draw 并解析 stdout 契约行（PID= / DATA_ADDR= / MAGIC=）。
-fn spawn_draw(exe: &Path) -> (Child, u32, u64, u32) {
-    let mut child = Command::new(exe)
+fn spawn_draw(exe: &Path) -> (KillGuard, u32, u64, u32) {
+    let child = Command::new(exe)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn dummy-draw");
+    // guard 紧随 spawn：契约行缺失/解析失败 panic 时 Drop 杀进程。
+    let mut guard = KillGuard(child);
     let mut pid = 0u32;
     let mut addr = 0u64;
     let mut magic = 0u32;
-    let stdout = child.stdout.take().expect("stdout");
+    let stdout = guard.0.stdout.take().expect("stdout");
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     loop {
@@ -96,7 +109,7 @@ fn spawn_draw(exe: &Path) -> (Child, u32, u64, u32) {
             }
         }
     });
-    (child, pid, addr, magic)
+    (guard, pid, addr, magic)
 }
 
 fn temp_ws() -> PathBuf {
@@ -428,8 +441,8 @@ async fn m3_wizard_full_flow_on_dummy_draw() {
     };
 
     let ok = done.await;
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
     ev.log_line(&format!("[result] {}", if ok { "PASS" } else { "FAIL" }));
     ev.flush();

@@ -48,20 +48,33 @@ fn dummy_exe(arch: &str, name: &str) -> Option<PathBuf> {
     }
 }
 
-/// spawn dummy 并解析 stdout 契约行 → (child, pid, data_addr)。
+/// panic 时也杀掉 dummy（测试失败不留孤儿 tick 进程；同 m4 KillGuard 惯例，
+/// 构造必须紧随 spawn——覆盖契约行解析 panic）。
+struct KillGuard(Child);
+
+impl Drop for KillGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// spawn dummy 并解析 stdout 契约行 → (guard, pid, data_addr)。
 /// 两种契约行都认：dummy-draw=DATA_ADDR / dummy-monitor=STATE_ADDR。
 #[allow(unused_assignments)]
-fn spawn_dummy(exe: &Path, extra: &[&str]) -> (Child, u32, u64) {
-    let mut child = Command::new(exe)
+fn spawn_dummy(exe: &Path, extra: &[&str]) -> (KillGuard, u32, u64) {
+    let child = Command::new(exe)
         .args(extra)
         .stdout(Stdio::piped())
         .stderr(Stdio::null()) // kill 后 dummy println 炸管的噪音不入测试输出
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn dummy");
+    // guard 紧随 spawn：契约行缺失/解析失败 panic 时 Drop 杀进程。
+    let mut guard = KillGuard(child);
     let mut pid = 0u32;
     let mut data_addr = 0u64;
-    let stdout = child.stdout.take().expect("stdout");
+    let stdout = guard.0.stdout.take().expect("stdout");
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     loop {
@@ -98,7 +111,7 @@ fn spawn_dummy(exe: &Path, extra: &[&str]) -> (Child, u32, u64) {
         }
     });
     assert!(pid != 0 && data_addr != 0, "stdout 契约不完整");
-    (child, pid, data_addr)
+    (guard, pid, data_addr)
 }
 
 /// 构造指向 dummy-draw 的 profile（结构与 dummy 同源）。
@@ -241,11 +254,11 @@ async fn x64_attach_handshake_read_decode_detach() {
     let session = match attach {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            let _ = child.kill();
+            let _ = child.0.kill();
             panic!("attach 失败（注入/握手链路）: {e}");
         }
         Err(_) => {
-            let _ = child.kill();
+            let _ = child.0.kill();
             panic!("attach 超时（60s）");
         }
     };
@@ -306,11 +319,11 @@ async fn x64_attach_handshake_read_decode_detach() {
     // 目标进程应仍然存活（卸载不影响宿主）
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
-        child.try_wait().unwrap().is_none(),
+        child.0.try_wait().unwrap().is_none(),
         "目标进程不应随卸载退出"
     );
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
 
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
@@ -334,8 +347,8 @@ async fn x64_attach_twice_rejected() {
     let _ = session; // 会话保活到测试尾
 
     mgr.detach(&profile.profile_id).await.expect("detach");
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
 
@@ -408,11 +421,11 @@ async fn x86_wow64_attach_read_detach() {
     let session = match attach {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            let _ = child.kill();
+            let _ = child.0.kill();
             panic!("x86 attach 失败（WOW64 链路）: {e}");
         }
         Err(_) => {
-            let _ = child.kill();
+            let _ = child.0.kill();
             panic!("x86 attach 超时（60s）");
         }
     };
@@ -436,11 +449,11 @@ async fn x86_wow64_attach_read_detach() {
     assert_eq!(mgr.session_count(), 0);
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
-        child.try_wait().unwrap().is_none(),
+        child.0.try_wait().unwrap().is_none(),
         "x86 目标不应随卸载退出"
     );
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
 
@@ -524,7 +537,7 @@ async fn soak_10min() {
         "soak 完成：{polls} 次轮询，tick={last_tick}，state={}",
         session.state().as_str()
     );
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }

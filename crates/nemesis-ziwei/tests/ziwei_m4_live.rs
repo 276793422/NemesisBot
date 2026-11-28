@@ -53,7 +53,9 @@ fn dummy_exe(arch: &str, name: &str) -> Option<PathBuf> {
     }
 }
 
-/// panic 时也杀掉 dummy-draw（测试失败不留孤儿 tick 进程）。
+/// panic 时也杀掉 dummy-draw（测试失败不留孤儿 tick 进程）。构造必须
+/// 紧随 spawn——迟于契约行解析构造的话，解析 panic（提前退出/解析失败）
+/// 仍会泄漏孤儿进程。
 struct KillGuard(Child);
 
 impl Drop for KillGuard {
@@ -93,14 +95,16 @@ impl DrawContract {
 /// 线程吞掉。
 fn spawn_draw(exe: &Path) -> (KillGuard, DrawContract) {
     let mut cmd = Command::new(exe);
-    let mut child = cmd
+    let child = cmd
         .arg("--tick-ms=3")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn dummy-draw");
-    let stdout = child.stdout.take().expect("stdout");
+    // guard 紧随 spawn：契约行缺失/解析失败 panic 时 Drop 杀进程。
+    let mut guard = KillGuard(child);
+    let stdout = guard.0.stdout.take().expect("stdout");
     let mut reader = BufReader::new(stdout);
     let mut c = DrawContract::default();
     let grab = |t: &str, prefix: &str, slot: &mut u64| {
@@ -142,7 +146,7 @@ fn spawn_draw(exe: &Path) -> (KillGuard, DrawContract) {
             }
         }
     });
-    (KillGuard(child), c)
+    (guard, c)
 }
 
 fn temp_ws() -> PathBuf {

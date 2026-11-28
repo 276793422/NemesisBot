@@ -46,18 +46,31 @@ fn dummy_exe(arch: &str, name: &str) -> Option<PathBuf> {
     }
 }
 
+/// panic 时也杀掉 dummy-monitor（测试失败不留孤儿 tick 进程；同 m4
+/// KillGuard 惯例，构造必须紧随 spawn——覆盖契约行解析 panic）。
+struct KillGuard(Child);
+
+impl Drop for KillGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// spawn dummy-monitor 并解析 stdout 契约行（PID= / STATE_ADDR=）。
-fn spawn_monitor(exe: &Path, extra: &[&str]) -> (Child, u32, u64) {
-    let mut child = Command::new(exe)
+fn spawn_monitor(exe: &Path, extra: &[&str]) -> (KillGuard, u32, u64) {
+    let child = Command::new(exe)
         .args(extra)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .stdin(Stdio::null())
         .spawn()
         .expect("spawn dummy-monitor");
+    // guard 紧随 spawn：契约行缺失/解析失败 panic 时 Drop 杀进程。
+    let mut guard = KillGuard(child);
     let mut pid = 0u32;
     let mut addr = 0u64;
-    let stdout = child.stdout.take().expect("stdout");
+    let stdout = guard.0.stdout.take().expect("stdout");
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     loop {
@@ -89,7 +102,7 @@ fn spawn_monitor(exe: &Path, extra: &[&str]) -> (Child, u32, u64) {
             }
         }
     });
-    (child, pid, addr)
+    (guard, pid, addr)
 }
 
 /// 场景 B profile：MonitorState poll 工具 + ALERT 报警条件。
@@ -184,11 +197,11 @@ async fn alert_to_sink_with_rate_limit_and_capture() {
     let session = match attach {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            let _ = child.kill();
+            let _ = child.0.kill();
             panic!("attach_and_schedule 失败: {e}");
         }
         Err(_) => {
-            let _ = child.kill();
+            let _ = child.0.kill();
             panic!("attach 超时（60s）");
         }
     };
@@ -263,9 +276,9 @@ async fn alert_to_sink_with_rate_limit_and_capture() {
     mgr.detach("zw-m2-alert").await.expect("detach");
     assert_eq!(mgr.session_count(), 0);
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(child.try_wait().unwrap().is_none(), "目标不应随卸载退出");
-    let _ = child.kill();
-    let _ = child.wait();
+    assert!(child.0.try_wait().unwrap().is_none(), "目标不应随卸载退出");
+    let _ = child.0.kill();
+    let _ = child.0.wait();
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
 
@@ -303,7 +316,7 @@ async fn unresolved_struct_addr_disables_poll_honestly() {
     );
 
     mgr.detach("zw-m2-noaddr").await.expect("detach");
-    let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.0.kill();
+    let _ = child.0.wait();
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
