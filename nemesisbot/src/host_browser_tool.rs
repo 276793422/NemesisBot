@@ -689,38 +689,23 @@ impl Tool for HostBrowserTool {
     /// extract·screenshot·wait + DOM 只读三动作=internal /
     /// run_script=process_exec + **强制人工审批**（卡片展示完整脚本，跳过
     /// 「总是允许」规则表）。
+    ///
+    /// BUG-20261128-047（BUG-20261125-050 同族横向补齐）：畸形面（args 非
+    /// JSON / action 缺失 / action 非四动作且非 WebAction）此前返回 None →
+    /// 静态表无 `host_browser` 条目 → 未知名 fail-closed CRITICAL 误档
+    /// （每调用 WARN + guardian 误档烧 token）。本工具不进静态表兜底
+    /// （`crates/nemesis-security/src/types.rs` 静态表位点在他线 WIP 工作
+    /// 树上，本轮避碰）——兜底投影收在工具侧：畸形面恒投影 NetworkRequest
+    /// （宁过勿漏，8 层管线全跑，execute 侧对畸形 args 诚实报错；语义与
+    /// 静态表补键等价，mail 静态兜底同款「按最危险分支」）。他线提交
+    /// types.rs 后可改为静态表条目 + 删除本兜底（二者行为一致，冗余无害）。
     fn operation_override(&self, args: &str) -> Option<OperationOverride> {
-        let v: serde_json::Value = serde_json::from_str(args).ok()?;
-        let action = v.get("action").and_then(|a| a.as_str())?;
-        let session_level = match action {
-            "spawn" => "network_request",
-            "tabs" | "close_tab" | "close_browser" => "internal",
-            _ => "",
-        };
-        if !session_level.is_empty() {
-            return Some(OperationOverride {
-                op_type: session_level.to_string(),
+        try_operation_override(args).or_else(|| {
+            Some(OperationOverride {
+                op_type: "network_request".to_string(),
                 force_approval: None,
                 receipt_ctx: None,
-            });
-        }
-        if action == "run_script" {
-            let n = v
-                .get("steps")
-                .and_then(|s| s.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            return Some(OperationOverride {
-                op_type: "process_exec".to_string(),
-                force_approval: Some(format!("浏览器脚本执行（{n} 步，逐步过安全闸）：{args}")),
-                receipt_ctx: None,
-            });
-        }
-        let wa: WebAction = serde_json::from_value(v).ok()?;
-        Some(OperationOverride {
-            op_type: action_op_slug(&wa).to_string(),
-            force_approval: None,
-            receipt_ctx: None,
+            })
         })
     }
 
@@ -885,6 +870,46 @@ impl Tool for HostBrowserTool {
             .await?;
         Ok(attach_note(result, note))
     }
+}
+
+/// 正常面投影（会话级四动作早臂 / run_script 强审批 / WebAction 逐动作
+/// slug）；畸形面（args 非 JSON / action 缺失或非字符串 / 非 WebAction 的
+/// 未知名）返回 None（由 trait `operation_override` 的兜底臂接住——
+/// BUG-20261128-047）。主体原样自旧 operation_override，拆出只为让兜底
+/// 收口在 trait 方法一处。
+fn try_operation_override(args: &str) -> Option<OperationOverride> {
+    let v: serde_json::Value = serde_json::from_str(args).ok()?;
+    let action = v.get("action").and_then(|a| a.as_str())?;
+    let session_level = match action {
+        "spawn" => "network_request",
+        "tabs" | "close_tab" | "close_browser" => "internal",
+        _ => "",
+    };
+    if !session_level.is_empty() {
+        return Some(OperationOverride {
+            op_type: session_level.to_string(),
+            force_approval: None,
+            receipt_ctx: None,
+        });
+    }
+    if action == "run_script" {
+        let n = v
+            .get("steps")
+            .and_then(|s| s.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        return Some(OperationOverride {
+            op_type: "process_exec".to_string(),
+            force_approval: Some(format!("浏览器脚本执行（{n} 步，逐步过安全闸）：{args}")),
+            receipt_ctx: None,
+        });
+    }
+    let wa: WebAction = serde_json::from_value(v).ok()?;
+    Some(OperationOverride {
+        op_type: action_op_slug(&wa).to_string(),
+        force_approval: None,
+        receipt_ctx: None,
+    })
 }
 
 #[cfg(test)]

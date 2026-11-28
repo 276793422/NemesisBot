@@ -190,14 +190,19 @@ fn operation_override_run_script_forces_approval_with_script_text() {
 
 #[test]
 fn operation_override_malformed_args_is_none() {
-    // 畸形 args 不投影（dispatch 回落静态表/fail-closed 旧行为）。
+    // BUG-20261128-047 改约：畸形 args 此前不投影（None → 静态表无
+    // host_browser 条目 → 未知名 fail-closed CRITICAL 误档）——现兜底恒
+    // 投影 NetworkRequest（宁过勿漏）。None 语义只剩内部形态：正常面投影
+    // 主体 try_operation_override 对畸形面返回 None、由 trait 方法兜底；
+    // 外部观测面恒 Some（回归锁见 override_malformed_args_fall_back_
+    // to_network_request）。本测试改钉兜底后的统一契约。
     let t = tool_for_screenshot(std::env::temp_dir());
-    assert!(t.operation_override("not json").is_none());
-    assert!(t.operation_override("{}").is_none());
-    assert!(
-        t.operation_override(r#"{"action":"unknown_action"}"#)
-            .is_none()
-    );
+    for args in ["not json", "{}", r#"{"action":"unknown_action"}"#] {
+        let ov = t
+            .operation_override(args)
+            .unwrap_or_else(|| panic!("畸形 args 兜底缺失: {args}"));
+        assert_eq!(ov.op_type, "network_request", "args={args}");
+    }
 }
 
 // --- 会话级四动作（2026-11-28 批）：override 早臂 + 编排拒绝 + 注记合并 ---
@@ -599,4 +604,82 @@ async fn run_script_live_orchestrates_type_click_extract() {
 
     let _ = manager.close_session(&session.id, None).await;
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261128-047 回归锁：operation_override 畸形面兜底
+// ---------------------------------------------------------------------------
+
+#[test]
+fn override_malformed_args_fall_back_to_network_request() {
+    // 畸形面（args 非 JSON / action 缺失 / action 非字符串 / 未知 action）
+    // 此前返回 None → 静态表无 host_browser 条目（BUG-20261125-050 批横向
+    // 补齐漏网）→ 未知名 fail-closed CRITICAL 误档（每调用 WARN + guardian
+    // 误档烧 token）。修复后畸形面恒兜底投影 NetworkRequest（宁过勿漏，
+    // 8 层管线全跑，execute 侧诚实报错）。
+    let t = tool_for_screenshot(std::env::temp_dir());
+
+    // ① args 非 JSON
+    let ov = t.operation_override("not json at all {");
+    let ov = ov.expect("非 JSON args 必须有兜底投影");
+    assert_eq!(ov.op_type, "network_request");
+    assert!(ov.force_approval.is_none(), "兜底臂不带强审批卡");
+
+    // ② JSON 合法但 action 缺失
+    let ov = t
+        .operation_override(r#"{"url":"https://example.com"}"#)
+        .expect("action 缺失必须有兜底投影");
+    assert_eq!(ov.op_type, "network_request");
+
+    // ③ action 是未知名（schema 十六动作之外——模型幻觉产物）
+    let ov = t
+        .operation_override(r#"{"action":"teleport","url":"x"}"#)
+        .expect("未知 action 必须有兜底投影");
+    assert_eq!(ov.op_type, "network_request");
+
+    // ④ action 存在但非字符串（类型错位同样落畸形面）
+    let ov = t
+        .operation_override(r#"{"action":42}"#)
+        .expect("action 非字符串必须有兜底投影");
+    assert_eq!(ov.op_type, "network_request");
+}
+
+#[test]
+fn override_normal_actions_unaffected_by_fallback() {
+    // 正常面不得被兜底劫持：WebAction 逐动作 slug / 会话级四动作早臂 /
+    // run_script 强审批臂全维持原分档（click=network_upload、
+    // extract_text=internal，均非兜底值 network_request——兜底若误劫持
+    // 这两臂即红）。
+    let t = tool_for_screenshot(std::env::temp_dir());
+
+    let ov = t
+        .operation_override(r##"{"action":"click","selector":"#btn"}"##)
+        .expect("click 投影缺失");
+    assert_eq!(ov.op_type, "network_upload");
+    assert!(ov.force_approval.is_none());
+
+    let ov = t
+        .operation_override(r#"{"action":"extract_text"}"#)
+        .expect("extract_text 投影缺失");
+    assert_eq!(ov.op_type, "internal");
+
+    // 会话级四动作早臂（spawn=network_request / tabs=internal）。
+    let ov = t
+        .operation_override(r#"{"action":"spawn"}"#)
+        .expect("spawn 投影缺失");
+    assert_eq!(ov.op_type, "network_request");
+    let ov = t
+        .operation_override(r#"{"action":"tabs"}"#)
+        .expect("tabs 投影缺失");
+    assert_eq!(ov.op_type, "internal");
+
+    // run_script 强审批臂不受兜底影响（process_exec + force_approval 卡）。
+    let ov = t
+        .operation_override(
+            r#"{"action":"run_script","steps":[{"action":"navigate","url":"https://example.com"}]}"#,
+        )
+        .expect("run_script 投影缺失");
+    assert_eq!(ov.op_type, "process_exec");
+    let fa = ov.force_approval.expect("run_script 必须带强审批卡");
+    assert!(fa.contains("浏览器脚本执行"), "强审批卡文案丢失: {fa}");
 }
