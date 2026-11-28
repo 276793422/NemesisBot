@@ -1624,6 +1624,67 @@ async fn test_condition_node_unprovable_leftover_is_false() {
     assert_eq!(result.output["condition_result"], serde_json::json!(false));
 }
 
+/// BUG-20261129-005 回归：**混合引用**条件（A 已完成、B 未执行——菱形
+/// 里被自身条件丢弃的分支）。可证性判定只查解析后**残留**的占位符：
+/// 旧实现查原文全部占位符，A 命中 completed 就把「被丢弃分支」形态
+/// 误升级为执行 Failed；契约（Err 臂 = 「上游输出已完全落定、字段不
+/// 存在可证」）下 B 未落定 → B.x 存在性不可证 → 应落不可证臂
+/// Ok(false)，节点照常 Completed 且条件按不成立。
+#[tokio::test]
+async fn test_condition_node_mixed_refs_unresolved_branch_is_false_not_failed() {
+    let exec = ConditionNodeExecutor;
+    let wf_ctx = wf_ctx_with_completed_condition("check", true);
+    let mut ctx = HashMap::new();
+    ctx.insert(
+        "check.condition_result".to_string(),
+        serde_json::json!(true),
+    );
+    let mut config = HashMap::new();
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{check.condition_result}} == {{dropped_branch.x}}"),
+    );
+    let node = make_node("n1", "condition", config);
+    let result = exec.execute(&node, &ctx, &wf_ctx).await.unwrap();
+    assert_eq!(
+        result.state,
+        ExecutionState::Completed,
+        "混合引用中未落定的分支不可证 → 跳过语义，不得 Failed；error={:?}",
+        result.error
+    );
+    assert_eq!(result.output["condition_result"], serde_json::json!(false));
+}
+
+/// BUG-20261129-005 反向锚：混合引用的**残留段**命中已完成节点（真字段
+/// 幻觉，如同节点引用写错的字段）仍诚实 Failed——修复不得把幻觉放走。
+#[tokio::test]
+async fn test_condition_node_mixed_refs_resolved_head_hallucination_still_fails() {
+    let exec = ConditionNodeExecutor;
+    let wf_ctx = wf_ctx_with_completed_condition("check", true);
+    let mut ctx = HashMap::new();
+    ctx.insert(
+        "check.condition_result".to_string(),
+        serde_json::json!(true),
+    );
+    let mut config = HashMap::new();
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{check.condition_result}} == {{check.nonexistent}}"),
+    );
+    let node = make_node("n1", "condition", config);
+    let result = exec.execute(&node, &ctx, &wf_ctx).await.unwrap();
+    assert_eq!(
+        result.state,
+        ExecutionState::Failed,
+        "残留段命中已完成节点（真幻觉）必须保持诚实 Failed"
+    );
+    let err = result.error.unwrap_or_default();
+    assert!(
+        err.contains("check.nonexistent"),
+        "错误消息应点名残留的条件原文，got: {err}"
+    );
+}
+
 /// BUG-20261126-088 回归：padded 占位符（`{{ check.condition_result }}`，
 /// Go template / Jinja 书写习惯）在**字段拼写完全正确**时也必然解析不到
 /// ——替换语义是裁决过的 exact-match（不 trim）。旧实现错误消息把原因

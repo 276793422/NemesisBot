@@ -905,13 +905,14 @@ fn is_truthy(val: &serde_json::Value) -> bool {
 /// LoopNodeStub）。
 ///
 /// `resolve_prompt_template` 对缺失键保留 `{{…}}` 原样，残留 = 不可解析
-/// 信号，按可证伪性分流：
-/// - `Err`：占位符首段命中 `completed`（已完成节点集合）——上游输出已
-///   完全落定、字段不存在可证 → 调用方必须诚实失败（节点 Failed / 执行
-///   Failed / loop_error），绝不静默选边（缺陷 15 语义，能力表对条件边
-///   明文承诺的行为）；
+/// 信号，按可证伪性分流（可证性判定只查**残留**占位符——BUG-20261129-005）：
+/// - `Err`：残留占位符首段命中 `completed`（已完成节点集合）——该引用的
+///   上游输出已完全落定、字段不存在可证 → 调用方必须诚实失败（节点
+///   Failed / 执行 Failed / loop_error），绝不静默选边（缺陷 15 语义，
+///   能力表对条件边明文承诺的行为）；
 /// - `Ok(false)`：不可证（未定义变量 / 未执行节点——被丢弃分支、可选
-///   触发器入参）→ 整条条件按不成立（保留 s12b 跳过语义）；
+///   触发器入参；含混合引用中未落定的那个引用）→ 整条条件按不成立
+///   （保留 s12b 跳过语义）；
 /// - 无残留 → 正常 [`evaluate_condition`]。
 ///
 /// `site` 是错误消息的位点描述（如 `节点 branch 的条件边`）。注意：上游
@@ -926,7 +927,17 @@ pub(crate) fn eval_condition_with_falsifiability(
 ) -> Result<bool, String> {
     let resolved = resolve_prompt_template(condition, context);
     if resolved.contains("{{") {
-        let provable = placeholder_refs(condition)
+        // BUG-20261129-005：可证性判定只查**残留**占位符（resolved），不是
+        // 原文全部占位符。混合引用（`{{A.val}} == {{B.x}}`，A 已完成、B 未
+        // 执行——Kahn 层级调度的求值时机保证本节点激活时前驱均已终态，B
+        // 不在 completed = 已终态且非完成，即被丢弃分支）时残留只有 B.x：
+        // A 命中 completed 不构成「字段不存在可证」——上方 Err 臂契约
+        // 「上游输出已完全落定」在混合形态不成立（B 的输出永不落定，B.x
+        // 存在性不可证）→ 应落不可证臂 Ok(false) 跳过（s12b 语义），而非
+        // 把「被丢弃分支」形态误升级为执行 Failed。单占位符幻觉 / 全部
+        // 不可证两臂行为不变（resolved 残留 = 原文占位符）。原文形态的
+        // 正确消费面是草稿期 lint（静态扫描，天然无 resolved）。
+        let provable = placeholder_refs(&resolved)
             .iter()
             .any(|(head, _)| completed.contains(head.as_str()));
         if provable {
