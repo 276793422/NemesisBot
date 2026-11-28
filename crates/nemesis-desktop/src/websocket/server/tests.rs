@@ -909,3 +909,84 @@ fn test_server_state_empty() {
     assert!(server.get_connection("anything").is_none());
     assert_eq!(server.get_port(), 0);
 }
+
+// ===========================================================================
+// BUG-20261128-036 回归锁：挂死 sink 上写循环必须有界退出并解楔全队列。
+// 形态同 BUG-20261115-016（onebot）实证结论：duplex(64) + from_raw_socket
+// ——对端永不 poll，4KB 帧写满 64 字节缓冲后在 tokio 层永远 pending；
+// start_paused 虚拟时钟在运行时空闲时自动推进到 WS_WRITE_TIMEOUT_SECS
+// deadline——确定性、真实耗时毫秒级。不走真实 TCP：Windows loopback RLS
+// 快路径内核缓冲可达 MB 级，真实挂起形态跨平台不可复现。
+// ===========================================================================
+
+#[tokio::test(start_paused = true)]
+async fn test_bug036_write_loop_times_out_on_wedged_sink_and_unwedges_queue() {
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    let (peer_io, loop_io) = tokio::io::duplex(64);
+    // 对端永不 poll——写进 loop_io 的帧滞留 tokio 缓冲，写循环永远 pending。
+    let _never_polled =
+        tokio_tungstenite::WebSocketStream::from_raw_socket(peer_io, Role::Server, None).await;
+    let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(loop_io, Role::Client, None).await;
+    let (sink, _read_half) = ws.split();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let conn = Arc::new(tokio::sync::Mutex::new(ChildConnection::new(
+        "wedged".to_string(),
+        "wedged".to_string(),
+        42,
+        tx.clone(),
+    )));
+
+    // 先入队一帧超缓冲载荷（4KB > duplex 64B）：写循环取帧后在 sink 上
+    // 永远 pending——这才是被测的挂起形态（漏发这步则 rx.recv() 因 tx 存活
+    // 永挂，测试自身死锁——首轮实录，onebot 模板有此步）。
+    tx.send("x".repeat(4096)).await.unwrap();
+
+    let started = std::time::Instant::now();
+    WebSocketServer::run_write_loop(rx, sink, conn.clone(), "wedged".to_string()).await;
+
+    // 退出必须置位 closed 旗标：后续 send 快速失败不再入队死连接。
+    assert!(
+        conn.lock().await.is_closed(),
+        "写循环超时退出必须置位 closed 旗标"
+    );
+    // rx 已随任务退出 drop——阻塞中的 send_tx.send().await 立即 Err（解楔证明：
+    // 旧形态读循环回发/call_child 会在此处级联永挂）。
+    assert!(
+        tx.send("after".to_string()).await.is_err(),
+        "写循环退出后 send_tx 必须 Err（rx drop 解楔）"
+    );
+    // 虚拟时钟推进：真实耗时必须远小于超时上限（无真实等待）。
+    assert!(
+        started.elapsed() < Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+        "超时应由虚拟时钟触发，真实耗时 {:?} 异常",
+        started.elapsed()
+    );
+}
+
+/// BUG-20261128-036 回归锁：静默 TCP 对端（连上不发 HTTP upgrade 的本地
+/// 探测/挂死子窗口）必须被 AUTH_TIMEOUT 有界丢弃，不得永久钉住
+/// per-connection 任务。真实 TcpListener/TcpStream（connect 快速完成）+
+/// start_paused 虚拟时钟推进升级段超时。
+#[tokio::test(start_paused = true)]
+async fn test_bug036_silent_tcp_peer_upgrade_is_bounded() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _peer = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (stream, _) = listener.accept().await.unwrap();
+
+    let key_gen = Arc::new(KeyGenerator::new());
+    let state = Arc::new(parking_lot::Mutex::new(ServerState {
+        connections: HashMap::new(),
+        pending: HashMap::new(),
+    }));
+
+    let started = std::time::Instant::now();
+    WebSocketServer::handle_new_connection(stream, state, key_gen).await;
+    assert!(
+        started.elapsed() < AUTH_TIMEOUT,
+        "升级段必须由 AUTH_TIMEOUT 有界，真实耗时 {:?} 异常",
+        started.elapsed()
+    );
+}

@@ -20,14 +20,18 @@ use tracing::{debug, info, warn};
 use crate::websocket::dispatcher::Dispatcher;
 use crate::websocket::protocol::Message;
 
-/// Bounded wait for the authentication message: a
-/// connection that never completes auth is dropped instead of pinning its
-/// spawned per-connection task forever.
+/// Bounded wait for the WebSocket upgrade handshake and the authentication
+/// message (BUG-20261128-036：升级段同样是对端可控 IO——静默 TCP 对端
+/// （连上不发 HTTP upgrade 的本地探测/挂死子窗口）此前会永久钉住其
+/// per-connection 任务)。A connection that never completes auth is dropped
+/// instead of pinning its spawned per-connection task forever.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Bounded wait for per-write and close-handshake sinks (BUG-20261128-015
+/// Bounded wait for each write-frame and the close-handshake sink (BUG-20261128-015
 /// 同族收尾；对齐 nemesis-channels/nemesis-web 家族值 30s——挂死连接上
-/// 收尾路径本身不能挂死）。
+/// 收尾路径本身不能挂死）。BUG-20261128-036：单帧写本体此前无界——挂死
+/// 子窗口（TCP 零窗口）上 tungstenite flush 永远 pending → 写循环楔死 →
+/// mpsc(64) 满 → 读循环回发/call_child 级联永挂；现单帧写同盖本值。
 const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 
 /// Error type for WebSocket server operations.
@@ -87,6 +91,20 @@ impl ChildConnection {
         self.send_tx
             .send(data)
             .await
+            .map_err(|e| format!("send failed: {}", e))
+    }
+
+    /// Try to queue a message without awaiting.
+    ///
+    /// Bounded-queue-full / closed connection = honest immediate failure
+    /// (BUG-20261128-036：读循环回发路径专用——await 形态会在写循环楔死后
+    /// 把读循环一起挂死）。Mirrors [`Self::send`] with `try_send` semantics.
+    pub fn try_send(&self, data: String) -> Result<(), String> {
+        if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("connection closed".to_string());
+        }
+        self.send_tx
+            .try_send(data)
             .map_err(|e| format!("send failed: {}", e))
     }
 
@@ -299,17 +317,26 @@ impl WebSocketServer {
         state: Arc<Mutex<ServerState>>,
         key_gen: Arc<KeyGenerator>,
     ) {
-        // Upgrade to WebSocket
-        let ws_stream = tokio_tungstenite::accept_async(stream).await;
-        let ws_stream = match ws_stream {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("[WebSocketServer] WebSocket upgrade failed: {}", e);
-                return;
-            }
-        };
+        // Upgrade to WebSocket（有界——BUG-20261128-036：升级段是对端可控
+        // IO，静默 TCP 对端不能永久钉住本任务；AUTH_TIMEOUT 与鉴权段同盖）
+        let ws_stream =
+            match tokio::time::timeout(AUTH_TIMEOUT, tokio_tungstenite::accept_async(stream)).await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    warn!("[WebSocketServer] WebSocket upgrade failed: {}", e);
+                    return;
+                }
+                Err(_) => {
+                    warn!(
+                        "[WebSocketServer] WebSocket upgrade timed out ({}s): silent TCP peer",
+                        AUTH_TIMEOUT.as_secs()
+                    );
+                    return;
+                }
+            };
 
-        let (mut ws_write, mut ws_read) = ws_stream.split();
+        let (ws_write, mut ws_read) = ws_stream.split();
 
         // Read the first message for authentication (bounded — see fn docs)
         let auth_msg = match tokio::time::timeout(AUTH_TIMEOUT, ws_read.next()).await {
@@ -351,7 +378,7 @@ impl WebSocketServer {
         );
 
         // Create send/receive channels
-        let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<String>(64);
+        let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<String>(64);
 
         let mut conn = ChildConnection::new(
             validated.key.clone(),
@@ -381,27 +408,12 @@ impl WebSocketServer {
             validated.key, validated.child_id
         );
 
-        // Spawn write loop
+        // Spawn write loop（泛型实现见 run_write_loop——duplex 回归锁用）
         let write_key = validated.key.clone();
-        tokio::spawn(async move {
-            while let Some(data) = msg_rx.recv().await {
-                if let Err(e) = ws_write.send(WsMessage::Text(data.into())).await {
-                    warn!("[WebSocketServer] Write error for {}: {}", write_key, e);
-                    break;
-                }
-            }
-            // BUG-20261128-015 同族：收尾 sink.close() 驱动 tungstenite 把
-            // close 回帧冲出（客户端主动 Close 场景回帧 auto-queue 在
-            // additional 里，flush 才能写出），对端才能完成 RFC 6455 §5.5.1
-            // 双向握手而非收到 TCP reset。有界写纪律同 BUG-20261115-016
-            // （挂死连接上收尾不能挂死）。
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
-                ws_write.close(),
-            )
-            .await;
-            debug!("[WebSocketServer] Write loop ended for {}", write_key);
-        });
+        let write_conn = conn.clone();
+        tokio::spawn(Self::run_write_loop(
+            msg_rx, ws_write, write_conn, write_key,
+        ));
 
         // Spawn read loop
         let read_key = validated.key.clone();
@@ -454,8 +466,20 @@ impl WebSocketServer {
                                 {
                                     let resp_str =
                                         serde_json::to_string(&resp_msg).unwrap_or_default();
+                                    // BUG-20261128-036：回发必须 try_send（队
+                                    // 列满/已关=诚实弃帧）——旧形态
+                                    // guard.send().await 无界：写循环楔死后
+                                    // mpsc 满，读循环挂在此处且持 conn 锁 →
+                                    // 本连接消息处理与清理全部停摆，
+                                    // call_child 级联永挂。对齐 client.rs
+                                    // handle_message 同位点形态。
                                     let guard = conn_arc.lock().await;
-                                    let _ = guard.send(resp_str).await;
+                                    if let Err(e) = guard.try_send(resp_str) {
+                                        warn!(
+                                            "[WebSocketServer] Failed to queue dispatch response for {}: {}",
+                                            read_key, e
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -483,6 +507,59 @@ impl WebSocketServer {
 
             debug!("[WebSocketServer] Connection removed: {}", read_key);
         });
+    }
+
+    /// Per-connection write loop.
+    ///
+    /// 单帧写必须 bounded（BUG-20261128-036）：挂死子窗口（TCP 零窗口）上
+    /// tungstenite flush 永远 pending——旧形态无界 `sink.send().await` 会把
+    /// 本任务楔死，mpsc(64) 填满后读循环回发与 `call_child` 的 send 全部级联
+    /// 永挂 + pending 条目泄漏。超时/失败同走 break：任务退出即 drop msg_rx，
+    /// 所有阻塞中的 `send_tx.send().await` 立刻 Err 解楔；随后置位 closed
+    /// 旗标让后续 `ChildConnection::send` 快速失败「connection closed」。
+    /// 有界写纪律同 BUG-20261115-016 / BUG-20261128-015（本文件 close 臂
+    /// 早已引用，单帧写本体此前漏盖）。泛型 S 服务生产 tungstenite sink 与
+    /// duplex 回归锁（同 BUG-20261115-016 §四：真实挂起形态 Windows loopback
+    /// 内核缓冲不可复现，必须 tokio 层确定性挂起）。
+    ///
+    /// 收尾 sink.close() 驱动 tungstenite 把 close 回帧冲出（客户端主动
+    /// Close 场景回帧 auto-queue 在 additional 里，flush 才能写出），对端才能
+    /// 完成 RFC 6455 §5.5.1 双向握手而非收到 TCP reset（BUG-20261128-015）。
+    async fn run_write_loop<S>(
+        mut msg_rx: tokio::sync::mpsc::Receiver<String>,
+        mut sink: S,
+        conn: Arc<tokio::sync::Mutex<ChildConnection>>,
+        key: String,
+    ) where
+        S: futures_util::Sink<WsMessage> + Unpin,
+        S::Error: std::fmt::Display,
+    {
+        while let Some(data) = msg_rx.recv().await {
+            let sent = tokio::time::timeout(
+                Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                sink.send(WsMessage::Text(data.into())),
+            )
+            .await;
+            match sent {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    warn!("[WebSocketServer] Write error for {}: {}", key, e);
+                    break;
+                }
+                Err(_) => {
+                    warn!(
+                        "[WebSocketServer] Write timeout ({}s) for {}: connection suspected hung, dropping queued writes",
+                        WS_WRITE_TIMEOUT_SECS, key
+                    );
+                    break;
+                }
+            }
+        }
+        // 退出前置位 closed：后续 send/try_send 快速失败，不再入队死连接。
+        conn.lock().await.close();
+        let _ =
+            tokio::time::timeout(Duration::from_secs(WS_WRITE_TIMEOUT_SECS), sink.close()).await;
+        debug!("[WebSocketServer] Write loop ended for {}", key);
     }
 
     /// Stop the WebSocket server.
@@ -537,6 +614,11 @@ impl WebSocketServer {
     ///
     /// Registers a pending channel, sends the request, and awaits the
     /// response with a 30-second timeout.
+    ///
+    /// BUG-20261128-036：发送段的排队 `send().await` 由写循环的有界单帧写
+    /// 背书——挂死连接上写循环超时退出（≤`WS_WRITE_TIMEOUT_SECS`）会置位
+    /// closed 并 drop 队列接收端，阻塞中的排队 send 立刻 Err（pending 随即
+    /// 清理）；本函数不再有裸无界 await。
     pub async fn call_child(
         &self,
         child_id: &str,

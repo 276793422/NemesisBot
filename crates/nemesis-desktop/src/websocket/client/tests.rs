@@ -999,3 +999,43 @@ fn test_send_raw_rejects_when_no_send_channel() {
     let err = client.send_raw(&msg).unwrap_err();
     assert_eq!(err, "no send channel");
 }
+
+// ===========================================================================
+// BUG-20261128-036 回归锁：挂死 sink 上客户端写循环必须有界退出
+// （形态同 server 侧锁：duplex(64) + from_raw_socket + start_paused；
+// 对端永不 poll，4KB 帧在 tokio 层永远 pending，虚拟时钟推进超时）。
+// ===========================================================================
+
+#[tokio::test(start_paused = true)]
+async fn test_bug036_client_write_loop_times_out_on_wedged_sink() {
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    let (peer_io, loop_io) = tokio::io::duplex(64);
+    let _never_polled =
+        tokio_tungstenite::WebSocketStream::from_raw_socket(peer_io, Role::Server, None).await;
+    let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(loop_io, Role::Client, None).await;
+    let (sink, _read_half) = ws.split();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+    // 先入队一帧超缓冲载荷（4KB > duplex 64B）：写循环取帧后在 sink 上
+    // 永远 pending——这才是被测的挂起形态（漏发这步则 select 两臂都永挂，
+    // 测试自身死锁——首轮实录，onebot 模板有此步）。
+    tx.send("x".repeat(4096)).await.unwrap();
+
+    let started = std::time::Instant::now();
+    WebSocketClient::write_loop(rx, sink, shutdown_rx, "wedged").await;
+
+    // rx 已随任务退出 drop——出站 try_send 立刻失败（不再无声吞进死队列）。
+    assert!(
+        tx.try_send("after".to_string()).is_err(),
+        "写循环退出后 rx 已 drop，try_send 必须立刻失败"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+        "超时应由虚拟时钟触发，真实耗时 {:?} 异常",
+        started.elapsed()
+    );
+    drop(shutdown_tx);
+}

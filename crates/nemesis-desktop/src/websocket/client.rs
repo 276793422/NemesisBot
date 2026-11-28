@@ -19,6 +19,14 @@ use crate::websocket::protocol::Message;
 /// Type alias for the WebSocket stream used in read/write tasks.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// Bounded wait for each write-frame (BUG-20261128-036 同族收编，对齐
+/// server.rs / nemesis-channels 家族值 30s)：挂死父端（TCP 零窗口）上
+/// tungstenite flush 永远 pending——写任务楔死后 rx 永不 drop，出站队列
+/// try_send 全部失败、请求全部空转 30s 超时。单帧写有界后任务退出 → rx
+/// drop → 出站侧快速失败。注意 select! 的 shutdown 臂无法抢占已进入臂体
+/// 的 await——close() 对楔死写任务的生效路径就是本超时（而非 shutdown）。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
+
 /// Shared state for the WebSocket client that can be sent across tasks.
 struct ClientState {
     /// Connected flag.
@@ -174,26 +182,43 @@ impl WebSocketClient {
     }
 
     /// Background write loop - sends outgoing messages through the WebSocket.
-    async fn write_loop(
+    ///
+    /// 单帧写有界（BUG-20261128-036，泛型 S 服务生产 sink 与 duplex 回归锁）：
+    /// 超时/失败同走 break——任务退出 drop msg_rx，出站 `try_send`/`send`
+    /// 立刻失败，不再把消息无声吞进死队列。
+    async fn write_loop<S>(
         mut msg_rx: tokio::sync::mpsc::Receiver<String>,
-        mut write: futures_util::stream::SplitSink<
-            WsStream,
-            tokio_tungstenite::tungstenite::Message,
-        >,
+        mut write: S,
         mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
         id: &str,
-    ) {
+    ) where
+        S: futures_util::Sink<tokio_tungstenite::tungstenite::Message> + Unpin,
+        S::Error: std::fmt::Display,
+    {
         loop {
             tokio::select! {
                 msg = msg_rx.recv() => {
                     match msg {
                         Some(data) => {
-                            if let Err(e) = write
-                                .send(tokio_tungstenite::tungstenite::Message::Text(data.into()))
-                                .await
-                            {
-                                warn!("[WebSocketClient] {}: Write error: {}", id, e);
-                                break;
+                            let sent = tokio::time::timeout(
+                                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                write
+                                    .send(tokio_tungstenite::tungstenite::Message::Text(data.into())),
+                            )
+                            .await;
+                            match sent {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    warn!("[WebSocketClient] {}: Write error: {}", id, e);
+                                    break;
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        "[WebSocketClient] {}: Write timeout ({}s): peer suspected hung, dropping queued writes",
+                                        id, WS_WRITE_TIMEOUT_SECS
+                                    );
+                                    break;
+                                }
                             }
                         }
                         None => {
