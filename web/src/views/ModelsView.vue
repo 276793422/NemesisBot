@@ -549,13 +549,14 @@ function dirtyFields(m: Model): string[] {
 }
 
 /** 生效方式标注（对码结论）：tier/effort 走 agent 每轮 LLM 开头的
- * check_config_reload 重读（改完即时生效）；size/real_name 参与 auto 档
- * 检测、同链路生效；显式 tier 下 size/real_name 不参与。 */
+ * check_config_reload 重读（改完即时生效）；auto/缺席 tier 统一直落
+ * big 档（2026-11-28 检测退役——size/real_name 不再参与档位解析，纯
+ * 展示元数据）。 */
 const FIELD_EFFECT: Record<string, string> = {
   model_tier: '即时生效（下一次 LLM 轮自动重读配置）',
   reasoning_effort: '即时生效（下次 LLM 调用前重读配置）',
-  model_size_b: 'auto 档下即时生效（参与能力自动检测）',
-  real_name: 'auto 档下即时生效（别名识别真名）',
+  model_size_b: '纯展示元数据（2026-11-28 检测退役后不参与档位解析；降档用 tier 下拉）',
+  real_name: '纯展示元数据（不参与档位解析）',
   context_window: '保存后生效（上下文预算依据）',
   compact_context_tokens: '即时生效（每轮压缩检查前重读配置）；留空 = 自动（窗口 × 75%）',
   protocol: '改默认模型立即生效（自动热切）；其他模型设为默认时生效；或重启后生效',
@@ -865,7 +866,7 @@ onMounted(() => {
               <span class="settings-key">协议</span>
               <span class="settings-value">{{ isImageModel(m) ? '图像生成（generate_image 专用）' : (m.protocol || '自动识别') }}</span>
               <span class="settings-key">能力档</span>
-              <span class="settings-value">{{ m.model_tier || 'auto（自动检测）' }}</span>
+              <span class="settings-value">{{ m.model_tier || 'auto（默认 big 档）' }}</span>
               <span class="settings-key">工具健康<template v-if="toolHealthDays"> · 近{{ toolHealthDays }}天</template></span>
               <span class="settings-value">
                 <template v-if="healthByName[m.model_name]">
@@ -912,7 +913,7 @@ onMounted(() => {
               <div class="attr-field">
                 <label class="form-label">能力档 tier</label>
                 <select class="form-input" v-model="attrDrafts[m.model_name].tier">
-                  <option value="auto">auto（自动检测）</option>
+                  <option value="auto">auto（默认 big 档 · 检测已退役）</option>
                   <option value="mini">mini（小模型 · 核心 13 工具）</option>
                   <option value="normal">normal（中模型 · ~26 工具）</option>
                   <option value="big">big（大模型 · 全量 42 工具）</option>

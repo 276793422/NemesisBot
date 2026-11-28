@@ -1000,18 +1000,51 @@ fn test_scan_correction_without_context_and_without_reply() {
 }
 
 #[test]
-fn test_scan_correction_skips_injected_and_plain() {
-    // 注入行（system_notice / steer）不触发；普通指令与短应答（无纠正词）不触发
+fn test_scan_correction_steer_triggers_notice_does_not() {
+    // BUG-20261128-042：steer 行 content 就是用户原话（chat_log 字段注释：
+    // role 仍 "user"，steer 标记只是 rewind/fork 轮边界语义）——运行中实时
+    // 纠偏（默认并发模式即 steer）是自由文本纠正主通道，粗筛必须纳入；
+    // system_notice 注入行内容是系统文本，照旧排除。steer 行不当任务目标
+    // （goal 只认轮首行）。
     let steer_row = serde_json::json!({
         "role": "user",
-        "content": "不对，你要重新想（steer 注入行不触发）",
+        "content": "不对，你要重新想，我说的是真机测试。",
         "timestamp": "2026-11-24T10:01:00+08:00",
         "steer": true,
     })
     .to_string();
     let rows = [
         system_notice_row("（不对——system_notice 注入行不触发）"),
+        plain_assistant_row("我正在用模拟器测试接口。"),
         steer_row,
+        user_row("请把测试跑完并汇总结果给我。"),
+        plain_assistant_row("好的，改用真机重测接口。"),
+    ];
+    let drafts = scan_chat_log("s", None, &log_bytes(&rows));
+    assert_eq!(drafts.len(), 1, "仅 steer 纠正触发；system_notice 不触发");
+    let d = &drafts[0];
+    assert_eq!(d.kind, CandidateKind::Correction);
+    assert!(
+        d.ask.contains("模拟器测试"),
+        "ask = steer 前最近 assistant 尾段: {}",
+        d.ask
+    );
+    assert_eq!(
+        d.goal, "请把测试跑完并汇总结果给我。",
+        "steer 行不当任务目标，goal = 首条轮首 user 行"
+    );
+    assert!(
+        d.result.contains("真机重测"),
+        "result = 纠正行之后第一条 assistant 尾段: {}",
+        d.result
+    );
+}
+
+#[test]
+fn test_scan_correction_skips_notice_and_plain() {
+    // system_notice 注入行不触发；普通指令与短应答（无纠正词）不触发
+    let rows = [
+        system_notice_row("（不对——system_notice 注入行不触发）"),
         user_row("请把测试跑完并汇总结果给我。"),
         user_row("好的，继续。"),
         plain_assistant_row("好的。"),

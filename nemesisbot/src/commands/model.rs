@@ -67,7 +67,7 @@ pub enum ModelAction {
     /// Show default model
     Default,
     /// Set the capability tier for a model (auto/mini/normal/big).
-    /// Overrides auto-detection — "user knows best".
+    /// mini/normal/big 采信；auto = 默认 big 档（2026-11-28 检测退役）。
     SetTier {
         /// Model name (alias or vendor/model)
         name: String,
@@ -75,14 +75,14 @@ pub enum ModelAction {
         tier: String,
     },
     /// Set the parameter size for a model (e.g. 30B, 70B, 120B).
-    /// Refines auto tier detection when the alias is opaque.
+    /// Display metadata only (2026-11-28 tier detection retired; downgrade via set-tier).
     SetSize {
         name: String,
         /// Size with optional B suffix, e.g. "30B", "9b", "120"
         size: String,
     },
     /// Set the real model name (for opaque aliases like "astron-code-latest").
-    /// Refines auto tier detection.
+    /// Display metadata only (2026-11-28 tier detection retired).
     SetRealName {
         name: String,
         /// Real model name, e.g. "Qwen3-30B-A3B"
@@ -422,9 +422,10 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 );
             }
 
-            // a (small-model-tool-robustness): tag with an auto-detect
-            // tier. Resolved at runtime from the model name (and any real_name /
-            // model_size_b the user adds later). Override with `model set-tier`.
+            // a (small-model-tool-robustness): tag with the default tier.
+            // 2026-11-28 检测退役：auto 在运行时统一直落 big（名字/
+            // real_name/model_size_b 不再参与解析）；小模型显式降档走
+            // `model set-tier`。
             // F-I：只对**新增**条目写 auto——重复 add 由下方合并保留旧 tier。
             if !already_exists {
                 entry["model_tier"] = serde_json::Value::String("auto".to_string());

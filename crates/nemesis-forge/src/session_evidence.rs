@@ -21,7 +21,9 @@
 //!   = 已作答；`No answer:`（超时/estop）= 用户没回，不是候选——v1 只抓
 //!   卡片作答形态（§11.3 审批卡形态同样不抓）。
 //! 2. **文本纠正**（v2，真实数据实测后补——该用户从不答卡片，纠正全走
-//!    自由文本，v1 形状 0/3 触发）：**非注入 user 行命中纠正词表**。
+//!    自由文本，v1 形状 0/3 触发）：**user 行命中纠正词表**（system_notice
+//!    注入行排除；steer 行纳入——content 就是用户原话，运行中实时纠偏的
+//!    主通道；BUG-20261128-042）。
 //!    ask = 此前最近一条 assistant 内容尾段（被纠正的上下文），reply =
 //!    用户纠正原文，result = 纠正行之后第一条 assistant 尾段（纠正后回
 //!    应；缺席诚实空串）。词表只管粗筛（宁滥勿缺——语义真假归对话期
@@ -29,8 +31,9 @@
 //! - 会话身份 = `logs/session_logs/*.jsonl` 文件名消毒键（chat_log 寻址
 //!   唯一可恢复身份；`sanitize_path_segment` 有损不可逆，原始键不落盘
 //!   也不需要——目标摘要已给对话引擎语义锚点）。
-//! - 任务目标摘要 = 会话首条**真实** user 行（跳过 system_notice/steer
-//!   注入行——它们 role=user 但不是用户说的话）。
+//! - 任务目标摘要 = 会话首条**轮首** user 行（跳过 system_notice 注入行
+//!   与 steer 插话行——steer 的 content 是用户原话但属轮中间插话，不当
+//!   任务目标；纠正粗筛不受此排除影响）。
 //!
 //! 消费模型：`candidates.jsonl` append-only 不删行；消费按**按消费者游
 //! 标**记账（`consumed.json`）——同一候选行可被画像 sweep 与学习对话各
@@ -402,15 +405,23 @@ pub fn scan_chat_log(session_key: &str, scope: Option<&str>, bytes: &[u8]) -> Ve
         let content = row["content"].as_str().unwrap_or("");
         let ts = row["timestamp"].as_str().unwrap_or("");
         if role == "user" {
-            // 注入行（system_notice / steer）不是用户说的话：既不当目标
-            // 也不进纠正粗筛。
-            let is_injected = row.get("system_notice").is_some()
-                || row.get("steer").and_then(|v| v.as_bool()).unwrap_or(false);
-            if is_injected || content.trim().is_empty() {
+            // 两种注入标记语义不同，按消费形状拆开（BUG-20261128-042）：
+            // - system_notice：内容是系统注入文本，**不是用户说的话**——
+            //   既不当目标也不进纠正粗筛；
+            // - steer：content 就是用户原话（chat_log 字段注释：role 仍
+            //   "user"、steer 标记只是轮边界语义——rewind/fork 据此跳过），
+            //   **不是**「非用户内容」标记。任务目标只认轮首行（steer 是
+            //   轮中间插话，不当目标），但纠正粗筛必须纳入——用户在 agent
+            //   运行中实时纠偏（默认并发模式就是 steer）是自由文本纠正的
+            //   主通道，排除它 = v2 形状系统性漏扫（本形状自声明成本模型：
+            //   漏一条真实纠正 = 信号永久丢失）。
+            let is_notice = row.get("system_notice").is_some();
+            let is_steer = row.get("steer").and_then(|v| v.as_bool()).unwrap_or(false);
+            if is_notice || content.trim().is_empty() {
                 continue;
             }
-            // 首条真实 user 行 = 任务目标摘要
-            if goal.is_empty() {
+            // 首条真实轮首 user 行 = 任务目标摘要（steer 行不当目标）
+            if !is_steer && goal.is_empty() {
                 goal = truncate_chars(content, GOAL_MAX_CHARS);
             }
             // v2 形状粗筛：纠正词命中 → 种子（ask = 此前最近 assistant 尾段；
