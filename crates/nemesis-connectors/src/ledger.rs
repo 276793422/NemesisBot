@@ -171,7 +171,27 @@ impl BrokerLedger {
         if self.cash < cost {
             return Err(format!("模拟资金不足：需 {cost:.2}，可用 {:.2}", self.cash));
         }
-        self.cash = r2(self.cash - cost);
+        // 二阶 r2 溢出闸（BUG-20261128-044）：一阶闸只保订单金额（cost 的
+        // r2 输出）有限；现金/均价的**累计形态** r2(现值±金额) 与
+        // r2(总成本/数量) 的 ×100 放大可对合法有限输入二次溢出（如现金
+        // 1.8e307 的存量文件扣 1 元 → (1.8e307×100)=inf）。inf 入账 =
+        // 双重破坏：资金闸 `cash < cost` 永假（BUG-20261121-030 注释点名的
+        // 毒态从第二条路到达）+ serde_json 把非有限 f64 序列化为 null =
+        // 账本文件砖化（下次 load 诚实报损坏）。先算后写：任一累计值非
+        // 有限 → 拒单不动账。
+        let new_cash = r2(self.cash - cost);
+        let (pos_qty, pos_avg) = match self.positions.get(symbol) {
+            Some(p) => (p.qty, p.avg_cost),
+            None => (0.0, 0.0),
+        };
+        let new_qty = pos_qty + qty;
+        let new_avg = r2((pos_avg * pos_qty + cost) / new_qty);
+        if !new_cash.is_finite() || !new_avg.is_finite() {
+            return Err(format!(
+                "累计值溢出（现金 → {new_cash:e}，均价 → {new_avg:e}），已拒单不动账"
+            ));
+        }
+        self.cash = new_cash;
         let pos = self
             .positions
             .entry(symbol.to_string())
@@ -180,9 +200,8 @@ impl BrokerLedger {
                 qty: 0.0,
                 avg_cost: 0.0,
             });
-        let total_cost = pos.avg_cost * pos.qty + cost;
-        pos.qty += qty;
-        pos.avg_cost = r2(total_cost / pos.qty);
+        pos.qty = new_qty;
+        pos.avg_cost = new_avg;
         let order = OrderRecord {
             order_id: self.next_order_id(),
             ts: ts.to_string(),
@@ -230,7 +249,18 @@ impl BrokerLedger {
                 "卖出金额溢出（qty×price ≈ {qty:.3e} × {price:.3e}），已拒单"
             ));
         }
-        self.cash = r2(self.cash + proceeds);
+        // 二阶 r2 溢出闸（BUG-20261128-044 同族）：proceeds 一阶有限 ≠
+        // 现金累计有限——cash 1e6 + proceeds 1.79e308 ≈ 1.79e308 有限，
+        // 但 r2 的 ×100 放大 → 1.79e310 = inf 入账（资金闸永假 + 账本
+        // 序列化 null 砖化）。先算后写，非有限拒单不动账。
+        let new_cash = r2(self.cash + proceeds);
+        if !new_cash.is_finite() {
+            return Err(format!(
+                "账户现金累计溢出（{:.3e} + {:.3e} 经 r2 ×100 放大越界），已拒单不动账",
+                self.cash, proceeds
+            ));
+        }
+        self.cash = new_cash;
         pos.qty -= qty;
         if pos.qty <= 0.0 {
             self.positions.remove(symbol);

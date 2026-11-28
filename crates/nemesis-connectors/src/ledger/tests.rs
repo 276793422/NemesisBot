@@ -251,3 +251,84 @@ fn concurrent_rmw_through_write_lock_loses_no_orders() {
     ids.dedup();
     assert_eq!(ids.len(), 50, "订单号不得重号");
 }
+
+// BUG-20261128-044：二阶 r2 溢出——现金**累计** r2(cash+proceeds) 的 ×100
+// 放大可越过 f64 上限（单笔 proceeds 一阶闸拦不住：两笔各 1.7e306 的卖出
+// 相加 3.4e306 → ×100 = 3.4e308 = inf）。inf 入账 = 资金闸 `cash < cost`
+// 永假 + serde_json 把非有限 f64 序列化为 null = 账本文件砖化（下次 load
+// 诚实报损坏）。拒单必须不动账、文件照常可落盘回读。
+#[test]
+fn sell_cash_accumulation_overflow_rejected_ledger_intact() {
+    let mut l = BrokerLedger::default();
+    l.buy("QQQ", 2.0, 1.0, TS).expect("建仓 2 股");
+    // 第一笔近界卖出过闸：proceeds = r2(1.7e306) = 1.7e306 有限，
+    // 累计 cash ≈ 1.7e306（999998 在该数量级被 float 吸收）。
+    l.sell("QQQ", 1.0, 1.7e306, TS)
+        .expect("第一笔近界卖出应正常成交");
+    let cash_after_first = l.cash;
+    assert!(
+        cash_after_first.is_finite() && cash_after_first > 1.0e306,
+        "第一笔后现金 ≈ 1.7e306，实际 {cash_after_first}"
+    );
+
+    // 第二笔同价卖出：proceeds 一阶有限（1.7e306，旧一阶闸放行），
+    // 但累计 r2(3.4e306) = 3.4e308 = inf——必须拒单不动账。
+    let err = l
+        .sell("QQQ", 1.0, 1.7e306, TS)
+        .expect_err("现金累计溢出必须拒单");
+    assert!(err.contains("现金累计溢出"), "{err}");
+    assert!(l.cash.is_finite(), "拒单后现金必须仍有限");
+    assert_eq!(l.cash, cash_after_first, "被拒订单不得动现金");
+    let pos = l.positions.get("QQQ").expect("被拒订单不得动持仓");
+    assert_eq!(pos.qty, 1.0, "被拒订单不得动持仓数量");
+    assert_eq!(l.orders.len(), 2, "拒单不得追加订单记录");
+
+    // 关键反砖化断言：账本照常落盘且可回读（修复前 cash=inf 序列化为
+    // null，load 直接报损坏）。
+    let ws = tmpws();
+    save_ledger(ws.path(), &l).expect("有限账本必须可落盘");
+    let reloaded = load_ledger(ws.path()).expect("落盘后必须可回读");
+    assert_eq!(reloaded.cash, l.cash, "落盘回读现金一致");
+}
+
+// BUG-20261128-044 同族（buy 均价臂）：avg_cost 累计 r2(总成本/数量) 的
+// ×100 放大同样可溢出。现金/持仓受 sell 闸约束后正常交易路径到不了界，
+// 但 load_ledger 接受任意有限 f64 的手工账本——用 avg_cost=1e308 的存量
+// 持仓加仓 1 股验证防线：r2((1e308+1)/2) = r2(5e307) → 5e309 = inf → 拒单
+// 不动账（修复前 inf 均价入账，save 序列化 null 砖化账本）。
+#[test]
+fn buy_avg_cost_overflow_rejected_ledger_intact() {
+    let ws = tmpws();
+    let path = ws.path().join("data/paper_broker.json");
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+    std::fs::write(
+        &path,
+        r#"{"cash": 1000000.0, "positions": {"XX": {"symbol": "XX", "qty": 1.0, "avg_cost": 1e308}}, "orders": []}"#,
+    )
+    .expect("write");
+    let mut l = load_ledger(ws.path()).expect("手工账本可加载");
+    let err = l.buy("XX", 1.0, 1.0, TS).expect_err("均价累计溢出必须拒单");
+    assert!(err.contains("累计值溢出"), "{err}");
+    let pos = &l.positions["XX"];
+    assert!(pos.avg_cost.is_finite(), "拒单后均价必须仍有限");
+    assert_eq!(pos.avg_cost, 1e308, "被拒订单不得动持仓均价");
+    assert_eq!(l.cash, 1000000.0, "被拒订单不得动现金");
+    assert!(l.orders.is_empty(), "拒单不得追加订单记录");
+    save_ledger(ws.path(), &l).expect("拒单后账本照常可落盘");
+}
+
+// BUG-20261128-044 同族（buy 现金臂）：存量文件现金 1.8e307（合法有限
+// JSON，一阶闸全放行）扣 1 元 → r2(1.8e307-1) = 1.8e309 = inf → 拒单，
+// 堵住「加载即信任」路径。
+#[test]
+fn buy_cash_deduction_overflow_rejected() {
+    let ws = tmpws();
+    let path = ws.path().join("data/paper_broker.json");
+    std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
+    std::fs::write(&path, r#"{"cash": 1.8e307, "positions": {}, "orders": []}"#).expect("write");
+    let mut l = load_ledger(ws.path()).expect("手工账本可加载");
+    let err = l.buy("YY", 1.0, 1.0, TS).expect_err("现金扣减溢出必须拒单");
+    assert!(err.contains("累计值溢出"), "{err}");
+    assert_eq!(l.cash, 1.8e307, "被拒订单不得动现金");
+    assert!(l.orders.is_empty(), "拒单不得追加订单记录");
+}
