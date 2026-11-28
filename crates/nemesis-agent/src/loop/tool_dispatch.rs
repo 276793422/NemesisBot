@@ -1018,6 +1018,17 @@ impl AgentLoop {
             // 恒 false 本就放行，豁免让两形态行为对齐，供给闸（含
             // todowrite）不再与分发闸失配。
             && tool_call.name != "todowrite"
+            // spawn 被静态表归 ProcessSpawn（8 层管线的 HIGH 风险语义——
+            // 起子代理进程本身），但 Plan 契约是「spawn 保留供给 + 分发闸
+            // 在子代理深度同样生效=纵深」（PLAN_MODE_TOOLS 表注 + R13
+            // 供给↔分发契约：供给的工具不得被分发闸 100% 拒）。spawn 自身
+            // 无外部写副作用面；子代理工具调用经同一 loop 的本闸（mode 是
+            // loop 级，run_detached_events 共享 self dispatch，深度无关）
+            // ——豁免 spawn 本体后「委托子代理不能成为旁路」语义仍由本闸
+            // 深度无关拦截承载，文档化设计（只读委派）恢复可达。
+            // （BUG-20261129-001：WASM 框架第三臂经静态表把 spawn 本体
+            // 100% 拒，供给↔分发契约失配——R13 修 cron/todowrite 时漏网。）
+            && tool_call.name != "spawn"
             && (matches!(
                 nemesis_security::types::tool_to_operation(&tool_call.name),
                 Some(

@@ -697,3 +697,45 @@ async fn plan_mode_todowrite_dispatches_while_write_still_blocked() {
         "Plan 模式下 write_file 必须仍被拦，实际: {out}"
     );
 }
+
+/// 分发闸行为面（BUG-20261129-001 回归锁）：plan 模式下 spawn 调用不被
+/// declared_write 臂（静态表 ProcessSpawn）100% 拒——供给闸保留 spawn
+/// （R13 契约：供给的工具不得被分发闸必拒），子代理写拦截由本闸深度无关
+/// 承载。正对照：同一 loop、depth=1（子代理视角）的 write_file 仍被拦
+/// ——「委托子代理不能成为旁路」语义不因 spawn 豁免外溢。
+#[tokio::test]
+async fn plan_mode_spawn_dispatches_and_subagent_writes_still_blocked() {
+    let mut al = f1_loop();
+    al.register_tool("spawn".to_string(), Box::new(EchoTool));
+    al.register_tool("write_file".to_string(), Box::new(EchoTool));
+    al.set_mode_with_event(
+        crate::types::AgentMode::Plan,
+        "agent:main:session:f1",
+        "web:f1",
+    );
+    let ctx = RequestContext::new("web", "f1chat", "f1user", "agent:main:session:f1");
+
+    let tc_spawn = ToolCallInfo {
+        id: "call_spawn".to_string(),
+        name: "spawn".to_string(),
+        arguments: r#"{"task": "只读调研：grep 一下登录相关代码"}"#.to_string(),
+    };
+    let out = al.handle_tool_call(&tc_spawn, &ctx).await;
+    assert_eq!(
+        out, "echo_ok",
+        "Plan 模式下 spawn（只读委派设计）必须放行，实际: {out}"
+    );
+
+    // 正对照：depth=1（子代理视角）的写类调用依旧被拦——豁免只限 spawn
+    // 本体，子代理的写不走旁路（mode 是 loop 级，dispatch 深度无关）。
+    let tc_write = ToolCallInfo {
+        id: "call_wf_d1".to_string(),
+        name: "write_file".to_string(),
+        arguments: r#"{"path": "src/main.rs", "content": "x"}"#.to_string(),
+    };
+    let out = al.handle_tool_call_at_depth(&tc_write, &ctx, 1).await;
+    assert!(
+        out.contains("Plan mode") && out.contains("/build"),
+        "Plan 模式下子代理（depth=1）write_file 必须仍被拦，实际: {out}"
+    );
+}
